@@ -1,4 +1,4 @@
-from .utils import register_hooks, print_model_params, tensor_md5, DebugLayer, filename, MyTimer, global_timer, print_cuda_memory_gb, DebuggingEvent, print_tensor_info, record_oom_threshold
+from .utils import register_hooks, print_model_params, tensor_md5, DebugLayer, filename, MyTimer, NoOpMyTimer ,global_timer, print_cuda_memory_gb, DebuggingEvent, print_tensor_info, record_oom_threshold
 # from .logging import get_logger
 from .gpu_mem_tracker import GPU_Performance_Tracker
 from .profilerwrapper import ProfilerWrapper
