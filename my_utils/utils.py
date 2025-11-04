@@ -552,6 +552,9 @@ class MyTimer:
                     f"[Iter {r['iteration']}][Rank {r['rank']}] Stage: {r['stage']:<30} | "
                     f"CPU: {r['cpu_duration_ms']:>8.3f}ms, CUDA: {cuda_str}\n"
                 )
+
+
+                
     def generate_report(self, stage_pattern, output_filename, iteration_filter=None):
         """
         【最终正确版 V2】生成详细的性能分析报告，并保存到文件。
