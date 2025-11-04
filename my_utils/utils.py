@@ -379,7 +379,7 @@ class MyTimer:
         #     self.logger = self._get_logger()
         # 此处耦合了handler的logger在这里设定，目前已经迁移到初始化完megatron分布式环境后传入logger
         self._ensure_logger()
-        if self.rank != dist.get_rank():
+        if torch.distributed.is_initialized() and self.rank != dist.get_rank():
             self.rank = dist.get_rank()
         # entry = {"cpu_start": time.time()}
         # CPU code start time
