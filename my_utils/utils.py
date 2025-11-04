@@ -757,6 +757,79 @@ if PROFILING_ENABLED:
 else: 
     global_timer = NoOpMyTimer()
 
+
+
+# (在 my_utils.init_utils.py 中)
+
+import os
+import logging
+import torch.distributed as dist
+from my_utils.logger import GlobalLogger, get_global_logger
+
+def setup_logging_and_timer(args, role_tag: str, use_cuda: bool, is_distributed: bool):
+    """
+    为当前进程 (Worker 或 Driver) 初始化 GlobalLogger 和 MyTimer。
+    
+    返回:
+        (logging.Logger, MyTimer/NoOpTimer): 配置好的 logger 和 timer 实例。
+    """
+    
+    # --- 1. 配置 GlobalLogger ---
+    logger_instance = GlobalLogger()
+    
+    if not logger_instance.is_configured:
+        if is_distributed:
+            # Worker 进程: 从 torch.dist 获取 rank
+            rank = dist.get_rank()
+            world_size = dist.get_world_size()
+        else:
+            # Driver 进程: 总是 0/1
+            rank = 0
+            world_size = 1
+            
+        if not hasattr(args, 'log_dir') or args.logdir is None:
+            base_log_dir = "logs"
+        else:
+            base_log_dir = args.logdir
+
+        # e.g., "logs/Critic" 或 "logs/Trainer_Driver"
+        log_dir = os.path.join(base_log_dir, str(role_tag))
+        
+        logger_instance.setup(
+            log_dir=log_dir,
+            level=logging.INFO, # or args.log_level
+            rank=rank,
+            world_size=world_size,
+            extra_log_label=str(role_tag)
+        )
+    
+    logger = get_global_logger()
+    logger.info(f"Logger for {role_tag} (Rank {rank if is_distributed else 0}) configured.")
+
+    # --- 2. 配置 MyTimer ---
+    if os.environ.get("ENABLE_TIMER", "0") == "1":
+        logger.info(f"Performance Timer ENABLED for {role_tag}")
+        
+        timer = MyTimer(
+            use_cuda=use_cuda,
+            tag=str(role_tag),
+            log_dir=log_dir,
+            use_nvtx=False, 
+            profile_memory=False
+        )
+        
+        # [!!] 注入 Logger (已修复 Bug)
+
+        
+    else:
+        timer = NoOpMyTimer()
+    timer.set_logger(logger)
+
+
+    
+    return logger, timer
+
+
 def print_cuda_memory_gb(step_name=""):
     """
     打印当前进程（Rank）的已分配和已缓存的 CUDA 显存。
@@ -774,6 +847,7 @@ def print_cuda_memory_gb(step_name=""):
     else:
         # 如果没有分布式环境或 CUDA，只打印普通信息
         print(f"✅ {step_name}: CUDA not available or distributed not initialized.")
+
 
 
 
