@@ -215,7 +215,7 @@ class MyTimer:
     # (此处省略了之前已展示的、未改动的方法代码，以保持简洁)
     def __init__(self, use_cuda=True, tag="timer", 
                  verbose=True, log_dir="my_timer_log/",
-                 profile_memory=False, use_nvtx=True):
+                 profile_memory=False, use_nvtx=False):
         self.use_cuda = use_cuda and torch.cuda.is_available()
         self.verbose = verbose
         self.tag = tag
