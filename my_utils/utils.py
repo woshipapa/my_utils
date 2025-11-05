@@ -222,7 +222,7 @@ class MyTimer:
         self.rank = dist.get_rank() if dist.is_initialized() else 0
         self.world_size = dist.get_world_size() if dist.is_initialized() else 1
         self.log_dir = log_dir
-        self._stage_times = {}
+        
         self.records = []
         self.current_iteration = 0
         
@@ -244,6 +244,27 @@ class MyTimer:
         # async
         # 新增：用于存放本轮迭代中已完成但尚未计算时间的记录
         self._pending_records = []
+
+        # self._stage_times = {}
+
+        # --- [!!] 新的层级堆栈逻辑 [!!] ---
+        
+        # 1. (替换) 移除 self._stage_times = {}
+        # 2. (新增) 我们需要一个唯一的节点 ID 来在
+        #    'summarize' 阶段重建父子关系。
+        self.next_node_id = 1 # 0 是 root
+        
+        # 3. (新增) 创建根节点 (root_node)。
+        #    current_node 始终指向堆栈的顶部。
+        self.root_node = {
+            "name": "root",
+            "node_id": 0,
+            "parent_id": None,
+            "start_cpu": time.perf_counter(),
+            "children": [] # (用于调试, 主要数据在 records 中)
+        }
+
+        self.current_node = self.root_node
 
     def _get_domain(self, domain_name: str):
         """内部方法，用于获取并缓存 Domain 对象"""
@@ -408,84 +429,305 @@ class MyTimer:
                     message=stage_name, color=color, domain=domain_name
                 )
                 # 此时 entry["nvtx_domain"] 保持为 None，作为使用全局函数的标记
-        self._stage_times[stage_name] = entry
 
-    def stop(self, stage_name):
-        if stage_name not in self._stage_times:
-            return
-        entry = self._stage_times.pop(stage_name)
-        # cpu_end = time.time()
+
+        new_node_id = self.next_node_id
+        self.next_node_id += 1
+        
+        new_node = {
+            "name": stage_name,
+            "node_id": new_node_id,
+            "parent_id": self.current_node["node_id"],
+            "children": [],
+            
+            # (存储你 'entry' 字典中的所有内容)
+            "cpu_start": entry["cpu_start"],
+            "cuda_start": entry.get("cuda_start"),
+            "cuda_end":  entry.get("cuda_end"),
+            "nvtx_domain": entry.get("nvtx_domain"),
+            "nvtx_range_id": entry.get("nvtx_range_id"),
+        }
+
+        self.current_node["children"].append(new_node)
+        self.current_node = new_node
+        # self._stage_times[stage_name] = entry
+
+    # def stop(self, stage_name):
+    #     if stage_name not in self._stage_times:
+    #         return
+    #     entry = self._stage_times.pop(stage_name)
+    #     # cpu_end = time.time()
+    #     cpu_end = time.perf_counter()
+    #     cpu_elapsed_ms = (cpu_end - entry.get("cpu_start", cpu_end)) * 1000
+    #     cuda_elapsed_ms = None
+    #     if self.use_cuda and "cuda_end" in entry:
+    #         entry["cuda_end"].record()
+    #         # torch.cuda.synchronize()
+    #         # cuda_elapsed_ms = entry["cuda_start"].elapsed_time(entry["cuda_end"])
+
+    #     if self.use_nvtx and "nvtx_range_id" in entry:
+    #         domain = entry.get("nvtx_domain")
+    #         range_id = entry.get("nvtx_range_id")
+
+    #         if range_id is not None:
+    #             if domain:
+    #                 # 如果 start 是在 domain 对象上调用的，end 也必须在同一个对象上调用
+    #                 domain.end_range(range_id)
+    #             else:
+    #                 # 如果 start 是用全局函数调用的，end 也必须用全局函数
+    #                 nvtx.end_range(range_id)
+
+
+
+    #      # 暂存记录，CPU 时间已知，GPU 事件已记录但时间未知
+    #     pending_record = {
+    #         "stage": stage_name,
+    #         "cpu_duration_ms": (cpu_end - entry["cpu_start"]) * 1000,
+    #         "cuda_events": (entry.get("cuda_start"), entry.get("cuda_end"))
+    #     }
+    #     self._pending_records.append(pending_record)    
+    #     # self.records.append(
+    #     #     {
+    #     #         "stage": stage_name,
+    #     #         "rank": self.rank,
+    #     #         "iteration": self.current_iteration,
+    #     #         "cpu_duration_ms": cpu_elapsed_ms,
+    #     #         "cuda_duration_ms": cuda_elapsed_ms,
+    #     #     }
+    #     # )
+
+    #     # # 使用传入的logger来记录timer中的数据信息
+    #     # if self.verbose:
+    #     #     self.logger.info(
+    #     #         f"[Iter {self.current_iteration}] Stage '{stage_name}': CPU {cpu_elapsed_ms:.3f}ms, CUDA {cuda_elapsed_ms or 0.0:.3f}ms"
+    #     #     )
+    def stop(self, stage_name: str):
         cpu_end = time.perf_counter()
-        cpu_elapsed_ms = (cpu_end - entry.get("cpu_start", cpu_end)) * 1000
-        cuda_elapsed_ms = None
-        if self.use_cuda and "cuda_end" in entry:
-            entry["cuda_end"].record()
-            # torch.cuda.synchronize()
-            # cuda_elapsed_ms = entry["cuda_start"].elapsed_time(entry["cuda_end"])
 
-        if self.use_nvtx and "nvtx_range_id" in entry:
-            domain = entry.get("nvtx_domain")
-            range_id = entry.get("nvtx_range_id")
+        # [!!] (V2) 1. 堆栈检查 (最关键的部分) [!!]
+        if self.current_node["name"] != stage_name:
+            # (健壮性处理：如果名称不匹配, 我们尝试在堆栈中向上查找)
+            # (这可以处理 "stop('A')" 自动关闭 "B" 的情况)
+            
+            print(f"TimerWarning: Mismatched stop call on Rank {self.rank}! "
+                  f"Expected to stop '{self.current_node['name']}' but got '{stage_name}'.")
+            
+            node_to_stop = self._find_node_in_stack(stage_name)
+            
+            if node_to_stop is None:
+                print(f"TimerError: Could not find active timer '{stage_name}' in the stack.")
+                return
 
+            # 如果找到了, 我们必须自动关闭所有子节点, 直到我们到达
+            # 'node_to_stop'。
+            while self.current_node != node_to_stop:
+                print(f"TimerWarning: Auto-stopping child '{self.current_node['name']}' "
+                      f"due to explicit stop of ancestor '{stage_name}'.")
+                # (传入 cpu_end, 因为这是唯一的 "stop" 时间)
+                self._finalize_and_record_node(self.current_node, cpu_end) 
+                self.current_node = self.current_node['parent']
+            
+        # [!!] (V2) 2. 最终确定并记录当前节点
+        self._finalize_and_record_node(self.current_node, cpu_end)
+
+        # [!!] (V2) 3. 上浮 (Ascend)
+        # (我们 *总是* 上浮到当前节点的父节点)
+        if self.current_node["parent"] is not None:
+            self.current_node = self.current_node["parent"]
+        else:
+            print(f"TimerError: Attempted to stop root node?")
+
+
+    def _find_node_in_stack(self, name: str):
+        """ (新增) 辅助函数: 从当前节点向上搜索堆栈 """
+        temp_node = self.current_node
+        while temp_node is not None and temp_node["name"] != "root":
+            if temp_node["name"] == name:
+                return temp_node
+            temp_node = temp_node["parent"]
+        return None
+    
+    def _finalize_and_record_node(self, node: dict, cpu_end: float):
+        """ (新增) 辅助函数: 包含你 'stop' 方法的所有核心逻辑 """
+        
+        # [!!] (V2) 这部分代码 *就是* 你 'stop' 方法的 90% [!!]
+        
+        # (来自你 'stop' 的逻辑)
+        if self.use_cuda and "cuda_end" in node and node["cuda_end"] is not None:
+            node["cuda_end"].record()
+
+        if self.use_nvtx and "nvtx_range_id" in node:
+            domain = node.get("nvtx_domain")
+            range_id = node.get("nvtx_range_id")
             if range_id is not None:
                 if domain:
-                    # 如果 start 是在 domain 对象上调用的，end 也必须在同一个对象上调用
                     domain.end_range(range_id)
                 else:
-                    # 如果 start 是用全局函数调用的，end 也必须用全局函数
                     nvtx.end_range(range_id)
 
-
-
-         # 暂存记录，CPU 时间已知，GPU 事件已记录但时间未知
+        # (来自你 'stop' 的逻辑: 创建 pending_record)
         pending_record = {
-            "stage": stage_name,
-            "cpu_duration_ms": (cpu_end - entry["cpu_start"]) * 1000,
-            "cuda_events": (entry.get("cuda_start"), entry.get("cuda_end"))
+            "stage": node["name"],
+            "cpu_duration_ms": (cpu_end - node["cpu_start"]) * 1000,
+            "cuda_events": (node.get("cuda_start"), node.get("cuda_end")),
+            
+            # [!!] (V2) 新增的层级数据 [!!]
+            # (这允许 'summarize' 重建树)
+            "node_id": node["node_id"],
+            "parent_id": node["parent_id"]
         }
-        self._pending_records.append(pending_record)    
-        # self.records.append(
-        #     {
-        #         "stage": stage_name,
-        #         "rank": self.rank,
-        #         "iteration": self.current_iteration,
-        #         "cpu_duration_ms": cpu_elapsed_ms,
-        #         "cuda_duration_ms": cuda_elapsed_ms,
-        #     }
-        # )
-
-        # # 使用传入的logger来记录timer中的数据信息
-        # if self.verbose:
-        #     self.logger.info(
-        #         f"[Iter {self.current_iteration}] Stage '{stage_name}': CPU {cpu_elapsed_ms:.3f}ms, CUDA {cuda_elapsed_ms or 0.0:.3f}ms"
-        #     )
-
+        self._pending_records.append(pending_record)
 
     def synchronize_and_log(self):
         """
-        在迭代结束时调用，执行一次同步，并计算和记录所有暂存的记录。
+        [V2 - 层级版本]
+        在迭代结束时调用，执行同步，并完成三件事：
+        1. 计算所有 pending records 的 CUDA 时间并存入 self.records。
+        2. 从 self.records (扁平列表) 重建本次迭代的调用树。
+        3. 遍历该树，计算 Self Time 并以层级（缩进）格式记录日志。
         """
         if self.use_cuda:
             torch.cuda.synchronize()
 
+        # --- 步骤 1: 处理 _pending_records 并填充 self.records ---
+        
+        # 清空本次迭代的 records
+        self.records = []
+        
         for record in self._pending_records:
             cuda_elapsed_ms = None
             if self.use_cuda:
                 start_event, end_event = record["cuda_events"]
                 if start_event and end_event:
-                    cuda_elapsed_ms = start_event.elapsed_time(end_event)
+                    # 确保事件已准备好
+                    try:
+                        cuda_elapsed_ms = start_event.elapsed_time(end_event)
+                    except torch.cuda.Error as e:
+                        # (处理可能的 CUDA 错误)
+                        self.logger.warning(f"CUDA event error for {record['stage']}: {e}")
             
             full_record = {
-                "stage": record["stage"], "rank": self.rank, "iteration": self.current_iteration,
-                "cpu_duration_ms": record["cpu_duration_ms"], "cuda_duration_ms": cuda_elapsed_ms,
+                "stage": record["stage"],
+                "rank": self.rank,
+                "iteration": self.current_iteration,
+                "cpu_duration_ms": record["cpu_duration_ms"],
+                "cuda_duration_ms": cuda_elapsed_ms,
+                
+                # [!!] 关键: 保留 V2 堆栈 timer 提供的层级 ID
+                "node_id": record["node_id"],
+                "parent_id": record["parent_id"],
+                
+                # (用于步骤 2 的临时字段)
+                "children": []
             }
             self.records.append(full_record)
-            if self.verbose:
-                self.logger.info(
-                    f"[Iter {self.current_iteration}] Stage '{record['stage']}': "
-                    f"CPU {full_record['cpu_duration_ms']:.3f}ms, CUDA {cuda_elapsed_ms or 0.0:.3f}ms"
-                )
+        
         self._pending_records.clear()
+
+        if not self.records or not self.verbose:
+            # 如果没有记录, 或者我们处于非 verbose 模式, 就提前退出
+            # (self.records 仍然被填充, 只是不记录日志)
+            return
+
+        # --- 步骤 2: 从 self.records (扁平列表) 重建调用树 ---
+        
+        # 使用字典以便快速查找
+        nodes_map = {node['node_id']: node for node in self.records}
+        
+        # (注意: 我们假设 self.root_node (id=0) 是全局根,
+        #  我们在这里只构建本次迭代的子树)
+        
+        tree_roots = [] # 存放本次迭代的"顶层"调用
+        
+        for node in self.records:
+            parent_id = node['parent_id']
+            if parent_id in nodes_map:
+                # 这是一个子节点, 将它添加到其父节点的 'children' 列表中
+                parent_node = nodes_map[parent_id]
+                parent_node['children'].append(node)
+            else:
+                # 这是一个顶层节点 (其父节点不是本次迭代的记录, 
+                # 可能是全局根节点 'id=0')
+                tree_roots.append(node)
+
+        # --- 步骤 3: 递归计算 Self Time ---
+        
+        def calculate_self_time_recursive(node):
+            """
+            遍历树, 计算每个节点的 Self Time。
+            返回: 该节点的 Total CUDA Time (用于父节点的计算)。
+            """
+            # 我们使用 CUDA 时间作为 "Total Time"
+            total_time_ms = node.get('cuda_duration_ms') or 0.0
+            
+            if not node['children']:
+                # 如果是叶节点, Self Time == Total Time
+                node['self_time_ms'] = total_time_ms
+                return total_time_ms
+                
+            # 递归计算所有子节点的总时间
+            children_total_time = 0.0
+            for child in node['children']:
+                children_total_time += calculate_self_time_recursive(child)
+            
+            # Self Time = Total Time - Children's Total Time
+            node['self_time_ms'] = total_time_ms - children_total_time
+            
+            # 返回 *Total Time* 给父节点
+            return total_time_ms
+
+        # 遍历所有顶层节点来启动计算
+        for root_node in tree_roots:
+            calculate_self_time_recursive(root_node)
+
+        # --- 步骤 4: 递归地记录层级日志 ---
+        
+        def log_tree_recursive(node, indent_prefix=""):
+            """
+            遍历树, 并以缩进格式打印日志。
+            """
+            # 准备日志条目
+            stage = node['stage']
+            cpu_ms = node['cpu_duration_ms']
+            cuda_ms = node.get('cuda_duration_ms') or 0.0
+            self_ms = node.get('self_time_ms', 0.0) # self_time 是我们刚计算的
+            
+            # [!!] 这就是你的 "Log Parsing" 解决方案 [!!]
+            node_id = node['node_id']
+            parent_id = node['parent_id']
+            
+            # 格式化 Self Time (仅在有子节点且 Self > 0 时显示)
+            self_time_str = ""
+            if node['children'] and self_ms > 0.001:
+                self_time_str = f", Self {self_ms:.3f}ms"
+
+            # [!!] 最终的、可解析的、层级的日志消息 [!!]
+            log_msg = (
+                f"[Iter {self.current_iteration}] {indent_prefix}"
+                f"Stage '{stage}' [id={node_id}, p_id={parent_id}]: "
+                f"CPU {cpu_ms:.3f}ms, CUDA {cuda_ms:.3f}ms{self_time_str}"
+            )
+            
+            self.logger.info(log_msg)
+            
+            # 递归地打印子节点
+            new_indent = indent_prefix + "  L "
+            
+            # (按 node_id 排序, 以确保日志顺序与调用顺序大致匹配)
+            sorted_children = sorted(node['children'], key=lambda x: x['node_id'])
+            
+            for child in sorted_children:
+                log_tree_recursive(child, indent_prefix=new_indent)
+
+        # 确保 self.logger 可用
+        self._ensure_logger()
+
+        # (按 node_id 排序根节点)
+        sorted_roots = sorted(tree_roots, key=lambda x: x['node_id'])
+        
+        # 启动日志记录
+        for root_node in sorted_roots:
+            log_tree_recursive(root_node, indent_prefix="") # 顶层没有缩进
 
     def step(self):
         self.synchronize_and_log()
