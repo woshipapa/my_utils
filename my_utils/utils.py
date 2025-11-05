@@ -439,7 +439,8 @@ class MyTimer:
             "node_id": new_node_id,
             "parent_id": self.current_node["node_id"],
             "children": [],
-            
+            # (用于 stop() 方法的堆栈上浮)
+            "parent": self.current_node,
             # (存储你 'entry' 字典中的所有内容)
             "cpu_start": entry["cpu_start"],
             "cuda_start": entry.get("cuda_start"),
