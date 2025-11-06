@@ -1008,7 +1008,7 @@ import os
 import logging
 import torch.distributed as dist
 from my_utils.logger import GlobalLogger, get_global_logger
-
+from my_utils.memory_snapshot import global_snapshotter
 def setup_logging_and_timer(args, role_tag: str, use_cuda: bool, is_distributed: bool):
     """
     为当前进程 (Worker 或 Driver) 初始化 GlobalLogger 和 MyTimer。
@@ -1088,6 +1088,8 @@ def setup_logging_and_timer(args, role_tag: str, use_cuda: bool, is_distributed:
     
         timer = global_timer
 
+
+    global_snapshotter.set_logger(logger=logger)
     
     return logger, timer
 
