@@ -1072,8 +1072,8 @@ def setup_logging_and_timer(args, role_tag: str, use_cuda: bool, is_distributed:
         global_timer.set_logger(logger)
         global_timer.use_cuda = use_cuda
         global_timer.tag = str(role_tag)
-        global_timer.log_dir = logger_instance.log_dir # (重用 logger 的 log_dir)
-        global_timer.rank = logger_instance.rank
+        # global_timer.log_dir = logger_instance.log_dir # (重用 logger 的 log_dir)
+        # global_timer.rank = logger_instance.rank
         
         # (来自你 V1 的硬编码)
         global_timer.use_nvtx = False 
