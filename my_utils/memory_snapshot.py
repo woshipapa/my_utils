@@ -61,14 +61,14 @@ class MemorySnapshotter:
         try:
             if not self._active_names:
                 # [!!] 堆栈为空, 这是 "根" 调用 [!!]
-                # 启动并*重置*历史
+                # 启动并*重置*历史, 全局开始记录
                 torch.cuda.memory._record_memory_history(
                     enabled=True
                 )
                 self.logger.info(f"[MemSnapshot] START-ROOT: '{name}' (已启动并重置历史)")
             else:
                 # 已经是子调用, 确保记录器仍在运行
-                torch.cuda.memory._record_memory_history(enabled=True)
+                # torch.cuda.memory._record_memory_history(enabled=True)
                 self.logger.info(f"[MemSnapshot] START-CHILD: '{name}'")
             
             # 压入堆栈
