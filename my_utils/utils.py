@@ -1068,25 +1068,25 @@ def setup_logging_and_timer(args, role_tag: str, use_cuda: bool, is_distributed:
         else:
             timer = NoOpMyTimer()
         timer.set_logger(logger)
-    else:
-        global_timer.set_logger(logger)
-        global_timer.use_cuda = use_cuda
-        global_timer.tag = str(role_tag)
-        # global_timer.log_dir = logger_instance.log_dir # (重用 logger 的 log_dir)
-        # global_timer.rank = logger_instance.rank
-        
-        # (来自你 V1 的硬编码)
-        global_timer.use_nvtx = False 
-        global_timer.profile_memory = False
-        
-        # 3. 检查 global_timer 是哪种类型并记录
-        # (我们通过检查它是否是 NoOpTimer 来判断 ENABLE_TIMER 的状态)
-        if isinstance(global_timer, NoOpMyTimer):
-            logger.info(f"Performance Timer is DISABLED for {role_tag}.")
-        else:
-            logger.info(f"Performance Timer ENABLED for {role_tag} (Rank {global_timer.rank}).")
     
-        timer = global_timer
+    global_timer.set_logger(logger)
+    global_timer.use_cuda = use_cuda
+    global_timer.tag = str(role_tag)
+    # global_timer.log_dir = logger_instance.log_dir # (重用 logger 的 log_dir)
+    # global_timer.rank = logger_instance.rank
+    
+    # (来自你 V1 的硬编码)
+    global_timer.use_nvtx = False 
+    global_timer.profile_memory = False
+    
+    # 3. 检查 global_timer 是哪种类型并记录
+    # (我们通过检查它是否是 NoOpTimer 来判断 ENABLE_TIMER 的状态)
+    if isinstance(global_timer, NoOpMyTimer):
+        logger.info(f"Performance Timer is DISABLED for {role_tag}.")
+    else:
+        logger.info(f"Performance Timer ENABLED for {role_tag} (Rank {global_timer.rank}).")
+
+    timer = global_timer
 
 
     global_snapshotter.set_logger(logger=logger)
