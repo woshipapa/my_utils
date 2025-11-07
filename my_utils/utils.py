@@ -1086,12 +1086,13 @@ def setup_logging_and_timer(args, role_tag: str, use_cuda: bool, is_distributed:
     else:
         logger.info(f"Performance Timer ENABLED for {role_tag} (Rank {global_timer.rank}).")
 
-    timer = global_timer
+    
 
 
     global_snapshotter.set_logger(logger=logger)
     
     return logger, timer
+    
 
 
 def print_cuda_memory_gb(step_name=""):
