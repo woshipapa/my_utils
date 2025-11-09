@@ -1048,7 +1048,7 @@ def setup_logging_and_timer(args, role_tag: str, use_cuda: bool, is_distributed:
     
     logger = get_global_logger()
     logger.info(f"Logger for {role_tag} (Rank {rank if is_distributed else 0}) configured.")
-
+    timer = None
     # --- 2. 配置 MyTimer ---
     if args.use_ray:
         if os.environ.get("ENABLE_TIMER", "0") == "1":
