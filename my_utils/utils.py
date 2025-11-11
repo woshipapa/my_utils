@@ -1285,6 +1285,23 @@ def _get_checksum(tensor: torch.Tensor) -> float:
     except Exception:
         return -1.0
 
+import torch
+import os
+import logging
+import torch.distributed as dist
+from tensordict import TensorDict # (假设 DataProto.batch 是这个类型)
+
+IS_ENABLED = os.environ.get("DEBUG_DATA_CONSISTENCY", "0") == "1"
+CSUM_PREFIX = "_csum_"
+
+def _get_checksum(tensor: torch.Tensor) -> float:
+    """计算一个快速校验和 (在 CPU 上, 使用 float)。"""
+    if not IS_ENABLED: return 0.0
+    try:
+        # (确保 .float() 以防止 BFloat16 等的精度问题)
+        return torch.sum(tensor.cpu().float()).item()
+    except Exception:
+        return -1.0
 
 class ChecksumUtils:
     
@@ -1292,44 +1309,47 @@ class ChecksumUtils:
     ## dataproto batch
     def sign(payload: dict) -> dict:
         """
-        [在 *发送* 端调用 - V2 版本]
+        [在 *发送* 端调用 - V4 In-Band 版本]
         
-        计算 'payload' 字典中所有 torch.Tensor 的校验和。
-        [!!] 不再修改 payload, 而是 *返回* 一个新的 'csum_dict' [!!]
+        [!!] 核心修改: 
+        1. 计算校验和
+        2. 将 (float) 校验和包装成 (Tensor)
+        3. *修改* 原始 payload 字典, 将校验和 Tensor 添加进去。
         
         Args:
-            payload (dict): *未修改* 的 tensors 字典 (e.g., _g_fwd_microbatch 的 'tensors')
-        
-        Returns:
-            dict: 一个包含校验和的新字典 (e.g., {"_csum_noisy_latent_cpu": 123.4})
+            payload (dict): 即将发送的 *tensors* 字典
         """
         if not IS_ENABLED:
-            return {} # 返回一个空字典
+            return
 
-        checksums = {}
+        checksums_to_add = {}
         for key, value in payload.items():
             if isinstance(value, torch.Tensor):
-                # 1. 计算校验和
                 csum_value = _get_checksum(value)
-                
-                # 2. 添加到新字典
                 csum_key = f"{CSUM_PREFIX}{key}"
-                checksums[csum_key] = csum_value
+                
+                # [!!] 关键: 将 float 包装成一个 0 维 Tensor [!!]
+                # (我们使用与 value 相同的 device, 尽管 .cpu() 也可以)
+                checksums_to_add[csum_key] = torch.tensor(
+                    [csum_value], dtype=torch.float32, device=value.device
+                )
         
-        return checksums
+        # [!!] 关键: *修改* payload [!!]
+        payload.update(checksums_to_add)
+        # (此函数现在没有返回值)
 
     @staticmethod
-    def verify(fwd_data: DataProto, logger: logging.Logger):
+    def verify(batch: TensorDict, logger: logging.Logger):
         """
-        [在 *接收* 端调用 - V2 版本]
+        [在 *接收* 端调用 - V4 In-Band 版本]
         
-        比较 DataProto.meta_info (预期) 和 DataProto.batch (实际张量)
+        在 *已切片* 的 'TensorDict' (.batch) 内部比较校验和。
         
         [!!] 关键: 
         此函数 *必须* 在你的 Tensors 被 .to(device) *之前* 调用。
         
         Args:
-            fwd_data (DataProto): 接收到的 *完整* DataProto 对象
+            batch (TensorDict): 接收到的 *已切片* 的 DataProto.batch
             logger (logging.Logger): 接收端 worker 的 logger
         """
         if not IS_ENABLED:
@@ -1337,51 +1357,57 @@ class ChecksumUtils:
             
         if not logger:
             rank = dist.get_rank() if dist.is_initialized() else 0
-            print(f"[Rank {rank}] ChecksumUtils.verify: No logger provided, skipping verification.")
+            print(f"[Rank {rank}] ChecksumUtils.verify: No logger provided, skipping.")
             return
 
-        # [!!] V2: 从 .meta_info (标签) 和 .batch (包裹) 中获取数据 [!!]
-        csum_dict = fwd_data.meta_info
-        payload_dict = fwd_data.batch
+        # 1. 查找所有 checksum 键
+        csum_keys = [k for k in batch.keys() if k.startswith(CSUM_PREFIX)]
         
-        if not csum_dict:
-            logger.info("[Checksum] No checksums found in meta_info.")
+        if not csum_keys:
+            logger.info("[Checksum] No checksum tensors found in TensorDict.")
             return
 
-        for csum_key, expected_csum in csum_dict.items():
-            # (只处理我们关心的 checksum 键)
-            if not csum_key.startswith(CSUM_PREFIX):
-                continue
-                
-            # e.g., _csum_noisy_latent_cpu -> noisy_latent_cpu
+        for csum_key in csum_keys:
             original_key = csum_key[len(CSUM_PREFIX):]
             
-            # 3. 获取接收端 (C-Worker) 接收到的张量
-            received_tensor = payload_dict.get(original_key)
+            # 2. 获取 *校验和张量* (e.g., [csum0, csum1])
+            expected_csums_tensor = batch[csum_key]
             
-            if received_tensor is None:
-                logger.warning(f"[Checksum] Found key '{csum_key}' in meta_info but "
-                                 f"missing original tensor key '{original_key}' in .batch!")
+            # 3. 获取 *数据张量* (e.g., Tensors[BS=2, F, C, H, W])
+            received_tensors = batch.get(original_key)
+            
+            if received_tensors is None:
+                logger.warning(f"[Checksum] Found '{csum_key}' but "
+                                 f"missing '{original_key}' in TensorDict!")
                 continue
             
-            if not isinstance(received_tensor, torch.Tensor):
-                logger.warning(f"[Checksum] Key '{original_key}' is not a Tensor, cannot verify.")
-                continue
+            # (确保 batch size 匹配)
+            if expected_csums_tensor.shape[0] != received_tensors.shape[0]:
+                 logger.error(f"[Checksum] FAILED: Mismatched batch size for '{original_key}'. "
+                                f"Data has {received_tensors.shape[0]} but csum has {expected_csums_tensor.shape[0]}.")
+                 continue
+
+            # [!!] 4. V4 核心逻辑: 遍历 *切片后* 的 Batch [!!]
+            for i in range(received_tensors.shape[0]):
                 
-            # 4. 在接收端 *重新计算* 校验和 (在 CPU 上)
-            try:
-                new_csum = _get_checksum(received_tensor)
+                # (获取第 i 个张量 (BS=1))
+                tensor_slice = received_tensors[i] 
+                # (获取第 i 个校验和 (BS=1))
+                expected_csum = expected_csums_tensor[i]
                 
-                # 5. 比较
-                if not torch.allclose(torch.tensor(expected_csum), torch.tensor(new_csum)):
-                     logger.error(
-                        f"[!!] CHECKSUM MISMATCH (Key: {original_key}) [!!]\n"
-                        f"  Sender (Generator)   Calculated: {expected_csum}\n"
-                        f"  Receiver (Critic)  Re-calculated: {new_csum}"
-                    )
-                else:
-                    logger.info(
-                        f"[Checksum OK] Key: {original_key} (Sum: {new_csum})"
-                    )
-            except Exception as e:
-                logger.error(f"[Checksum] FAILED to verify '{original_key}': {e}")
+                try:
+                    # 重新计算 *该切片* 的校验和
+                    new_csum = _get_checksum(tensor_slice)
+                    
+                    if not torch.allclose(expected_csum.cpu(), torch.tensor(new_csum)):
+                         logger.error(
+                            f"[!!] CHECKSUM MISMATCH (Key: {original_key}, Batch Index: {i}) [!!]\n"
+                            f"  Sender (Generator)   Calculated: {expected_csum.item()}\n"
+                            f"  Receiver (Critic)  Re-calculated: {new_csum}"
+                        )
+                    else:
+                        logger.info(
+                            f"[Checksum OK] Key: {original_key} (Index: {i}, Sum: {new_csum})"
+                        )
+                except Exception as e:
+                    logger.error(f"[Checksum] FAILED to verify '{original_key}': {e}")
