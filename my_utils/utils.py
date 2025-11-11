@@ -1242,7 +1242,7 @@ def print_tensor_info(tensor: torch.Tensor, name: str = ""):
         )
 
 
-
+from tensordict import TensorDict # (假设 DataProto.batch 是这个类型)
 
 
 IS_ENABLED = os.environ.get("DEBUG_DATA_CONSISTENCY", "0") == "1"
