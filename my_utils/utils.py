@@ -1303,54 +1303,72 @@ def _get_checksum(tensor: torch.Tensor) -> float:
     except Exception:
         return -1.0
 
+import torch
+import os
+import logging
+import torch.distributed as dist
+from tensordict import TensorDict # (假设 DataProto.batch 是这个类型)
+
+IS_ENABLED = os.environ.get("DEBUG_DATA_CONSISTENCY", "0") == "1"
+CSUM_PREFIX = "_csum_"
+
+def _get_checksum_for_slice(tensor_slice: torch.Tensor) -> float:
+    """
+    [V6] 计算 *单个* 批次项 (slice) 的校验和。
+    """
+    if not IS_ENABLED: return 0.0
+    try:
+        # (确保 .float() 以防止 BFloat16 等的精度问题)
+        return torch.sum(tensor_slice.cpu().float()).item()
+    except Exception:
+        return -1.0
+
 class ChecksumUtils:
     
     @staticmethod
-    ## dataproto batch
-    def sign(payload: dict) -> dict:
+    def sign(payload: dict):
         """
-        [在 *发送* 端调用 - V4 In-Band 版本]
+        [在 *发送* 端调用 - V6 逐切片版]
         
         [!!] 核心修改: 
-        1. 计算校验和
-        2. 将 (float) 校验和包装成 (Tensor)
-        3. *修改* 原始 payload 字典, 将校验和 Tensor 添加进去。
-        
-        Args:
-            payload (dict): 即将发送的 *tensors* 字典
+        1. 遍历 payload 中的所有张量。
+        2. 遍历该张量的 *每一项* (e.g., 0 到 batch_size-1)。
+        3. 为 *每一项* 计算校验和。
+        4. 将 [csum0, csum1, ...] 列表包装成一个 [BS] 形状的张量。
         """
         if not IS_ENABLED:
             return
 
         checksums_to_add = {}
         for key, value in payload.items():
-            if isinstance(value, torch.Tensor):
-                csum_value = _get_checksum(value)
-                csum_key = f"{CSUM_PREFIX}{key}"
-                
-                # [!!] 关键: 将 float 包装成一个 0 维 Tensor [!!]
-                # (我们使用与 value 相同的 device, 尽管 .cpu() 也可以)
-                checksums_to_add[csum_key] = torch.tensor(
-                    [csum_value], dtype=torch.float32, device=value.device
-                )
+            if not isinstance(value, torch.Tensor):
+                continue
+
+            csum_key = f"{CSUM_PREFIX}{key}"
+            
+            # [!!] V6 关键修复: 遍历 Batch [!!]
+            batch_size = value.shape[0]
+            csum_list = []
+            for i in range(batch_size):
+                # (为第 i 个切片计算校验和)
+                csum_list.append(_get_checksum_for_slice(value[i]))
+            
+            # (创建 [BS] 形状的张量)
+            checksums_to_add[csum_key] = torch.tensor(
+                csum_list, 
+                dtype=torch.float32, 
+                device=value.device # (或 .cpu(), 但 .device 匹配更好)
+            )
         
         # [!!] 关键: *修改* payload [!!]
         payload.update(checksums_to_add)
-        # (此函数现在没有返回值)
 
     @staticmethod
     def verify(batch: TensorDict, logger: logging.Logger):
         """
-        [在 *接收* 端调用 - V4 In-Band 版本]
+        [在 *接收* 端调用 - V6 逐切片版]
         
         在 *已切片* 的 'TensorDict' (.batch) 内部比较校验和。
-        
-        [!!] 关键: 
-        此函数 *必须* 在你的 Tensors 被 .to(device) *之前* 调用。
-        
-        Args:
-            batch (TensorDict): 接收到的 *已切片* 的 DataProto.batch
-            logger (logging.Logger): 接收端 worker 的 logger
         """
         if not IS_ENABLED:
             return
@@ -1360,9 +1378,7 @@ class ChecksumUtils:
             print(f"[Rank {rank}] ChecksumUtils.verify: No logger provided, skipping.")
             return
 
-        # 1. 查找所有 checksum 键
         csum_keys = [k for k in batch.keys() if k.startswith(CSUM_PREFIX)]
-        
         if not csum_keys:
             logger.info("[Checksum] No checksum tensors found in TensorDict.")
             return
@@ -1370,10 +1386,10 @@ class ChecksumUtils:
         for csum_key in csum_keys:
             original_key = csum_key[len(CSUM_PREFIX):]
             
-            # 2. 获取 *校验和张量* (e.g., [csum0, csum1])
+            # 2. 获取 *校验和张量* (e.g., Shape [2])
             expected_csums_tensor = batch[csum_key]
             
-            # 3. 获取 *数据张量* (e.g., Tensors[BS=2, F, C, H, W])
+            # 3. 获取 *数据张量* (e.g., Shape [2, F, C, H, W])
             received_tensors = batch.get(original_key)
             
             if received_tensors is None:
@@ -1381,28 +1397,26 @@ class ChecksumUtils:
                                  f"missing '{original_key}' in TensorDict!")
                 continue
             
-            # (确保 batch size 匹配)
-            if expected_csums_tensor.shape[0] != received_tensors.shape[0]:
+            batch_size = received_tensors.shape[0]
+            if expected_csums_tensor.shape[0] != batch_size:
                  logger.error(f"[Checksum] FAILED: Mismatched batch size for '{original_key}'. "
-                                f"Data has {received_tensors.shape[0]} but csum has {expected_csums_tensor.shape[0]}.")
+                                f"Data has {batch_size} but csum has {expected_csums_tensor.shape[0]}.")
                  continue
 
-            # [!!] 4. V4 核心逻辑: 遍历 *切片后* 的 Batch [!!]
-            for i in range(received_tensors.shape[0]):
+            # [!!] 4. V6 核心逻辑: 遍历 *切片后* 的 Batch [!!]
+            for i in range(batch_size):
                 
-                # (获取第 i 个张量 (BS=1))
-                tensor_slice = received_tensors[i] 
-                # (获取第 i 个校验和 (BS=1))
-                expected_csum = expected_csums_tensor[i]
+                tensor_slice = received_tensors[i] # (获取第 i 个张量 (BS=1))
+                expected_csum = expected_csums_tensor[i].item() # (获取第 i 个校验和 (float))
                 
                 try:
                     # 重新计算 *该切片* 的校验和
-                    new_csum = _get_checksum(tensor_slice)
+                    new_csum = _get_checksum_for_slice(tensor_slice)
                     
-                    if not torch.allclose(expected_csum.cpu(), torch.tensor(new_csum)):
+                    if not torch.allclose(torch.tensor(expected_csum), torch.tensor(new_csum)):
                          logger.error(
                             f"[!!] CHECKSUM MISMATCH (Key: {original_key}, Batch Index: {i}) [!!]\n"
-                            f"  Sender (Generator)   Calculated: {expected_csum.item()}\n"
+                            f"  Sender (Generator)   Calculated: {expected_csum}\n"
                             f"  Receiver (Critic)  Re-calculated: {new_csum}"
                         )
                     else:
