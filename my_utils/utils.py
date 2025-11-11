@@ -1289,6 +1289,7 @@ def _get_checksum(tensor: torch.Tensor) -> float:
 class ChecksumUtils:
     
     @staticmethod
+    ## dataproto batch
     def sign(payload: dict) -> dict:
         """
         [在 *发送* 端调用 - V2 版本]
