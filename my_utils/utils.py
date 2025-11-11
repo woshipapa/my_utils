@@ -1266,54 +1266,70 @@ def _get_checksum(tensor: torch.Tensor) -> float:
         return -1.0
 
 
+import torch
+import os
+import logging
+import torch.distributed as dist
+from teletron.core.single_controller.protocol import DataProto # (假设 DataProto 在这里)
+
+# [!!] 1. 全局开关 [!!]
+IS_ENABLED = os.environ.get("DEBUG_DATA_CONSISTENCY", "0") == "1"
+CSUM_PREFIX = "_csum_"
+
+def _get_checksum(tensor: torch.Tensor) -> float:
+    """计算一个快速校验和 (在 CPU 上, 使用 float)。"""
+    if not IS_ENABLED:
+        return 0.0
+    try:
+        return torch.sum(tensor.cpu().float()).item()
+    except Exception:
+        return -1.0
+
+
 class ChecksumUtils:
     
     @staticmethod
     def sign(payload: dict) -> dict:
         """
-        [在 *发送* 端调用]
+        [在 *发送* 端调用 - V2 版本]
         
-        计算 'payload' 字典中所有 torch.Tensor 的校验和, 
-        并将它们作为 '_csum_...' 键添加回 payload。
+        计算 'payload' 字典中所有 torch.Tensor 的校验和。
+        [!!] 不再修改 payload, 而是 *返回* 一个新的 'csum_dict' [!!]
         
         Args:
-            payload (dict): 即将发送的字典 (e.g., _g_fwd_microbatch 的 'tensors')
+            payload (dict): *未修改* 的 tensors 字典 (e.g., _g_fwd_microbatch 的 'tensors')
         
         Returns:
-            dict: 带有校验和键的、修改后的 payload
+            dict: 一个包含校验和的新字典 (e.g., {"_csum_noisy_latent_cpu": 123.4})
         """
         if not IS_ENABLED:
-            return payload
+            return {} # 返回一个空字典
 
         checksums = {}
         for key, value in payload.items():
             if isinstance(value, torch.Tensor):
-                # 1. 计算校验和 (总是在 CPU 上)
+                # 1. 计算校验和
                 csum_value = _get_checksum(value)
                 
-                # 2. 添加新键
+                # 2. 添加到新字典
                 csum_key = f"{CSUM_PREFIX}{key}"
                 checksums[csum_key] = csum_value
         
-        # 将新键合并回 payload
-        payload.update(checksums)
-        return payload
+        return checksums
 
     @staticmethod
-    def verify(data_proto_batch: dict, logger: logging.Logger):
+    def verify(fwd_data: DataProto, logger: logging.Logger):
         """
-        [在 *接收* 端调用]
+        [在 *接收* 端调用 - V2 版本]
         
-        在 'data_proto_batch' (一个字典) 中查找所有 '_csum_...' 键,
-        然后计算相应张量的 *新* 校验和, 并进行比较。
+        比较 DataProto.meta_info (预期) 和 DataProto.batch (实际张量)
         
         [!!] 关键: 
-        此函数 *必须* 在你的 Tensors 被 .to(device) *之前* 调用,
-        因为它假设 'data_proto_batch' 中的张量仍在 CPU 上。
+        此函数 *必须* 在你的 Tensors 被 .to(device) *之前* 调用。
         
         Args:
-            data_proto_batch (dict): 接收到的 DataProto 的 .batch 属性
-            logger (logging.Logger): 接收端 worker 的 logger, 用于打印错误
+            fwd_data (DataProto): 接收到的 *完整* DataProto 对象
+            logger (logging.Logger): 接收端 worker 的 logger
         """
         if not IS_ENABLED:
             return
@@ -1323,31 +1339,32 @@ class ChecksumUtils:
             print(f"[Rank {rank}] ChecksumUtils.verify: No logger provided, skipping verification.")
             return
 
-        # 1. 查找所有 checksum 键
-        csum_keys = [k for k in data_proto_batch.keys() if k.startswith(CSUM_PREFIX)]
+        # [!!] V2: 从 .meta_info (标签) 和 .batch (包裹) 中获取数据 [!!]
+        csum_dict = fwd_data.meta_info
+        payload_dict = fwd_data.batch
         
-        if not csum_keys:
-            logger.info("[Checksum] No checksums found in payload.")
+        if not csum_dict:
+            logger.info("[Checksum] No checksums found in meta_info.")
             return
 
-        for csum_key in csum_keys:
+        for csum_key, expected_csum in csum_dict.items():
+            # (只处理我们关心的 checksum 键)
+            if not csum_key.startswith(CSUM_PREFIX):
+                continue
+                
             # e.g., _csum_noisy_latent_cpu -> noisy_latent_cpu
             original_key = csum_key[len(CSUM_PREFIX):]
             
-            # 2. 获取发送端 (G-Worker) 计算的校验和
-            expected_csum = data_proto_batch[csum_key]
-            
             # 3. 获取接收端 (C-Worker) 接收到的张量
-            received_tensor = data_proto_batch.get(original_key)
+            received_tensor = payload_dict.get(original_key)
             
             if received_tensor is None:
-                logger.warning(f"[Checksum] Found key '{csum_key}' but "
-                                 f"missing original tensor key '{original_key}'!")
+                logger.warning(f"[Checksum] Found key '{csum_key}' in meta_info but "
+                                 f"missing original tensor key '{original_key}' in .batch!")
                 continue
             
             if not isinstance(received_tensor, torch.Tensor):
-                logger.warning(f"[Checksum] Key '{original_key}' (value={received_tensor}) "
-                                 f"is not a Tensor, cannot verify checksum.")
+                logger.warning(f"[Checksum] Key '{original_key}' is not a Tensor, cannot verify.")
                 continue
                 
             # 4. 在接收端 *重新计算* 校验和 (在 CPU 上)
@@ -1355,7 +1372,6 @@ class ChecksumUtils:
                 new_csum = _get_checksum(received_tensor)
                 
                 # 5. 比较
-                # (我们需要用 torch.tensor 包装, 因为 python float 比较可能不稳定)
                 if not torch.allclose(torch.tensor(expected_csum), torch.tensor(new_csum)):
                      logger.error(
                         f"[!!] CHECKSUM MISMATCH (Key: {original_key}) [!!]\n"
@@ -1366,6 +1382,5 @@ class ChecksumUtils:
                     logger.info(
                         f"[Checksum OK] Key: {original_key} (Sum: {new_csum})"
                     )
-            
             except Exception as e:
                 logger.error(f"[Checksum] FAILED to verify '{original_key}': {e}")
