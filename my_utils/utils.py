@@ -994,7 +994,7 @@ class NoOpMyTimer:
 
 
 # SPMD下使用的全局实例        
-PROFILING_ENABLED = os.environ.get("ENABLE_TIMER", "1") == "1"
+PROFILING_ENABLED = os.environ.get("ENABLE_TIMER", "0") == "1"
 if PROFILING_ENABLED:
     global_timer = MyTimer()
 else: 
