@@ -20,6 +20,19 @@ class SingletonMeta(type):
 # --------------------------------------------------
 # 2. 重构后的 GlobalLogger 类
 # --------------------------------------------------
+
+# 定义一个强制刷新的 Handler
+class FlushingFileHandler(logging.FileHandler):
+    def emit(self, record):
+        super().emit(record)
+        self.flush()  # <--- 关键：每条日志写完立刻刷盘
+
+# 在你的 setup 函数中替换：
+# 原代码: file_handler = logging.FileHandler(log_file, mode="a")
+# 修改为:
+
+
+
 class GlobalLogger(metaclass=SingletonMeta):
     """
     一个与框架无关的、可移植的全局日志记录器。
@@ -87,7 +100,9 @@ class GlobalLogger(metaclass=SingletonMeta):
         # 5. 配置 FileHandler (输出到文件)
         os.makedirs(log_dir, exist_ok=True)
         log_file = os.path.join(log_dir, f"rank_{rank}.log")
-        file_handler = logging.FileHandler(log_file, mode="a")
+        # file_handler = logging.FileHandler(log_file, mode="a")
+
+        file_handler = FlushingFileHandler(log_file, mode="a")
         file_handler.setFormatter(formatter)
         self.logger.addHandler(file_handler)
 
