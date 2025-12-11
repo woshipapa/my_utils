@@ -41,11 +41,13 @@ class GlobalLogger(metaclass=SingletonMeta):
     """
     _GLOBAL_LOGGER_NAME = "MySystemGlobalLogger"
 
-    def __init__(self):
+    def __init__(self, log_level: str = logging.DEBUG):
         """
         构造函数非常干净，只进行最基础的内部状态初始化。
         它不依赖任何外部框架。
         """
+        logging.getLogger().handlers.clear()
+        logging.basicConfig(level=log_level)
         self.logger = logging.getLogger(self._GLOBAL_LOGGER_NAME)
         self.is_configured = False
 
@@ -72,6 +74,7 @@ class GlobalLogger(metaclass=SingletonMeta):
             self.logger.handlers.clear()
 
         # 2. 设置日志级别
+        logging.basicConfig(level=level)
         self.logger.setLevel(level)
 
         # --- 构建一个动态的日志格式字符串 ---

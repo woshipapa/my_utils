@@ -1009,7 +1009,7 @@ import logging
 import torch.distributed as dist
 from my_utils.logger import GlobalLogger, get_global_logger
 from my_utils.memory_snapshot import global_snapshotter
-def setup_logging_and_timer(args, role_tag: str, use_cuda: bool, is_distributed: bool):
+def setup_logging_and_timer(args, role_tag: str, use_cuda: bool, is_distributed: bool, log_level: str = logging.DEBUG):
     """
     为当前进程 (Worker 或 Driver) 初始化 GlobalLogger 和 MyTimer。
     
@@ -1018,7 +1018,7 @@ def setup_logging_and_timer(args, role_tag: str, use_cuda: bool, is_distributed:
     """
     
     # --- 1. 配置 GlobalLogger ---
-    logger_instance = GlobalLogger()
+    logger_instance = GlobalLogger(log_level)
     
     if not logger_instance.is_configured:
         if is_distributed:
@@ -1040,14 +1040,17 @@ def setup_logging_and_timer(args, role_tag: str, use_cuda: bool, is_distributed:
         
         logger_instance.setup(
             log_dir=log_dir,
-            level=logging.INFO, # or args.log_level
+            level=log_level, # or args.log_level
             rank=rank,
             world_size=world_size,
             extra_log_label=str(role_tag)
         )
     
-    logger = get_global_logger()
-    logger.info(f"Logger for {role_tag} (Rank {rank if is_distributed else 0}) configured.")
+        logger = get_global_logger()
+        logger.info(f"Logger for {role_tag} (Rank {rank if is_distributed else 0}) configured.")
+    else:
+        
+        logger = get_global_logger()
     timer = None
     # --- 2. 配置 MyTimer ---
     if args.use_ray:
