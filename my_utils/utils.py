@@ -395,7 +395,10 @@ class MyTimer:
 
     def start(self, stage_name: str, 
               color: str = "blue",
-              domain_name: str = None):
+              domain_name: str = None,
+              device_synchronize=False):
+        if device_synchronize:
+            torch.cuda.synchronize()
         # if self.logger is None:
         #     self.logger = self._get_logger()
         # 此处耦合了handler的logger在这里设定，目前已经迁移到初始化完megatron分布式环境后传入logger
@@ -502,7 +505,9 @@ class MyTimer:
     #     #     self.logger.info(
     #     #         f"[Iter {self.current_iteration}] Stage '{stage_name}': CPU {cpu_elapsed_ms:.3f}ms, CUDA {cuda_elapsed_ms or 0.0:.3f}ms"
     #     #     )
-    def stop(self, stage_name: str):
+    def stop(self, stage_name: str, device_synchronize=False):
+        if device_synchronize:
+            torch.cuda.synchronize()
         cpu_end = time.perf_counter()
 
         # [!!] (V2) 1. 堆栈检查 (最关键的部分) [!!]
@@ -527,7 +532,8 @@ class MyTimer:
                 # (传入 cpu_end, 因为这是唯一的 "stop" 时间)
                 self._finalize_and_record_node(self.current_node, cpu_end) 
                 self.current_node = self.current_node['parent']
-            
+        
+        time_elapse = (cpu_end - self.current_node['cpu_start']) * 1000
         # [!!] (V2) 2. 最终确定并记录当前节点
         self._finalize_and_record_node(self.current_node, cpu_end)
 
@@ -537,6 +543,7 @@ class MyTimer:
             self.current_node = self.current_node["parent"]
         else:
             print(f"TimerError: Attempted to stop root node?")
+        return time_elapse 
 
 
     def _find_node_in_stack(self, name: str):
@@ -994,13 +1001,28 @@ class NoOpMyTimer:
 
 
 # SPMD下使用的全局实例        
-PROFILING_ENABLED = os.environ.get("ENABLE_TIMER", "0") == "1"
-if PROFILING_ENABLED:
-    global_timer = MyTimer()
-else: 
-    global_timer = NoOpMyTimer()
 
+global_timer = None
 
+def get_global_timer():
+    global global_timer
+    if global_timer is None:
+        logger = get_global_logger()
+        logger.warning("No global timer is set, use default")
+        PROFILING_ENABLED = os.environ.get("ENABLE_TIMER", "0") == "1"
+        if PROFILING_ENABLED:
+            global_timer = MyTimer()
+        else: 
+            global_timer = NoOpMyTimer()
+    return global_timer
+
+def set_global_timer(timer):
+    global global_timer
+    if global_timer is not None:
+        logger = get_global_logger()
+        logger.warning("Override existing global timer")
+    global_timer = timer
+    
 
 # (在 my_utils.init_utils.py 中)
 
@@ -1071,6 +1093,8 @@ def setup_logging_and_timer(args, role_tag: str, use_cuda: bool, is_distributed:
         else:
             timer = NoOpMyTimer()
         timer.set_logger(logger)
+    print("set timer", timer)
+    set_global_timer(timer)
     
     global_timer.set_logger(logger)
     global_timer.use_cuda = use_cuda
