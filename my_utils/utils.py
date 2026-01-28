@@ -1036,6 +1036,8 @@ else:
     global_timer = NoOpMyTimer()
 
 
+def get_global_timer():
+    return global_timer
 
 # (在 my_utils.init_utils.py 中)
 
