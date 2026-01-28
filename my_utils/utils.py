@@ -571,6 +571,7 @@ class MyTimer:
                 if domain:
                     domain.end_range(range_id)
                 else:
+                    print(f"Timer NVTX: Using global end_range for '{node['name']}'")
                     nvtx.end_range(range_id)
 
         # (来自你 'stop' 的逻辑: 创建 pending_record)
