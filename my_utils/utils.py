@@ -301,8 +301,14 @@ class MyTimer:
         注入后会立即用 LoggerAdapter 包装，以支持过滤器。
         """
         # 即使外部注入，也用 Adapter 包装以确保 log_context 存在
+        # logger_instance是global_logger.get_logger()返回的logger
         self.logger = LoggerAdapter(logger_instance, self.log_context)
+        
 
+        # 单例
+        global_logger = GlobalLogger()
+
+        setattr(self.logger, 'log_profile_event', global_logger.log_profile_event)
 
     def _create_default_logger(self) -> logging.Logger:
         """
@@ -395,10 +401,7 @@ class MyTimer:
 
     def start(self, stage_name: str, 
               color: str = "blue",
-              domain_name: str = None,
-              device_synchronize=False):
-        if device_synchronize:
-            torch.cuda.synchronize()
+              domain_name: str = None):
         # if self.logger is None:
         #     self.logger = self._get_logger()
         # 此处耦合了handler的logger在这里设定，目前已经迁移到初始化完megatron分布式环境后传入logger
@@ -444,6 +447,7 @@ class MyTimer:
             "children": [],
             # (用于 stop() 方法的堆栈上浮)
             "parent": self.current_node,
+            "abs_start_time": time.time(),
             # (存储你 'entry' 字典中的所有内容)
             "cpu_start": entry["cpu_start"],
             "cuda_start": entry.get("cuda_start"),
@@ -505,9 +509,7 @@ class MyTimer:
     #     #     self.logger.info(
     #     #         f"[Iter {self.current_iteration}] Stage '{stage_name}': CPU {cpu_elapsed_ms:.3f}ms, CUDA {cuda_elapsed_ms or 0.0:.3f}ms"
     #     #     )
-    def stop(self, stage_name: str, device_synchronize=False):
-        if device_synchronize:
-            torch.cuda.synchronize()
+    def stop(self, stage_name: str):
         cpu_end = time.perf_counter()
 
         # [!!] (V2) 1. 堆栈检查 (最关键的部分) [!!]
@@ -532,8 +534,7 @@ class MyTimer:
                 # (传入 cpu_end, 因为这是唯一的 "stop" 时间)
                 self._finalize_and_record_node(self.current_node, cpu_end) 
                 self.current_node = self.current_node['parent']
-        
-        time_elapse = (cpu_end - self.current_node['cpu_start']) * 1000
+            
         # [!!] (V2) 2. 最终确定并记录当前节点
         self._finalize_and_record_node(self.current_node, cpu_end)
 
@@ -543,7 +544,6 @@ class MyTimer:
             self.current_node = self.current_node["parent"]
         else:
             print(f"TimerError: Attempted to stop root node?")
-        return time_elapse 
 
 
     def _find_node_in_stack(self, name: str):
@@ -578,7 +578,7 @@ class MyTimer:
             "stage": node["name"],
             "cpu_duration_ms": (cpu_end - node["cpu_start"]) * 1000,
             "cuda_events": (node.get("cuda_start"), node.get("cuda_end")),
-            
+            "abs_start_time": node.get("abs_start_time", 0.0),
             # [!!] (V2) 新增的层级数据 [!!]
             # (这允许 'summarize' 重建树)
             "node_id": node["node_id"],
@@ -586,6 +586,8 @@ class MyTimer:
         }
         self._pending_records.append(pending_record)
 
+    def set_step(self, iteration: int):
+        self.current_iteration = iteration
     def synchronize_and_log(self):
         """
         [V2 - 层级版本]
@@ -614,6 +616,32 @@ class MyTimer:
                         # (处理可能的 CUDA 错误)
                         self.logger.warning(f"CUDA event error for {record['stage']}: {e}")
             
+            abs_start_ts = record.get("abs_start_time", 0.0)
+            
+            # B. 确定耗时 (优先用 CUDA 耗时，如果是纯 CPU 操作则用 CPU 耗时)
+            final_duration_ms = cuda_elapsed_ms if cuda_elapsed_ms is not None else record["cpu_duration_ms"]
+            
+            # C. 推算结束时间点 (Start + Duration)
+            # 注意 ms 转 s
+            abs_end_ts = abs_start_ts + (final_duration_ms / 1000.0)
+
+            self.logger.log_profile_event(
+                timestamp=abs_start_ts,
+                step=self.current_iteration,
+                event_name=record["stage"],
+                event_type="START",
+                metadata=f"node_id={record['node_id']}"
+            )
+            
+            # E. 写入 END 事件
+            self.logger.log_profile_event(
+                timestamp=abs_end_ts,
+                step=self.current_iteration,
+                event_name=record["stage"],
+                event_type="END",
+                duration_ms=final_duration_ms,
+                metadata=f"node_id={record['node_id']}" # 可以记录更多 meta
+            )
             full_record = {
                 "stage": record["stage"],
                 "rank": self.rank,
@@ -1001,28 +1029,13 @@ class NoOpMyTimer:
 
 
 # SPMD下使用的全局实例        
+PROFILING_ENABLED = os.environ.get("ENABLE_TIMER", "0") == "1"
+if PROFILING_ENABLED:
+    global_timer = MyTimer()
+else: 
+    global_timer = NoOpMyTimer()
 
-global_timer = None
 
-def get_global_timer():
-    global global_timer
-    if global_timer is None:
-        logger = get_global_logger()
-        logger.warning("No global timer is set, use default")
-        PROFILING_ENABLED = os.environ.get("ENABLE_TIMER", "0") == "1"
-        if PROFILING_ENABLED:
-            global_timer = MyTimer()
-        else: 
-            global_timer = NoOpMyTimer()
-    return global_timer
-
-def set_global_timer(timer):
-    global global_timer
-    if global_timer is not None:
-        logger = get_global_logger()
-        logger.warning("Override existing global timer")
-    global_timer = timer
-    
 
 # (在 my_utils.init_utils.py 中)
 
@@ -1031,7 +1044,7 @@ import logging
 import torch.distributed as dist
 from my_utils.logger import GlobalLogger, get_global_logger
 from my_utils.memory_snapshot import global_snapshotter
-def setup_logging_and_timer(args, role_tag: str, use_cuda: bool, is_distributed: bool, log_level: str = logging.DEBUG):
+def setup_logging_and_timer(args, role_tag: str, use_cuda: bool, is_distributed: bool):
     """
     为当前进程 (Worker 或 Driver) 初始化 GlobalLogger 和 MyTimer。
     
@@ -1040,13 +1053,18 @@ def setup_logging_and_timer(args, role_tag: str, use_cuda: bool, is_distributed:
     """
     
     # --- 1. 配置 GlobalLogger ---
-    logger_instance = GlobalLogger(log_level)
+    logger_instance = GlobalLogger()
     
     if not logger_instance.is_configured:
         if is_distributed:
             # Worker 进程: 从 torch.dist 获取 rank
             rank = dist.get_rank()
             world_size = dist.get_world_size()
+        elif os.environ.get('LOCAL_RANK') is not None:
+            # torchrun
+            rank = int(os.environ['LOCAL_RANK'])
+            world_size = int(os.environ.get('WORLD_SIZE', 1))
+            print(f"Detected torchrun environment: LOCAL_RANK={rank}, WORLD_SIZE={world_size}")
         else:
             # Driver 进程: 总是 0/1
             rank = 0
@@ -1062,20 +1080,17 @@ def setup_logging_and_timer(args, role_tag: str, use_cuda: bool, is_distributed:
         
         logger_instance.setup(
             log_dir=log_dir,
-            level=log_level, # or args.log_level
+            level=logging.INFO, # or args.log_level
             rank=rank,
             world_size=world_size,
             extra_log_label=str(role_tag)
         )
     
-        logger = get_global_logger()
-        logger.info(f"Logger for {role_tag} (Rank {rank if is_distributed else 0}) configured.")
-    else:
-        
-        logger = get_global_logger()
+    logger = get_global_logger()
+    logger.info(f"Logger for {role_tag} (Rank {rank} World_size {world_size}) configured.")
     timer = None
     # --- 2. 配置 MyTimer ---
-    if args.use_ray:
+    if hasattr(args, 'use_ray') and args.use_ray :
         if os.environ.get("ENABLE_TIMER", "0") == "1":
             logger.info(f"Performance Timer ENABLED for {role_tag}")
             
@@ -1093,8 +1108,6 @@ def setup_logging_and_timer(args, role_tag: str, use_cuda: bool, is_distributed:
         else:
             timer = NoOpMyTimer()
         timer.set_logger(logger)
-    print("set timer", timer)
-    set_global_timer(timer)
     
     global_timer.set_logger(logger)
     global_timer.use_cuda = use_cuda
