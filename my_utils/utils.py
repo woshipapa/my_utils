@@ -1046,7 +1046,7 @@ import logging
 import torch.distributed as dist
 from my_utils.logger import GlobalLogger, get_global_logger
 from my_utils.memory_snapshot import global_snapshotter
-def setup_logging_and_timer(args, role_tag: str, use_cuda: bool, is_distributed: bool):
+def setup_logging_and_timer(args, role_tag: str, use_cuda: bool, use_nvtx: bool, is_distributed: bool):
     """
     为当前进程 (Worker 或 Driver) 初始化 GlobalLogger 和 MyTimer。
     
@@ -1094,13 +1094,13 @@ def setup_logging_and_timer(args, role_tag: str, use_cuda: bool, is_distributed:
     # --- 2. 配置 MyTimer ---
     if hasattr(args, 'use_ray') and args.use_ray :
         if os.environ.get("ENABLE_TIMER", "0") == "1":
-            logger.info(f"Performance Timer ENABLED for {role_tag}")
+            logger.info(f"Performance Timer ENABLED for {role_tag}, nvtx={use_nvtx}, use_cuda={use_cuda}.")
             
             timer = MyTimer(
                 use_cuda=use_cuda,
                 tag=str(role_tag),
                 log_dir=log_dir,
-                use_nvtx=False, 
+                use_nvtx=use_nvtx, 
                 profile_memory=False
             )
             
