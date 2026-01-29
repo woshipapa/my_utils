@@ -83,6 +83,31 @@ class CaptureController:
             if "enable_nvtx_window" in self._spec:
                 self._enable_nvtx_window = bool(self._spec["enable_nvtx_window"])
 
+            # arm() 里，在 self._spec = dict(spec) 后面追加
+            if "start_profile_names" not in self._spec:
+                self._spec["start_profile_names"] = self._spec.get("target_profile_names", [])
+            if "start_expected_iter" not in self._spec:
+                self._spec["start_expected_iter"] = self._spec.get("expected_iter", None)
+            if "start_expected_mb" not in self._spec:
+                self._spec["start_expected_mb"] = self._spec.get("expected_mb", None)
+
+            if "stop_profile_names" not in self._spec:
+                self._spec["stop_profile_names"] = self._spec.get("stop_profile_names", [])
+
+            if "stop_expected_iter" not in self._spec:
+                # 若用户没写 stop_expected_iter，就默认 None（不做 iter gate）
+                self._spec["stop_expected_iter"] = self._spec.get("stop_expected_iter", None)
+
+            if "stop_expected_mb" not in self._spec:
+                self._spec["stop_expected_mb"] = self._spec.get("stop_expected_mb", None)
+
+            # 兼容 stop_policy 名字
+            if self._spec.get("stop_policy") == "ON_TARGET_FUNC_EXIT":
+                self._spec["stop_policy"] = "ON_TRIGGER_FUNC_EXIT"
+
+            if "stop_edge" not in self._spec:
+                self._spec["stop_edge"] = "EXIT"
+
         self._log(f"[Capture] ARMED window={self._window_id} spec={self._spec}")
 
     def disarm(self, window_id: Optional[str] = None) -> None:
@@ -108,47 +133,68 @@ class CaptureController:
     # -----------------------
     # Data-plane hooks (called by wrapper/decorator)
     # -----------------------
-    def on_enter(self, event: HookEvent) -> None:
-        # decide trigger
+    def on_enter(self, event):
         with self._lock:
-            if not self._armed or self._done or self._active:
+            if not self._armed or self._done:
                 return
             if not self._spec:
                 return
-            if not self._match(event, self._spec):
-                return
 
-            # Trigger start
-            self._active = True
-            self._triggered_by_profile_name = event.profile_name
+            # 如果 active 且 stop_edge=ENTER，就允许在 enter 上 stop
+            if self._active:
+                if self._spec.get("stop_edge", "EXIT") == "ENTER":
+                    if self._match_stop(event, self._spec):
+                        pass
+                    else:
+                        return
+                else:
+                    return  # active 且 stop_edge=EXIT 时，enter 不处理 stop
+            else:
+                # not active -> try start
+                if not self._match_start(event, self._spec):
+                    return
+                self._active = True
+                self._triggered_by_profile_name = event.profile_name
 
-        self._start_window(event)
+        # outside lock
+        if self._active and self._triggered_by_profile_name == event.profile_name:
+            self._start_window(event)
+
+        # 若 stop_edge=ENTER 且匹配 stop -> stop
+        if self._spec.get("stop_edge", "EXIT") == "ENTER":
+            # 这里再 check 一遍 stop（避免竞态）
+            if self._match_stop(event, self._spec):
+                self._stop_window(event)
+                with self._lock:
+                    self._active = False
+                    self._done = True
+                    self._armed = False
+                    self._triggered_by_profile_name = None
+
 
     # capture_controller.py 里
-    def on_exit(self, event: HookEvent) -> None:
+    def on_exit(self, event):
         with self._lock:
-            if not self._active:
+            if not self._active or not self._spec:
                 return
-            if not self._spec:
+            stop_edge = self._spec.get("stop_edge", "EXIT")
+            if stop_edge != "EXIT":
                 return
-            stop_policy = self._spec.get("stop_policy", "ON_TRIGGER_FUNC_EXIT")
 
+            stop_policy = self._spec.get("stop_policy", "ON_TRIGGER_FUNC_EXIT")
             if stop_policy == "ON_TRIGGER_FUNC_EXIT":
                 if event.profile_name != self._triggered_by_profile_name:
                     return
             elif stop_policy == "MANUAL":
                 return
             elif stop_policy == "ON_STOP_PROFILE_NAME":
-                stop_names = set(self._spec.get("stop_profile_names", []) or [])
-                if event.profile_name not in stop_names:
+                if not self._match_stop(event, self._spec):
                     return
             else:
-                # fallback：保持默认
                 if event.profile_name != self._triggered_by_profile_name:
                     return
 
         self._stop_window(event)
-
         with self._lock:
             self._active = False
             self._done = True
@@ -242,6 +288,25 @@ class CaptureController:
         if debug:
             self._log(f"[Capture][Match] ✅ MATCHED window={self._window_id} by={event.profile_name}")
         return True
+
+
+    def _match_start(self, event: HookEvent, spec: Dict[str, Any]) -> bool:
+        # 复用 _match 的逻辑，但换成 start 字段
+        spec2 = dict(spec)
+        spec2["target_profile_names"] = spec.get("start_profile_names", []) or []
+        spec2["expected_iter"] = spec.get("start_expected_iter", None)
+        spec2["expected_mb"] = spec.get("start_expected_mb", None)
+        return self._match(event, spec2)
+
+    def _match_stop(self, event: HookEvent, spec: Dict[str, Any]) -> bool:
+        spec2 = dict(spec)
+        # stop 用 stop_profile_names；若为空则不能用 ON_STOP_PROFILE_NAME
+        spec2["target_profile_names"] = spec.get("stop_profile_names", []) or []
+        spec2["expected_iter"] = spec.get("stop_expected_iter", None)
+        spec2["expected_mb"] = spec.get("stop_expected_mb", None)
+        return self._match(event, spec2)
+
+
 
     def _start_window(self, event: HookEvent) -> None:
         self._log(f"[Capture] START window={self._window_id} by={event.profile_name} meta={event.meta}")
