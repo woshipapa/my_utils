@@ -159,33 +159,88 @@ class CaptureController:
     # Internal helpers
     # -----------------------
     def _match(self, event: HookEvent, spec: Dict[str, Any]) -> bool:
+        # debug 开关：默认不刷屏；你可以在 driver arm 的 spec 里加 "debug_match": true
+        debug = bool(spec.get("debug_match", False))
+        if debug:
+            self._log(
+                f"[Capture][Match] try window={self._window_id} "
+                f"event={{name={event.profile_name}, role={event.role}, rank={event.rank}, meta={event.meta}}} "
+                f"spec={{targets={spec.get('target_profile_names')}, expected_iter={spec.get('expected_iter')}, "
+                f"expected_mb={spec.get('expected_mb')}, expected_role={spec.get('expected_role')}, "
+                f"ranks_filter={spec.get('ranks_filter')}}}"
+            )
+
+        # 1) profile_name gate
         targets: Set[str] = set(spec.get("target_profile_names", []) or [])
         if targets and event.profile_name not in targets:
+            if debug:
+                self._log(f"[Capture][Match] FAIL name: {event.profile_name} not in {sorted(list(targets))}")
             return False
+        if debug:
+            self._log(f"[Capture][Match] PASS name")
 
+        # 2) iteration gate
         exp_it = spec.get("expected_iter", None)
         if exp_it is not None:
             it = event.meta.get("iter", None)
-            if it is None or int(it) != int(exp_it):
+            if it is None:
+                if debug:
+                    self._log(f"[Capture][Match] FAIL iter: event.meta['iter'] missing, expected={exp_it}")
                 return False
+            if int(it) != int(exp_it):
+                if debug:
+                    self._log(f"[Capture][Match] FAIL iter: got={it}, expected={exp_it}")
+                return False
+            if debug:
+                self._log(f"[Capture][Match] PASS iter: {it}")
 
+        # 3) microbatch gate
         exp_mb = spec.get("expected_mb", None)
         if exp_mb is not None:
             mb = event.meta.get("microbatch_index", None)
-            if mb is None or int(mb) != int(exp_mb):
+            if mb is None:
+                if debug:
+                    self._log(f"[Capture][Match] FAIL mb: event.meta['microbatch_index'] missing, expected={exp_mb}")
                 return False
+            if int(mb) != int(exp_mb):
+                if debug:
+                    self._log(f"[Capture][Match] FAIL mb: got={mb}, expected={exp_mb}")
+                return False
+            if debug:
+                self._log(f"[Capture][Match] PASS mb: {mb}")
 
-        # optional role/rank filters
+        # 4) role gate
         exp_role = spec.get("expected_role", None)
-        if exp_role is not None and event.role is not None:
+        if exp_role is not None:
+            # event.role 可能是 None；这种情况建议直接 fail（避免误触发）
+            if event.role is None:
+                if debug:
+                    self._log(f"[Capture][Match] FAIL role: event.role is None, expected={exp_role}")
+                return False
             if str(event.role) != str(exp_role):
+                if debug:
+                    self._log(f"[Capture][Match] FAIL role: got={event.role}, expected={exp_role}")
                 return False
+            if debug:
+                self._log(f"[Capture][Match] PASS role: {event.role}")
 
+        # 5) ranks_filter gate
         ranks = spec.get("ranks_filter", None)
-        if ranks is not None and event.rank is not None:
-            if int(event.rank) not in set(map(int, ranks)):
+        if ranks is not None:
+            if event.rank is None:
+                if debug:
+                    self._log(f"[Capture][Match] FAIL rank: event.rank is None, ranks_filter={ranks}")
                 return False
+            ranks_set = set(map(int, ranks))
+            if int(event.rank) not in ranks_set:
+                if debug:
+                    self._log(f"[Capture][Match] FAIL rank: got={event.rank}, ranks_filter={sorted(list(ranks_set))}")
+                return False
+            if debug:
+                self._log(f"[Capture][Match] PASS rank: {event.rank}")
 
+        if debug:
+            self._log(f"[Capture][Match] ✅ MATCHED window={self._window_id} by={event.profile_name}")
         return True
 
     def _start_window(self, event: HookEvent) -> None:
