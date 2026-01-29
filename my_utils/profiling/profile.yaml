@@ -127,21 +127,36 @@ profile:
     # window 列表：用 selector 表达“抓哪个 microbatch”，driver 在运行时 resolve 成 expected_mb去匹配@register运行时解析的运行时mb和iter
     windows:
       # 例：抓 generator 的最后一个 microbatch 的 backward
-      - name: "GEN_fwd2bwd_last_mb"
+      - name: "G_iter5_mb0_to_iter6_mb3"
         role: "generator"
-        target_profile_names: ["run_forward_microbatch"]          # start
-        mb_selector: "last"
-        ranks_filter: null
+        # start
+        start_profile_names: ["run_forward_microbatch"]
+        start_iter: 5
+        start_mb_selector: 0
+        # stop
         stop_policy: "ON_STOP_PROFILE_NAME"
-        stop_profile_names: ["generator_loss_and_backward"]        # stop
-
-
-      - name: "C_FWD_BWD_last_mb"
-        role: "critic"
-        target_profile_names: ["run_critic_fwd_bwd_microbatch"]
-        mb_selector: "last"
+        stop_profile_names: ["generator_loss_and_backward"]
+        stop_iter: 5
+        stop_mb_selector: "last"
+        stop_edge: "EXIT"
         ranks_filter: null
-        stop_policy: "ON_TARGET_FUNC_EXIT"
+
+
+      - name: "C_FWD_BWD_iter1_to_iter3_mb0"
+        role: "critic"
+
+        # --- start 条件 ---
+        start_iter: 1
+        start_profile_names: ["run_critic_fwd_bwd_microbatch"]
+        start_mb_selector: 0          # 或 "first"
+
+        # --- stop 条件 ---
+        stop_iter: 3
+        stop_profile_names: ["run_critic_fwd_bwd_microbatch"]
+        stop_mb_selector: 0          # 或 "first"
+        stop_edge: "EXIT"
+        ranks_filter: null
+
 
       # 你也可以加 critic / teacher 的窗口
       # - name: "C_score_mb_last"
