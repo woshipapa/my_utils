@@ -1,0 +1,232 @@
+# ===================================================================
+#
+#        Profiling 配置文件 (profile.yaml)
+#
+# ===================================================================
+# 目标：
+#   1) 将“启用哪些 profiling 功能（timer / nvtx / capture）”与“抓哪些窗口（capture spec）”
+#      放在同一个文件里，便于跨框架复用。
+#   2) tooling（nsys 参数）也放在这里，但仍保持与具体工具解耦：换工具只换 tooling 块。
+#   3) Ray / torchrun / 其他框架只负责“如何把本配置注入到 worker + driver”，而不是定义配置语义。
+#
+# 使用建议：
+#   - Driver 读取本文件，按 schedule 决定本 step 是否启用 capture，并 resolve window selector → spec。
+#   - Driver 调用 WG.capture_arm(spec) 广播到 actor。
+#   - Worker 的 register 装饰器在进入/退出 profile_name 时触发 CaptureController.start/stop（cudart API）。
+#
+profile:
+  # 是否启用 profiling 体系（总开关）
+  enabled: true
+
+  # 本次 profiling run 的标识，用于输出目录、文件名前缀等
+  run_tag: "dmd_profile_run_20260129"
+
+  # 输出根目录（driver 可以把 resolved spec、nsys 输出等都放到此处）
+  out_dir: "logs/profiler"
+
+  # -----------------------------------------------------------------
+  # 1) 功能开关：跨框架可复用的语义设置
+  # -----------------------------------------------------------------
+  features:
+    # MyTimer：stage 计时 + 可选 NVTX ranges
+    timer:
+      # 等价于你之前的 ENABLE_TIMER，但建议未来优先走显式 settings 注入而非 env
+      enabled: true
+
+      # 是否用 cuda events 记 GPU 时间
+      use_cuda_events: true
+
+      # MyTimer 内部 stage_name 是否打 NVTX range（细粒度：每个 profile_name 一条 range）
+      # 适合配合 nsys trace=nvtx 查看每个 worker 的逻辑阶段。
+      use_nvtx_ranges: true
+
+      # 是否按 role 设置 NVTX domain（domain=generator/critic/teacher 等）
+      nvtx_domain_by_role: true
+
+      # 若你预注册 attrs（domain.get_event_attributes），可在这里开
+      # （可选：你现有 MyTimer 支持 register_stage）
+      pre_register_stages: false
+
+    # CaptureController：决定是否用 cudart cudaProfilerStart/Stop 做 capture window
+    capture:
+      enabled: true
+
+      # 后端：
+      # - cudaProfilerApi: 用 torch.cuda.cudart().cudaProfilerStart/Stop（配合 nsys capture-range=cudaProfilerApi）
+      # - none: 不启用 capture（只保留 timer/nvtx）
+      backend: "cudaProfilerApi"
+
+      # 是否在 capture window 边界打“粗粒度 NVTX 大标签”
+      # 例如：CAPTURE_WINDOW_START iter1/G_BWD/mb31
+      nvtx_window: true
+
+      # stop 策略（默认：触发函数退出就 stop）
+      # - ON_TARGET_FUNC_EXIT: 推荐，最稳（一个 window = 一个 profile_name 调用）
+      # - MANUAL: 仅通过显式 RPC stop（不建议做默认）
+      default_stop_policy: "ON_TARGET_FUNC_EXIT"
+
+    # OOM dump 行为（你 register 装饰器里已有）
+    oom_dump:
+      enabled: true
+
+      # torch.cuda.memory snapshot（.pt，pytorch memory_viz 可读）
+      dump_torch_snapshot: true
+
+      # torch.profiler trace（如果你启用了 self.profiler）
+      dump_profiler_trace: true
+
+    # 可选：Ray timeline/事件（平台 feature，不建议混到 infra 里）
+    ray_timeline:
+      enabled: false
+      # 0 表示尽可能频繁上报（注意可能有开销）
+      task_events_report_interval_ms: 0
+
+    # Torch Profiler（按任务类型开关，来自 DITProfiler.create_profiler_context）
+    torch_profiler:
+      enabled: false
+      # 任务类型白名单（对应环境变量 PROFILE_TASK_TYPES 的语义）
+      task_types: ["DIT", "VAE"]
+      # 输出根目录（每个 task_type 会建立子目录）
+      output_dir: "prof_results"
+      # torch.profiler 配置
+      record_shapes: true
+      profile_memory: true
+      with_stack: true
+      # 可选：指定要分析的 op 正则 -> metric
+      # ops_to_analyze:
+      #   "tile_encoder_\\d+": "self_cuda_time_total"
+
+  # -----------------------------------------------------------------
+  # 2) 环境变量映射（可选）
+  # -----------------------------------------------------------------
+  # 说明：
+  #   - 有些框架习惯用 env 控制开关（你现在就是这样）。
+  #   - 迁移时可以忽略 env_map，直接用 features 的语义开关注入到 worker。
+  #   - 如果你想兼容旧逻辑（比如 ENABLE_TIMER），driver 可以按该映射生成 env_vars。
+  env_map:
+    ENABLE_TIMER: "features.timer.enabled"
+    ENABLE_PROFILE_TIMELINE: "features.ray_timeline.enabled"
+    ENABLE_MEMORY_SNAPSHOT: "features.oom_dump.dump_torch_snapshot"
+    # DEBUG_DATA_CONSISTENCY: "..."  # 如果你要把校验也纳入 profile 控制，可加
+
+  # -----------------------------------------------------------------
+  # 3) 抓取计划（capture spec）：跨框架可复用
+  # -----------------------------------------------------------------
+  capture:
+    # 抓取调度：哪些 step/iter 触发；每个 step 抓几个 window
+    schedule:
+      # 哪些 iteration 开启 capture（与训练主循环 step 对齐）
+      steps: [5]
+
+      # 每个 step 最多触发多少个 window（避免一次抓太多导致 nsys 文件巨大）
+      max_windows_per_step: 2
+
+      # 可选：限制哪些 role 允许抓（不写则不限制）
+      roles: ["generator", "critic", "teacher"]
+
+    # window 列表：用 selector 表达“抓哪个 microbatch”，driver 在运行时 resolve 成 expected_mb去匹配@register运行时解析的运行时mb和iter
+    windows:
+      # 例：抓 generator 的最后一个 microbatch 的 backward
+      - name: "GEN_fwd2bwd_last_mb"
+        role: "generator"
+        target_profile_names: ["run_forward_microbatch"]          # start
+        mb_selector: "last"
+        ranks_filter: null
+        stop_policy: "ON_STOP_PROFILE_NAME"
+        stop_profile_names: ["generator_loss_and_backward"]        # stop
+
+
+      - name: "C_FWD_BWD_last_mb"
+        role: "critic"
+        target_profile_names: ["run_critic_fwd_bwd_microbatch"]
+        mb_selector: "last"
+        ranks_filter: null
+        stop_policy: "ON_TARGET_FUNC_EXIT"
+
+      # 你也可以加 critic / teacher 的窗口
+      # - name: "C_score_mb_last"
+      #   role: "critic"
+      #   target_profile_names: ["compute_fake_score"]
+      #   mb_selector: "last"
+
+# -------------------------------------------------------------------
+# 4) tooling：具体 profiling 工具参数（nsys/ncu/torch.profiler）
+# -------------------------------------------------------------------
+tooling:
+  nsys:
+    # Controller 通常用于全局监控或单节点协调
+    controller_nsight_options:
+      # 追踪范围：增加了 nccl (分布式通信) 和 syscall (2024.6 预览版系统调用追踪)
+      # 可选项: mpi, cublas, cudnn, nvtx, osrt, syscall, vukan
+      trace: "cuda,nvtx,osrt,nccl,syscall"
+      
+      # 采样设置：none 表示关闭。若需识别 CPU 瓶颈可设为 process-tree
+      sample: "none"
+      
+      # 是否覆盖已有报告文件
+      force-overwrite: "true"
+      
+      # 采集触发机制：
+      # - cudaProfilerApi: 仅在代码调用 cudaProfilerStart/Stop 时采集 [1, 2]
+      # - nvtx: 基于 NVTX 范围触发
+      # - none: 应用启动即开始采集
+      capture-range: "cudaProfilerApi"
+      
+      # 采集结束行为：
+      # - stop: 到达结束点立即停止采集，应用继续运行 [3, 1]
+      # - stop-shutdown: 停止采集并强制关闭应用
+      # - repeat[:N]: 2024.6 特色，允许重复触发 N 次（适用于分析循环迭代） [4]
+      capture-range-end: "stop"
+      
+      # 启用 CUDA API 调用时的回溯，帮助定位代码行
+      cudabacktrace: "true"
+      
+      # 进程退出时自动停止采集并刷新缓冲区
+      stop-on-exit: "true"
+
+    # Worker 通常是计算密集型节点，需要更详细的硬件指标
+    worker_nsight_options:
+      # 追踪范围：增加 nccl 以分析跨卡通信延迟 [5, 6]
+      trace: "cuda,nvtx,osrt,cudnn,cublas,nccl"
+      
+      # CPU 采样：
+      # - cpu: 开启 CPU 指标采样
+      # - process-tree: 采样目标及其所有子进程 [3, 7]
+      sample: "cpu"
+      
+      # 采样回溯方法：
+      # - dwarf: 最准确，适用于优化过的代码但开销略高 [3, 1]
+      # - fp: 帧指针，开销极低但需编译支持 [3, 1]
+      # - lbr: Intel 硬件特性，低开销分支追踪 [3, 1]
+      backtrace: "auto"
+      
+      # 2024.6 新增：追踪范围作用域
+      # - process-tree: 仅追踪应用进程树
+      # - system-wide: 追踪整个系统的 CUDA 活动 
+      cuda-trace-scope: "process-tree"
+      
+      # GPU 硬件指标采集 (需 Turing 架构及以上)
+      # - all: 采集所有支持的硬件计数器 (SM 利用率、显存带宽等) [9, 4]
+      gpu-metrics-device: "all"
+      
+      # 显存使用追踪：记录 VRAM 分配和释放的时间线 [10, 6]
+      cuda-memory-usage: "true"
+      
+      # CUDA Graph 追踪模式：
+      # - graph: 将整个图作为一个整体展示 [6]
+      # - node: 展示图中每个独立节点的活动 [6]
+      cuda-graph-trace: "graph"
+      
+      # 线程上下文切换追踪：识别 CPU 调度开销 [3, 10]
+      # 可选项: process-tree, system-wide, none
+      cpuctxsw: "process-tree"
+      
+      force-overwrite: "true"
+      capture-range: "cudaProfilerApi"
+      capture-range-end: "stop"
+      cudabacktrace: "true"
+      stop-on-exit: "true"
+      
+      # 专家系统分析规则 (2024.6 推荐)：
+      # 在 profile 阶段开启后，可通过 nsys analyze 自动识别以下瓶颈
+      # rules: "cuda_api_sync,gpu_gaps,cuda_memcpy_sync" [3, 11, 12]
