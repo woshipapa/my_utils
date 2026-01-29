@@ -7,7 +7,7 @@ class ProfileManager:
         self._cap_cfg = (self.cfg.get("profile", {}) or {}).get("capture", {}) or {}
         self._schedule = (self._cap_cfg.get("schedule", {}) or {})
         self._windows = (self._cap_cfg.get("windows", []) or [])
-
+        self.debug_watch = bool(self._cap_cfg.get("debug_watch", False))
         self._steps = set(map(int, self._schedule.get("steps", []) or []))
         self._max_windows = int(self._schedule.get("max_windows_per_step", 1))
         self._roles = set(self._schedule.get("roles", []) or [])  # optional
@@ -56,6 +56,7 @@ class ProfileManager:
                 "ranks_filter": w.get("ranks_filter", None),
                 "stop_policy": w.get("stop_policy", None) or "ON_TARGET_FUNC_EXIT",
                 "stop_profile_names": w.get("stop_profile_names", None),
+                "debug_match": self.debug_watch,
                 # 可选：window 级 NVTX window 开关
                 "enable_nvtx_window": True,
             }
