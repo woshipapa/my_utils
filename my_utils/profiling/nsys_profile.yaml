@@ -1,0 +1,78 @@
+tooling:
+  nsys:
+    # Controller 通常用于全局监控或单节点协调
+    controller_nsight_options:
+      # 追踪范围：增加了 nccl (分布式通信) 和 syscall (2024.6 预览版系统调用追踪)
+      # 可选项: mpi, cublas, cudnn, nvtx, osrt, syscall, vukan
+      trace: "cuda,nvtx,osrt,nccl,syscall"
+      
+      # 采样设置：none 表示关闭。若需识别 CPU 瓶颈可设为 process-tree
+      sample: "none"
+      
+      # 是否覆盖已有报告文件
+      force-overwrite: "true"
+      
+      # 采集触发机制：
+      # - cudaProfilerApi: 仅在代码调用 cudaProfilerStart/Stop 时采集 [1, 2]
+      # - nvtx: 基于 NVTX 范围触发
+      # - none: 应用启动即开始采集
+      capture-range: "cudaProfilerApi"
+      
+      # 采集结束行为：
+      # - stop: 到达结束点立即停止采集，应用继续运行 [3, 1]
+      # - stop-shutdown: 停止采集并强制关闭应用
+      # - repeat[:N]: 2024.6 特色，允许重复触发 N 次（适用于分析循环迭代） [4]
+      capture-range-end: "stop"
+      
+      # 启用 CUDA API 调用时的回溯，帮助定位代码行
+      cudabacktrace: "true"
+      
+      # 进程退出时自动停止采集并刷新缓冲区
+      stop-on-exit: "true"
+
+    # Worker 通常是计算密集型节点，需要更详细的硬件指标
+    worker_nsight_options:
+      # 追踪范围：增加 nccl 以分析跨卡通信延迟 [5, 6]
+      trace: "cuda,nvtx,osrt,cudnn,cublas,nccl"
+      
+      # CPU 采样：
+      # - cpu: 开启 CPU 指标采样
+      # - process-tree: 采样目标及其所有子进程 [3, 7]
+      sample: "cpu"
+      
+      # 采样回溯方法：
+      # - dwarf: 最准确，适用于优化过的代码但开销略高 [3, 1]
+      # - fp: 帧指针，开销极低但需编译支持 [3, 1]
+      # - lbr: Intel 硬件特性，低开销分支追踪 [3, 1]
+      backtrace: "auto"
+      
+      # 2024.6 新增：追踪范围作用域
+      # - process-tree: 仅追踪应用进程树
+      # - system-wide: 追踪整个系统的 CUDA 活动 
+      cuda-trace-scope: "process-tree"
+      
+      # GPU 硬件指标采集 (需 Turing 架构及以上)
+      # - all: 采集所有支持的硬件计数器 (SM 利用率、显存带宽等) [9, 4]
+      gpu-metrics-device: "all"
+      
+      # 显存使用追踪：记录 VRAM 分配和释放的时间线 [10, 6]
+      cuda-memory-usage: "true"
+      
+      # CUDA Graph 追踪模式：
+      # - graph: 将整个图作为一个整体展示 [6]
+      # - node: 展示图中每个独立节点的活动 [6]
+      cuda-graph-trace: "graph"
+      
+      # 线程上下文切换追踪：识别 CPU 调度开销 [3, 10]
+      # 可选项: process-tree, system-wide, none
+      cpuctxsw: "process-tree"
+      
+      force-overwrite: "true"
+      capture-range: "cudaProfilerApi"
+      capture-range-end: "stop"
+      cudabacktrace: "true"
+      stop-on-exit: "true"
+      
+      # 专家系统分析规则 (2024.6 推荐)：
+      # 在 profile 阶段开启后，可通过 nsys analyze 自动识别以下瓶颈
+      # rules: "cuda_api_sync,gpu_gaps,cuda_memcpy_sync" [3, 11, 12]
