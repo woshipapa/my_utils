@@ -123,7 +123,7 @@ profile:
 
       # 可选：限制哪些 role 允许抓（不写则不限制）
       roles: ["generator", "critic", "teacher"]
-
+    debug_watch: true
     # window 列表：用 selector 表达“抓哪个 microbatch”，driver 在运行时 resolve 成 expected_mb去匹配@register运行时解析的运行时mb和iter
     windows:
       # 例：抓 generator 的最后一个 microbatch 的 backward
