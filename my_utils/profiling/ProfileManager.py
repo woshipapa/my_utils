@@ -47,29 +47,33 @@ class ProfileManager:
         return it in self._arm_iters
 
     def resolve_mb(self, selector, num_microbatches: int):
+        """
+        将 mb_selector 解析为具体 microbatch index。
+        注意：这里按当前 iter 的 num_microbatches resolve。
+        如果 stop_iter 的 num_microbatches 可能变化，需要把 selector 留到 worker 侧 resolve（更复杂）。
+        """
         if selector is None:
             return None
         if selector == "last":
-            return num_microbatches - 1
+            return int(num_microbatches) - 1
         if selector == "first":
             return 0
         if isinstance(selector, int):
             return int(selector)
-        if isinstance(selector, list):
-            return int(selector[0])
-        if isinstance(selector, dict) and "range" in selector:
-            a, b = selector["range"]
-            return int(a)
+        if isinstance(selector, str) and selector.isdigit():
+            return int(selector)
+        # 你也可以扩展 list/range
         return None
 
     def build_specs_to_arm_at_iter(self, it: int, num_microbatches: int) -> list[dict]:
         """
-        只为“start_iter == it”的 window 构造 spec。
+        只为“start_iter == it”的 window 构造 spec，并广播给对应 role 的 worker group。
+        spec 使用你约定的统一字段名（start_iter/stop_iter/start_mb/stop_mb）。
         """
         it = int(it)
-        specs = []
+        specs: list[dict] = []
 
-        for w in self._windows:
+        for w in (self._windows or []):
             role = w.get("role")
             if self._roles and role not in self._roles:
                 continue
@@ -78,49 +82,65 @@ class ProfileManager:
             if start_iter is None or int(start_iter) != it:
                 continue  # ✅ 只在 start_iter 当轮 arm
 
-            # start mb
+            # ---- resolve start/stop microbatch ----
             start_mb = self.resolve_mb(w.get("start_mb_selector"), num_microbatches)
 
-            # stop mb（注意：这里默认 num_microbatches 跨 iter 不变；如果会变，你需要在 stop 那轮再 resolve）
+            stop_iter = w.get("stop_iter", None)
+            if stop_iter is None:
+                stop_iter = start_iter
+            stop_iter = int(stop_iter)
+
             stop_mb = self.resolve_mb(w.get("stop_mb_selector"), num_microbatches)
 
-            stop_policy = w.get("stop_policy", None) or "ON_TRIGGER_FUNC_EXIT"
+            # ---- stop policy default (关键修复点) ----
+            stop_policy = w.get("stop_policy", None)
+            has_explicit_stop = (
+                w.get("stop_profile_names") is not None
+                or w.get("stop_iter") is not None
+                or w.get("stop_mb_selector") is not None
+            )
+            if not stop_policy:
+                # ✅ 只要配置了 stop 条件，默认就应该是 ON_STOP_PROFILE_NAME
+                stop_policy = "ON_STOP_PROFILE_NAME" if has_explicit_stop else "ON_TRIGGER_FUNC_EXIT"
+
+            # 兼容旧名字：ON_TARGET_FUNC_EXIT == ON_TRIGGER_FUNC_EXIT
+            if stop_policy == "ON_TARGET_FUNC_EXIT":
+                stop_policy = "ON_TRIGGER_FUNC_EXIT"
+
             stop_edge = w.get("stop_edge", None) or "EXIT"
 
+            # ---- spec ----
             spec = {
-                # 标识：把 start/stop 写清楚，方便你在 nsys 里 grep
                 "window_id": (
                     f"{w.get('name')}"
-                    f"/start_iter{it}_mb{start_mb}"
-                    f"/stop_iter{int(w.get('stop_iter', it))}_mb{stop_mb}"
+                    f"/start_iter{int(start_iter)}_mb{start_mb}"
+                    f"/stop_iter{int(stop_iter)}_mb{stop_mb}"
                 ),
 
-                # --- start 条件（你 controller arm() 里会 normalize 成 start_*） ---
-                "start_profile_names": w.get("start_profile_names", []) or [],
-                "start_expected_iter": int(start_iter),
-                "start_expected_mb": start_mb,
-
-                # --- stop 条件 ---
-                "stop_policy": stop_policy,
-                "stop_profile_names": w.get("stop_profile_names", []) or [],
-                "stop_expected_iter": int(w.get("stop_iter", start_iter)),
-                "stop_expected_mb": stop_mb,
-                "stop_edge": stop_edge,
-
-                # --- filters ---
                 "expected_role": role,
                 "ranks_filter": w.get("ranks_filter", None),
 
+                # start 条件（统一字段）
+                "start_iter": int(start_iter),
+                "start_profile_names": w.get("start_profile_names", []) or [],
+                "start_mb": start_mb,  # ✅ 已 resolve 的具体 mb index
+
+                # stop 条件（统一字段）
+                "stop_iter": int(stop_iter),
+                "stop_profile_names": w.get("stop_profile_names", []) or [],
+                "stop_mb": stop_mb,    # ✅ 已 resolve 的具体 mb index
+                "stop_policy": stop_policy,
+                "stop_edge": stop_edge,
+
                 # debug
-                "debug_match": self.debug_watch,
+                "debug_match": bool(self.debug_watch),
 
                 # window 级 NVTX 大标签
                 "enable_nvtx_window": True,
             }
-
             specs.append(spec)
 
-        return specs[: self._max_windows]
+        return specs[: int(self._max_windows)]
 
     def arm_iter(self, it: int, num_microbatches: int, wg_by_role: dict):
         """

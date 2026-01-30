@@ -151,6 +151,7 @@ profile:
         start_mb_selector: 0          # 或 "first"
 
         # --- stop 条件 ---
+        stop_policy: "ON_STOP_PROFILE_NAME"
         stop_iter: 3
         stop_profile_names: ["run_critic_fwd_bwd_microbatch"]
         stop_mb_selector: 0          # 或 "first"
