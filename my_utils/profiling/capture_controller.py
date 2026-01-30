@@ -51,25 +51,30 @@ class CaptureController:
             self._done = False
             self._triggered_by_profile_name = None
 
+            # allow per-window nvtx override
             if "enable_nvtx_window" in self._spec:
                 self._enable_nvtx_window = bool(self._spec["enable_nvtx_window"])
 
-            # defaults
-            if "stop_edge" not in self._spec:
-                self._spec["stop_edge"] = "EXIT"
+            # ---- normalize defaults (统一字段名) ----
+            self._spec.setdefault("start_profile_names", [])
+            self._spec.setdefault("stop_profile_names", [])
 
-            if "stop_policy" not in self._spec or not self._spec["stop_policy"]:
-                has_explicit_stop = (
-                    self._spec.get("stop_profile_names") is not None
-                    or self._spec.get("stop_iter") is not None
-                    or self._spec.get("stop_mb") is not None
-                )
-                self._spec["stop_policy"] = "ON_STOP_PROFILE_NAME" if has_explicit_stop else "ON_TRIGGER_FUNC_EXIT"
+            # start/stop iter/mb 默认 None = 不 gate
+            self._spec.setdefault("start_iter", None)
+            self._spec.setdefault("start_mb", None)
+            self._spec.setdefault("stop_iter", None)
+            self._spec.setdefault("stop_mb", None)
 
-            if self._spec.get("stop_policy") == "ON_TARGET_FUNC_EXIT":
-                self._spec["stop_policy"] = "ON_TRIGGER_FUNC_EXIT"
+            # policy/edge 默认
+            self._spec.setdefault("stop_policy", "ON_TRIGGER_FUNC_EXIT")
+            self._spec.setdefault("stop_edge", "EXIT")
 
-        self._log(f"[Capture] ARMED window={self._window_id} spec={self._spec}")
+            self._log(
+                f"[Capture] ARMED window={self._window_id} "
+                f"start={{iter={self._spec.get('start_iter')}, mb={self._spec.get('start_mb')}, names={self._spec.get('start_profile_names')}}} "
+                f"stop={{iter={self._spec.get('stop_iter')}, mb={self._spec.get('stop_mb')}, names={self._spec.get('stop_profile_names')}, "
+                f"policy={self._spec.get('stop_policy')}, edge={self._spec.get('stop_edge')}}}"
+            )
 
     def disarm(self, window_id: Optional[str] = None) -> None:
         with self._lock:
@@ -254,9 +259,10 @@ class CaptureController:
             return event.profile_name == self._triggered_by_profile_name
 
         if stop_policy == "ON_STOP_PROFILE_NAME":
+            # stop_edge 由 on_enter/on_exit 的外层逻辑控制
             return self._match_stop(event)
 
-        # fallback：行为等同 ON_TRIGGER_FUNC_EXIT
+        # fallback：等同 ON_TRIGGER_FUNC_EXIT
         if edge != "EXIT":
             return False
         return event.profile_name == self._triggered_by_profile_name
