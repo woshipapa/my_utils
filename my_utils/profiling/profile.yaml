@@ -161,13 +161,13 @@ profile:
         role: "teacher"
 
         # --- start 条件 ---
-        start_iter: 5
+        start_iter: 0
         start_profile_names: ["compute_real_score"]
         start_mb_selector: 0     # 或 "first"
 
         # --- stop 条件 ---
         stop_policy: "ON_STOP_PROFILE_NAME"
-        stop_iter: 5
+        stop_iter: 10
         stop_profile_names: ["compute_real_score"]
         stop_mb_selector: "last"      # 或 "first"
         stop_edge: "EXIT"
