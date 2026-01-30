@@ -116,7 +116,7 @@ profile:
     # 抓取调度：哪些 step/iter 触发；每个 step 抓几个 window
     schedule:
       # 哪些 iteration 开启 capture（与训练主循环 step 对齐）
-      steps: [5]
+      # steps: [5]
 
       # 每个 step 最多触发多少个 window（避免一次抓太多导致 nsys 文件巨大）
       max_windows_per_step: 2
@@ -131,12 +131,12 @@ profile:
         role: "generator"
         # start
         start_profile_names: ["run_forward_microbatch"]
-        start_iter: 5
+        start_iter: 1
         start_mb_selector: 0
         # stop
         stop_policy: "ON_STOP_PROFILE_NAME"
         stop_profile_names: ["generator_loss_and_backward"]
-        stop_iter: 5
+        stop_iter: 3
         stop_mb_selector: "last"
         stop_edge: "EXIT"
         ranks_filter: null
