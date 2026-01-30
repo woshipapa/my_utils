@@ -67,80 +67,78 @@ class ProfileManager:
 
     def build_specs_to_arm_at_iter(self, it: int, num_microbatches: int) -> list[dict]:
         """
-        只为“start_iter == it”的 window 构造 spec，并广播给对应 role 的 worker group。
-        spec 使用你约定的统一字段名（start_iter/stop_iter/start_mb/stop_mb）。
+        只为“start_iter == it”的 window 构造 spec。
+        统一配置格式（来自 YAML）：
+        start_iter, start_profile_names, start_mb_selector
+        stop_iter,  stop_profile_names,  stop_mb_selector
+        stop_policy (optional), stop_edge (optional)
         """
         it = int(it)
         specs: list[dict] = []
 
-        for w in (self._windows or []):
+        for w in self._windows:
             role = w.get("role")
             if self._roles and role not in self._roles:
                 continue
 
             start_iter = w.get("start_iter", None)
             if start_iter is None or int(start_iter) != it:
-                continue  # ✅ 只在 start_iter 当轮 arm
+                continue  # 只在 start_iter 当轮 arm
 
-            # ---- resolve start/stop microbatch ----
+            # ---- resolve start/stop mb ----
             start_mb = self.resolve_mb(w.get("start_mb_selector"), num_microbatches)
-
-            stop_iter = w.get("stop_iter", None)
-            if stop_iter is None:
-                stop_iter = start_iter
-            stop_iter = int(stop_iter)
-
             stop_mb = self.resolve_mb(w.get("stop_mb_selector"), num_microbatches)
 
-            # ---- stop policy default (关键修复点) ----
-            stop_policy = w.get("stop_policy", None)
-            has_explicit_stop = (
-                w.get("stop_profile_names") is not None
-                or w.get("stop_iter") is not None
-                or w.get("stop_mb_selector") is not None
+            # ---- detect explicit stop condition ----
+            # 只要用户给了任何 stop 条件字段，就认为“显式 stop”
+            has_explicit_stop = any(
+                k in w and w.get(k) is not None
+                for k in ("stop_iter", "stop_profile_names", "stop_mb_selector", "stop_edge")
             )
-            if not stop_policy:
-                # ✅ 只要配置了 stop 条件，默认就应该是 ON_STOP_PROFILE_NAME
-                stop_policy = "ON_STOP_PROFILE_NAME" if has_explicit_stop else "ON_TRIGGER_FUNC_EXIT"
 
-            # 兼容旧名字：ON_TARGET_FUNC_EXIT == ON_TRIGGER_FUNC_EXIT
-            if stop_policy == "ON_TARGET_FUNC_EXIT":
-                stop_policy = "ON_TRIGGER_FUNC_EXIT"
+            # ---- stop policy defaulting (关键修复点) ----
+            stop_policy = w.get("stop_policy", None)
+            if not stop_policy:
+                # ✅ 只要显式 stop，就默认 ON_STOP_PROFILE_NAME
+                stop_policy = "ON_STOP_PROFILE_NAME" if has_explicit_stop else "ON_TRIGGER_FUNC_EXIT"
 
             stop_edge = w.get("stop_edge", None) or "EXIT"
 
-            # ---- spec ----
+            # ---- build spec (统一字段名，直接给 controller 用) ----
             spec = {
                 "window_id": (
                     f"{w.get('name')}"
                     f"/start_iter{int(start_iter)}_mb{start_mb}"
-                    f"/stop_iter{int(stop_iter)}_mb{stop_mb}"
+                    f"/stop_iter{int(w.get('stop_iter', start_iter))}_mb{stop_mb}"
                 ),
 
+                # start 条件
+                "start_profile_names": w.get("start_profile_names", []) or [],
+                "start_iter": int(start_iter),
+                "start_mb": start_mb,
+
+                # stop 条件
+                "stop_policy": stop_policy,
+                "stop_profile_names": w.get("stop_profile_names", []) or [],
+                "stop_iter": int(w.get("stop_iter", start_iter)),
+                "stop_mb": stop_mb,
+                "stop_edge": stop_edge,
+
+                # filters
                 "expected_role": role,
                 "ranks_filter": w.get("ranks_filter", None),
 
-                # start 条件（统一字段）
-                "start_iter": int(start_iter),
-                "start_profile_names": w.get("start_profile_names", []) or [],
-                "start_mb": start_mb,  # ✅ 已 resolve 的具体 mb index
-
-                # stop 条件（统一字段）
-                "stop_iter": int(stop_iter),
-                "stop_profile_names": w.get("stop_profile_names", []) or [],
-                "stop_mb": stop_mb,    # ✅ 已 resolve 的具体 mb index
-                "stop_policy": stop_policy,
-                "stop_edge": stop_edge,
-
                 # debug
-                "debug_match": bool(self.debug_watch),
+                "debug_match": bool(getattr(self, "debug_watch", False)),
 
-                # window 级 NVTX 大标签
+                # window级 NVTX
                 "enable_nvtx_window": True,
             }
+
             specs.append(spec)
 
-        return specs[: int(self._max_windows)]
+        return specs[: self._max_windows]
+
 
     def arm_iter(self, it: int, num_microbatches: int, wg_by_role: dict):
         """
