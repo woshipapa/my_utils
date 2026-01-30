@@ -119,7 +119,7 @@ profile:
       # steps: [5]
 
       # 每个 step 最多触发多少个 window（避免一次抓太多导致 nsys 文件巨大）
-      max_windows_per_step: 2
+      max_windows_per_step: 10
 
       # 可选：限制哪些 role 允许抓（不写则不限制）
       roles: ["generator", "critic", "teacher"]
