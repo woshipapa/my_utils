@@ -2,6 +2,7 @@ import torch
 import sys
 import torch.distributed as dist
 import time
+from typing import Any
 
 # from megatron.core.tensor_parallel.mappings import (
 #     gather_from_tensor_model_parallel_region,
@@ -1285,7 +1286,10 @@ def print_tensor_info(tensor: torch.Tensor, name: str = ""):
         )
 
 
-from tensordict import TensorDict # (假设 DataProto.batch 是这个类型)
+try:
+    from tensordict import TensorDict  # optional dependency
+except Exception:
+    TensorDict = Any
 
 
 IS_ENABLED = os.environ.get("DEBUG_DATA_CONSISTENCY", "0") == "1"
