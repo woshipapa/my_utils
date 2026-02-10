@@ -127,6 +127,29 @@ def csv_to_trace(csv_path: str, out_json: str) -> None:
 
 Then open the JSON in `chrome://tracing` or Perfetto UI.
 
+## Standalone NVTX labels (without MyTimer)
+
+If you only want NVTX ranges and do not want to couple with `MyTimer`, use `NvtxLabeler`:
+
+```python
+from my_utils import NvtxLabeler
+
+nvtx = NvtxLabeler(enabled=True, default_domain="light_bagel")
+nvtx.register_label("model.forward", color="blue")
+nvtx.register_label("model.layer_00.fusion", color="red")
+
+with nvtx.range("model.forward"):
+    # your forward code
+    with nvtx.range("model.layer_00.fusion"):
+        pass
+```
+
+Notes:
+
+- `enabled=None` (default) follows env `ENABLE_NVTX` (`1` to enable).
+- If `nvtx` package is unavailable, APIs become no-op safely.
+- You can call `start(...)` / `stop(token)` directly when context manager is not suitable.
+
 ## Class Reference (by file)
 
 ## `my_utils/logger.py`
@@ -176,6 +199,18 @@ g.log_profile_event(timestamp=0.0, step=0, event_name="warmup", event_type="STAR
 - `ChecksumUtils`
   - `sign(payload)`: appends per-sample checksum tensors to outgoing payload.
   - `verify(batch, logger)`: validates checksums on receiver side.
+
+## `my_utils/nvtx_utils.py`
+
+- `NvtxLabeler`
+  - Lightweight, standalone NVTX range helper (independent from `MyTimer`).
+  - Key methods:
+    - `register_label(label, color="blue", domain_name=None, category=None)`
+    - `start(label, color="blue", domain_name=None, category=None)`
+    - `stop(token=None)`
+    - `range(label, color="blue", domain_name=None, category=None)` context manager
+- `NVTX_AVAILABLE`
+  - Boolean flag indicating whether `import nvtx` succeeded.
 
 ## `my_utils/profilerwrapper.py`
 
@@ -495,6 +530,7 @@ cc.on_exit(HookEvent(profile_name="generator.forward", meta={"iter": 10, "microb
 ## Environment variables
 
 - `ENABLE_TIMER=1`: enables global `MyTimer` instance (`global_timer`) in `utils.py`.
+- `ENABLE_NVTX=1`: default switch for `NvtxLabeler(enabled=None)`.
 - `ENABLE_MEMORY_SNAPSHOT=1`: enables `global_snapshotter`.
 - `PROFILE_TASK_TYPES=DIT,VAE`: enables `create_profiler_context` for listed task types.
 - `DEBUG_DATA_CONSISTENCY=1`: enables `ChecksumUtils` sign/verify.
@@ -506,4 +542,3 @@ cc.on_exit(HookEvent(profile_name="generator.forward", meta={"iter": 10, "microb
 - Several tools assume CUDA and, in some paths, initialized `torch.distributed`.
 - For accurate CUDA timings in manual flows, call `timer.step()` after finishing one iteration.
 - If you use `GlobalLogger.set_time_offset(...)` with `ClockSynchronizer`, multi-machine CSV timelines can be aligned before trace conversion.
-
