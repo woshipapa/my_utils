@@ -32,6 +32,7 @@ from .profiling import (
     extract_meta_from_call,
     ProfileManager,
 )
+from .nvtx_utils import NvtxLabeler, NVTX_AVAILABLE
 
 __all__ = [
     "register_hooks",
@@ -69,6 +70,8 @@ __all__ = [
     "HookEvent",
     "extract_meta_from_call",
     "ProfileManager",
+    "NvtxLabeler",
+    "NVTX_AVAILABLE",
 ]
 
 # Optional exports: keep import-time dependencies minimal for base install.
@@ -110,4 +113,3 @@ try:
     __all__.extend(["pad_for_sequence_parallel", "remove_pad_by_value"])
 except Exception:
     pass
-
