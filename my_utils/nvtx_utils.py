@@ -7,9 +7,11 @@ try:
     import nvtx as _nvtx
 
     NVTX_AVAILABLE = True
+    print("[NvtxLabeler] nvtx import succeeded. NVTX hooks are available.")
 except Exception:
     _nvtx = None
     NVTX_AVAILABLE = False
+    print("[NvtxLabeler] nvtx import failed. NVTX hooks are unavailable.")
 
 
 class NvtxLabeler:
@@ -32,6 +34,20 @@ class NvtxLabeler:
         self._domains = {}
         self._registered_attrs = {}
         self._active_stack = []
+        if self.enabled:
+            print(
+                f"[NvtxLabeler] enabled=True, default_domain={self.default_domain!r}."
+            )
+        else:
+            if not enabled:
+                reason = "requested disabled (enabled=False or ENABLE_NVTX!=1)"
+            elif not NVTX_AVAILABLE:
+                reason = "nvtx backend unavailable"
+            else:
+                reason = "unknown"
+            print(
+                f"[NvtxLabeler] enabled=False, default_domain={self.default_domain!r}, reason={reason}."
+            )
 
     def _get_domain(self, domain_name: Optional[str]):
         if not self.enabled or domain_name is None:
