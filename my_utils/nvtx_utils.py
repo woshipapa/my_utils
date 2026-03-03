@@ -1,3 +1,5 @@
+
+## ENABLE_NVTX
 import os
 from contextlib import contextmanager
 from typing import Optional, Tuple, Any
