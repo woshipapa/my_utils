@@ -5,6 +5,13 @@ class ProfileManager:
 
         prof = (self.cfg.get("profile", {}) or {})
         self._enabled = bool(prof.get("enabled", False))
+        self._features = (prof.get("features", {}) or {})
+        self._capture_features = (self._features.get("capture", {}) or {})
+        self._capture_enabled = bool(self._capture_features.get("enabled", True))
+        self._capture_nvtx_window = bool(self._capture_features.get("nvtx_window", False))
+        self._default_stop_policy = self._normalize_stop_policy(
+            self._capture_features.get("default_stop_policy", "ON_TRIGGER_FUNC_EXIT")
+        )
 
         cap = (prof.get("capture", {}) or {})
         self._cap_cfg = cap
@@ -26,7 +33,13 @@ class ProfileManager:
                 self._arm_iters.add(int(si))
 
     def enabled(self) -> bool:
-        return self._enabled
+        return self._enabled and self._capture_enabled
+
+    @staticmethod
+    def _normalize_stop_policy(stop_policy: str) -> str:
+        if stop_policy == "ON_TARGET_FUNC_EXIT":
+            return "ON_TRIGGER_FUNC_EXIT"
+        return stop_policy
 
     def should_capture_this_iter(self, it: int) -> bool:
         """
@@ -34,7 +47,7 @@ class ProfileManager:
         - 你可以用 schedule.steps 做总开关 gate（比如只想在 [5] 这一轮允许 arm）
         - 也可以不写 schedule.steps，只依赖 windows.start_iter
         """
-        if not self._enabled:
+        if not self.enabled():
             return False
 
         it = int(it)
@@ -100,8 +113,9 @@ class ProfileManager:
             stop_policy = w.get("stop_policy", None)
             if not stop_policy:
                 # ✅ 只要显式 stop，就默认 ON_STOP_PROFILE_NAME
-                stop_policy = "ON_STOP_PROFILE_NAME" if has_explicit_stop else "ON_TRIGGER_FUNC_EXIT"
+                stop_policy = "ON_STOP_PROFILE_NAME" if has_explicit_stop else self._default_stop_policy
 
+            stop_policy = self._normalize_stop_policy(stop_policy)
             stop_edge = w.get("stop_edge", None) or "EXIT"
 
             # ---- build spec (统一字段名，直接给 controller 用) ----
@@ -132,7 +146,7 @@ class ProfileManager:
                 "debug_match": bool(getattr(self, "debug_watch", False)),
 
                 # window级 NVTX
-                "enable_nvtx_window": True,
+                "enable_nvtx_window": bool(w.get("enable_nvtx_window", self._capture_nvtx_window)),
             }
 
             specs.append(spec)

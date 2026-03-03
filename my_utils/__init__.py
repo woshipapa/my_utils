@@ -33,10 +33,13 @@ from .profiling import (
     ProfileManager,
 )
 from .nvtx_utils import (
+    LabelerProtocol,
+    NoOpLabeler,
     NvtxLabeler,
     NVTX_AVAILABLE,
     TorchNvtxLabeler,
     TORCH_NVTX_AVAILABLE,
+    create_labeler,
 )
 
 __all__ = [
@@ -75,10 +78,13 @@ __all__ = [
     "HookEvent",
     "extract_meta_from_call",
     "ProfileManager",
+    "LabelerProtocol",
+    "NoOpLabeler",
     "NvtxLabeler",
     "NVTX_AVAILABLE",
     "TorchNvtxLabeler",
     "TORCH_NVTX_AVAILABLE",
+    "create_labeler",
 ]
 
 # Optional exports: keep import-time dependencies minimal for base install.
