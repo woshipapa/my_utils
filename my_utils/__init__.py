@@ -32,7 +32,12 @@ from .profiling import (
     extract_meta_from_call,
     ProfileManager,
 )
-from .nvtx_utils import NvtxLabeler, NVTX_AVAILABLE
+from .nvtx_utils import (
+    NvtxLabeler,
+    NVTX_AVAILABLE,
+    TorchNvtxLabeler,
+    TORCH_NVTX_AVAILABLE,
+)
 
 __all__ = [
     "register_hooks",
@@ -72,6 +77,8 @@ __all__ = [
     "ProfileManager",
     "NvtxLabeler",
     "NVTX_AVAILABLE",
+    "TorchNvtxLabeler",
+    "TORCH_NVTX_AVAILABLE",
 ]
 
 # Optional exports: keep import-time dependencies minimal for base install.
