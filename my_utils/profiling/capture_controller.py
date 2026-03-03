@@ -4,6 +4,8 @@ from dataclasses import dataclass
 from typing import Any, Dict, Optional, Set
 import threading
 
+from ..nvtx_utils import LabelerProtocol, NoOpLabeler
+
 
 @dataclass
 class HookEvent:
@@ -21,23 +23,35 @@ class CaptureController:
         *,
         enable_nvtx_window: bool = False,
         nvtx_domain: Optional[str] = None,
+        window_labeler: Optional[LabelerProtocol] = None,
     ):
         self._backend = backend
         self._logger = logger
 
+        self._default_enable_nvtx_window = enable_nvtx_window
         self._enable_nvtx_window = enable_nvtx_window
         self._nvtx_domain = nvtx_domain
+        self._window_labeler = window_labeler if window_labeler is not None else NoOpLabeler(
+            default_domain=nvtx_domain
+        )
 
         self._armed = False
         self._active = False
         self._done = False
         self._spec: Optional[Dict[str, Any]] = None
         self._window_id: Optional[str] = None
+        self._window_nvtx_token: object | None = None
 
         # 记录是哪个 profile_name 触发 start（用于 ON_TRIGGER_FUNC_EXIT）
         self._triggered_by_profile_name: Optional[str] = None
 
         self._lock = threading.Lock()
+
+    @staticmethod
+    def _normalize_stop_policy(stop_policy: str) -> str:
+        if stop_policy == "ON_TARGET_FUNC_EXIT":
+            return "ON_TRIGGER_FUNC_EXIT"
+        return stop_policy
 
     # -----------------------
     # control-plane
@@ -50,10 +64,12 @@ class CaptureController:
             self._active = False
             self._done = False
             self._triggered_by_profile_name = None
+            self._window_nvtx_token = None
 
             # allow per-window nvtx override
-            if "enable_nvtx_window" in self._spec:
-                self._enable_nvtx_window = bool(self._spec["enable_nvtx_window"])
+            self._enable_nvtx_window = bool(
+                self._spec.get("enable_nvtx_window", self._default_enable_nvtx_window)
+            )
 
             # ---- normalize defaults (统一字段名) ----
             self._spec.setdefault("start_profile_names", [])
@@ -66,7 +82,9 @@ class CaptureController:
             self._spec.setdefault("stop_mb", None)
 
             # policy/edge 默认
-            self._spec.setdefault("stop_policy", "ON_TRIGGER_FUNC_EXIT")
+            self._spec["stop_policy"] = self._normalize_stop_policy(
+                self._spec.get("stop_policy", "ON_TRIGGER_FUNC_EXIT")
+            )
             self._spec.setdefault("stop_edge", "EXIT")
 
             self._log(
@@ -77,15 +95,20 @@ class CaptureController:
             )
 
     def disarm(self, window_id: Optional[str] = None) -> None:
+        token_to_stop = None
         with self._lock:
             if window_id is not None and window_id != self._window_id:
                 return
+            token_to_stop = self._window_nvtx_token
             self._armed = False
             self._active = False
             self._done = False
             self._spec = None
             self._window_id = None
             self._triggered_by_profile_name = None
+            self._window_nvtx_token = None
+        if token_to_stop is not None:
+            self._window_labeler.stop(token_to_stop)
         self._log(f"[Capture] DISARM window={window_id}")
 
     def status(self) -> Dict[str, Any]:
@@ -247,7 +270,9 @@ class CaptureController:
         edge: "ENTER" or "EXIT"
         """
         spec = self._spec or {}
-        stop_policy = spec.get("stop_policy", "ON_TRIGGER_FUNC_EXIT")
+        stop_policy = self._normalize_stop_policy(
+            spec.get("stop_policy", "ON_TRIGGER_FUNC_EXIT")
+        )
 
         if stop_policy == "MANUAL":
             return False
@@ -290,23 +315,16 @@ class CaptureController:
     def _nvtx_mark_start(self) -> None:
         if not self._enable_nvtx_window:
             return
-        try:
-            import nvtx
-            nvtx.start_range(
-                message=f"CAPTURE_WINDOW_START {self._window_id}",
-                domain=self._nvtx_domain,
-            )
-        except Exception:
-            return
+        self._window_nvtx_token = self._window_labeler.start(
+            f"CAPTURE_WINDOW {self._window_id}",
+            domain_name=self._nvtx_domain,
+        )
 
     def _nvtx_mark_end(self) -> None:
         if not self._enable_nvtx_window:
             return
-        try:
-            import nvtx
-            nvtx.end_range()
-        except Exception:
-            return
+        self._window_labeler.stop(self._window_nvtx_token)
+        self._window_nvtx_token = None
 
     def _log(self, msg: str) -> None:
         if self._logger is None:
