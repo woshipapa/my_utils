@@ -2,7 +2,7 @@ import torch
 import sys
 import torch.distributed as dist
 import time
-from typing import Any
+from typing import Any, Optional
 
 # from megatron.core.tensor_parallel.mappings import (
 #     gather_from_tensor_model_parallel_region,
@@ -77,7 +77,7 @@ def register_hooks(model, print_values=True, max_elements=20):
                         get_logger().info(
                             f"[rank {rank}] {label} shape: {tensor.shape} "
                         )
-            else:
+            elif False:
                 get_logger().info(f"[rank {rank}]  {label} is not tensor, is {tensor} ")
 
     def forward_hook_fn(module, input, output, name):
@@ -89,7 +89,7 @@ def register_hooks(model, print_values=True, max_elements=20):
             if hasattr(module, "weight") and module.weight is not None:
                 weight = module.weight.data
                 print_shape_and_values(weight, f"{name}_Weight")
-            else:
+            elif False:
                 get_logger().info(f"[rank {rank}] Layer: {name} has no weight ")
         # 打印输入
         if isinstance(input, tuple):
@@ -192,19 +192,8 @@ import numpy as np
 import logging
 # from t2v_flow.executor.DynamicForwardStepHandler import DynamicForwardStepHandler
 from logging import LoggerAdapter
+from .nvtx_utils import LabelerProtocol, NoOpLabeler, create_labeler
 
-try:
-    # nvidia nvtx not torch.cuda.nvtx
-    import nvtx
-    NVTX_AVAILABLE = True
-except ImportError:
-    # ... (dummy nvtx class)
-    NVTX_AVAILABLE = False
-    class nvtx:
-        @staticmethod
-        def start_range(*args, **kwargs): return None
-        @staticmethod
-        def end_range(*args, **kwargs): pass
 try:
     import psutil
     PSUTIL_AVAILABLE = True
@@ -216,7 +205,9 @@ class MyTimer:
     # (此处省略了之前已展示的、未改动的方法代码，以保持简洁)
     def __init__(self, use_cuda=True, tag="timer", 
                  verbose=True, log_dir="my_timer_log/",
-                 profile_memory=False, use_nvtx=False):
+                 profile_memory=False, use_nvtx=False,
+                 labeler: Optional[LabelerProtocol] = None,
+                 nvtx_domain: Optional[str] = None):
         self.use_cuda = use_cuda and torch.cuda.is_available()
         self.verbose = verbose
         self.tag = tag
@@ -228,7 +219,6 @@ class MyTimer:
         self.current_iteration = 0
         
         self.profile_memory = profile_memory and PSUTIL_AVAILABLE and self.use_cuda
-        self.use_nvtx = use_nvtx and NVTX_AVAILABLE
         self.log_context = {'log_type': 'timing'}
         # self.logger = self._get_logger()
 
@@ -237,9 +227,12 @@ class MyTimer:
         # if verbose: self.logger.setLevel(logging.INFO)
         # else: self.logger.setLevel(logging.WARNING)
 
-        # nvidia nvtx 
-        self._domains = {}
-        self._registered_attrs = {}
+        self.set_labeler(
+            labeler if labeler is not None else create_labeler(
+                enabled=bool(use_nvtx),
+                default_domain=nvtx_domain,
+            )
+        )
 
 
         # async
@@ -268,6 +261,7 @@ class MyTimer:
         self.current_node = self.root_node
 
     def _get_domain(self, domain_name: str):
+        raise RuntimeError("MyTimer no longer exposes raw NVTX domains; use register_stage() via the configured labeler.")
         """内部方法，用于获取并缓存 Domain 对象"""
         if domain_name is None:
             return None
@@ -277,9 +271,20 @@ class MyTimer:
 
         return self._domains[domain_name]
 
+    def set_labeler(self, labeler: Optional[LabelerProtocol]) -> None:
+        self.labeler = labeler if labeler is not None else NoOpLabeler()
+        self.use_nvtx = bool(getattr(self.labeler, "enabled", False))
+
     def register_stage(self, stage_name: str, color: str = "blue", domain_name: str = None, category = None):
         if not self.use_nvtx:
             return
+        self.labeler.register_label(
+            stage_name,
+            color=color,
+            domain_name=domain_name,
+            category=category,
+        )
+        return
             
         if domain_name is None:
             raise ValueError("Pre-registration for NVTX optimization requires a valid `domain_name`.")
@@ -422,19 +427,22 @@ class MyTimer:
 
 
         if self.use_nvtx:
+            entry["nvtx_token"] = self.labeler.start(
+                stage_name,
+                color=color,
+                domain_name=domain_name,
+            )
             entry["nvtx_domain"] = None  # 用于在 stop 时判断调用哪个 end_range
             entry["nvtx_range_id"] = None
 
-            if stage_name in self._registered_attrs:
+            if False:
                 # 优化路径: 使用预缓存的 (domain, attrs)
                 domain, attrs = self._registered_attrs[stage_name]
                 entry["nvtx_domain"] = domain
                 entry["nvtx_range_id"] = domain.start_range(attributes=attrs)
-            else:
+            elif False:
                 # 探索路径: 即时创建
-                entry["nvtx_range_id"] = nvtx.start_range(
-                    message=stage_name, color=color, domain=domain_name
-                )
+                entry["nvtx_range_id"] = None
                 # 此时 entry["nvtx_domain"] 保持为 None，作为使用全局函数的标记
 
 
@@ -455,6 +463,7 @@ class MyTimer:
             "cuda_end":  entry.get("cuda_end"),
             "nvtx_domain": entry.get("nvtx_domain"),
             "nvtx_range_id": entry.get("nvtx_range_id"),
+            "nvtx_token": entry.get("nvtx_token"),
         }
 
         self.current_node["children"].append(new_node)
@@ -565,6 +574,9 @@ class MyTimer:
         if self.use_cuda and "cuda_end" in node and node["cuda_end"] is not None:
             node["cuda_end"].record()
 
+        if self.use_nvtx:
+            self.labeler.stop(node.get("nvtx_token"))
+
         if self.use_nvtx and "nvtx_range_id" in node:
             domain = node.get("nvtx_domain")
             range_id = node.get("nvtx_range_id")
@@ -573,7 +585,7 @@ class MyTimer:
                     domain.end_range(range_id)
                 else:
                     # print(f"Timer NVTX: Using global end_range for '{node['name']}'")
-                    nvtx.end_range(range_id)
+                    pass
 
         # (来自你 'stop' 的逻辑: 创建 pending_record)
         pending_record = {
@@ -982,6 +994,9 @@ class NoOpMyTimer:
     def set_logger(self, logger_instance: logging.Logger):
         pass
 
+    def set_labeler(self, labeler: Optional[LabelerProtocol]):
+        pass
+
     def start(self, stage_name: str, *args, **kwargs):
         pass
 
@@ -1102,7 +1117,7 @@ def setup_logging_and_timer(args, role_tag: str, use_cuda: bool, use_nvtx: bool,
                 use_cuda=use_cuda,
                 tag=str(role_tag),
                 log_dir=log_dir,
-                use_nvtx=use_nvtx, 
+                labeler=create_labeler(enabled=use_nvtx),
                 profile_memory=False
             )
             
@@ -1120,7 +1135,7 @@ def setup_logging_and_timer(args, role_tag: str, use_cuda: bool, use_nvtx: bool,
     # global_timer.rank = logger_instance.rank
     
     # (来自你 V1 的硬编码)
-    global_timer.use_nvtx = False 
+    global_timer.set_labeler(create_labeler(enabled=False))
     global_timer.profile_memory = False
     
     # 3. 检查 global_timer 是哪种类型并记录
