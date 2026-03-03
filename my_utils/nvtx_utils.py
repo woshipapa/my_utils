@@ -15,6 +15,16 @@ except Exception:
     NVTX_AVAILABLE = False
     print("[NvtxLabeler] nvtx import failed. NVTX hooks are unavailable.")
 
+try:
+    import torch.cuda.nvtx as _torch_nvtx
+
+    TORCH_NVTX_AVAILABLE = True
+    print("[TorchNvtxLabeler] torch.cuda.nvtx import succeeded. NVTX hooks are available.")
+except Exception:
+    _torch_nvtx = None
+    TORCH_NVTX_AVAILABLE = False
+    print("[TorchNvtxLabeler] torch.cuda.nvtx import failed. NVTX hooks are unavailable.")
+
 
 class NvtxLabeler:
     """
@@ -141,6 +151,165 @@ class NvtxLabeler:
             domain.end_range(range_id)
         else:
             _nvtx.end_range(range_id)
+
+    @contextmanager
+    def range(
+        self,
+        label: str,
+        color: str = "blue",
+        domain_name: Optional[str] = None,
+        category: Optional[Any] = None,
+    ):
+        token = self.start(label, color=color, domain_name=domain_name, category=category)
+        try:
+            yield
+        finally:
+            self.stop(token)
+
+
+class TorchNvtxLabeler:
+    """
+    Lightweight NVTX helper backed by torch.cuda.nvtx.
+
+    Notes:
+    - Keeps the same start/stop/range style as NvtxLabeler.
+    - torch.cuda.nvtx does not support true color/domain/category attributes.
+    - domain/category are encoded into the message string for readability.
+    """
+
+    def __init__(self, enabled: Optional[bool] = None, default_domain: Optional[str] = None):
+        if enabled is None:
+            enabled = os.environ.get("ENABLE_NVTX", "0") == "1"
+
+        self.enabled = bool(enabled and TORCH_NVTX_AVAILABLE)
+        self.default_domain = default_domain
+        self._registered_messages = {}
+        self._active_stack = []
+        if self.enabled:
+            print(
+                f"[TorchNvtxLabeler] enabled=True, default_domain={self.default_domain!r}."
+            )
+        else:
+            if not enabled:
+                reason = "requested disabled (enabled=False or ENABLE_NVTX!=1)"
+            elif not TORCH_NVTX_AVAILABLE:
+                reason = "torch.cuda.nvtx backend unavailable"
+            else:
+                reason = "unknown"
+            print(
+                f"[TorchNvtxLabeler] enabled=False, default_domain={self.default_domain!r}, reason={reason}."
+            )
+
+    def _compose_message(
+        self,
+        label: str,
+        *,
+        domain_name: Optional[str] = None,
+        category: Optional[Any] = None,
+    ) -> str:
+        effective_domain = domain_name or self.default_domain
+        prefixes = []
+        if effective_domain is not None:
+            prefixes.append(str(effective_domain))
+        if category is not None:
+            prefixes.append(str(category))
+        if not prefixes:
+            return label
+        return f"[{'/'.join(prefixes)}] {label}"
+
+    def register_label(
+        self,
+        label: str,
+        color: str = "blue",
+        domain_name: Optional[str] = None,
+        category: Optional[Any] = None,
+    ) -> None:
+        if not self.enabled:
+            return
+
+        self._registered_messages[label] = self._compose_message(
+            label,
+            domain_name=domain_name,
+            category=category,
+        )
+
+    def start(
+        self,
+        label: str,
+        color: str = "blue",
+        domain_name: Optional[str] = None,
+        category: Optional[Any] = None,
+    ) -> Optional[int]:
+        if not self.enabled:
+            return None
+
+        message = self._registered_messages.get(label)
+        if message is None:
+            message = self._compose_message(
+                label,
+                domain_name=domain_name,
+                category=category,
+            )
+        token = _torch_nvtx.range_start(message)
+        self._active_stack.append(token)
+        return token
+
+    def _remove_token(self, token: int) -> None:
+        for idx in range(len(self._active_stack) - 1, -1, -1):
+            if self._active_stack[idx] == token:
+                self._active_stack.pop(idx)
+                return
+
+    def stop(self, token: Optional[int] = None) -> None:
+        if not self.enabled:
+            return
+
+        if token is None:
+            if not self._active_stack:
+                return
+            token = self._active_stack.pop()
+        else:
+            self._remove_token(token)
+
+        _torch_nvtx.range_end(token)
+
+    def mark(
+        self,
+        label: str,
+        domain_name: Optional[str] = None,
+        category: Optional[Any] = None,
+    ) -> None:
+        if not self.enabled:
+            return
+        _torch_nvtx.mark(
+            self._compose_message(
+                label,
+                domain_name=domain_name,
+                category=category,
+            )
+        )
+
+    def push(
+        self,
+        label: str,
+        color: str = "blue",
+        domain_name: Optional[str] = None,
+        category: Optional[Any] = None,
+    ) -> Optional[int]:
+        if not self.enabled:
+            return None
+        return _torch_nvtx.range_push(
+            self._compose_message(
+                label,
+                domain_name=domain_name,
+                category=category,
+            )
+        )
+
+    def pop(self) -> Optional[int]:
+        if not self.enabled:
+            return None
+        return _torch_nvtx.range_pop()
 
     @contextmanager
     def range(
