@@ -41,6 +41,7 @@ from .nvtx_utils import (
     TORCH_NVTX_AVAILABLE,
     create_labeler,
 )
+from .method_patch import MethodPatchHandle, MethodPatcher
 
 __all__ = [
     "register_hooks",
@@ -85,6 +86,8 @@ __all__ = [
     "TorchNvtxLabeler",
     "TORCH_NVTX_AVAILABLE",
     "create_labeler",
+    "MethodPatchHandle",
+    "MethodPatcher",
 ]
 
 # Optional exports: keep import-time dependencies minimal for base install.
