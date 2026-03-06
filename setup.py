@@ -26,6 +26,14 @@ setup(
     version="0.1",
     packages=find_packages(),
     package_dir={"": "."},
+    include_package_data=True,
+    package_data={
+        "my_utils": [
+            "profiling/templates/*.sh",
+            "profiling/templates/*.env",
+            "profiling/templates/*.md",
+        ]
+    },
     install_requires=install_requires,
     extras_require=extras_require,
     author="Your Name",
