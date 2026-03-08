@@ -15,10 +15,10 @@ class ControlRandom(object):
             path_to_read = ControlRandom.random_data_path
 
         for filename in os.listdir(path_to_read):
-            if not filename.endwith(".pt"):
-                continue 
+            if not filename.endswith(".pt"):
+                continue
             key = '.'.join(filename.split('.')[:-1])
-            ControlRandom.random_data_dict[key] = torch.load(os.path.join(path_to_read,filename))
+            ControlRandom.random_data_dict[key] = torch.load(os.path.join(path_to_read, filename))
     
     @classmethod
     def set_random_data_dict(path: str):
@@ -33,7 +33,7 @@ class ControlRandom(object):
 
     @classmethod
     def load_random(cls, tag):
-        return ControlRandom.random_data_dict.get(f"{tag}.pt")
+        return ControlRandom.random_data_dict.get(tag)
 
     @classmethod
     def deal_with_random(cls, save: torch.bool, tag, random_data=None):

@@ -43,6 +43,7 @@ my_utils/
     ├── dump_utils.py                 # Tensor dump/load with checksums
     ├── module_hook.py                # ForwardTraceRecorder for module tracing
     ├── method_patch.py               # Runtime method patching utilities
+    ├── step_timer.py                 # NEW: Per-step wall-clock timer + anomaly detection
     ├── annotations.py                # Shape parametrization
     ├── etcd_utils.py                 # Distributed synchronization via etcd
     ├── ncu_analyze_from_csv.py       # NVIDIA Nsight Compute CSV analysis
@@ -58,6 +59,7 @@ my_utils/
         ├── frameworkless.py          # Framework-agnostic profiling helpers
         ├── meta_adapters.py          # Metadata extraction
         ├── template_utils.py         # Utility functions
+        ├── trace_aggregator.py       # NEW: Merge per-rank CSVs → Chrome Trace JSON
         ├── profile.yaml              # Main profiling config example
         ├── nsys_profile.yaml         # Nsight Systems config example
         ├── profile_wrapper.sh        # Universal Nsight Systems wrapper script
@@ -84,6 +86,7 @@ Hierarchical CPU/CUDA timer with nested event tracking. Central to most profilin
 Singleton logging system (via `SingletonMeta`) that writes both human-readable logs and machine-readable CSV profile events.
 - Thread-safe singleton — always access via `GlobalLogger()`
 - Outputs: `rank_<rank>.log` and `profile_rank_<rank>.csv`
+- CSV format: `timestamp_unix,readable_time,machine_id,step,event_name,event_type,duration_ms,metadata`
 
 ### 3. NVTX Labeling (`nvtx_utils.py`)
 - `NvtxLabeler`: Standalone NVTX range marking
@@ -91,11 +94,26 @@ Singleton logging system (via `SingletonMeta`) that writes both human-readable l
 - `create_labeler()`: Factory — auto-selects backend based on availability
 - `LabelerProtocol`: Abstract interface — implement this for custom backends
 
-### 4. `ProfileManager` (`profiling/ProfileManager.py`)
+### 4. `StepTimer` (`step_timer.py`) — NEW
+Framework-agnostic per-step wall-clock timer. Zero external dependencies.
+- Context manager API: `with timer.step(step_idx): ...`
+- Rolling statistics: mean, std, p50/p95/p99
+- Automatic anomaly detection (flags steps N× slower than the rolling mean)
+- `timer.summary()` — formatted summary table
+- `timer.throughput(batch_size)` — samples/second
+
+### 5. `ProfileManager` (`profiling/ProfileManager.py`)
 YAML-driven profiling config manager. Reads `profile.yaml` to configure profiling windows, step ranges, and feature flags. Integrates with `CaptureController`.
 
-### 5. `CaptureController` (`profiling/capture_controller.py`)
+### 6. `CaptureController` (`profiling/capture_controller.py`)
 Window-based capture coordination. Controls when profiling capture is active (by step count, time window, etc.). Works with pluggable `CaptureBackend` implementations.
+
+### 7. `TraceAggregator` (`profiling/trace_aggregator.py`) — NEW
+Post-training trace merging tool. Converts per-rank `profile_rank_*.csv` files (from `GlobalLogger`) into a single Chrome Trace JSON for Perfetto / chrome://tracing.
+- `agg.load_directory(log_dir)` — scan and load all rank CSVs
+- `agg.set_clock_offset(rank, offset_seconds)` — apply `ClockSynchronizer` offsets
+- `agg.export_chrome_trace(output_path)` — emit merged JSON
+- `agg.rank_summary()` — per-rank event count and time span
 
 ---
 
@@ -105,7 +123,7 @@ Window-based capture coordination. Controls when profiling capture is active (by
 |--------|-----------|
 | Singleton | `GlobalLogger` with `SingletonMeta` |
 | Factory | `create_labeler()`, `create_profiler_context()`, `create_nsys_capture_backend()` |
-| Context Manager | `ProfilerWrapper`, `FlexibleProfiler`, `ModuleProfiler`, `labeler.range()` |
+| Context Manager | `ProfilerWrapper`, `FlexibleProfiler`, `ModuleProfiler`, `labeler.range()`, `StepTimer.step()` |
 | Protocol/Interface | `LabelerProtocol`, `CaptureBackend` — use `@runtime_checkable` |
 | Hook Pattern | `ModuleProfiler._register_hooks()`, `ForwardProfilerHook`, `ForwardTraceRecorder` |
 | Dataclass Config | `TorchProfilerConfig`, `NsysProfilerConfig`, etc. in `profiling/config.py` |
@@ -120,6 +138,7 @@ The canonical public API is defined in `my_utils/__init__.py`. **Always check th
 Key exports include:
 - `MyTimer`, `NoOpMyTimer`
 - `GlobalLogger`
+- `StepTimer`, `StepStats`, `AnomalyRecord`
 - `NvtxLabeler`, `TorchNvtxLabeler`, `create_labeler`, `LabelerProtocol`
 - `ModuleProfiler`, `ProfilerWrapper`, `FlexibleProfiler`
 - `MemorySnapshotter`, `GPU_Performance_Tracker`
@@ -127,6 +146,52 @@ Key exports include:
 - `DumpTensorIO`, `UniversalDumper`, `ChecksumUtils`
 - `ForwardTraceRecorder`, `MethodPatcher`
 - `ProfileManager`, `CaptureController` (from `my_utils.profiling`)
+- `TraceAggregator`, `RankStat` (from `my_utils.profiling`)
+
+---
+
+## Typical Workflows
+
+### Single-machine training profiling
+```python
+from my_utils import StepTimer, GlobalLogger, MyTimer
+
+logger = GlobalLogger()
+logger.setup(log_dir="./logs", rank=rank, world_size=world_size)
+
+timer = StepTimer(window_size=50, rank=rank)
+for step in range(max_steps):
+    with timer.step(step):
+        train_step(batch)
+
+if rank == 0:
+    print(timer.summary())
+```
+
+### Multi-machine trace correlation
+```python
+# After training: merge per-rank CSVs with clock correction
+from my_utils.profiling import TraceAggregator
+
+agg = TraceAggregator()
+agg.load_directory("./logs")
+
+# offsets from ClockSynchronizer (rank 1 was 3 ms ahead of rank 0)
+agg.set_clock_offsets({1: -0.003, 2: -0.001})
+
+agg.export_chrome_trace("./logs/merged_trace.json")
+print(agg.rank_summary())
+# Open merged_trace.json at https://ui.perfetto.dev
+```
+
+### NVTX + Nsight Systems
+```python
+from my_utils import create_labeler, CaptureController
+
+labeler = create_labeler()
+with labeler.range("forward"):
+    output = model(input)
+```
 
 ---
 
@@ -186,11 +251,14 @@ All optional dependencies are loaded lazily — missing ones cause graceful degr
 - New profiling backends should implement `CaptureBackend` protocol
 - New labelers should implement `LabelerProtocol`
 - Add new public exports to `my_utils/__init__.py`
+- New modules with no external deps (like `step_timer.py`) go into the top-level `my_utils/` package
+- New modules that depend on the profiling subsystem (like `trace_aggregator.py`) go in `my_utils/profiling/`
 
 ### Patterns to Avoid
 - Do not import optional dependencies at module level without a try/except guard
 - Do not use `torch.distributed` in code paths that should work on single-GPU setups
 - Do not add hard synchronization (`torch.cuda.synchronize()`) outside of timer boundaries — it has performance implications
+- Do not use `sys.exit()` inside library code — raise exceptions instead
 
 ---
 
@@ -200,6 +268,7 @@ All optional dependencies are loaded lazily — missing ones cause graceful degr
 |----------|--------|--------|
 | `rank_<rank>.log` | Text | `GlobalLogger` |
 | `profile_rank_<rank>.csv` | CSV (START/END rows) | `GlobalLogger` |
+| `merged_trace.json` | Chrome Trace JSON | `TraceAggregator` |
 | `<prefix>_trace.json` | Chrome trace | `ProfilerWrapper` |
 | `<prefix>_cuda_time_plot.png` | PNG | `ProfilerWrapper` |
 | `<prefix>_memory_usage_line_chart.png` | PNG | `ProfilerWrapper` |
@@ -245,9 +314,50 @@ No Makefile, CI/CD, or pre-commit hooks are currently configured.
 
 ---
 
-## Known Issues / Notes
+## Known Issues / Improvement Areas
 
-- `CtrlRandom/control_random.py` line ~18: uses `endwith` — should be `endswith` (Python string method)
-- No automated tests exist — be careful when refactoring core utilities
-- `DITProfiler.py` (`FlexibleProfiler`) uses regex-based operation type detection — review `PROFILE_TASK_TYPES` env var when debugging unexpected profiling behavior
-- Mixed English/Chinese documentation throughout — both are intentional and acceptable
+### Bugs Fixed
+- `CtrlRandom/control_random.py`: `endwith` typo fixed to `endswith`; `load_random` key mismatch also fixed (was looking up `"tag.pt"` but dict stored under `"tag"`)
+
+### Remaining Known Issues
+- `profilerwrapper.py` line 29: `dist.get_rank()` called unconditionally at init — will crash if `torch.distributed` is not initialized; consider making rank optional
+- `profilerwrapper.py` line 135: `sys.exit(1)` inside `record_function()` — kills the training process on OOM; should raise instead
+- `moduleProfiler.py` line 73: `torch.cuda.synchronize()` is a hard serialization point; use CUDA events for async timing
+- `pad.py`: Megatron dependency not guarded with `try/except`; crashes on import if megatron is not installed
+- `etcd_utils.py`: etcd host/port is hardcoded with no env var override
+- `DITProfiler.py` line 110: `re.match()` only matches at string start; should use `re.search()` for substring matching
+
+### Missing Features (Future Work)
+| Area | Gap | Suggested approach |
+|------|-----|--------------------|
+| Distributed tracing | No automatic collective communication tracing | Hook `dist.all_reduce` etc. via `MethodPatcher` |
+| Bottleneck detection | No compute/communication imbalance analysis | Analyze `MyTimer` CSV: compare compute vs comm event durations |
+| Real-time monitoring | No live dashboard | Integrate with TensorBoard `SummaryWriter` |
+| Log rotation | `GlobalLogger` CSV can grow unboundedly | Add `max_size_mb` / `rotate_every_n_steps` option |
+| Async profiling | All profiling hooks are synchronous | Offload write I/O to a background thread |
+| Distributed aggregation | `StepTimer` and `MyTimer` stats are per-process | Add `aggregate_from_ranks()` using `dist.all_gather` |
+
+---
+
+## Module Dependency Map
+
+```
+my_utils (public API)
+├── step_timer.py          ← zero deps (stdlib only)
+├── logger.py              ← stdlib only
+├── utils.py               ← torch, numpy
+├── nvtx_utils.py          ← optional: nvtx, torch.cuda.nvtx
+├── clockSyncUtils.py      ← torch.distributed OR socket (no dist)
+├── dump_utils.py          ← torch, optional: tensordict
+├── module_hook.py         ← torch
+├── moduleProfiler.py      ← torch, optional: pandas
+├── profilerwrapper.py     ← torch, matplotlib, torch.distributed
+├── gpu_mem_tracker.py     ← torch, optional: pynvml, matplotlib
+├── memory_snapshot.py     ← torch (private API)
+├── DITProfiler.py         ← torch (regex-based)
+└── profiling/
+    ├── trace_aggregator.py ← stdlib only (json, glob, re)
+    ├── ProfileManager.py  ← yaml, torch
+    ├── capture_controller.py ← torch, nvtx_utils
+    └── backends.py        ← torch.cuda
+```

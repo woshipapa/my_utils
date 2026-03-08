@@ -40,7 +40,10 @@ from .profiling import (
     build_nsys_launch_prefix,
     get_profiling_templates_dir,
     get_profiling_template_path,
+    TraceAggregator,
+    RankStat,
 )
+from .step_timer import StepTimer, StepStats, AnomalyRecord
 from .nvtx_utils import (
     LabelerProtocol,
     NoOpLabeler,
@@ -106,6 +109,11 @@ __all__ = [
     "create_labeler",
     "MethodPatchHandle",
     "MethodPatcher",
+    "TraceAggregator",
+    "RankStat",
+    "StepTimer",
+    "StepStats",
+    "AnomalyRecord",
 ]
 
 # Optional exports: keep import-time dependencies minimal for base install.
