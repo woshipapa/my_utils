@@ -509,6 +509,256 @@ def _build_builtin_skills(schema: NsightSchema) -> Dict[str, SqlSkill]:
                 tags=["thread", "cpu", "utilization"],
             )
 
+    # 12) Memcpy bandwidth analysis
+    if schema.table_exists(memcpy_table):
+        bw_bytes_col = schema.resolve_column(memcpy_table, ("bytes", "srcSize", "numBytes"))
+        bw_ck_col = schema.resolve_column(memcpy_table, ("copyKind",))
+        bw_dev_col = schema.resolve_column(memcpy_table, ("deviceId",))
+        bw_start_col = schema.resolve_column(memcpy_table, ("start",))
+        bw_end_col = schema.resolve_column(memcpy_table, ("end",))
+        if bw_bytes_col and bw_ck_col and bw_start_col and bw_end_col:
+            bw_device_where = ""
+            if bw_dev_col:
+                bw_device_where = f" AND ({{device_id}} < 0 OR m.{_ident(bw_dev_col)} = {{device_id}})"
+            skill_map["memcpy_bandwidth_analysis"] = SqlSkill(
+                name="memcpy_bandwidth_analysis",
+                title="Memcpy Bandwidth Analysis",
+                description="Aggregate memcpy bandwidth (GB/s) by copyKind direction (H2D/D2H/D2D).",
+                category="memory",
+                sql=(
+                    f"SELECT m.{_ident(bw_ck_col)} AS copy_kind, "
+                    "COUNT(*) AS count, "
+                    f"ROUND(SUM(m.{_ident(bw_bytes_col)}) / 1.0e9, 3) AS total_gb, "
+                    f"ROUND(SUM(m.[{_ident(bw_end_col)}] - m.{_ident(bw_start_col)}) / 1.0e6, 3) AS total_ms, "
+                    f"ROUND(CAST(SUM(m.{_ident(bw_bytes_col)}) AS REAL) / "
+                    f"NULLIF(SUM(m.[{_ident(bw_end_col)}] - m.{_ident(bw_start_col)}), 0), 3) AS avg_gbps, "
+                    f"ROUND(MIN(CAST(m.{_ident(bw_bytes_col)} AS REAL) / "
+                    f"NULLIF(m.[{_ident(bw_end_col)}] - m.{_ident(bw_start_col)}, 0)), 3) AS min_gbps, "
+                    f"ROUND(MAX(CAST(m.{_ident(bw_bytes_col)} AS REAL) / "
+                    f"NULLIF(m.[{_ident(bw_end_col)}] - m.{_ident(bw_start_col)}, 0)), 3) AS max_gbps "
+                    f"FROM {memcpy_table} m "
+                    "WHERE 1=1 "
+                    f"{bw_device_where} "
+                    f"GROUP BY m.{_ident(bw_ck_col)} "
+                    "ORDER BY total_ms DESC"
+                ),
+                params=[
+                    SqlSkillParam("device_id", "CUDA deviceId, -1 means all devices", "int", False, -1),
+                ],
+                tags=["memcpy", "bandwidth", "pcie", "nvlink", "memory"],
+            )
+
+    # 13) Sync breakdown
+    if schema.sync_table and schema.table_exists(schema.sync_table):
+        sync_tbl = _ident(schema.sync_table)
+        sync_type_col = schema.resolve_column(sync_tbl, ("syncType", "type"))
+        sync_start_col = schema.resolve_column(sync_tbl, ("start",))
+        sync_end_col = schema.resolve_column(sync_tbl, ("end",))
+        sync_dev_col = schema.resolve_column(sync_tbl, ("deviceId",))
+        if sync_type_col and sync_start_col and sync_end_col:
+            sync_device_where = ""
+            if sync_dev_col:
+                sync_device_where = f" AND ({{device_id}} < 0 OR s.{_ident(sync_dev_col)} = {{device_id}})"
+            skill_map["sync_breakdown"] = SqlSkill(
+                name="sync_breakdown",
+                title="Sync Breakdown",
+                description="Aggregate CUDA synchronization events by type, reporting count and overhead.",
+                category="pipeline",
+                sql=(
+                    f"SELECT s.{_ident(sync_type_col)} AS sync_type, "
+                    "COUNT(*) AS count, "
+                    f"ROUND(SUM(s.[{_ident(sync_end_col)}] - s.{_ident(sync_start_col)}) / 1e6, 3) AS total_ms, "
+                    f"ROUND(AVG(s.[{_ident(sync_end_col)}] - s.{_ident(sync_start_col)}) / 1e6, 3) AS avg_ms, "
+                    f"ROUND(MAX(s.[{_ident(sync_end_col)}] - s.{_ident(sync_start_col)}) / 1e6, 3) AS max_ms "
+                    f"FROM {sync_tbl} s "
+                    "WHERE 1=1 "
+                    f"{sync_device_where} "
+                    f"GROUP BY s.{_ident(sync_type_col)} "
+                    "ORDER BY total_ms DESC "
+                    "LIMIT {limit}"
+                ),
+                params=[
+                    SqlSkillParam("device_id", "CUDA deviceId, -1 means all devices", "int", False, -1),
+                    SqlSkillParam("limit", "max rows", "int", False, 50),
+                ],
+                tags=["sync", "synchronization", "overhead", "pipeline"],
+            )
+
+    # 14) Memset breakdown
+    if schema.memset_table and schema.table_exists(schema.memset_table):
+        memset_tbl = _ident(schema.memset_table)
+        memset_bytes_col = schema.resolve_column(memset_tbl, ("bytes", "numBytes"))
+        memset_value_col = schema.resolve_column(memset_tbl, ("value",))
+        memset_start_col = schema.resolve_column(memset_tbl, ("start",))
+        memset_end_col = schema.resolve_column(memset_tbl, ("end",))
+        memset_dev_col = schema.resolve_column(memset_tbl, ("deviceId",))
+        if memset_bytes_col and memset_start_col and memset_end_col:
+            memset_device_where = ""
+            if memset_dev_col:
+                memset_device_where = f" AND ({{device_id}} < 0 OR ms.{_ident(memset_dev_col)} = {{device_id}})"
+            if memset_value_col:
+                value_select = f"ms.{_ident(memset_value_col)} AS fill_value, "
+                group_by_expr = f"ms.{_ident(memset_value_col)}"
+            else:
+                value_select = ""
+                group_by_expr = "'all'"
+            skill_map["memset_breakdown"] = SqlSkill(
+                name="memset_breakdown",
+                title="Memset Breakdown",
+                description="Aggregate memset ops by fill value (0=zero-init vs custom fill), reporting bytes and bandwidth.",
+                category="memory",
+                sql=(
+                    f"SELECT {value_select}"
+                    "COUNT(*) AS count, "
+                    f"ROUND(SUM(ms.{_ident(memset_bytes_col)}) / 1.0e9, 3) AS total_gb, "
+                    f"ROUND(SUM(ms.[{_ident(memset_end_col)}] - ms.{_ident(memset_start_col)}) / 1e6, 3) AS total_ms, "
+                    f"ROUND(CAST(SUM(ms.{_ident(memset_bytes_col)}) AS REAL) / "
+                    f"NULLIF(SUM(ms.[{_ident(memset_end_col)}] - ms.{_ident(memset_start_col)}), 0), 3) AS avg_gbps "
+                    f"FROM {memset_tbl} ms "
+                    "WHERE 1=1 "
+                    f"{memset_device_where} "
+                    f"GROUP BY {group_by_expr} "
+                    "ORDER BY total_ms DESC "
+                    "LIMIT {limit}"
+                ),
+                params=[
+                    SqlSkillParam("device_id", "CUDA deviceId, -1 means all devices", "int", False, -1),
+                    SqlSkillParam("limit", "max rows", "int", False, 20),
+                ],
+                tags=["memset", "zero-init", "memory", "overhead"],
+            )
+
+    # 15) Kernel occupancy estimate
+    occ_block_x = schema.resolve_column(kernel_table, ("blockX",))
+    occ_block_y = schema.resolve_column(kernel_table, ("blockY",))
+    occ_block_z = schema.resolve_column(kernel_table, ("blockZ",))
+    occ_reg_col = schema.resolve_column(kernel_table, ("registersPerThread",))
+    occ_static_smem = schema.resolve_column(kernel_table, ("staticSharedMemory",))
+    occ_dyn_smem = schema.resolve_column(kernel_table, ("dynamicSharedMemory",))
+    if occ_block_x and occ_block_y and occ_block_z:
+        if occ_static_smem and occ_dyn_smem:
+            occ_shared_expr = f"k.{_ident(occ_static_smem)} + k.{_ident(occ_dyn_smem)}"
+        elif occ_static_smem:
+            occ_shared_expr = f"k.{_ident(occ_static_smem)}"
+        elif occ_dyn_smem:
+            occ_shared_expr = f"k.{_ident(occ_dyn_smem)}"
+        else:
+            occ_shared_expr = "0"
+        occ_reg_select = f"k.{_ident(occ_reg_col)} AS registersPerThread, " if occ_reg_col else ""
+        occ_tpb_expr = f"k.{_ident(occ_block_x)} * k.{_ident(occ_block_y)} * k.{_ident(occ_block_z)}"
+        skill_map["kernel_occupancy_estimate"] = SqlSkill(
+            name="kernel_occupancy_estimate",
+            title="Kernel Occupancy Estimate",
+            description="Estimate theoretical SM occupancy from launch configuration (threads/block, registers, shared mem).",
+            category="compute",
+            sql=(
+                f"SELECT {name_expr} AS kernel_name, "
+                f"{occ_tpb_expr} AS threads_per_block, "
+                f"{occ_reg_select}"
+                f"({occ_shared_expr}) AS total_shared_bytes, "
+                "COUNT(*) AS invocations, "
+                f"ROUND(100.0 * MIN(64, ({occ_tpb_expr} + 31) / 32 * 4) / 64.0, 1) AS occupancy_pct_estimate "
+                f"FROM {kernel_table} k "
+                f"{name_join} "
+                "WHERE 1=1 "
+                f"{kernel_where_device} "
+                f"GROUP BY {name_expr} "
+                "ORDER BY invocations DESC "
+                "LIMIT {limit}"
+            ),
+            params=[
+                SqlSkillParam("device_id", "CUDA deviceId, -1 means all devices", "int", False, -1),
+                SqlSkillParam("limit", "max rows", "int", False, 30),
+            ],
+            tags=["occupancy", "compute", "launch_config", "register", "shared_memory"],
+        )
+
+    # 16) Stream parallelism
+    if stream_col:
+        sp_device_where = ""
+        if device_col:
+            sp_device_where = f" AND ({{device_id}} < 0 OR k.{_ident(device_col)} = {{device_id}})"
+        skill_map["stream_parallelism"] = SqlSkill(
+            name="stream_parallelism",
+            title="Stream Parallelism",
+            description="Analyze concurrent stream utilization via time-bucket approach — exposes whether multi-stream overlap is happening.",
+            category="pipeline",
+            sql=(
+                "WITH kernel_buckets AS ( "
+                f"  SELECT (k.{_ident(start_col)} / {{bucket_ns}}) AS bucket, "
+                f"         k.{_ident(stream_col)} AS stream_id "
+                f"  FROM {kernel_table} k "
+                "  WHERE 1=1 "
+                f"  {sp_device_where} "
+                "), "
+                "bucket_streams AS ( "
+                "  SELECT bucket, COUNT(DISTINCT stream_id) AS concurrent_streams "
+                "  FROM kernel_buckets "
+                "  GROUP BY bucket "
+                ") "
+                "SELECT "
+                "  MAX(concurrent_streams) AS max_concurrent_streams, "
+                "  ROUND(AVG(CAST(concurrent_streams AS REAL)), 2) AS avg_concurrent_streams, "
+                "  COUNT(*) AS total_buckets, "
+                "  SUM(CASE WHEN concurrent_streams > 1 THEN 1 ELSE 0 END) AS multi_stream_buckets, "
+                "  ROUND(100.0 * SUM(CASE WHEN concurrent_streams > 1 THEN 1 ELSE 0 END) / MAX(1, COUNT(*)), 1) AS pct_time_multi_stream "
+                "FROM bucket_streams"
+            ),
+            params=[
+                SqlSkillParam("device_id", "CUDA deviceId, -1 means all devices", "int", False, -1),
+                SqlSkillParam("bucket_ns", "time bucket size in nanoseconds", "int", False, 1_000_000),
+            ],
+            tags=["stream", "parallelism", "concurrent", "pipeline", "overlap"],
+        )
+
+    # 17) NVTX memcpy breakdown (per-phase data movement)
+    if schema.table_exists(nvtx_table) and schema.table_exists(memcpy_table):
+        nm_nvtx_start = schema.resolve_column(nvtx_table, ("start",))
+        nm_nvtx_end = schema.resolve_column(nvtx_table, ("end",))
+        nm_bytes_col = schema.resolve_column(memcpy_table, ("bytes", "srcSize", "numBytes"))
+        nm_mc_start = schema.resolve_column(memcpy_table, ("start",))
+        nm_mc_end = schema.resolve_column(memcpy_table, ("end",))
+        nm_ck_col = schema.resolve_column(memcpy_table, ("copyKind",))
+        if nm_nvtx_start and nm_nvtx_end and nm_bytes_col and nm_mc_start and nm_mc_end:
+            nm_text_expr = "n.text"
+            nm_nvtx_join = ""
+            if string_table:
+                nm_text_id = schema.resolve_column(nvtx_table, ("textId", "nameId"))
+                if nm_text_id:
+                    nm_nvtx_join = f" LEFT JOIN {_ident(string_table)} s_n ON n.{_ident(nm_text_id)} = s_n.id "
+                    nm_text_expr = "COALESCE(n.text, s_n.value)"
+            nm_ck_select = f"m.{_ident(nm_ck_col)} AS copy_kind, " if nm_ck_col else ""
+            nm_ck_group = f", m.{_ident(nm_ck_col)}" if nm_ck_col else ""
+            skill_map["nvtx_memcpy_breakdown"] = SqlSkill(
+                name="nvtx_memcpy_breakdown",
+                title="NVTX Memcpy Breakdown",
+                description="Aggregate memcpy bytes and duration within each NVTX range to identify per-phase data movement.",
+                category="memory",
+                sql=(
+                    f"SELECT {nm_text_expr} AS nvtx_text, "
+                    f"{nm_ck_select}"
+                    "COUNT(*) AS memcpy_count, "
+                    f"ROUND(SUM(m.{_ident(nm_bytes_col)}) / 1.0e9, 3) AS total_gb, "
+                    f"ROUND(SUM(m.[{_ident(nm_mc_end)}] - m.{_ident(nm_mc_start)}) / 1e6, 3) AS total_ms, "
+                    f"ROUND(CAST(SUM(m.{_ident(nm_bytes_col)}) AS REAL) / "
+                    f"NULLIF(SUM(m.[{_ident(nm_mc_end)}] - m.{_ident(nm_mc_start)}), 0), 3) AS avg_gbps "
+                    f"FROM {nvtx_table} n "
+                    f"{nm_nvtx_join} "
+                    f"JOIN {memcpy_table} m "
+                    f"  ON m.{_ident(nm_mc_start)} >= n.{_ident(nm_nvtx_start)} "
+                    f"  AND m.[{_ident(nm_mc_end)}] <= n.[{_ident(nm_nvtx_end)}] "
+                    f"WHERE {nm_text_expr} IS NOT NULL "
+                    f"AND n.[{_ident(nm_nvtx_end)}] > n.{_ident(nm_nvtx_start)} "
+                    f"GROUP BY {nm_text_expr}{nm_ck_group} "
+                    "ORDER BY total_ms DESC "
+                    "LIMIT {limit}"
+                ),
+                params=[
+                    SqlSkillParam("limit", "max rows", "int", False, 50),
+                ],
+                tags=["nvtx", "memcpy", "bandwidth", "phase", "memory"],
+            )
+
     return skill_map
 
 
@@ -838,3 +1088,128 @@ class NsysSqlSkillEngine:
             top_level_only=top_level_only,
             limit=limit,
         )
+
+    def analyze_per_iteration_overlap(
+        self,
+        *,
+        marker: str = "sample_0",
+        device_id: int = -1,
+        start_ns: int = -1,
+        end_ns: int = -1,
+        top_level_only: bool = True,
+        limit: int = 2000,
+    ) -> List[Dict[str, object]]:
+        """Per-iteration compute/comm/overlap breakdown.
+
+        Returns one dict per iteration with fields from detect_iterations() extended by:
+        compute_ms, comm_ms, overlap_ms, comm_pct, kernel_count.
+        """
+        iterations = self.detect_iterations(
+            marker=marker,
+            device_id=device_id,
+            start_ns=start_ns,
+            end_ns=end_ns,
+            top_level_only=top_level_only,
+            limit=limit,
+        )
+        result: List[Dict[str, object]] = []
+        for it in iterations:
+            it_start = int(it.get("start_ns") or 0)
+            it_end = int(it.get("end_ns") or 0)
+            if it_end <= it_start:
+                continue
+            triples = self._fetch_minimal_kernel_intervals(
+                device_id=device_id,
+                start_ns=it_start,
+                end_ns=it_end,
+            )
+            compute_iv: List[Tuple[int, int]] = []
+            comm_iv: List[Tuple[int, int]] = []
+            for s, e, name in triples:
+                if _is_nccl_kernel(name):
+                    comm_iv.append((s, e))
+                else:
+                    compute_iv.append((s, e))
+            compute_m = _merge_intervals(compute_iv)
+            comm_m = _merge_intervals(comm_iv)
+            compute_ns_val = _covered_ns(compute_m)
+            comm_ns_val = _covered_ns(comm_m)
+            overlap_ns_val = _intersection_coverage_ns(compute_m, comm_m)
+            total_active_ns = compute_ns_val + comm_ns_val - overlap_ns_val
+            entry = dict(it)
+            entry.update({
+                "compute_ms": round(compute_ns_val / 1e6, 3),
+                "comm_ms": round(comm_ns_val / 1e6, 3),
+                "overlap_ms": round(overlap_ns_val / 1e6, 3),
+                "comm_pct": round(100.0 * comm_ns_val / total_active_ns, 2) if total_active_ns > 0 else 0.0,
+                "kernel_count": len(triples),
+            })
+            result.append(entry)
+        return result
+
+    def detect_iteration_outliers(
+        self,
+        *,
+        marker: str = "sample_0",
+        device_id: int = -1,
+        threshold_sigma: float = 2.0,
+        limit: int = 2000,
+    ) -> Dict[str, object]:
+        """Statistical outlier detection on iteration durations.
+
+        Returns:
+            {
+                "stats": {count, mean_ms, median_ms, std_ms, p95_ms, p99_ms},
+                "outliers": [{iteration, duration_ms, deviation_sigma}, ...]
+            }
+        """
+        iterations = self.detect_iterations(
+            marker=marker,
+            device_id=device_id,
+            start_ns=-1,
+            end_ns=-1,
+            top_level_only=True,
+            limit=limit,
+        )
+        durations = [
+            float(it.get("duration_ms") or 0)
+            for it in iterations
+            if (it.get("duration_ms") or 0) > 0
+        ]
+        if not durations:
+            return {"stats": {}, "outliers": []}
+
+        n = len(durations)
+        mean = sum(durations) / n
+        sorted_d = sorted(durations)
+        if n % 2 == 0:
+            median = (sorted_d[n // 2 - 1] + sorted_d[n // 2]) / 2.0
+        else:
+            median = sorted_d[n // 2]
+        variance = sum((x - mean) ** 2 for x in durations) / max(1, n - 1)
+        std = variance ** 0.5
+        p95 = sorted_d[min(int(0.95 * n), n - 1)]
+        p99 = sorted_d[min(int(0.99 * n), n - 1)]
+
+        stats: Dict[str, object] = {
+            "count": n,
+            "mean_ms": round(mean, 3),
+            "median_ms": round(median, 3),
+            "std_ms": round(std, 3),
+            "p95_ms": round(p95, 3),
+            "p99_ms": round(p99, 3),
+        }
+
+        outliers: List[Dict[str, object]] = []
+        for i, it in enumerate(iterations):
+            d = float(it.get("duration_ms") or 0)
+            if d <= 0:
+                continue
+            sigma = abs(d - median) / std if std > 0 else 0.0
+            if sigma > threshold_sigma:
+                outliers.append({
+                    "iteration": i,
+                    "duration_ms": round(d, 3),
+                    "deviation_sigma": round(sigma, 3),
+                })
+        return {"stats": stats, "outliers": outliers}
