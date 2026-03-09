@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import html
 from pathlib import Path
 from typing import Dict, List
@@ -9,10 +10,10 @@ from .nsys_sqlite_provider import NsysSqliteMetricsProvider
 
 
 def _color_for_name(name: str) -> str:
-    seed = sum(ord(ch) for ch in (name or ""))
-    r = 70 + (seed * 37) % 130
-    g = 70 + (seed * 53) % 130
-    b = 70 + (seed * 71) % 130
+    digest = int(hashlib.md5((name or "").encode(), usedforsecurity=False).hexdigest(), 16)
+    r = 70 + (digest >> 16 & 0xFF) * 130 // 255
+    g = 70 + (digest >> 8 & 0xFF) * 130 // 255
+    b = 70 + (digest & 0xFF) * 130 // 255
     return f"rgb({r},{g},{b})"
 
 
