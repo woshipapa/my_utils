@@ -1,0 +1,82 @@
+{
+  "base_path": "tmp_trace_demo\\run_pretrain\\analysis_report.json",
+  "target_path": "tmp_trace_demo\\run_inference\\analysis_report.json",
+  "summary_delta": {
+    "metric_count": {
+      "base": 4,
+      "target": 4,
+      "delta": 0
+    },
+    "rank_count": {
+      "base": 2,
+      "target": 2,
+      "delta": 0
+    },
+    "step_count": {
+      "base": 4,
+      "target": 4,
+      "delta": 0
+    },
+    "step_max": {
+      "base": 3,
+      "target": 3,
+      "delta": 0
+    },
+    "step_min": {
+      "base": 0,
+      "target": 0,
+      "delta": 0
+    },
+    "total_events": {
+      "base": 40,
+      "target": 40,
+      "delta": 0
+    },
+    "workload_profile": {
+      "base": "pretrain",
+      "target": "inference"
+    }
+  },
+  "finding_delta": {
+    "total": {
+      "base": 4,
+      "target": 1,
+      "delta": -3
+    },
+    "by_type": {
+      "bottleneck": {
+        "base": 1,
+        "target": 1,
+        "delta": 0
+      },
+      "communication": {
+        "base": 1,
+        "target": 0,
+        "delta": -1
+      },
+      "distributed": {
+        "base": 1,
+        "target": 0,
+        "delta": -1
+      },
+      "memory": {
+        "base": 1,
+        "target": 0,
+        "delta": -1
+      }
+    }
+  },
+  "recommendation_delta": {
+    "added": [],
+    "removed": [
+      "Align NCCL timeline with skewed stages to identify communication head-of-line blocking.",
+      "Check tensor partitioning and collective payload balance across ranks.",
+      "Check tensor/loss/history caches and stale references causing monotonic memory growth.",
+      "Correlate memory growth steps with dataloader or optimizer state transitions.",
+      "Inspect straggler ranks with NSYS communication traces and NIC metrics.",
+      "Investigate straggler ranks and rebalance uneven stage workloads."
+    ],
+    "unchanged_count": 2
+  },
+  "score_delta": 30.0
+}

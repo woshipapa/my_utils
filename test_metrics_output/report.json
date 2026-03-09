@@ -1,0 +1,56 @@
+{
+  "generated_at": "2026-03-08T15:12:53.373939+00:00",
+  "summary": {
+    "total_events": 50,
+    "providers": [
+      "external_csv",
+      "ncu_csv",
+      "synthetic_train"
+    ]
+  },
+  "findings": [
+    {
+      "finding_type": "bottleneck",
+      "severity": "high",
+      "title": "Latency Bottlenecks Detected",
+      "description": "Detected 2 latency bottlenecks above 10%.",
+      "data": {
+        "bottlenecks": [
+          {
+            "name": "latency.stage:backward",
+            "share_percent": 56.88987760663486,
+            "avg_value": 31.384596250552807,
+            "unit": "ms",
+            "sample_count": 10
+          },
+          {
+            "name": "latency.stage:forward",
+            "share_percent": 35.695563913682385,
+            "avg_value": 19.69227054965695,
+            "unit": "ms",
+            "sample_count": 10
+          }
+        ],
+        "total_latency_ms": 551.6727680020977
+      }
+    },
+    {
+      "finding_type": "memory",
+      "severity": "info",
+      "title": "Memory Profile",
+      "description": "Memory metrics collected.",
+      "data": {
+        "peak_bytes": {
+          "memory.gpu.allocated": 8662513128.0
+        },
+        "growth_warnings": [],
+        "growth_threshold_bytes_per_step": 10485760.0
+      }
+    }
+  ],
+  "recommendations": [
+    "Use operator-level tracing (torch.profiler or Nsight) on top bottleneck groups for root-cause isolation.",
+    "Correlate memory peaks with stage/op tags and verify whether growth is monotonic across steps."
+  ],
+  "metadata": {}
+}

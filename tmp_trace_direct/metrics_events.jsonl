@@ -1,0 +1,2 @@
+{"timestamp": 1000.0, "name": "latency.stage", "value": 10.0, "unit": "ms", "provider_id": "ut", "tags": {"rank": "0", "step": "1", "stage": "fwd"}, "attributes": {}, "parent_id": null, "node_id": null, "event_id": null, "schema_version": "1.0"}
+{"timestamp": 1000.1, "name": "latency.stage", "value": 11.0, "unit": "ms", "provider_id": "ut", "tags": {"rank": "1", "step": "1", "stage": "fwd"}, "attributes": {}, "parent_id": null, "node_id": null, "event_id": null, "schema_version": "1.0"}

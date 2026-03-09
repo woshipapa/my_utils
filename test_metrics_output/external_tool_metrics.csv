@@ -1,0 +1,11 @@
+op_name,latency_ms,step
+dataloader.next_batch,4.7564,0
+dataloader.next_batch,3.5097,1
+dataloader.next_batch,4.7210,2
+dataloader.next_batch,4.3730,3
+dataloader.next_batch,4.4964,4
+dataloader.next_batch,3.5401,5
+dataloader.next_batch,3.9499,6
+dataloader.next_batch,4.3006,7
+dataloader.next_batch,3.7380,8
+dataloader.next_batch,3.5190,9

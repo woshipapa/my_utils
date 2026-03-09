@@ -1,0 +1,63 @@
+{
+  "generated_at": "2026-03-08T16:48:23.422323+00:00",
+  "summary": {
+    "total_events": 50,
+    "providers": [
+      "external_csv",
+      "synthetic_dist"
+    ],
+    "metric_count": 4,
+    "workload_profile": "inference",
+    "rank_count": 2,
+    "step_min": 0,
+    "step_max": 4,
+    "step_count": 5
+  },
+  "findings": [
+    {
+      "finding_type": "bottleneck",
+      "severity": "high",
+      "title": "Latency Bottlenecks Detected",
+      "description": "2 groups exceed share threshold 10%.",
+      "data": {
+        "threshold": 0.1,
+        "total_latency_ms": 699.6345374594458,
+        "bottlenecks": [
+          {
+            "name": "latency.stage:backward",
+            "share_percent": 55.15698377874708,
+            "avg_value": 38.58973083370187,
+            "unit": "ms",
+            "sample_count": 10
+          },
+          {
+            "name": "latency.stage:forward",
+            "share_percent": 38.97635329905847,
+            "avg_value": 27.26920291224271,
+            "unit": "ms",
+            "sample_count": 10
+          }
+        ]
+      },
+      "finding_id": "latency_bottleneck"
+    }
+  ],
+  "recommendations": [
+    "Drill down top bottleneck groups with torch.profiler/Nsight kernel traces.",
+    "Align bottleneck stages with rank skew and communication overlap before optimization."
+  ],
+  "metadata": {
+    "workload_profile": "inference",
+    "rules": [
+      "latency_bottleneck",
+      "latency_variance",
+      "latency_outlier",
+      "gpu_utilization"
+    ],
+    "severity_counts": {
+      "high": 1
+    }
+  },
+  "schema_version": "1.0",
+  "overall_score": 80.0
+}

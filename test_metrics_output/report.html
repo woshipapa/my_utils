@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Profiling Analysis Report</title>
+  <style>
+    :root {
+      --bg: #f6f8fb;
+      --card: #ffffff;
+      --text: #11203a;
+      --muted: #4f607d;
+      --warn: #c67a00;
+      --high: #bb2f2f;
+      --info: #2f6dbb;
+      --border: #dbe2ee;
+    }
+    body { margin: 0; font-family: 'Segoe UI', 'Noto Sans', sans-serif; background: var(--bg); color: var(--text); }
+    main { max-width: 980px; margin: 24px auto; padding: 0 16px; }
+    .card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 16px; margin-bottom: 16px; }
+    .finding { border-top: 1px solid var(--border); padding-top: 12px; margin-top: 12px; }
+    .sev { padding: 2px 8px; border-radius: 999px; font-size: 12px; }
+    .sev-warning { background: #fff3d0; color: var(--warn); }
+    .sev-high { background: #ffe0df; color: var(--high); }
+    .sev-info { background: #dfeeff; color: var(--info); }
+    pre { white-space: pre-wrap; background: #f4f6fb; padding: 8px; border-radius: 8px; }
+  </style>
+</head>
+<body>
+  <main>
+    <section class="card">
+      <h1>Profiling Analysis Report</h1>
+      <p><b>Generated:</b> 2026-03-08T15:12:53.373939+00:00</p>
+      <h2>Summary</h2>
+      <ul><li><b>total_events</b>: 50</li><li><b>providers</b>: [&#x27;external_csv&#x27;, &#x27;ncu_csv&#x27;, &#x27;synthetic_train&#x27;]</li></ul>
+    </section>
+    <section class="card">
+      <h2>Findings</h2>
+      <div class='finding'><h3>Latency Bottlenecks Detected <span class='sev sev-high'>HIGH</span></h3><p><b>Type:</b> bottleneck</p><p>Detected 2 latency bottlenecks above 10%.</p><pre>{
+  &quot;bottlenecks&quot;: [
+    {
+      &quot;name&quot;: &quot;latency.stage:backward&quot;,
+      &quot;share_percent&quot;: 56.88987760663486,
+      &quot;avg_value&quot;: 31.384596250552807,
+      &quot;unit&quot;: &quot;ms&quot;,
+      &quot;sample_count&quot;: 10
+    },
+    {
+      &quot;name&quot;: &quot;latency.stage:forward&quot;,
+      &quot;share_percent&quot;: 35.695563913682385,
+      &quot;avg_value&quot;: 19.69227054965695,
+      &quot;unit&quot;: &quot;ms&quot;,
+      &quot;sample_count&quot;: 10
+    }
+  ],
+  &quot;total_latency_ms&quot;: 551.6727680020977
+}</pre></div><div class='finding'><h3>Memory Profile <span class='sev sev-info'>INFO</span></h3><p><b>Type:</b> memory</p><p>Memory metrics collected.</p><pre>{
+  &quot;peak_bytes&quot;: {
+    &quot;memory.gpu.allocated&quot;: 8662513128.0
+  },
+  &quot;growth_warnings&quot;: [],
+  &quot;growth_threshold_bytes_per_step&quot;: 10485760.0
+}</pre></div>
+    </section>
+    <section class="card">
+      <h2>Recommendations</h2>
+      <ul><li>Use operator-level tracing (torch.profiler or Nsight) on top bottleneck groups for root-cause isolation.</li><li>Correlate memory peaks with stage/op tags and verify whether growth is monotonic across steps.</li></ul>
+    </section>
+  </main>
+</body>
+</html>

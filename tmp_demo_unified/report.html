@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Profiling Analysis Report</title>
+  <style>
+    :root {
+      --bg: #f4f7fb;
+      --card: #ffffff;
+      --text: #14233a;
+      --muted: #5a6e8d;
+      --warn: #b26a00;
+      --high: #b42f2f;
+      --info: #2a6ec4;
+      --border: #d8e1f0;
+    }
+    body { margin: 0; font-family: "Segoe UI", "Noto Sans", sans-serif; background: var(--bg); color: var(--text); }
+    main { max-width: 1080px; margin: 24px auto; padding: 0 16px; }
+    .card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 16px; margin-bottom: 16px; }
+    .finding { border-top: 1px solid var(--border); padding-top: 12px; margin-top: 12px; }
+    .sev { padding: 2px 8px; border-radius: 999px; font-size: 12px; }
+    .sev-warning { background: #fff2d9; color: var(--warn); }
+    .sev-high { background: #ffe0df; color: var(--high); }
+    .sev-info { background: #dfeeff; color: var(--info); }
+    pre { white-space: pre-wrap; background: #f2f5fb; padding: 8px; border-radius: 8px; }
+  </style>
+</head>
+<body>
+  <main>
+    <section class="card">
+      <h1>Profiling Analysis Report</h1>
+      <p><b>Generated:</b> 2026-03-08T16:48:23.395512+00:00</p>
+      <p><b>Schema:</b> 1.0</p>
+      <p><b>Overall Score:</b> 77.0</p>
+      <h2>Summary</h2>
+      <ul><li><b>total_events</b>: 25</li><li><b>providers</b>: [&#x27;external_csv&#x27;, &#x27;ncu_csv&#x27;, &#x27;synthetic_train&#x27;]</li><li><b>metric_count</b>: 4</li><li><b>workload_profile</b>: default</li><li><b>rank_count</b>: 0</li><li><b>step_min</b>: 0</li><li><b>step_max</b>: 4</li><li><b>step_count</b>: 5</li></ul>
+    </section>
+    <section class="card">
+      <h2>Findings</h2>
+      <div class='finding'><h3>Latency Bottlenecks Detected <span class='sev sev-high'>HIGH</span></h3><p><b>Type:</b> bottleneck</p><p>2 groups exceed share threshold 10%.</p><pre>{
+  &quot;threshold&quot;: 0.1,
+  &quot;total_latency_ms&quot;: 282.09227880320987,
+  &quot;bottlenecks&quot;: [
+    {
+      &quot;name&quot;: &quot;latency.stage:backward&quot;,
+      &quot;share_percent&quot;: 55.90660353765675,
+      &quot;avg_value&quot;: 31.541642384170377,
+      &quot;unit&quot;: &quot;ms&quot;,
+      &quot;sample_count&quot;: 5
+    },
+    {
+      &quot;name&quot;: &quot;latency.stage:forward&quot;,
+      &quot;share_percent&quot;: 36.345399922796936,
+      &quot;avg_value&quot;: 20.50551337647159,
+      &quot;unit&quot;: &quot;ms&quot;,
+      &quot;sample_count&quot;: 5
+    }
+  ]
+}</pre></div><div class='finding'><h3>Memory Growth Analysis <span class='sev sev-info'>INFO</span></h3><p><b>Type:</b> memory</p><p>Memory metrics collected.</p><pre>{
+  &quot;growth_threshold_bytes_per_step&quot;: 10485760.0,
+  &quot;growth_items&quot;: [],
+  &quot;peak_bytes&quot;: {
+    &quot;memory.gpu.allocated&quot;: 8622397854.0
+  }
+}</pre></div>
+    </section>
+    <section class="card">
+      <h2>Recommendations</h2>
+      <ul><li>Drill down top bottleneck groups with torch.profiler/Nsight kernel traces.</li><li>Align bottleneck stages with rank skew and communication overlap before optimization.</li></ul>
+    </section>
+  </main>
+</body>
+</html>

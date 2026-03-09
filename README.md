@@ -1,10 +1,10 @@
 # my_utils
 
-PyTorch训练/推理工作流的性能分析、日志记录、追踪和调试工具集�?
-本README按照代码实际行为组织，提供可直接复制的使用模式�?
+PyTorch训练/推理工作流的性能分析、日志记录、追踪和调试工具集�?
+本README按照代码实际行为组织，提供可直接复制的使用模式�?
 ## 安装
 
-从仓库根目录�?
+从仓库根目录�?
 ```bash
 cd my_utils
 pip install -e .
@@ -21,6 +21,129 @@ pip install -e .[profiling,tensordict,etcd,nvml,nvtx,system,megatron]
 ```bash
 pip install -e .[all]
 ```
+
+## Package Layout (Hierarchical)
+
+`my_utils` ?????????? README ???????????????????
+
+- [core](./my_utils/core/README.md): logger/timer/common utils
+- [tracing](./my_utils/tracing/README.md): NVTX labeler and trace helpers
+- [hooks](./my_utils/hooks/README.md): forward/module hooks and module profiler
+- [distributed](./my_utils/distributed/README.md): clock sync, etcd barrier, padding helpers
+- [memory](./my_utils/memory/README.md): memory snapshot / oom / gpu memory tracker
+- [artifacts](./my_utils/artifacts/README.md): dump utils and NCU CSV analyzers
+- [legacy_profilers](./my_utils/legacy_profilers/README.md): DITProfiler / profilerwrapper
+- [profiling](./my_utils/profiling/README.md): unified profiling + metrics framework
+
+??????
+- ??????????? `from my_utils.utils import MyTimer`?`from my_utils.nvtx_utils import create_labeler`?
+- ??????????????? `from my_utils.core.utils import MyTimer`?`from my_utils.tracing.nvtx_utils import create_labeler`?
+- `my_utils/__init__.py` ??? legacy module alias??????????????????
+## 🆕 新功能: 统一 Profiling 系统
+
+> **一键性能分析** - 自动收集、分析、报告，框架无关，开箱即用！
+
+### 核心特性
+
+- ✅ **统一指标收集** - 整合 MyTimer、torch.profiler、CSV、NCU、nsys 等所有数据源
+- ✅ **智能自动分析** - 自动检测瓶颈、内存泄漏、性能异常
+- ✅ **美观HTML报告** - 交互式图表，专业排版，一键生成
+- ✅ **框架无关** - 适用于任何 PyTorch 项目
+- ✅ **零开销禁用** - 关闭时完全无性能影响
+
+### 快速开始 (3 行代码)
+
+```python
+from my_utils.profiling import MetricsCollector, MyTimerMetricsProvider
+
+# 1. 创建 collector
+collector = MetricsCollector(output_dir="./profiling_results")
+collector.register_provider(MyTimerMetricsProvider(your_timer))
+
+# 2. 训练中收集 (每 N 步)
+for step in range(1000):
+    # ... 你的训练代码 ...
+    if step % 100 == 0:
+        collector.collect(step=step)
+
+# 3. 一键生成报告
+report = collector.analyze()
+collector.export_report(fmt="html", report=report)
+print(f"报告: {report.findings}")
+```
+
+### 支持的数据源
+
+| 数据源 | Provider | 说明 |
+|--------|----------|------|
+| MyTimer | `MyTimerMetricsProvider` | CPU/CUDA 计时 |
+| torch.profiler | `TorchProfilerMetricsProvider` | Kernel 级分析 |
+| ModuleProfiler | `ModuleProfilerMetricsProvider` | 模块级分析 |
+| CSV 文件 | `TableCsvMetricsProvider` | 通用 CSV 导入 |
+| NCU 导出 | `NcuCsvMetricsProvider` | NCU 分析 |
+| nsys 数据库 | `NsysSqliteMetricsProvider` | nsys 深度分析 |
+| cProfile | `CProfileStatsProvider` | Python 性能 |
+
+### 自动分析能力
+
+- 🔍 **瓶颈检测** - 自动识别性能热点（>10% 阈值）
+- 💾 **内存分析** - 检测内存泄漏和增长趋势
+- ⚠️ **异常检测** - 3σ 原则检测性能异常值
+- 📊 **变异性分析** - 检测不稳定操作
+- 💡 **优化建议** - 自动生成可操作的改进建议
+
+### 报告格式
+
+- **HTML** - 美观的交互式报告（推荐）
+- **Markdown** - 文本格式报告
+- **JSON** - 机器可读格式
+
+### 文档导航
+
+- 📘 [完整使用指南](./PROFILING_GUIDE.md) - 所有功能详解
+- 🚀 [快速开始指南](./QUICKSTART_PROFILING.md) - 5分钟上手
+- 🔧 [故障排查指南](./TROUBLESHOOTING.md) - 常见问题解决
+- 📊 [改进分析报告](./PROFILING_ANALYSIS_REPORT.md) - 全面评估
+
+### 运行 Demo
+
+```bash
+python -m my_utils.profiling.examples.unified_metrics_demo --steps 30 --output-dir ./demo_output
+```
+
+### CLI Workflow (New)
+
+```bash
+# 1) collect + analyze from config
+myutils-profile ingest --config ./my_utils/profiling/examples/collector_config_example.json --analyze
+
+# 2) analyze existing events
+myutils-profile analyze --events ./metrics_out/metrics_events.jsonl --workload pretrain --output-dir ./analysis_out
+
+# 3) diff two report json files
+myutils-profile diff --base-report ./run_a/analysis_report.json --target-report ./run_b/analysis_report.json --output ./diff.json --markdown ./diff.md
+
+# 4) export chrome trace from unified metrics events
+myutils-profile trace --events ./metrics_out/metrics_events.jsonl --output ./metrics_out/metrics_trace.json --auto-align-ranks --reference-rank 0
+```
+
+### Migration Checklist (New)
+
+See:
+
+- `my_utils/profiling/docs/MIGRATION_CHECKLIST.md`
+
+### 兼容性影响（重点）
+
+- 你现有的 `MyTimer + collector.register_provider(...)+collect()+analyze()` 用法仍然可用。
+- 这次主要是“新增能力”，不是强制迁移。
+- 可能感知到的变化：
+  - `MetricEvent` / `AnalysisReport` 新增了 schema 和评分等字段（向后兼容，旧字段仍在）。
+  - `MetricsAnalyzer` 默认分析维度更丰富（输出 findings 可能比以前更多）。
+  - `MetricsCollector.from_config(...)` 现在会按配置自动装配 providers（配置错误会报错，可用 `ignore_provider_errors` 放宽）。
+- 若你有自定义脚本“严格按旧 JSON 键集合做校验”，需要把新增字段加入白名单。
+
+---
 
 ## Fast Path: Reuse Profiling in a New Framework
 
@@ -98,11 +221,11 @@ Your framework must parse these groups if you want full functionality:
 - `--nsys_launch.*`
 
 If these are not parsed, shell-level `nsys profile ...` wrapping still works, but step-window control and env-to-runtime config injection will not.
-## 快速导�?
-- [核心工作流](#核心工作�?globallogger--mytimer)
-- [工具类参考](#工具类参�?
+## 快速导�?
+- [核心工作流](#核心工作�?globallogger--mytimer)
+- [工具类参考](#工具类参�?
   - [日志系统](#1-日志系统-loggerpygloballogger)
-  - [计时器](#2-计时�?utilspymytimer)
+  - [计时器](#2-计时�?utilspymytimer)
   - [NVTX标记](#3-nvtx标记-nvtx_utilspynvtxlabeler)
   - [模块性能分析](#4-模块性能分析-moduleprofilerpymoduleprofiler)
   - [PyTorch Profiler封装](#5-pytorch-profiler封装-profilerwrapperpyprofilerwrapper)
@@ -115,9 +238,9 @@ If these are not parsed, shell-level `nsys profile ...` wrapping still works, bu
 - [输出文件说明](#输出文件说明)
 - [环境变量](#环境变量)
 
-## 核心工作�? GlobalLogger + MyTimer
+## 核心工作�? GlobalLogger + MyTimer
 
-这是最主要的工作流程，用于分阶段计时和生成机器可读的profiling日志�?
+这是最主要的工作流程，用于分阶段计时和生成机器可读的profiling日志�?
 ### 基本使用
 
 ```python
@@ -148,7 +271,7 @@ for step in range(3):
     timer.stop("backward")
     timer.stop("iter")
 
-    # 刷新CUDA事件计时并写入机器日�?    timer.step()  # 等同�?timer.synchronize_and_log()
+    # 刷新CUDA事件计时并写入机器日�?    timer.step()  # 等同�?timer.synchronize_and_log()
 ```
 
 ### 工作原理
@@ -156,18 +279,18 @@ for step in range(3):
 **MyTimer记录的内容：**
 - **CPU时间**: 使用 `time.perf_counter()` 测量
 - **CUDA时间**: 使用CUDA事件 (`cuda_start.elapsed_time(cuda_end)`)，如果启用CUDA
-- **层级结构**: 嵌套�?`start/stop` 被追踪为树形结构，包�?`node_id/parent_id`
-- **机器日志**: `GlobalLogger.log_profile_event(...)` �?`START/END` 行写�?`profile_rank_<rank>.csv`
+- **层级结构**: 嵌套�?`start/stop` 被追踪为树形结构，包�?`node_id/parent_id`
+- **机器日志**: `GlobalLogger.log_profile_event(...)` �?`START/END` 行写�?`profile_rank_<rank>.csv`
 
 **CSV列格式：**
 ```
 timestamp_unix, readable_time, machine_id, step, event_name, event_type, duration_ms, metadata
 ```
 
-这个profile event可以设计成自定义的Chrome Trace要记录的信息�?
+这个profile event可以设计成自定义的Chrome Trace要记录的信息�?
 ### 将CSV转换为Chrome Trace
 
-`MyTimer` 已经写入了可解析�?`START/END` 行。你可以将CSV转换为Chrome/Perfetto trace�?
+`MyTimer` 已经写入了可解析�?`START/END` 行。你可以将CSV转换为Chrome/Perfetto trace�?
 ```python
 import csv
 import json
@@ -214,13 +337,13 @@ def csv_to_trace(csv_path: str, out_json: str) -> None:
 # csv_to_trace("logs/train/profile_rank_0.csv", "logs/train/mytimer_trace.json")
 ```
 
-然后�?`chrome://tracing` �?Perfetto UI 中打开JSON文件�?
+然后�?`chrome://tracing` �?Perfetto UI 中打开JSON文件�?
 ---
 
-## 工具类参�?
+## 工具类参�?
 ### 1. 日志系统 (logger.py::GlobalLogger)
 
-**功能**: 单例模式的全局日志管理器，支持控制台和文件输出，以及机器可读的profile CSV�?
+**功能**: 单例模式的全局日志管理器，支持控制台和文件输出，以及机器可读的profile CSV�?
 **核心方法**:
 - `setup(log_dir, rank, world_size, extra_log_label)`: 配置日志系统（幂等，只首次生效）
 - `get_logger()`: 获取logger实例
@@ -238,7 +361,7 @@ logger_mgr.setup(
     rank=0,
     world_size=4,
     extra_log_label="Worker",
-    data_parallel_rank=0,  # 可�? Megatron并行信息
+    data_parallel_rank=0,  # 可�? Megatron并行信息
     data_parallel_world_size=2
 )
 logger = logger_mgr.get_logger()
@@ -261,20 +384,20 @@ logger_mgr.log_profile_event(
 ```
 
 **输出文件**:
-- `rank_<rank>.log`: 人类可读的日�?- `profile_rank_<rank>.csv`: 机器可读的性能事件
+- `rank_<rank>.log`: 人类可读的日�?- `profile_rank_<rank>.csv`: 机器可读的性能事件
 
 **工作流程**:
 1. 首次调用 `setup()` 时初始化文件handlers和CSV文件
 2. 所有日志通过标准logging模块输出
 3. Profile事件直接写入CSV（行缓冲，防止崩溃丢失数据）
-4. 支持时间偏移，用于多机时间对�?
+4. 支持时间偏移，用于多机时间对�?
 ---
 
-### 2. 计时�?(utils.py::MyTimer)
+### 2. 计时�?(utils.py::MyTimer)
 
-**功能**: 层级化的CPU/CUDA计时器，支持嵌套计时和自动日志记录�?
+**功能**: 层级化的CPU/CUDA计时器，支持嵌套计时和自动日志记录�?
 **核心方法**:
-- `start(name)`: 开始计时一个事�?- `stop(name)`: 停止计时（必须匹配最近的start�?- `set_step(step)`: 设置当前迭代步数
+- `start(name)`: 开始计时一个事�?- `stop(name)`: 停止计时（必须匹配最近的start�?- `set_step(step)`: 设置当前迭代步数
 - `step()` / `synchronize_and_log()`: 同步CUDA并写入所有事件到日志
 - `set_logger(logger)`: 注入GlobalLogger实例
 
@@ -312,24 +435,24 @@ for epoch in range(10):
 
     timer.stop("epoch")
 
-    # 刷新并记录所有事�?    timer.step()
+    # 刷新并记录所有事�?    timer.step()
 ```
 
 **工作原理**:
 1. **CPU计时**: 使用 `time.perf_counter()` 记录墙钟时间
-2. **CUDA计时**: 创建CUDA事件对，在start/stop时记�?3. **层级追踪**: 维护栈结构，自动分配 `node_id` �?`parent_id`
-4. **延迟写入**: 调用 `step()` 时才同步CUDA并写入日�?5. **错误处理**: 检测不匹配的start/stop调用
+2. **CUDA计时**: 创建CUDA事件对，在start/stop时记�?3. **层级追踪**: 维护栈结构，自动分配 `node_id` �?`parent_id`
+4. **延迟写入**: 调用 `step()` 时才同步CUDA并写入日�?5. **错误处理**: 检测不匹配的start/stop调用
 
 **注意事项**:
 - 必须在每次迭代结束时调用 `timer.step()` 以获取准确的CUDA时间
-- `stop()` 必须与最近的 `start()` 匹配（LIFO顺序�?- CUDA计时需要显式同步才能获取准确结�?
+- `stop()` 必须与最近的 `start()` 匹配（LIFO顺序�?- CUDA计时需要显式同步才能获取准确结�?
 ---
 
 ### 3. NVTX标记 (nvtx_utils.py::NvtxLabeler)
 
-**功能**: 独立的NVTX范围标记工具，用于Nsight Systems分析�?
+**功能**: 独立的NVTX范围标记工具，用于Nsight Systems分析�?
 **核心方法**:
-- `register_label(label, color, domain_name, category)`: 预注册标签（性能优化�?- `start(label, color, domain_name, category)`: 开始NVTX范围
+- `register_label(label, color, domain_name, category)`: 预注册标签（性能优化�?- `start(label, color, domain_name, category)`: 开始NVTX范围
 - `stop(token)`: 结束NVTX范围
 - `range(label, ...)`: 上下文管理器
 
@@ -340,7 +463,7 @@ from my_utils import create_labeler
 # 推荐：框架代码统一通过 create_labeler 获取后端
 labeler = create_labeler(enabled=True, default_domain="my_app")
 
-# 预注册常用标签（可选，提升性能�?labeler.register_label("model.forward", color="blue")
+# 预注册常用标签（可选，提升性能�?labeler.register_label("model.forward", color="blue")
 labeler.register_label("model.layer_00.attention", color="green")
 labeler.register_label("model.layer_00.ffn", color="red")
 
@@ -360,8 +483,8 @@ labeler.stop(token)
 labeler.mark("checkpoint_saved")
 ```
 
-**当前最佳实�?*:
-- 优先使用 `create_labeler(...)`，它会在 `NvtxLabeler`、`TorchNvtxLabeler` �?`NoOpLabeler` 之间自动选择�?- 框架层和业务层都只依赖统一协议：`register_label()`、`start()`、`stop()`、`mark()`、`range()`�?- 只有在你明确要固定到 `torch.cuda.nvtx` 后端时，才直接使�?`TorchNvtxLabeler`�?
+**当前最佳实�?*:
+- 优先使用 `create_labeler(...)`，它会在 `NvtxLabeler`、`TorchNvtxLabeler` �?`NoOpLabeler` 之间自动选择�?- 框架层和业务层都只依赖统一协议：`register_label()`、`start()`、`stop()`、`mark()`、`range()`�?- 只有在你明确要固定到 `torch.cuda.nvtx` 后端时，才直接使�?`TorchNvtxLabeler`�?
 **TorchNvtxLabeler** (torch.cuda.nvtx后端):
 ```python
 from my_utils import TorchNvtxLabeler
@@ -378,7 +501,7 @@ nvtx.pop()
 ```
 
 **工作原理**:
-1. 检�?`nvtx` �?`torch.cuda.nvtx` 包是否可�?2. 如果不可用或disabled，所有API变为no-op（零开销�?3. 预注册的标签缓存domain和attributes，避免重复创�?4. 维护活动栈，支持嵌套和错误恢�?
+1. 检�?`nvtx` �?`torch.cuda.nvtx` 包是否可�?2. 如果不可用或disabled，所有API变为no-op（零开销�?3. 预注册的标签缓存domain和attributes，避免重复创�?4. 维护活动栈，支持嵌套和错误恢�?
 **使用场景**:
 - 配合 `nsys profile` 使用，在Nsight Systems中可视化
 - 不依赖MyTimer，可独立使用
@@ -388,10 +511,10 @@ nvtx.pop()
 
 ### 4. 模块性能分析 (moduleProfiler.py::ModuleProfiler)
 
-**功能**: 基于Hook的PyTorch模块级性能分析器，自动测量每个叶子模块的执行时间�?
+**功能**: 基于Hook的PyTorch模块级性能分析器，自动测量每个叶子模块的执行时间�?
 **核心方法**:
 - `start()`: 开始一次profiling（在forward前调用）
-- `stop()`: 结束profiling并记录数据（在同步后调用�?- `summary(output_path)`: 生成统计报告DataFrame
+- `stop()`: 结束profiling并记录数据（在同步后调用�?- `summary(output_path)`: 生成统计报告DataFrame
 - `cleanup()`: 移除所有hooks
 
 **使用示例**:
@@ -401,12 +524,12 @@ import torch
 
 model = MyModel().cuda()
 
-# 方式1: 上下文管理器（推荐，自动cleanup�?with ModuleProfiler(model) as profiler:
+# 方式1: 上下文管理器（推荐，自动cleanup�?with ModuleProfiler(model) as profiler:
     for i in range(100):
         profiler.start()
 
         output = model(input_data)
-        torch.cuda.synchronize()  # 必须�?
+        torch.cuda.synchronize()  # 必须�?
         profiler.stop()
 
     # 生成报告
@@ -429,12 +552,12 @@ profiler.cleanup()
 ```
 
 **工作原理**:
-1. 遍历模型，为所有叶子模块注�?`forward_pre_hook` �?`forward_hook`
+1. 遍历模型，为所有叶子模块注�?`forward_pre_hook` �?`forward_hook`
 2. Pre-hook记录CUDA事件start，post-hook记录end
 3. 调用 `stop()` 时同步并计算所有事件的elapsed time
-4. 累积多次运行的统计数�?5. `summary()` 计算均值、中位数、标准差和占�?
+4. 累积多次运行的统计数�?5. `summary()` 计算均值、中位数、标准差和占�?
 **注意事项**:
-- 仅支持CUDA（需要CUDA事件计时�?- 必须�?`stop()` 前调�?`torch.cuda.synchronize()`
+- 仅支持CUDA（需要CUDA事件计时�?- 必须�?`stop()` 前调�?`torch.cuda.synchronize()`
 - 只在叶子模块上注册hook（避免重复计数）
 - 适合找出模型中的性能瓶颈
 
@@ -442,12 +565,12 @@ profiler.cleanup()
 
 ### 5. PyTorch Profiler封装 (profilerwrapper.py::ProfilerWrapper)
 
-**功能**: 封装 `torch.profiler`，自动生成trace、图表和内存快照�?
+**功能**: 封装 `torch.profiler`，自动生成trace、图表和内存快照�?
 **核心方法**:
-- `__enter__` / `__exit__`: 上下文管理器，自动启�?停止profiler
+- `__enter__` / `__exit__`: 上下文管理器，自动启�?停止profiler
 - `record_cuda_average_time()`: 记录CUDA时间统计
 - `record_cuda_mm()`: 记录显存使用
-- `plot_cuda_time_line()`: 绘制CUDA时间折线�?- `plot_memory_usage_line_chart()`: 绘制显存使用�?- `leave()`: 保存所有输出并退�?
+- `plot_cuda_time_line()`: 绘制CUDA时间折线�?- `plot_memory_usage_line_chart()`: 绘制显存使用�?- `leave()`: 保存所有输出并退�?
 **使用示例**:
 ```python
 from my_utils.profilerwrapper import ProfilerWrapper
@@ -475,24 +598,24 @@ profiler.leave()
 
 **输出文件**:
 - `<prefix>_trace.json`: Chrome trace文件
-- `<prefix>_cuda_time_plot.png`: CUDA时间折线�?- `<prefix>_memory_usage_line_chart.png`: 显存使用�?- `<prefix>_rank_<rank>.log`: 性能摘要表格
+- `<prefix>_cuda_time_plot.png`: CUDA时间折线�?- `<prefix>_memory_usage_line_chart.png`: 显存使用�?- `<prefix>_rank_<rank>.log`: 性能摘要表格
 - `<prefix>_mem_<timestamp>.pickle`: 内存快照（可选）
 
 **工作原理**:
 1. 每次进入上下文时启动 `torch.profiler.profile`
 2. 退出时自动记录统计数据（CUDA时间、显存）
-3. 累积多次运行的数据用于绘�?4. `leave()` 时生成所有可视化和导出文�?
+3. 累积多次运行的数据用于绘�?4. `leave()` 时生成所有可视化和导出文�?
 **适用场景**:
 - 需要详细的算子级性能分析
-- 想要可视化CUDA时间和显存趋�?- 调试OOM问题
+- 想要可视化CUDA时间和显存趋�?- 调试OOM问题
 
 ---
 
 ### 6. 内存快照 (memory_snapshot.py::MemorySnapshotter)
 
-**功能**: 层级化的PyTorch内存快照工具，支持嵌套区域的内存追踪�?
+**功能**: 层级化的PyTorch内存快照工具，支持嵌套区域的内存追踪�?
 **核心方法**:
-- `start(name, max_entries)`: 开始记录内存历�?- `stop(name)`: 停止并保存快照到 `.pt` 文件
+- `start(name, max_entries)`: 开始记录内存历�?- `stop(name)`: 停止并保存快照到 `.pt` 文件
 - `set_logger(logger)`: 注入logger
 
 **使用示例**:
@@ -524,9 +647,9 @@ global_snapshotter.stop("training_loop")  # 保存 training_loop__<time>__rank0.
 
 **工作原理**:
 1. 维护一个栈结构，类似MyTimer
-2. 首次 `start()` 时启�?`torch.cuda.memory._record_memory_history()`
-3. 每次 `stop()` 时调�?`_dump_snapshot()` 保存当前所有历�?4. 最后一�?`stop()` 时重置历史记录器
-5. 每个快照包含从根start到当前stop的所有内存操�?
+2. 首次 `start()` 时启�?`torch.cuda.memory._record_memory_history()`
+3. 每次 `stop()` 时调�?`_dump_snapshot()` 保存当前所有历�?4. 最后一�?`stop()` 时重置历史记录器
+5. 每个快照包含从根start到当前stop的所有内存操�?
 **分析快照**:
 ```python
 import torch
@@ -534,20 +657,20 @@ import torch
 # 加载快照
 snapshot = torch.load("forward__20260303_120000__rank0.pt")
 
-# 使用PyTorch的内存分析工�?from torch.cuda._memory_viz import profile_plot
+# 使用PyTorch的内存分析工�?from torch.cuda._memory_viz import profile_plot
 profile_plot(snapshot, "memory_viz.html")
 ```
 
 **注意事项**:
-- 快照文件可能很大（数百MB�?- 嵌套的快照包含父级的所有历史（需要diff分析�?- 仅在CUDA可用时工�?
+- 快照文件可能很大（数百MB�?- 嵌套的快照包含父级的所有历史（需要diff分析�?- 仅在CUDA可用时工�?
 ---
 
 ### 7. GPU性能追踪 (gpu_mem_tracker.py::GPU_Performance_Tracker)
 
-**功能**: 后台线程持续监控GPU显存、利用率和功耗�?
+**功能**: 后台线程持续监控GPU显存、利用率和功耗�?
 **核心方法**:
 - `start_monitoring()`: 启动后台监控线程
-- `stop_monitoring()`: 停止监控并生成图�?- `plot_usage_graphs()`: 绘制性能图表
+- `stop_monitoring()`: 停止监控并生成图�?- `plot_usage_graphs()`: 绘制性能图表
 
 **使用示例**:
 ```python
@@ -555,7 +678,7 @@ from my_utils.gpu_mem_tracker import GPU_Performance_Tracker
 
 tracker = GPU_Performance_Tracker(
     prefix="experiment_1",
-    interval=1,  # 采样间隔（秒�?    use_distributed=True,
+    interval=1,  # 采样间隔（秒�?    use_distributed=True,
     track_hardware_metrics=True  # 需要pynvml
 )
 
@@ -570,24 +693,24 @@ tracker.stop_monitoring()  # 自动生成图表
 
 **输出文件**:
 - `<prefix>_rank<rank>_performance_profile.png`: 包含两个子图
-  - 子图1: PyTorch显存（allocated/reserved�?  - 子图2: GPU利用率、显存带宽利用率、功�?
+  - 子图1: PyTorch显存（allocated/reserved�?  - 子图2: GPU利用率、显存带宽利用率、功�?
 **工作原理**:
 1. 启动daemon线程，按固定间隔采样
 2. 使用 `torch.cuda.memory_allocated/reserved` 获取显存
 3. 使用 `pynvml` 获取硬件指标（利用率、功耗）
-4. 停止时使用matplotlib绘制时间序列�?
+4. 停止时使用matplotlib绘制时间序列�?
 **适用场景**:
 - 长时间训练的资源监控
 - 诊断显存泄漏
-- 优化GPU利用�?
+- 优化GPU利用�?
 ---
 
 ### 8. 前向传播Profiling Hook (ForwardProfileHook.py::ForwardProfilerHook)
 
-**功能**: 在指定迭代范围自动启�?停止CUDA profiler和NVTX标记�?
+**功能**: 在指定迭代范围自动启�?停止CUDA profiler和NVTX标记�?
 **核心方法**:
-- `attach(module)`: 将hook附加到模�?- 自动�?`start_iter` 启动profiler
-- 自动�?`stop_iter` 停止profiler
+- `attach(module)`: 将hook附加到模�?- 自动�?`start_iter` 启动profiler
+- 自动�?`stop_iter` 停止profiler
 
 **使用示例**:
 ```python
@@ -595,38 +718,38 @@ from my_utils import ForwardProfilerHook, create_labeler
 
 model = MyModel()
 
-# 创建hook：在�?-10次迭代时profile
+# 创建hook：在�?-10次迭代时profile
 hook = ForwardProfilerHook(
     start_iter=5,
     stop_iter=10,
-    rank_only=[0, 1],  # 只在rank 0�?上profile
+    rank_only=[0, 1],  # 只在rank 0�?上profile
     nvtx_range="model_forward",
     labeler=create_labeler(enabled=True, default_domain="training"),
 )
 
 hook.attach(model)
 
-# 正常训练，hook会自动触�?for i in range(100):
+# 正常训练，hook会自动触�?for i in range(100):
     output = model(input)
     # 在iter 5时自动启动profiler
     # 在iter 10时自动停止profiler
 ```
 
 **工作原理**:
-1. 注册 `forward_hook` 到模�?2. 每次forward时检查当前迭代数
-3. �?`start_iter` 时调�?`torch.cuda.cudart().cudaProfilerStart()`
-4. �?`stop_iter` 时调�?`cudaProfilerStop()` 并移除hook
+1. 注册 `forward_hook` 到模�?2. 每次forward时检查当前迭代数
+3. �?`start_iter` 时调�?`torch.cuda.cudart().cudaProfilerStart()`
+4. �?`stop_iter` 时调�?`cudaProfilerStop()` 并移除hook
 5. 可选地推送NVTX范围标记
 
 **适用场景**:
 - 配合 `nsys profile --capture-range=cudaProfilerApi` 使用
-- 只profile特定迭代，减少开销和文件大�?- 分布式训练中选择性profile某些rank
+- 只profile特定迭代，减少开销和文件大�?- 分布式训练中选择性profile某些rank
 
 ---
 
 ### 9. 灵活的Profiler (DITProfiler.py::FlexibleProfiler)
 
-**功能**: 任务类型感知的profiler，支持正则表达式匹配算子并生成详细分析�?
+**功能**: 任务类型感知的profiler，支持正则表达式匹配算子并生成详细分析�?
 **核心方法**:
 - `create_profiler_context(current_task_type, logger, ops_to_analyze)`: 工厂函数
 
@@ -639,7 +762,7 @@ import os
 
 logger = get_global_logger()
 
-# 定义要分析的算子（支持正则表达式�?ops_to_analyze = {
+# 定义要分析的算子（支持正则表达式�?ops_to_analyze = {
     r"aten::linear": "self_cuda_time_total",
     r"aten::matmul": "self_cuda_time_total",
     r"tile_encoder_\d+": "cuda_time_total",  # 匹配 tile_encoder_0, tile_encoder_1, ...
@@ -660,7 +783,7 @@ with create_profiler_context(
 ):
     vae_output = vae_model(input)
 
-# Transformer任务不会被profile（不在环境变量中�?with create_profiler_context(
+# Transformer任务不会被profile（不在环境变量中�?with create_profiler_context(
     current_task_type="Transformer",
     logger=logger
 ):
@@ -668,8 +791,8 @@ with create_profiler_context(
 ```
 
 **输出文件**:
-- `<base_output_dir>/<task_type>/torch_prof_rank<rank>.json`: Chrome trace（VAE任务跳过�?- `<base_output_dir>/<task_type>/prof_summary_rank<rank>.txt`: 性能摘要
-- `<base_output_dir>/<task_type>/<op_name>_rank<rank>_analysis.json`: 每个匹配算子的详细统�?
+- `<base_output_dir>/<task_type>/torch_prof_rank<rank>.json`: Chrome trace（VAE任务跳过�?- `<base_output_dir>/<task_type>/prof_summary_rank<rank>.txt`: 性能摘要
+- `<base_output_dir>/<task_type>/<op_name>_rank<rank>_analysis.json`: 每个匹配算子的详细统�?
 **算子分析JSON格式**:
 ```json
 {
@@ -687,7 +810,7 @@ with create_profiler_context(
 ```
 
 **工作原理**:
-1. 读取环境变量 `PROFILE_TASK_TYPES`（逗号分隔�?2. 只有当前任务类型在列表中时才启动profiler
+1. 读取环境变量 `PROFILE_TASK_TYPES`（逗号分隔�?2. 只有当前任务类型在列表中时才启动profiler
 3. 使用 `torch.profiler.profile` 收集事件
 4. 退出时遍历所有事件，用正则表达式匹配
 5. 按完整事件名分组，计算统计量并保存JSON
@@ -701,9 +824,9 @@ with create_profiler_context(
 
 ### 10. 时钟同步 (clockSyncUtils.py::ClockSynchronizer)
 
-**功能**: 基于NTP协议的分布式时钟同步，用于多机profiling时间对齐�?
+**功能**: 基于NTP协议的分布式时钟同步，用于多机profiling时间对齐�?
 **核心方法**:
-- `sync(is_server, peer_rank, group)`: 执行同步并返回时间偏�?
+- `sync(is_server, peer_rank, group)`: 执行同步并返回时间偏�?
 **使用示例**:
 ```python
 from my_utils.clockSyncUtils import ClockSynchronizer
@@ -718,8 +841,8 @@ if rank == 0:
     offset = ClockSynchronizer.sync(is_server=True, peer_rank=1)
     # offset = 0.0
 else:
-    # Consumer (rank 1) 计算相对于Producer的偏�?    offset = ClockSynchronizer.sync(is_server=False, peer_rank=0)
-    # offset = 0.002345 (例如，Consumer比Producer�?.3ms)
+    # Consumer (rank 1) 计算相对于Producer的偏�?    offset = ClockSynchronizer.sync(is_server=False, peer_rank=0)
+    # offset = 0.002345 (例如，Consumer比Producer�?.3ms)
 
 # 将偏移应用到logger
 logger_mgr = GlobalLogger()
@@ -744,11 +867,11 @@ else:
 ```
 
 **工作原理** (NTP算法):
-1. Client发送ping，记�?T1
-2. Server接收，记�?T2
-3. Server立即回复，记�?T3
-4. Client接收，记�?T4
-5. 计算�?   - RTT = (T4 - T1) - (T3 - T2)
+1. Client发送ping，记�?T1
+2. Server接收，记�?T2
+3. Server立即回复，记�?T3
+4. Client接收，记�?T4
+5. 计算�?   - RTT = (T4 - T1) - (T3 - T2)
    - Latency = RTT / 2
    - Offset = (T2 - Latency) - T1
 
@@ -761,7 +884,7 @@ else:
 
 ### 11. 高级Profiling系统 (profiling::ProfileManager + CaptureController)
 
-**功能**: 基于配置的窗口化profiling系统，支持精确控制start/stop条件�?
+**功能**: 基于配置的窗口化profiling系统，支持精确控制start/stop条件�?
 **核心组件**:
 - `ProfileManager`: 读取YAML配置，管理profiling窗口
 - `CaptureController`: 执行具体的capture逻辑，响应hook事件
@@ -788,13 +911,13 @@ profile:
       - name: "forward_window"
         role: "generator"
         start_iter: 5
-        start_mb_selector: "first"  # first, last, 或数�?        start_profile_names: ["model.forward"]
+        start_mb_selector: "first"  # first, last, 或数�?        start_profile_names: ["model.forward"]
 
         stop_iter: 5
         stop_mb_selector: "last"
         stop_profile_names: ["model.forward"]
-        stop_policy: "ON_STOP_PROFILE_NAME"  # �?ON_TARGET_FUNC_EXIT
-        stop_edge: "EXIT"  # �?ENTER
+        stop_policy: "ON_STOP_PROFILE_NAME"  # �?ON_TARGET_FUNC_EXIT
+        stop_edge: "EXIT"  # �?ENTER
 
         ranks_filter: [0, 1]
         enable_nvtx_window: true
@@ -829,7 +952,7 @@ for it in range(100):
         for spec in specs:
             controller.arm(spec)
 
-    # 4. 在代码中插入hook�?    for mb in range(num_microbatches):
+    # 4. 在代码中插入hook�?    for mb in range(num_microbatches):
         # 触发start条件
         controller.on_enter(HookEvent(
             profile_name="model.forward",
@@ -851,29 +974,29 @@ for it in range(100):
 
 **工作原理**:
 1. **ProfileManager** 解析配置，确定哪些iter需要arm
-2. 在目标iter，构建capture spec（包含start/stop条件�?3. **CaptureController** 接收spec并进入armed状�?4. 代码中的hook点触�?`on_enter/on_exit` 事件
-5. Controller匹配条件（iter、mb、profile_name、role、rank�?6. 满足start条件时调�?`backend.start()`（如启动nsys�?7. 满足stop条件时调�?`backend.stop()`
-8. 自动disarm，等待下一个窗�?
+2. 在目标iter，构建capture spec（包含start/stop条件�?3. **CaptureController** 接收spec并进入armed状�?4. 代码中的hook点触�?`on_enter/on_exit` 事件
+5. Controller匹配条件（iter、mb、profile_name、role、rank�?6. 满足start条件时调�?`backend.start()`（如启动nsys�?7. 满足stop条件时调�?`backend.stop()`
+8. 自动disarm，等待下一个窗�?
 **Stop Policy**:
-- `ON_TARGET_FUNC_EXIT`: 历史别名，内部会归一化为 `ON_TRIGGER_FUNC_EXIT`�?- `ON_TRIGGER_FUNC_EXIT`: 在触发start的同一个profile_name的exit时stop
+- `ON_TARGET_FUNC_EXIT`: 历史别名，内部会归一化为 `ON_TRIGGER_FUNC_EXIT`�?- `ON_TRIGGER_FUNC_EXIT`: 在触发start的同一个profile_name的exit时stop
 - `ON_STOP_PROFILE_NAME`: 在配置的stop_profile_names匹配时stop
 
 **适用场景**:
 - 复杂的多阶段pipeline
-- 需要精确控制profiling窗口（特定iter的特定microbatch�?- 多角色系统（generator、critic、discriminator等）
+- 需要精确控制profiling窗口（特定iter的特定microbatch�?- 多角色系统（generator、critic、discriminator等）
 - 与Nsight Systems集成
 
 ---
 
 ## 输出文件说明
 
-根据使用的工具，你会看到以下输出文件�?
+根据使用的工具，你会看到以下输出文件�?
 ### Logger相关
-- `rank_<rank>.log`: 人类可读的日志文�?- `profile_rank_<rank>.csv`: 机器可读的性能事件CSV
+- `rank_<rank>.log`: 人类可读的日志文�?- `profile_rank_<rank>.csv`: 机器可读的性能事件CSV
 
 ### ProfilerWrapper
 - `<prefix>_trace.json`: Chrome trace文件
-- `<prefix>_cuda_time_plot.png`: CUDA时间折线�?- `<prefix>_memory_usage_line_chart.png`: 显存使用折线�?- `<prefix>_mem_<timestamp>.pickle`: 内存快照（可选）
+- `<prefix>_cuda_time_plot.png`: CUDA时间折线�?- `<prefix>_memory_usage_line_chart.png`: 显存使用折线�?- `<prefix>_mem_<timestamp>.pickle`: 内存快照（可选）
 
 ### ModuleProfiler
 - 通过 `summary(output_path=...)` 生成的CSV文件
@@ -896,15 +1019,15 @@ for it in range(100):
 以下环境变量控制工具的行为：
 
 - `ENABLE_TIMER=1`: 启用全局 `MyTimer` 实例 (`global_timer`)
-- `ENABLE_NVTX=1`: 作为 `create_labeler(enabled=None)` �?`ForwardProfilerHook(nvtx_range=...)` 的默认开关；如果显式传了 `enabled=`，以显式配置为准
+- `ENABLE_NVTX=1`: 作为 `create_labeler(enabled=None)` �?`ForwardProfilerHook(nvtx_range=...)` 的默认开关；如果显式传了 `enabled=`，以显式配置为准
 - `ENABLE_MEMORY_SNAPSHOT=1`: 启用 `global_snapshotter`
-- `PROFILE_TASK_TYPES=DIT,VAE`: �?`create_profiler_context` 启用指定任务类型的profiling
+- `PROFILE_TASK_TYPES=DIT,VAE`: �?`create_profiler_context` 启用指定任务类型的profiling
 - `DEBUG_DATA_CONSISTENCY=1`: 启用 `ChecksumUtils` 签名/验证
 - `WAN_DPO_PREVAE_TENSOR_DIR`: `DumpTensorIO` 张量文件的根目录
-- `WAN_DPO_PREVAE_COMPARE_FILE`: `DumpTensorIO` 的可选比较输出路径模�?
+- `WAN_DPO_PREVAE_COMPARE_FILE`: `DumpTensorIO` 的可选比较输出路径模�?
 ---
 
-## 常见工作流组�?
+## 常见工作流组�?
 ### 1. 基础训练监控
 ```python
 from my_utils.logger import GlobalLogger
@@ -961,7 +1084,7 @@ with ModuleProfiler(model) as profiler:
         profiler.stop()
 
     df = profiler.summary("module_timings.csv")
-    print(df.head(10))  # 查看最慢的10个模�?```
+    print(df.head(10))  # 查看最慢的10个模�?```
 
 ### 4. Nsight Systems集成
 ```python
@@ -1035,23 +1158,23 @@ global_snapshotter.stop("training")
 ## 注意事项
 
 ### 性能开销
-- **MyTimer**: 极低开销（仅事件记录�?- **NVTX**: 零开销（如果disabled�?- **ModuleProfiler**: 中等开销（每个模块的hook�?- **ProfilerWrapper**: 高开销（完整的算子追踪�?- **MemorySnapshotter**: 高开销（记录所有内存操作）
+- **MyTimer**: 极低开销（仅事件记录�?- **NVTX**: 零开销（如果disabled�?- **ModuleProfiler**: 中等开销（每个模块的hook�?- **ProfilerWrapper**: 高开销（完整的算子追踪�?- **MemorySnapshotter**: 高开销（记录所有内存操作）
 
-### 最佳实�?1. **分阶段profiling**: 不要同时启用所有工�?2. **选择性采�?*: 只profile几个迭代，不是全�?3. **使用环境变量**: 方便在不修改代码的情况下开关profiling
+### 最佳实�?1. **分阶段profiling**: 不要同时启用所有工�?2. **选择性采�?*: 只profile几个迭代，不是全�?3. **使用环境变量**: 方便在不修改代码的情况下开关profiling
 4. **先粗后细**: 先用MyTimer找瓶颈，再用ProfilerWrapper深入分析
-5. **CUDA同步**: 使用CUDA计时时必须显式同�?6. **文件大小**: ProfilerWrapper和MemorySnapshotter会生成大文件，注意磁盘空�?
+5. **CUDA同步**: 使用CUDA计时时必须显式同�?6. **文件大小**: ProfilerWrapper和MemorySnapshotter会生成大文件，注意磁盘空�?
 ### 常见问题
 
 **Q: MyTimer的CUDA时间不准确？**
-A: 确保在每次迭代结束时调用 `timer.step()` 来同步CUDA事件�?
-**Q: ModuleProfiler报错"requires CUDA"�?*
-A: 该工具仅支持CUDA。如果在CPU上运行，使用ProfilerWrapper代替�?
-**Q: NVTX标记在Nsight Systems中看不到�?*
-A: 先检�?`ENABLE_NVTX=1` 或显�?`create_labeler(enabled=True)` 是否生效，再确认 `nvtx` 包已安装；如果走的是 fallback backend，则只能看到 `torch.cuda.nvtx` 能表达的能力�?
-**Q: 内存快照文件太大�?*
-A: 减少 `max_entries` 参数，或只在关键区域使用�?
+A: 确保在每次迭代结束时调用 `timer.step()` 来同步CUDA事件�?
+**Q: ModuleProfiler报错"requires CUDA"�?*
+A: 该工具仅支持CUDA。如果在CPU上运行，使用ProfilerWrapper代替�?
+**Q: NVTX标记在Nsight Systems中看不到�?*
+A: 先检�?`ENABLE_NVTX=1` 或显�?`create_labeler(enabled=True)` 是否生效，再确认 `nvtx` 包已安装；如果走的是 fallback backend，则只能看到 `torch.cuda.nvtx` 能表达的能力�?
+**Q: 内存快照文件太大�?*
+A: 减少 `max_entries` 参数，或只在关键区域使用�?
 **Q: 多机trace时间不对齐？**
-A: 使用 `ClockSynchronizer` 同步时钟，并调用 `set_time_offset()`�?
+A: 使用 `ClockSynchronizer` 同步时钟，并调用 `set_time_offset()`�?
 ---
 
 ## 进阶主题
@@ -1066,7 +1189,7 @@ class MyCustomBackend(CaptureBackend):
         pass
 
     def stop(self):
-        # 停止并保存结�?        pass
+        # 停止并保存结�?        pass
 
 # 与CaptureController配合使用
 controller = CaptureController(
@@ -1083,7 +1206,7 @@ from my_utils.utils import MyTimer
 class MyCustomTimer(MyTimer):
     def step(self):
         super().step()
-        # 添加自定义逻辑，如上传到监控系�?        self.upload_metrics()
+        # 添加自定义逻辑，如上传到监控系�?        self.upload_metrics()
 ```
 
 ---
@@ -1092,11 +1215,11 @@ class MyCustomTimer(MyTimer):
 
 - **Nsight Systems**: NVIDIA的系统级profiler，配合NVTX使用
 - **PyTorch Profiler**: 内置的profiler，被ProfilerWrapper封装
-- **chrome://tracing**: Chrome浏览器的trace查看�?- **Perfetto UI**: 更现代的trace查看�?(https://ui.perfetto.dev)
+- **chrome://tracing**: Chrome浏览器的trace查看�?- **Perfetto UI**: 更现代的trace查看�?(https://ui.perfetto.dev)
 
 ---
 
-## 贡献与反�?
-如有问题或建议，请提交issue或PR�?
-## 许可�?
+## 贡献与反�?
+如有问题或建议，请提交issue或PR�?
+## 许可�?
 [根据你的项目添加许可证信息]

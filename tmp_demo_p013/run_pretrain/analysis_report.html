@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Profiling Analysis Report</title>
+  <style>
+    :root {
+      --bg: #f4f7fb;
+      --card: #ffffff;
+      --text: #14233a;
+      --muted: #5a6e8d;
+      --warn: #b26a00;
+      --high: #b42f2f;
+      --info: #2a6ec4;
+      --border: #d8e1f0;
+    }
+    body { margin: 0; font-family: "Segoe UI", "Noto Sans", sans-serif; background: var(--bg); color: var(--text); }
+    main { max-width: 1080px; margin: 24px auto; padding: 0 16px; }
+    .card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 16px; margin-bottom: 16px; }
+    .finding { border-top: 1px solid var(--border); padding-top: 12px; margin-top: 12px; }
+    .sev { padding: 2px 8px; border-radius: 999px; font-size: 12px; }
+    .sev-warning { background: #fff2d9; color: var(--warn); }
+    .sev-high { background: #ffe0df; color: var(--high); }
+    .sev-info { background: #dfeeff; color: var(--info); }
+    pre { white-space: pre-wrap; background: #f2f5fb; padding: 8px; border-radius: 8px; }
+  </style>
+</head>
+<body>
+  <main>
+    <section class="card">
+      <h1>Profiling Analysis Report</h1>
+      <p><b>Generated:</b> 2026-03-08T16:48:23.411071+00:00</p>
+      <p><b>Schema:</b> 1.0</p>
+      <p><b>Overall Score:</b> 50.0</p>
+      <h2>Summary</h2>
+      <ul><li><b>total_events</b>: 50</li><li><b>providers</b>: [&#x27;external_csv&#x27;, &#x27;synthetic_dist&#x27;]</li><li><b>metric_count</b>: 4</li><li><b>workload_profile</b>: pretrain</li><li><b>rank_count</b>: 2</li><li><b>step_min</b>: 0</li><li><b>step_max</b>: 4</li><li><b>step_count</b>: 5</li></ul>
+    </section>
+    <section class="card">
+      <h2>Findings</h2>
+      <div class='finding'><h3>Latency Bottlenecks Detected <span class='sev sev-high'>HIGH</span></h3><p><b>Type:</b> bottleneck</p><p>2 groups exceed share threshold 10%.</p><pre>{
+  &quot;threshold&quot;: 0.1,
+  &quot;total_latency_ms&quot;: 699.6345374594458,
+  &quot;bottlenecks&quot;: [
+    {
+      &quot;name&quot;: &quot;latency.stage:backward&quot;,
+      &quot;share_percent&quot;: 55.15698377874708,
+      &quot;avg_value&quot;: 38.58973083370187,
+      &quot;unit&quot;: &quot;ms&quot;,
+      &quot;sample_count&quot;: 10
+    },
+    {
+      &quot;name&quot;: &quot;latency.stage:forward&quot;,
+      &quot;share_percent&quot;: 38.97635329905847,
+      &quot;avg_value&quot;: 27.26920291224271,
+      &quot;unit&quot;: &quot;ms&quot;,
+      &quot;sample_count&quot;: 10
+    }
+  ]
+}</pre></div><div class='finding'><h3>Memory Growth Analysis <span class='sev sev-warning'>WARNING</span></h3><p><b>Type:</b> memory</p><p>Detected memory growth trends across steps.</p><pre>{
+  &quot;growth_threshold_bytes_per_step&quot;: 10485760.0,
+  &quot;growth_items&quot;: [
+    {
+      &quot;name&quot;: &quot;memory.gpu.allocated&quot;,
+      &quot;start_step&quot;: 0,
+      &quot;end_step&quot;: 4,
+      &quot;growth_bytes_per_step&quot;: 28750000.0
+    }
+  ],
+  &quot;peak_bytes&quot;: {
+    &quot;memory.gpu.allocated&quot;: 1115000000.0
+  }
+}</pre></div><div class='finding'><h3>Communication Imbalance <span class='sev sev-warning'>WARNING</span></h3><p><b>Type:</b> communication</p><p>Per-rank communication mean latency ratio is 1.62.</p><pre>{
+  &quot;imbalance_ratio_threshold&quot;: 1.25,
+  &quot;observed_ratio&quot;: 1.6152200001607717,
+  &quot;rank_mean_latency_ms&quot;: {
+    &quot;0&quot;: 7.138781550418426,
+    &quot;1&quot;: 11.530702737014565
+  }
+}</pre></div><div class='finding'><h3>Cross-rank Stage Skew <span class='sev sev-warning'>WARNING</span></h3><p><b>Type:</b> distributed</p><p>Detected rank skew in aligned stage latency; worst ratio 1.30.</p><pre>{
+  &quot;total_aligned_steps&quot;: 5,
+  &quot;skew_items&quot;: [
+    {
+      &quot;step&quot;: 4,
+      &quot;stage&quot;: &quot;backward&quot;,
+      &quot;rank_count&quot;: 2,
+      &quot;min_ms&quot;: 33.35571531996265,
+      &quot;max_ms&quot;: 43.22573024222486,
+      &quot;mean_ms&quot;: 38.290722781093756,
+      &quot;skew_ratio&quot;: 1.2959017615897217,
+      &quot;rank_to_mean_ms&quot;: {
+        &quot;0&quot;: 33.35571531996265,
+        &quot;1&quot;: 43.22573024222486
+      }
+    },
+    {
+      &quot;step&quot;: 0,
+      &quot;stage&quot;: &quot;backward&quot;,
+      &quot;rank_count&quot;: 2,
+      &quot;min_ms&quot;: 34.762930396701414,
+      &quot;max_ms&quot;: 44.75707598945505,
+      &quot;mean_ms&quot;: 39.760003193078234,
+      &quot;skew_ratio&quot;: 1.287494336027033,
+      &quot;rank_to_mean_ms&quot;: {
+        &quot;0&quot;: 34.762930396701414,
+        &quot;1&quot;: 44.75707598945505
+      }
+    },
+    {
+      &quot;step&quot;: 3,
+      &quot;stage&quot;: &quot;backward&quot;,
+      &quot;rank_count&quot;: 2,
+      &quot;min_ms&quot;: 34.94700616241904,
+      &quot;max_ms&quot;: 43.16435274220452,
+      &quot;mean_ms&quot;: 39.05567945231178,
+      &quot;skew_ratio&quot;: 1.2351373545875346,
+      &quot;rank_to_mean_ms&quot;: {
+        &quot;0&quot;: 34.94700616241904,
+        &quot;1&quot;: 43.16435274220452
+      }
+    },
+    {
+      &quot;step&quot;: 1,
+      &quot;stage&quot;: &quot;backward&quot;,
+      &quot;rank_count&quot;: 2,
+      &quot;min_ms&quot;: 33.335752907348336,
+      &quot;max_ms&quot;: 41.12325608690644,
+      &quot;mean_ms&quot;: 37.22950449712739,
+      &quot;skew_ratio&quot;: 1.2336081384213005,
+      &quot;rank_to_mean_ms&quot;: {
+        &quot;0&quot;: 33.335752907348336,
+        &quot;1&quot;: 41.12325608690644
+      }
+    },
+    {
+      &quot;step&quot;: 3,
+      &quot;stage&quot;: &quot;forward&quot;,
+      &quot;rank_count&quot;: 2,
+      &quot;min_ms&quot;: 23.543856341460728,
+      &quot;max_ms&quot;: 28.69368684293156,
+      &quot;mean_ms&quot;: 26.118771592196143,
+      &quot;skew_ratio&quot;: 1.2187335170068117,
+      &quot;rank_to_mean_ms&quot;: {
+        &quot;0&quot;: 23.543856341460728,
+        &quot;1&quot;: 28.69368684293156
+      }
+    }
+  ],
+  &quot;has_skew&quot;: true,
+  &quot;worst_skew_ratio&quot;: 1.2959017615897217
+}</pre></div>
+    </section>
+    <section class="card">
+      <h2>Recommendations</h2>
+      <ul><li>Drill down top bottleneck groups with torch.profiler/Nsight kernel traces.</li><li>Align bottleneck stages with rank skew and communication overlap before optimization.</li><li>Check tensor/loss/history caches and stale references causing monotonic memory growth.</li><li>Correlate memory growth steps with dataloader or optimizer state transitions.</li><li>Check tensor partitioning and collective payload balance across ranks.</li><li>Inspect straggler ranks with NSYS communication traces and NIC metrics.</li><li>Investigate straggler ranks and rebalance uneven stage workloads.</li><li>Align NCCL timeline with skewed stages to identify communication head-of-line blocking.</li></ul>
+    </section>
+  </main>
+</body>
+</html>

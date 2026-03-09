@@ -2,7 +2,7 @@ import torch
 import torch.distributed as dist
 from typing import List, Optional, Union
 
-from .nvtx_utils import LabelerProtocol, create_labeler
+from ..tracing.nvtx_utils import LabelerProtocol, create_labeler
 
 
 class ForwardProfilerHook:

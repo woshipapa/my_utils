@@ -192,7 +192,7 @@ import numpy as np
 import logging
 # from t2v_flow.executor.DynamicForwardStepHandler import DynamicForwardStepHandler
 from logging import LoggerAdapter
-from .nvtx_utils import LabelerProtocol, NoOpLabeler, create_labeler
+from ..tracing.nvtx_utils import LabelerProtocol, NoOpLabeler, create_labeler
 
 try:
     import psutil
@@ -379,7 +379,7 @@ class MyTimer:
 
         # 2. 如果没获取到，则创建系统初始化时创建的默认 global logger
         if raw_logger is None:
-            from my_utils.logger import GlobalLogger
+            from .logger import GlobalLogger
             raw_logger = GlobalLogger().get_logger()
             
         # 3. 无论来源如何，都用 LoggerAdapter 包装以添加上下文，使过滤器生效
@@ -1061,8 +1061,8 @@ def get_global_timer():
 import os
 import logging
 import torch.distributed as dist
-from my_utils.logger import GlobalLogger, get_global_logger
-from my_utils.memory_snapshot import global_snapshotter
+from .logger import GlobalLogger, get_global_logger
+from ..memory.memory_snapshot import global_snapshotter
 def setup_logging_and_timer(args, role_tag: str, use_cuda: bool, use_nvtx: bool, is_distributed: bool):
     """
     为当前进程 (Worker 或 Driver) 初始化 GlobalLogger 和 MyTimer。

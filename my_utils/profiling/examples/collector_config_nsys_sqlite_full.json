@@ -1,0 +1,46 @@
+{
+  "collector": {
+    "output_dir": "./nsys_metrics_out",
+    "enabled": true,
+    "validate_events": true,
+    "drop_invalid_events": false,
+    "ignore_provider_errors": false
+  },
+  "schema": {
+    "strict": false,
+    "enforce_known_prefix": false,
+    "enforce_recommended_units": false
+  },
+  "analysis": {
+    "workload_profile": "pretrain",
+    "bottleneck_threshold": 0.1,
+    "cv_threshold": 0.5,
+    "memory_growth_bytes_per_step": 10485760,
+    "enable_advanced_rules": true
+  },
+  "providers": [
+    {
+      "type": "nsys_sqlite",
+      "id": "nsys_rank0",
+      "enabled": true,
+      "params": {
+        "sqlite_path": "./train_rank0.sqlite",
+        "include_runtime": true,
+        "include_kernels": true,
+        "include_memcpy": true,
+        "include_memset": true,
+        "include_sync": true,
+        "include_nvtx": true,
+        "include_memory_usage": true,
+        "include_osrt": false,
+        "include_gpu_metrics": true,
+        "include_generic_events": true,
+        "include_network_metrics": true,
+        "include_pmu_metrics": true,
+        "include_cuda_um": true,
+        "include_auto_duration_tables": true,
+        "parse_step_from_nvtx": true
+      }
+    }
+  ]
+}

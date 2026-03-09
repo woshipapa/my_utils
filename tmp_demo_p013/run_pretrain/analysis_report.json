@@ -1,0 +1,228 @@
+{
+  "generated_at": "2026-03-08T16:48:23.411071+00:00",
+  "summary": {
+    "total_events": 50,
+    "providers": [
+      "external_csv",
+      "synthetic_dist"
+    ],
+    "metric_count": 4,
+    "workload_profile": "pretrain",
+    "rank_count": 2,
+    "step_min": 0,
+    "step_max": 4,
+    "step_count": 5
+  },
+  "findings": [
+    {
+      "finding_type": "bottleneck",
+      "severity": "high",
+      "title": "Latency Bottlenecks Detected",
+      "description": "2 groups exceed share threshold 10%.",
+      "data": {
+        "threshold": 0.1,
+        "total_latency_ms": 699.6345374594458,
+        "bottlenecks": [
+          {
+            "name": "latency.stage:backward",
+            "share_percent": 55.15698377874708,
+            "avg_value": 38.58973083370187,
+            "unit": "ms",
+            "sample_count": 10
+          },
+          {
+            "name": "latency.stage:forward",
+            "share_percent": 38.97635329905847,
+            "avg_value": 27.26920291224271,
+            "unit": "ms",
+            "sample_count": 10
+          }
+        ]
+      },
+      "finding_id": "latency_bottleneck"
+    },
+    {
+      "finding_type": "memory",
+      "severity": "warning",
+      "title": "Memory Growth Analysis",
+      "description": "Detected memory growth trends across steps.",
+      "data": {
+        "growth_threshold_bytes_per_step": 10485760.0,
+        "growth_items": [
+          {
+            "name": "memory.gpu.allocated",
+            "start_step": 0,
+            "end_step": 4,
+            "growth_bytes_per_step": 28750000.0
+          }
+        ],
+        "peak_bytes": {
+          "memory.gpu.allocated": 1115000000.0
+        }
+      },
+      "finding_id": "memory_growth"
+    },
+    {
+      "finding_type": "communication",
+      "severity": "warning",
+      "title": "Communication Imbalance",
+      "description": "Per-rank communication mean latency ratio is 1.62.",
+      "data": {
+        "imbalance_ratio_threshold": 1.25,
+        "observed_ratio": 1.6152200001607717,
+        "rank_mean_latency_ms": {
+          "0": 7.138781550418426,
+          "1": 11.530702737014565
+        }
+      },
+      "finding_id": "comm_imbalance"
+    },
+    {
+      "finding_type": "distributed",
+      "severity": "warning",
+      "title": "Cross-rank Stage Skew",
+      "description": "Detected rank skew in aligned stage latency; worst ratio 1.30.",
+      "data": {
+        "total_aligned_steps": 5,
+        "skew_items": [
+          {
+            "step": 4,
+            "stage": "backward",
+            "rank_count": 2,
+            "min_ms": 33.35571531996265,
+            "max_ms": 43.22573024222486,
+            "mean_ms": 38.290722781093756,
+            "skew_ratio": 1.2959017615897217,
+            "rank_to_mean_ms": {
+              "0": 33.35571531996265,
+              "1": 43.22573024222486
+            }
+          },
+          {
+            "step": 0,
+            "stage": "backward",
+            "rank_count": 2,
+            "min_ms": 34.762930396701414,
+            "max_ms": 44.75707598945505,
+            "mean_ms": 39.760003193078234,
+            "skew_ratio": 1.287494336027033,
+            "rank_to_mean_ms": {
+              "0": 34.762930396701414,
+              "1": 44.75707598945505
+            }
+          },
+          {
+            "step": 3,
+            "stage": "backward",
+            "rank_count": 2,
+            "min_ms": 34.94700616241904,
+            "max_ms": 43.16435274220452,
+            "mean_ms": 39.05567945231178,
+            "skew_ratio": 1.2351373545875346,
+            "rank_to_mean_ms": {
+              "0": 34.94700616241904,
+              "1": 43.16435274220452
+            }
+          },
+          {
+            "step": 1,
+            "stage": "backward",
+            "rank_count": 2,
+            "min_ms": 33.335752907348336,
+            "max_ms": 41.12325608690644,
+            "mean_ms": 37.22950449712739,
+            "skew_ratio": 1.2336081384213005,
+            "rank_to_mean_ms": {
+              "0": 33.335752907348336,
+              "1": 41.12325608690644
+            }
+          },
+          {
+            "step": 3,
+            "stage": "forward",
+            "rank_count": 2,
+            "min_ms": 23.543856341460728,
+            "max_ms": 28.69368684293156,
+            "mean_ms": 26.118771592196143,
+            "skew_ratio": 1.2187335170068117,
+            "rank_to_mean_ms": {
+              "0": 23.543856341460728,
+              "1": 28.69368684293156
+            }
+          }
+        ],
+        "has_skew": true,
+        "worst_skew_ratio": 1.2959017615897217
+      },
+      "finding_id": "distributed_skew"
+    }
+  ],
+  "recommendations": [
+    "Drill down top bottleneck groups with torch.profiler/Nsight kernel traces.",
+    "Align bottleneck stages with rank skew and communication overlap before optimization.",
+    "Check tensor/loss/history caches and stale references causing monotonic memory growth.",
+    "Correlate memory growth steps with dataloader or optimizer state transitions.",
+    "Check tensor partitioning and collective payload balance across ranks.",
+    "Inspect straggler ranks with NSYS communication traces and NIC metrics.",
+    "Investigate straggler ranks and rebalance uneven stage workloads.",
+    "Align NCCL timeline with skewed stages to identify communication head-of-line blocking."
+  ],
+  "metadata": {
+    "workload_profile": "pretrain",
+    "rules": [
+      "latency_bottleneck",
+      "memory_growth",
+      "latency_variance",
+      "latency_outlier",
+      "comm_imbalance",
+      "pipeline_bubble",
+      "distributed_skew",
+      "gpu_utilization"
+    ],
+    "severity_counts": {
+      "high": 1,
+      "warning": 3
+    },
+    "collector": {
+      "providers": [
+        "external_csv",
+        "synthetic_dist"
+      ],
+      "provider_capabilities": {
+        "synthetic_dist": {
+          "provider_type": "base",
+          "source_mode": "online",
+          "metric_prefixes": [],
+          "dimensions": [],
+          "supports_incremental": true,
+          "supports_step_scope": false,
+          "supports_rank_scope": false,
+          "notes": ""
+        },
+        "external_csv": {
+          "provider_type": "table_csv",
+          "source_mode": "offline",
+          "metric_prefixes": [
+            "external"
+          ],
+          "dimensions": [
+            "csv_columns"
+          ],
+          "supports_incremental": true,
+          "supports_step_scope": false,
+          "supports_rank_scope": false,
+          "notes": ""
+        }
+      },
+      "validation_stats": {
+        "validated_events": 50,
+        "invalid_events": 0,
+        "dropped_invalid_events": 0,
+        "validation_warnings": 10
+      },
+      "bootstrap_warnings": []
+    }
+  },
+  "schema_version": "1.0",
+  "overall_score": 50.0
+}

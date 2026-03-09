@@ -1,0 +1,11 @@
+Metric Name,Metric Value,Metric Unit,Kernel Name
+sm__throughput.avg.pct_of_peak_sustained_elapsed,54.0517,percent,kernel_step_0
+sm__throughput.avg.pct_of_peak_sustained_elapsed,61.5756,percent,kernel_step_1
+sm__throughput.avg.pct_of_peak_sustained_elapsed,56.3156,percent,kernel_step_2
+sm__throughput.avg.pct_of_peak_sustained_elapsed,48.3430,percent,kernel_step_0
+sm__throughput.avg.pct_of_peak_sustained_elapsed,50.7890,percent,kernel_step_1
+sm__throughput.avg.pct_of_peak_sustained_elapsed,59.6204,percent,kernel_step_2
+sm__throughput.avg.pct_of_peak_sustained_elapsed,56.9725,percent,kernel_step_0
+sm__throughput.avg.pct_of_peak_sustained_elapsed,49.3769,percent,kernel_step_1
+sm__throughput.avg.pct_of_peak_sustained_elapsed,48.8306,percent,kernel_step_2
+sm__throughput.avg.pct_of_peak_sustained_elapsed,54.7880,percent,kernel_step_0
