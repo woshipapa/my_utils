@@ -34,6 +34,11 @@ setup(
             "profiling/templates/*.md",
         ]
     },
+    entry_points={
+        "console_scripts": [
+            "myutils-profile=my_utils.profiling.cli:main",
+        ]
+    },
     install_requires=install_requires,
     extras_require=extras_require,
     author="Your Name",
