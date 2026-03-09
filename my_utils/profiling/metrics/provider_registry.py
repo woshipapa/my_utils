@@ -73,6 +73,7 @@ def register_builtin_providers(registry: MetricsProviderRegistry) -> MetricsProv
         ModuleProfilerMetricsProvider,
         MyTimerMetricsProvider,
         NcuCsvMetricsProvider,
+        NsysSqliteGlobMetricsProvider,
         NsysSqliteMetricsProvider,
         PerfStatTextProvider,
         TableCsvMetricsProvider,
@@ -112,6 +113,14 @@ def register_builtin_providers(registry: MetricsProviderRegistry) -> MetricsProv
     def make_nsys_sqlite(provider_id: str, params: Mapping[str, Any], context: Mapping[str, Any]) -> MetricsProvider:
         payload = dict(params)
         payload["provider_id"] = provider_id
+        sqlite_glob = str(payload.get("sqlite_glob", "") or "").strip()
+        sqlite_path = str(payload.get("sqlite_path", "") or "").strip()
+        has_glob = bool(sqlite_glob) or any(ch in sqlite_path for ch in ("*", "?", "["))
+        if has_glob:
+            if not sqlite_glob:
+                payload["sqlite_glob"] = sqlite_path
+                payload.pop("sqlite_path", None)
+            return NsysSqliteGlobMetricsProvider(**payload)
         return NsysSqliteMetricsProvider(**payload)
 
     def make_cprofile(provider_id: str, params: Mapping[str, Any], context: Mapping[str, Any]) -> MetricsProvider:
@@ -130,10 +139,10 @@ def register_builtin_providers(registry: MetricsProviderRegistry) -> MetricsProv
     registry.register("table_csv", make_table_csv)
     registry.register("ncu_csv", make_ncu_csv)
     registry.register("nsys_sqlite", make_nsys_sqlite)
+    registry.register("nsys_sqlite_glob", make_nsys_sqlite)
     registry.register("cprofile", make_cprofile)
     registry.register("perf_stat", make_perf_stat)
     return registry
 
 
 DEFAULT_PROVIDER_REGISTRY = register_builtin_providers(MetricsProviderRegistry())
-

@@ -4,12 +4,15 @@ import json
 import re
 import sqlite3
 import time
+from glob import glob
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from ..metrics.metrics_provider import BaseMetricsProvider, ProviderCapabilities
 from ..metrics.metrics_types import MetricEvent
-from .nsys_schema_adapter import NsysVersionInfo, detect_nsys_version
+from .nsys_mfu import compute_mfu_single, infer_peak_tflops
+from .nsys_schema_adapter import NsightSchema, NsysVersionInfo, detect_nsys_version
+from .nsys_sql_skills import NsysSqlSkillEngine
 
 
 def _safe_float(value) -> Optional[float]:
@@ -841,6 +844,7 @@ class NsysSqliteMetricsProvider(BaseMetricsProvider):
                 "staticSharedMemory",
                 "dynamicSharedMemory",
                 "localMemoryTotal",
+                "localMemoryPerThread",
             ),
         )
         if not rows:
@@ -868,6 +872,7 @@ class NsysSqliteMetricsProvider(BaseMetricsProvider):
                 ("staticSharedMemory", "memory.kernel.shared_static_bytes", "bytes"),
                 ("dynamicSharedMemory", "memory.kernel.shared_dynamic_bytes", "bytes"),
                 ("localMemoryTotal", "memory.kernel.local_total_bytes", "bytes"),
+                ("localMemoryPerThread", "memory.kernel.local_per_thread_bytes", "bytes"),
             ):
                 if col not in row.keys():
                     continue
@@ -890,6 +895,18 @@ class NsysSqliteMetricsProvider(BaseMetricsProvider):
                 bx = _safe_int(row["blockX"]) or 1
                 by = _safe_int(row["blockY"]) or 1
                 bz = _safe_int(row["blockZ"]) or 1
+                for axis, value in (("x", bx), ("y", by), ("z", bz)):
+                    events.append(
+                        MetricEvent(
+                            timestamp=now,
+                            name=f"compute.kernel.block_{axis}",
+                            value=int(max(1, value)),
+                            unit="count",
+                            provider_id=self.provider_id,
+                            tags=tags,
+                            node_id=node_id,
+                        )
+                    )
                 events.append(
                     MetricEvent(
                         timestamp=now,
@@ -905,6 +922,18 @@ class NsysSqliteMetricsProvider(BaseMetricsProvider):
                 gx = _safe_int(row["gridX"]) or 1
                 gy = _safe_int(row["gridY"]) or 1
                 gz = _safe_int(row["gridZ"]) or 1
+                for axis, value in (("x", gx), ("y", gy), ("z", gz)):
+                    events.append(
+                        MetricEvent(
+                            timestamp=now,
+                            name=f"compute.kernel.grid_{axis}",
+                            value=int(max(1, value)),
+                            unit="count",
+                            provider_id=self.provider_id,
+                            tags=tags,
+                            node_id=node_id,
+                        )
+                    )
                 events.append(
                     MetricEvent(
                         timestamp=now,
@@ -1695,6 +1724,8 @@ class NsysSqliteMetricsProvider(BaseMetricsProvider):
                 "eventType",
                 "text",
                 "textId",
+                "name",
+                "nameId",
                 "jsonText",
                 "domainId",
                 "category",
@@ -1724,10 +1755,18 @@ class NsysSqliteMetricsProvider(BaseMetricsProvider):
                 text = self._resolve_string(conn, row["text"])
             if not text and "textId" in row.keys():
                 text = self._resolve_string(conn, row["textId"])
+            if not text and "nameId" in row.keys():
+                text = self._resolve_string(conn, row["nameId"])
+            if not text and "name" in row.keys() and row["name"] is not None:
+                maybe_name = row["name"]
+                sid = _safe_int(maybe_name)
+                text = self._resolve_string(conn, sid) if sid is not None else str(maybe_name)
             if not text and "jsonText" in row.keys() and row["jsonText"] is not None:
                 text = str(row["jsonText"])
             if text:
                 tags["nvtx_text"] = text
+                # Expose NVTX custom label as standard "name" dimension for analyzer grouping.
+                tags.setdefault("name", text)
                 tags.update(self._extract_step_rank_from_nvtx(text))
 
             start = _safe_float(row["start"]) if "start" in row.keys() else None
@@ -1787,13 +1826,10 @@ class NsysSqliteMetricsProvider(BaseMetricsProvider):
         conn.row_factory = sqlite3.Row
         try:
             self._load_schema_meta(conn)
-            table_rows = conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name ASC;"
-            ).fetchall()
-            tables = [str(row["name"]) for row in table_rows if row["name"]]
-            columns: Dict[str, List[str]] = {}
-            for table in tables:
-                columns[table] = sorted(self._table_columns(conn, table))
+            schema = NsightSchema(conn, meta=self._schema_meta)
+            tables = list(schema.tables)
+            columns: Dict[str, List[str]] = {table: schema.columns(table) for table in tables}
+            summary = schema.summary()
             return {
                 "sqlite_path": str(self.sqlite_path),
                 "exists": True,
@@ -1801,6 +1837,7 @@ class NsysSqliteMetricsProvider(BaseMetricsProvider):
                 "tables": tables,
                 "columns": columns,
                 "schema_meta": dict(self._schema_meta or {}),
+                "canonical_tables": dict(summary.get("canonical_tables", {})),
                 "version_info": {
                     "exporter_version": getattr(self._version_info, "exporter_version", ""),
                     "export_schema_version": getattr(self._version_info, "export_schema_version", ""),
@@ -1810,6 +1847,179 @@ class NsysSqliteMetricsProvider(BaseMetricsProvider):
             }
         finally:
             conn.close()
+
+    def list_sql_skills(self) -> List[str]:
+        """
+        Return built-in SQL skill names available for this SQLite schema.
+        """
+        if not self.sqlite_path.exists():
+            return []
+        conn = sqlite3.connect(str(self.sqlite_path))
+        conn.row_factory = sqlite3.Row
+        try:
+            engine = NsysSqlSkillEngine(conn)
+            return engine.list_skills()
+        finally:
+            conn.close()
+
+    def describe_sql_skills(self) -> List[Dict[str, object]]:
+        """
+        Return built-in SQL skills with metadata and parameters.
+        """
+        if not self.sqlite_path.exists():
+            return []
+        conn = sqlite3.connect(str(self.sqlite_path))
+        conn.row_factory = sqlite3.Row
+        try:
+            engine = NsysSqlSkillEngine(conn)
+            return engine.describe_skills()
+        finally:
+            conn.close()
+
+    def run_sql_skill(self, skill_name: str, **params: Any) -> List[Dict[str, object]]:
+        """
+        Execute one built-in SQL skill and return rows.
+
+        Example:
+            provider.run_sql_skill("top_kernels", device_id=0, limit=20)
+        """
+        if not self.sqlite_path.exists():
+            return []
+        conn = sqlite3.connect(str(self.sqlite_path))
+        conn.row_factory = sqlite3.Row
+        try:
+            engine = NsysSqlSkillEngine(conn)
+            return engine.execute(skill_name, **params)
+        finally:
+            conn.close()
+
+    def analyze_compute_comm_overlap(
+        self,
+        *,
+        device_id: int = -1,
+        start_ns: int = -1,
+        end_ns: int = -1,
+        limit: int = 2_000_000,
+    ) -> Dict[str, object]:
+        """
+        Analyze compute (non-NCCL) and communication (NCCL-like) overlap from kernel timeline.
+        """
+        if not self.sqlite_path.exists():
+            return {}
+        conn = sqlite3.connect(str(self.sqlite_path))
+        conn.row_factory = sqlite3.Row
+        try:
+            engine = NsysSqlSkillEngine(conn)
+            return engine.analyze_compute_comm_overlap(
+                device_id=device_id,
+                start_ns=start_ns,
+                end_ns=end_ns,
+                limit=limit,
+            )
+        finally:
+            conn.close()
+
+    def summarize_gpu_kernels(
+        self,
+        *,
+        device_id: int = -1,
+        start_ns: int = -1,
+        end_ns: int = -1,
+        top_k: int = 10,
+        limit: int = 2_000_000,
+    ) -> Dict[str, object]:
+        """
+        Produce GPU kernel time summary (span/busy/idle/utilization/top kernels).
+        """
+        if not self.sqlite_path.exists():
+            return {}
+        conn = sqlite3.connect(str(self.sqlite_path))
+        conn.row_factory = sqlite3.Row
+        try:
+            engine = NsysSqlSkillEngine(conn)
+            return engine.summarize_gpu_kernels(
+                device_id=device_id,
+                start_ns=start_ns,
+                end_ns=end_ns,
+                top_k=top_k,
+                limit=limit,
+            )
+        finally:
+            conn.close()
+
+    def detect_iterations(
+        self,
+        *,
+        marker: str = "sample_0",
+        device_id: int = -1,
+        start_ns: int = -1,
+        end_ns: int = -1,
+        top_level_only: bool = True,
+        limit: int = 2000,
+    ) -> List[Dict[str, object]]:
+        """
+        Detect iteration windows from NVTX marker ranges.
+        """
+        if not self.sqlite_path.exists():
+            return []
+        conn = sqlite3.connect(str(self.sqlite_path))
+        conn.row_factory = sqlite3.Row
+        try:
+            engine = NsysSqlSkillEngine(conn)
+            return engine.detect_iterations(
+                marker=marker,
+                device_id=device_id,
+                start_ns=start_ns,
+                end_ns=end_ns,
+                top_level_only=top_level_only,
+                limit=limit,
+            )
+        finally:
+            conn.close()
+
+    def first_gpu_name(self) -> str:
+        if not self.sqlite_path.exists():
+            return ""
+        conn = sqlite3.connect(str(self.sqlite_path))
+        conn.row_factory = sqlite3.Row
+        try:
+            if not self._table_exists(conn, "TARGET_INFO_GPU"):
+                return ""
+            row = conn.execute("SELECT name FROM TARGET_INFO_GPU ORDER BY id ASC LIMIT 1;").fetchone()
+            return str(row["name"] or "").strip() if row else ""
+        finally:
+            conn.close()
+
+    def compute_mfu(
+        self,
+        *,
+        step_time_s: float,
+        model_flops_per_step: float,
+        peak_tflops: Optional[float] = None,
+        precision: str = "fp16",
+    ) -> Dict[str, object]:
+        """
+        Compute MFU from step time and model FLOPs.
+        """
+        resolved_peak = _safe_float(peak_tflops)
+        if resolved_peak is None:
+            gpu_name = self.first_gpu_name()
+            resolved_peak = infer_peak_tflops(gpu_name, precision=precision)
+            if resolved_peak is None:
+                return {
+                    "error": "peak_tflops is required when GPU name mapping is unavailable.",
+                    "gpu_name": gpu_name,
+                    "precision": precision,
+                }
+        payload = compute_mfu_single(
+            step_time_s=float(step_time_s),
+            model_flops_per_step=float(model_flops_per_step),
+            peak_tflops=float(resolved_peak),
+        )
+        if "error" not in payload:
+            payload["gpu_name"] = self.first_gpu_name()
+            payload["precision"] = precision
+        return payload
 
     def get_metrics(self) -> List[MetricEvent]:
         if not self.sqlite_path.exists():
@@ -1852,3 +2062,98 @@ class NsysSqliteMetricsProvider(BaseMetricsProvider):
             return result
         finally:
             conn.close()
+
+
+class NsysSqliteGlobMetricsProvider(BaseMetricsProvider):
+    """
+    Aggregate multiple Nsight Systems SQLite files matched by a glob pattern.
+
+    This enables one config provider spec to cover multi-rank outputs like:
+    ./logs/light_bagel_pretrain/xxxprefix_rank_*.sqlite
+    """
+
+    provider_id = "nsys_sqlite_glob"
+    _capabilities = ProviderCapabilities(
+        provider_type="nsys_sqlite_glob",
+        source_mode="offline",
+        metric_prefixes=["latency", "memory", "io", "compute", "comm", "perf", "calls"],
+        dimensions=["rank", "pid", "tid", "sqlite_file"],
+        supports_incremental=True,
+        supports_rank_scope=True,
+        supports_step_scope=True,
+        notes="Glob-based multi-file wrapper for NsysSqliteMetricsProvider.",
+    )
+
+    def __init__(
+        self,
+        *,
+        sqlite_glob: str,
+        provider_id: Optional[str] = None,
+        enabled: bool = True,
+        recursive: bool = False,
+        parse_rank_from_filename: bool = True,
+        file_rank_regex: str = r"rank[_-]?(\d+)",
+        **provider_kwargs: Any,
+    ) -> None:
+        super().__init__(enabled=enabled)
+        if provider_id:
+            self.provider_id = str(provider_id)
+
+        self.sqlite_glob = str(sqlite_glob)
+        self.recursive = bool(recursive)
+        self.parse_rank_from_filename = bool(parse_rank_from_filename)
+        self._file_rank_pattern = re.compile(str(file_rank_regex), re.IGNORECASE)
+        self._provider_kwargs = dict(provider_kwargs)
+        self._children: Dict[str, NsysSqliteMetricsProvider] = {}
+
+    def _iter_paths(self) -> List[Path]:
+        matched = sorted(glob(self.sqlite_glob, recursive=self.recursive))
+        return [Path(item) for item in matched if item]
+
+    def _get_child(self, path: Path) -> NsysSqliteMetricsProvider:
+        key = str(path.resolve())
+        child = self._children.get(key)
+        if child is None:
+            # Keep child provider_id stable but unify exported provider_id on events.
+            child = NsysSqliteMetricsProvider(
+                sqlite_path=str(path),
+                provider_id=f"{self.provider_id}:{path.stem}",
+                enabled=True,
+                **self._provider_kwargs,
+            )
+            self._children[key] = child
+        return child
+
+    def _infer_rank_from_filename(self, path: Path) -> Optional[str]:
+        if not self.parse_rank_from_filename:
+            return None
+        match = self._file_rank_pattern.search(path.name)
+        if not match:
+            return None
+        return str(match.group(1))
+
+    def get_metrics(self) -> List[MetricEvent]:
+        paths = self._iter_paths()
+        if not paths:
+            return []
+
+        events: List[MetricEvent] = []
+        for path in paths:
+            if not path.exists() or not path.is_file():
+                continue
+            try:
+                child = self._get_child(path)
+                child_events = child.get_metrics()
+            except Exception:
+                # Skip broken/non-sqlite files in a broad glob match.
+                continue
+
+            rank_from_name = self._infer_rank_from_filename(path)
+            for event in child_events:
+                event.provider_id = self.provider_id
+                event.tags.setdefault("sqlite_file", path.name)
+                event.tags.setdefault("sqlite_path", str(path))
+                if rank_from_name is not None and "rank" not in event.tags:
+                    event.tags["rank"] = rank_from_name
+                events.append(event)
+        return events

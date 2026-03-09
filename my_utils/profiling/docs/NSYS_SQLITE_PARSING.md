@@ -103,6 +103,85 @@ print("events:", len(events))
 print("example:", events[0].name, events[0].value, events[0].unit, events[0].tags)
 ```
 
+### 2.5 Run built-in SQL skills (nsys-ai style)
+
+This project now includes a built-in SQL skill engine inspired by `nsys-ai`:
+
+- `top_kernels`
+- `aggregate_kernels`
+- `aggregate_nvtx_ranges`
+- `memcpy_in_window`
+- `kernel_map`
+- `gpu_idle_gaps`
+- `kernel_launch_overhead`
+
+Python API:
+
+```python
+from my_utils.profiling import NsysSqliteMetricsProvider
+
+p = NsysSqliteMetricsProvider("./logs/nsys/train_rank_0.sqlite")
+print(p.list_sql_skills())
+print(p.describe_sql_skills())  # includes params/defaults
+
+rows = p.run_sql_skill("top_kernels", device_id=0, limit=20)
+for row in rows[:3]:
+    print(row)
+
+# overlap summary (compute vs NCCL kernels)
+print(p.analyze_compute_comm_overlap(device_id=0))
+
+# GPU kernel timeline summary
+print(p.summarize_gpu_kernels(device_id=0, top_k=10))
+```
+
+CLI:
+
+```bash
+# list skills and parameter schema
+myutils-profile nsys-sql-skill \
+  --sqlite ./logs/nsys/train_rank_0.sqlite \
+  --list-skills \
+  --pretty
+
+# run one skill
+myutils-profile nsys-sql-skill \
+  --sqlite ./logs/nsys/train_rank_0.sqlite \
+  --skill gpu_idle_gaps \
+  --param device_id=0 \
+  --param min_gap_ns=1000000 \
+  --param limit=30 \
+  --pretty \
+  --output ./nsys_metrics_out/gpu_idle_gaps.json
+
+# nsys-oriented summary report (json)
+myutils-profile nsys-analyze \
+  --sqlite ./logs/nsys/train_rank_0.sqlite \
+  --device-id 0 \
+  --top-k 20 \
+  --output ./nsys_metrics_out/nsys_analyze.json
+
+# kernel flat export
+myutils-profile nsys-export \
+  --sqlite ./logs/nsys/train_rank_0.sqlite \
+  --device-id 0 \
+  --format csv \
+  --output ./nsys_metrics_out/kernels_flat.csv
+
+# before/after sqlite diff
+myutils-profile nsys-diff \
+  --before-sqlite ./logs/nsys/run_a.sqlite \
+  --after-sqlite ./logs/nsys/run_b.sqlite \
+  --device-id 0 \
+  --output ./nsys_metrics_out/nsys_diff.json
+
+# static timeline html
+myutils-profile nsys-timeline-html \
+  --sqlite ./logs/nsys/train_rank_0.sqlite \
+  --device-id 0 \
+  --output ./nsys_metrics_out/timeline.html
+```
+
 ## 3. Constructor Options
 
 `NsysSqliteMetricsProvider(...)` options:
@@ -132,7 +211,7 @@ Current provider parses these tables and emits canonical metrics:
 | SQLite table | Main metrics | Typical questions answered |
 | --- | --- | --- |
 | `CUPTI_ACTIVITY_KIND_RUNTIME` | `latency.cuda.runtime_api` | Which CUDA runtime APIs are expensive? |
-| `CUPTI_ACTIVITY_KIND_KERNEL` | `latency.kernel.cuda`, `compute.kernel.registers_per_thread`, `compute.kernel.threads_per_block`, `compute.kernel.blocks_per_grid`, `memory.kernel.shared_*`, `memory.kernel.local_total_bytes` | Which kernels dominate time? Is launch config/resource usage reasonable? |
+| `CUPTI_ACTIVITY_KIND_KERNEL` | `latency.kernel.cuda`, `compute.kernel.registers_per_thread`, `compute.kernel.block_x/y/z`, `compute.kernel.grid_x/y/z`, `compute.kernel.threads_per_block`, `compute.kernel.blocks_per_grid`, `memory.kernel.shared_*`, `memory.kernel.local_total_bytes`, `memory.kernel.local_per_thread_bytes` | Which kernels dominate time? Is launch config/resource usage reasonable? |
 | `CUPTI_ACTIVITY_KIND_MEMCPY` | `latency.memcpy.cuda`, `io.memcpy.bytes`, `io.memcpy.bandwidth_gbps` | Is transfer time/throughput the bottleneck? |
 | `CUPTI_ACTIVITY_KIND_MEMSET` | `latency.memset.cuda`, `io.memset.bytes` | Is memset overhead significant? |
 | `CUPTI_ACTIVITY_KIND_SYNCHRONIZATION` | `latency.cuda.sync` | Is synchronization causing stalls? |
@@ -144,7 +223,7 @@ Current provider parses these tables and emits canonical metrics:
 | `PMU_EVENTS` / `PMU_EVENT_COUNTERS` / `PMU_EVENT_REQUESTS` | `perf.pmu.*`, `latency.pmu.sample_window` | What are CPU PMU counter samples around profiling windows? |
 | `CUDA_UM_CPU_PAGE_FAULT_EVENTS` | `calls.cuda.um.cpu_page_fault` | Are UM CPU page faults frequent? |
 | `CUDA_UM_GPU_PAGE_FAULT_EVENTS` | `calls.cuda.um.gpu_page_fault_event`, `memory.cuda.um.gpu_page_faults`, `latency.cuda.um.gpu_page_fault` | Are UM GPU page faults or migrations expensive? |
-| `NVTX_EVENTS` | `latency.nvtx.range`, `calls.nvtx.mark` | Which NVTX stage/range is expensive? |
+| `NVTX_EVENTS` | `latency.nvtx.range`, `calls.nvtx.mark` | Which NVTX stage/range is expensive? (Custom names are exposed in tags `nvtx_text` and `name`) |
 | `OSRT_API` (optional) | `latency.osrt.api` | Which host OS runtime calls are expensive? |
 | Other duration tables with `start/end` (auto mode) | `latency.nsys.<table>`, optional `io.nsys.<table>.bytes` | Collect duration-style metrics from newly introduced schema tables |
 | `StringIds` | name resolution support table | Convert id fields to readable names |
@@ -431,6 +510,20 @@ Provider surface:
 
 - `NsysSqliteMetricsProvider.describe_schema()`
   - returns table list, column map, schema metadata, detected version family
+- `NsysSqliteMetricsProvider.list_sql_skills()`
+  - returns available skill names for this SQLite schema
+- `NsysSqliteMetricsProvider.describe_sql_skills()`
+  - returns skill metadata and parameter definitions
+- `NsysSqliteMetricsProvider.run_sql_skill(name, **params)`
+  - executes one built-in SQL skill and returns result rows
+- `NsysSqliteMetricsProvider.analyze_compute_comm_overlap(...)`
+  - returns compute/comm overlap summary based on kernel intervals
+- `NsysSqliteMetricsProvider.summarize_gpu_kernels(...)`
+  - returns span/busy/idle/utilization and top kernels summary
+- `NsysSqliteMetricsProvider.detect_iterations(marker=...)`
+  - detects iteration windows by NVTX marker ranges
+- `NsysSqliteMetricsProvider.compute_mfu(...)`
+  - computes MFU from step time + model FLOPs + peak TFLOPS
 
 Example:
 
@@ -445,11 +538,12 @@ print(schema["table_count"], schema["version_info"])
 ## 14. Source References
 
 - Provider implementation:
-  - `my_utils/profiling/nsys_sqlite_provider.py`
-  - `my_utils/profiling/nsys_schema_adapter.py`
+  - `my_utils/profiling/sources/nsys_sqlite_provider.py`
+  - `my_utils/profiling/sources/nsys_schema_adapter.py`
+  - `my_utils/profiling/sources/nsys_sql_skills.py`
 - Unified metrics flow:
-  - `my_utils/profiling/metrics_collector.py`
-  - `my_utils/profiling/metrics_analyzer.py`
+  - `my_utils/profiling/pipeline/metrics_collector.py`
+  - `my_utils/profiling/analyzers/metrics_analyzer.py`
 - Official docs:
   - Nsight Systems User Guide: https://docs.nvidia.com/nsight-systems/UserGuide/
   - Nsight Systems docs archives: https://docs.nvidia.com/nsight-systems/archives/index.html

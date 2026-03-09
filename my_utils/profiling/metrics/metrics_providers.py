@@ -582,6 +582,9 @@ class _LegacyNsysSqliteMetricsProvider(BaseMetricsProvider):
 
 
 # Use the schema-adaptive parser implementation.
+from ..sources.nsys_sqlite_provider import (  # noqa: E402
+    NsysSqliteGlobMetricsProvider as NsysSqliteGlobMetricsProvider,
+)
 from ..sources.nsys_sqlite_provider import NsysSqliteMetricsProvider as NsysSqliteMetricsProvider  # noqa: E402
 
 

@@ -57,7 +57,8 @@ Example config files in this directory:
 - `collector_config_nsys_sqlite_full.json`
   - Full `nsys_sqlite` single-rank configuration for one SQLite file.
 - `collector_config_nsys_multi_rank_full.json`
-  - Full `nsys_sqlite` multi-rank configuration for two SQLite files.
+  - Full `nsys_sqlite_glob` multi-rank configuration using one glob pattern.
+  - Default pattern: `./logs/light_bagel_pretrain/xxxprefix_rank_*_.log`
 
 Run with CLI:
 
@@ -82,9 +83,53 @@ myutils-profile trace \
   --output ./nsys_metrics_out/metrics_trace.json \
   --auto-align-ranks \
   --reference-rank 0
+
+# 4) list built-in nsys SQL skills
+myutils-profile nsys-sql-skill \
+  --sqlite ./logs/light_bagel_pretrain/train_rank_0.sqlite \
+  --list-skills \
+  --pretty
+
+# 5) run one nsys SQL skill
+myutils-profile nsys-sql-skill \
+  --sqlite ./logs/light_bagel_pretrain/train_rank_0.sqlite \
+  --skill top_kernels \
+  --param device_id=0 \
+  --param limit=20 \
+  --pretty \
+  --output ./nsys_metrics_out/top_kernels.json
+
+# 6) nsys summarize/analyze
+myutils-profile nsys-analyze \
+  --sqlite ./logs/light_bagel_pretrain/train_rank_0.sqlite \
+  --device-id 0 \
+  --top-k 20 \
+  --output ./nsys_metrics_out/nsys_analyze.json
+
+# 7) nsys flat export
+myutils-profile nsys-export \
+  --sqlite ./logs/light_bagel_pretrain/train_rank_0.sqlite \
+  --device-id 0 \
+  --format csv \
+  --output ./nsys_metrics_out/kernels_flat.csv
+
+# 8) nsys before/after diff
+myutils-profile nsys-diff \
+  --before-sqlite ./logs/light_bagel_pretrain/run_a.sqlite \
+  --after-sqlite ./logs/light_bagel_pretrain/run_b.sqlite \
+  --device-id 0 \
+  --output ./nsys_metrics_out/nsys_diff.json
+
+# 9) static timeline html
+myutils-profile nsys-timeline-html \
+  --sqlite ./logs/light_bagel_pretrain/train_rank_0.sqlite \
+  --device-id 0 \
+  --output ./nsys_metrics_out/timeline.html
 ```
 
 Notes:
 
 - `nsys_sqlite` provider parameter is `sqlite_path` (not `db_path`).
+- `nsys_sqlite_glob` provider parameter is `sqlite_glob`.
+- `sqlite_glob` can match any extension (including `*.log`); file content must be SQLite export format.
 - For `my_timer` / `torch_profiler` / `module_profiler`, use Python API with `provider_context` object injection instead of CLI-only config.

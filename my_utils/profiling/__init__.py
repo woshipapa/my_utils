@@ -27,6 +27,7 @@ from .metrics.metrics_providers import (
     ModuleProfilerMetricsProvider,
     MyTimerMetricsProvider,
     NcuCsvMetricsProvider,
+    NsysSqliteGlobMetricsProvider,
     NsysSqliteMetricsProvider,
     PerfStatTextProvider,
     TableCsvMetricsProvider,
@@ -69,7 +70,14 @@ from .runtime.frameworkless import (
 from .runtime.meta_adapters import extract_meta_from_call
 from .runtime.ProfileManager import ProfileManager
 from .runtime.template_utils import get_profiling_template_path, get_profiling_templates_dir
-from .sources.nsys_schema_adapter import NsysVersionInfo, detect_nsys_version
+from .sources.nsys_analyze import analyze_nsys_sqlite, analyze_to_markdown
+from .sources.nsys_diff import diff_nsys_sqlite, diff_to_markdown
+from .sources.nsys_flat_export import collect_kernel_rows, export_kernels_flat
+from .sources.nsys_iterations import detect_iterations
+from .sources.nsys_mfu import compute_mfu_compare, compute_mfu_single, infer_peak_tflops
+from .sources.nsys_schema_adapter import NsightSchema, NsysVersionInfo, detect_nsys_version
+from .sources.nsys_sql_skills import NsysSqlSkillEngine, SqlSkill, SqlSkillParam
+from .sources.nsys_timeline_html import export_timeline_html
 
 VISUALIZATION_AVAILABLE = False
 try:
@@ -143,6 +151,7 @@ __all__ = [
     "ModuleProfilerMetricsProvider",
     "TableCsvMetricsProvider",
     "NcuCsvMetricsProvider",
+    "NsysSqliteGlobMetricsProvider",
     "NsysSqliteMetricsProvider",
     "CProfileStatsProvider",
     "PerfStatTextProvider",
@@ -164,7 +173,22 @@ __all__ = [
     "list_workload_profiles",
     "build_rules_for_workload",
     "NsysVersionInfo",
+    "NsightSchema",
     "detect_nsys_version",
+    "SqlSkillParam",
+    "SqlSkill",
+    "NsysSqlSkillEngine",
+    "detect_iterations",
+    "compute_mfu_single",
+    "compute_mfu_compare",
+    "infer_peak_tflops",
+    "collect_kernel_rows",
+    "export_kernels_flat",
+    "analyze_nsys_sqlite",
+    "analyze_to_markdown",
+    "diff_nsys_sqlite",
+    "diff_to_markdown",
+    "export_timeline_html",
     "VISUALIZATION_AVAILABLE",
 ]
 
@@ -210,7 +234,14 @@ _LEGACY_MODULE_ALIASES = {
     "my_utils.profiling.ProfileManager": "my_utils.profiling.runtime.ProfileManager",
     "my_utils.profiling.template_utils": "my_utils.profiling.runtime.template_utils",
     "my_utils.profiling.nsys_schema_adapter": "my_utils.profiling.sources.nsys_schema_adapter",
+    "my_utils.profiling.nsys_sql_skills": "my_utils.profiling.sources.nsys_sql_skills",
     "my_utils.profiling.nsys_sqlite_provider": "my_utils.profiling.sources.nsys_sqlite_provider",
+    "my_utils.profiling.nsys_iterations": "my_utils.profiling.sources.nsys_iterations",
+    "my_utils.profiling.nsys_mfu": "my_utils.profiling.sources.nsys_mfu",
+    "my_utils.profiling.nsys_flat_export": "my_utils.profiling.sources.nsys_flat_export",
+    "my_utils.profiling.nsys_analyze": "my_utils.profiling.sources.nsys_analyze",
+    "my_utils.profiling.nsys_diff": "my_utils.profiling.sources.nsys_diff",
+    "my_utils.profiling.nsys_timeline_html": "my_utils.profiling.sources.nsys_timeline_html",
 }
 
 
