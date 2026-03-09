@@ -128,6 +128,9 @@ def analyze_nsys_sqlite(
                         peak_tflops=float(resolved_peak),
                     )
 
+        sync_breakdown = engine.execute("sync_breakdown", device_id=device_id, limit=50) if engine.get_skill("sync_breakdown") else []
+        memcpy_bandwidth = engine.execute("memcpy_bandwidth_analysis", device_id=device_id) if engine.get_skill("memcpy_bandwidth_analysis") else []
+
         return {
             "sqlite_path": sqlite_path,
             "device_id": int(device_id),
@@ -138,6 +141,8 @@ def analyze_nsys_sqlite(
             "top_kernels": top_kernels,
             "nccl_breakdown": nccl_breakdown,
             "iterations": iterations,
+            "sync_breakdown": sync_breakdown,
+            "memcpy_bandwidth": memcpy_bandwidth,
             "mfu": mfu,
             "warnings": warnings,
         }
@@ -192,6 +197,24 @@ def analyze_to_markdown(result: Dict[str, object]) -> str:
     lines.append(json.dumps(result.get("iterations", []), ensure_ascii=False, indent=2))
     lines.append("```")
     lines.append("")
+
+    sync_bd = result.get("sync_breakdown") or []
+    if sync_bd:
+        lines.append("## Sync Breakdown")
+        lines.append("")
+        lines.append("```json")
+        lines.append(json.dumps(sync_bd, ensure_ascii=False, indent=2))
+        lines.append("```")
+        lines.append("")
+
+    memcpy_bw = result.get("memcpy_bandwidth") or []
+    if memcpy_bw:
+        lines.append("## Memcpy Bandwidth")
+        lines.append("")
+        lines.append("```json")
+        lines.append(json.dumps(memcpy_bw, ensure_ascii=False, indent=2))
+        lines.append("```")
+        lines.append("")
 
     mfu = result.get("mfu")
     if mfu:
