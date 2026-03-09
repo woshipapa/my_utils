@@ -29,6 +29,23 @@ profiling/
 4. `output/*` exports reports and chrome trace.
 5. `runtime/*` integrates capture windows and runtime controls.
 
+## CLI Quick Commands
+
+```bash
+# list built-in providers
+myutils-profile list-providers
+
+# run built-in Nsight SQLite SQL skills
+myutils-profile nsys-sql-skill --sqlite ./train_rank0.sqlite --list-skills --pretty
+myutils-profile nsys-sql-skill --sqlite ./train_rank0.sqlite --skill top_kernels --param device_id=0 --param limit=20 --pretty
+
+# nsys-oriented offline workflow
+myutils-profile nsys-analyze --sqlite ./train_rank0.sqlite --device-id 0 --top-k 20 --output ./nsys_analyze.json
+myutils-profile nsys-export --sqlite ./train_rank0.sqlite --device-id 0 --format csv --output ./kernels_flat.csv
+myutils-profile nsys-diff --before-sqlite ./run_a.sqlite --after-sqlite ./run_b.sqlite --device-id 0 --output ./nsys_diff.json
+myutils-profile nsys-timeline-html --sqlite ./train_rank0.sqlite --device-id 0 --output ./timeline.html
+```
+
 ## Submodule Docs
 
 - [docs/README.md](./docs/README.md)

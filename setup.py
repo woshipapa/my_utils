@@ -6,11 +6,13 @@ readme_path = ROOT / "README.md"
 long_description = readme_path.read_text(encoding="utf-8") if readme_path.exists() else ""
 
 install_requires = [
-    "torch",
     "numpy",
 ]
 
 extras_require = {
+    # Keep torch optional to avoid forcing a wheel/CUDA stack change
+    # in environments that already have a tuned torch + cuDNN setup.
+    "torch": ["torch"],
     "profiling": ["pandas", "matplotlib"],
     "tensordict": ["tensordict"],
     "etcd": ["etcd3"],
@@ -19,7 +21,21 @@ extras_require = {
     "system": ["psutil"],
     "megatron": ["megatron-core"],
 }
-extras_require["all"] = sorted({dep for deps in extras_require.values() for dep in deps})
+extras_require["all"] = sorted(
+    {
+        dep
+        for key, deps in extras_require.items()
+        if key != "torch"
+        for dep in deps
+    }
+)
+extras_require["all_with_torch"] = sorted(
+    {
+        dep
+        for deps in extras_require.values()
+        for dep in deps
+    }
+)
 
 setup(
     name="my_utils",

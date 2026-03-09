@@ -13,6 +13,7 @@ This directory contains design and governance docs for the unified profiling sys
 - [FRAMEWORK_ADAPTERS_DESIGN.md](./FRAMEWORK_ADAPTERS_DESIGN.md)
 - [CROSS_FRAMEWORK_PROFILE_REFERENCE.md](./CROSS_FRAMEWORK_PROFILE_REFERENCE.md)
 - [NSYS_SQLITE_PARSING.md](./NSYS_SQLITE_PARSING.md)
+- [NSYS_AI_ALIGNMENT_MATRIX.md](./NSYS_AI_ALIGNMENT_MATRIX.md)
 - [nsys_2024_7_1_cli_quick_reference.md](./nsys_2024_7_1_cli_quick_reference.md)
 - [MIGRATION_CHECKLIST.md](./MIGRATION_CHECKLIST.md)
 - [RELEASE_GOVERNANCE.md](./RELEASE_GOVERNANCE.md)

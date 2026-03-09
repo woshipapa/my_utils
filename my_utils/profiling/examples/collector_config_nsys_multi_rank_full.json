@@ -20,34 +20,14 @@
   },
   "providers": [
     {
-      "type": "nsys_sqlite",
-      "id": "nsys_rank0",
+      "type": "nsys_sqlite_glob",
+      "id": "nsys_all_ranks",
       "enabled": true,
       "params": {
-        "sqlite_path": "./train_rank0.sqlite",
-        "include_runtime": true,
-        "include_kernels": true,
-        "include_memcpy": true,
-        "include_memset": true,
-        "include_sync": true,
-        "include_nvtx": true,
-        "include_memory_usage": true,
-        "include_osrt": false,
-        "include_gpu_metrics": true,
-        "include_generic_events": true,
-        "include_network_metrics": true,
-        "include_pmu_metrics": true,
-        "include_cuda_um": true,
-        "include_auto_duration_tables": true,
-        "parse_step_from_nvtx": true
-      }
-    },
-    {
-      "type": "nsys_sqlite",
-      "id": "nsys_rank1",
-      "enabled": true,
-      "params": {
-        "sqlite_path": "./train_rank1.sqlite",
+        "sqlite_glob": "./logs/light_bagel_pretrain/xxxprefix_rank_*_.log",
+        "recursive": false,
+        "parse_rank_from_filename": true,
+        "file_rank_regex": "rank[_-]?(\\d+)",
         "include_runtime": true,
         "include_kernels": true,
         "include_memcpy": true,

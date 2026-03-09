@@ -1,4 +1,4 @@
-# my_utils
+﻿# my_utils
 
 PyTorch训练/推理工作流的性能分析、日志记录、追踪和调试工具集�?
 本README按照代码实际行为组织，提供可直接复制的使用模式�?
@@ -20,6 +20,22 @@ pip install -e .[profiling,tensordict,etcd,nvml,nvtx,system,megatron]
 
 ```bash
 pip install -e .[all]
+```
+
+Torch dependency policy:
+
+```bash
+# Keep your existing torch/cuDNN stack (recommended)
+pip install -e .
+
+# Let pip install torch automatically
+pip install -e .[torch]
+
+# All extras except torch
+pip install -e .[all]
+
+# All extras including torch
+pip install -e .[all_with_torch]
 ```
 
 ## Package Layout (Hierarchical)

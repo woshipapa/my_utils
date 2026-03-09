@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional
 
 from .analyzers.metrics_analyzer import MetricsAnalyzer
 from .pipeline.metrics_collector import MetricsCollector
@@ -13,6 +13,11 @@ from .metrics.metrics_store import MetricsStore
 from .output.metrics_trace import ChromeTraceExportConfig, export_events_file_to_chrome_trace
 from .metrics.metrics_types import AnalysisReport
 from .metrics.provider_registry import DEFAULT_PROVIDER_REGISTRY
+from .sources.nsys_analyze import analyze_nsys_sqlite, analyze_to_markdown
+from .sources.nsys_diff import diff_nsys_sqlite, diff_to_markdown
+from .sources.nsys_flat_export import export_kernels_flat
+from .sources.nsys_sqlite_provider import NsysSqliteMetricsProvider
+from .sources.nsys_timeline_html import export_timeline_html
 
 
 def _parse_tags(values: Iterable[str]) -> Dict[str, str]:
@@ -47,6 +52,32 @@ def _parse_rank_offsets(values: Iterable[str]) -> Dict[str, float]:
         except Exception:
             continue
     return result
+
+
+def _auto_parse_value(text: str) -> Any:
+    raw = str(text).strip()
+    low = raw.lower()
+    if low in {"true", "false"}:
+        return low == "true"
+    try:
+        if "." in raw:
+            return float(raw)
+        return int(raw)
+    except Exception:
+        return raw
+
+
+def _parse_kv_params(values: Iterable[str]) -> Dict[str, Any]:
+    out: Dict[str, Any] = {}
+    for item in values:
+        if "=" not in item:
+            continue
+        key, value = item.split("=", 1)
+        key = key.strip()
+        if not key:
+            continue
+        out[key] = _auto_parse_value(value)
+    return out
 
 
 def cmd_ingest(args: argparse.Namespace) -> int:
@@ -136,6 +167,110 @@ def cmd_trace(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_nsys_sql_skill(args: argparse.Namespace) -> int:
+    provider = NsysSqliteMetricsProvider(args.sqlite)
+    if args.list_skills:
+        payload = provider.describe_sql_skills()
+        print(json.dumps(payload, ensure_ascii=False, indent=2 if args.pretty else None))
+        return 0
+
+    if not args.skill:
+        print("[nsys-sql-skill] --skill is required unless --list-skills is set")
+        return 2
+
+    params = _parse_kv_params(args.param)
+    rows = provider.run_sql_skill(args.skill, **params)
+    text = json.dumps(rows, ensure_ascii=False, indent=2 if args.pretty else None)
+    if args.output:
+        path = Path(args.output)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+        print(f"[nsys-sql-skill] wrote: {path}")
+    else:
+        print(text)
+    return 0
+
+
+def cmd_nsys_export(args: argparse.Namespace) -> int:
+    output = export_kernels_flat(
+        args.sqlite,
+        output_path=args.output,
+        fmt=args.format,
+        device_id=args.device_id,
+        start_ns=args.start_ns,
+        end_ns=args.end_ns,
+        limit=args.limit,
+        attach_iteration=bool(args.attach_iteration),
+        iteration_marker=args.iteration_marker,
+    )
+    print(f"[nsys-export] wrote: {output}")
+    return 0
+
+
+def cmd_nsys_analyze(args: argparse.Namespace) -> int:
+    result = analyze_nsys_sqlite(
+        args.sqlite,
+        device_id=args.device_id,
+        start_ns=args.start_ns,
+        end_ns=args.end_ns,
+        top_k=args.top_k,
+        iteration_marker=args.iteration_marker,
+        model_flops_per_step=args.model_flops_per_step,
+        peak_tflops=args.peak_tflops,
+        peak_precision=args.peak_precision,
+        limit=args.limit,
+    )
+    if str(args.format).lower() in ("md", "markdown"):
+        text = analyze_to_markdown(result)
+    else:
+        text = json.dumps(result, ensure_ascii=False, indent=2 if args.pretty else None)
+    if args.output:
+        path = Path(args.output)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+        print(f"[nsys-analyze] wrote: {path}")
+    else:
+        print(text)
+    return 0
+
+
+def cmd_nsys_diff(args: argparse.Namespace) -> int:
+    result = diff_nsys_sqlite(
+        args.before_sqlite,
+        args.after_sqlite,
+        device_id=args.device_id,
+        start_ns=args.start_ns,
+        end_ns=args.end_ns,
+        top_k=args.top_k,
+    )
+    if str(args.format).lower() in ("md", "markdown"):
+        text = diff_to_markdown(result)
+    else:
+        text = json.dumps(result, ensure_ascii=False, indent=2 if args.pretty else None)
+    if args.output:
+        path = Path(args.output)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+        print(f"[nsys-diff] wrote: {path}")
+    else:
+        print(text)
+    return 0
+
+
+def cmd_nsys_timeline_html(args: argparse.Namespace) -> int:
+    output = export_timeline_html(
+        args.sqlite,
+        output_path=args.output,
+        device_id=args.device_id,
+        start_ns=args.start_ns,
+        end_ns=args.end_ns,
+        limit=args.limit,
+        width_px=args.width_px,
+    )
+    print(f"[nsys-timeline-html] wrote: {output}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Unified profiling metrics CLI")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -204,6 +339,70 @@ def build_parser() -> argparse.ArgumentParser:
         help="manual rank clock offset in seconds, format rank=offset_sec (can repeat)",
     )
     trace.set_defaults(func=cmd_trace)
+
+    nsys_sql = sub.add_parser("nsys-sql-skill", help="run built-in Nsight SQLite SQL skills")
+    nsys_sql.add_argument("--sqlite", required=True, help="nsys exported sqlite path")
+    nsys_sql.add_argument("--list-skills", action="store_true", help="list available skills and parameters")
+    nsys_sql.add_argument("--skill", default="", help="skill name, e.g. top_kernels")
+    nsys_sql.add_argument(
+        "--param",
+        action="append",
+        default=[],
+        help="skill parameter in key=value format (can repeat), e.g. --param device_id=0 --param limit=20",
+    )
+    nsys_sql.add_argument("--output", default="", help="optional json output path")
+    nsys_sql.add_argument("--pretty", action="store_true", help="pretty-print JSON output")
+    nsys_sql.set_defaults(func=cmd_nsys_sql_skill)
+
+    nsys_export = sub.add_parser("nsys-export", help="export sqlite kernel timeline rows to json/csv")
+    nsys_export.add_argument("--sqlite", required=True, help="nsys exported sqlite path")
+    nsys_export.add_argument("--output", required=True, help="output file path")
+    nsys_export.add_argument("--format", default="json", choices=["json", "csv"])
+    nsys_export.add_argument("--device-id", type=int, default=-1)
+    nsys_export.add_argument("--start-ns", type=int, default=-1)
+    nsys_export.add_argument("--end-ns", type=int, default=-1)
+    nsys_export.add_argument("--limit", type=int, default=500000)
+    nsys_export.add_argument("--attach-iteration", action="store_true")
+    nsys_export.add_argument("--iteration-marker", default="sample_0")
+    nsys_export.set_defaults(func=cmd_nsys_export)
+
+    nsys_analyze = sub.add_parser("nsys-analyze", help="run nsys-oriented summary/overlap/nccl/iterations/mfu analysis")
+    nsys_analyze.add_argument("--sqlite", required=True, help="nsys exported sqlite path")
+    nsys_analyze.add_argument("--device-id", type=int, default=-1)
+    nsys_analyze.add_argument("--start-ns", type=int, default=-1)
+    nsys_analyze.add_argument("--end-ns", type=int, default=-1)
+    nsys_analyze.add_argument("--top-k", type=int, default=10)
+    nsys_analyze.add_argument("--limit", type=int, default=500000)
+    nsys_analyze.add_argument("--iteration-marker", default="sample_0")
+    nsys_analyze.add_argument("--model-flops-per-step", type=float, default=None)
+    nsys_analyze.add_argument("--peak-tflops", type=float, default=None)
+    nsys_analyze.add_argument("--peak-precision", default="fp16")
+    nsys_analyze.add_argument("--format", default="json", choices=["json", "markdown", "md"])
+    nsys_analyze.add_argument("--output", default="")
+    nsys_analyze.add_argument("--pretty", action="store_true")
+    nsys_analyze.set_defaults(func=cmd_nsys_analyze)
+
+    nsys_diff = sub.add_parser("nsys-diff", help="diff two nsys sqlite profiles by kernel/nvtx aggregates")
+    nsys_diff.add_argument("--before-sqlite", required=True)
+    nsys_diff.add_argument("--after-sqlite", required=True)
+    nsys_diff.add_argument("--device-id", type=int, default=-1)
+    nsys_diff.add_argument("--start-ns", type=int, default=-1)
+    nsys_diff.add_argument("--end-ns", type=int, default=-1)
+    nsys_diff.add_argument("--top-k", type=int, default=20)
+    nsys_diff.add_argument("--format", default="json", choices=["json", "markdown", "md"])
+    nsys_diff.add_argument("--output", default="")
+    nsys_diff.add_argument("--pretty", action="store_true")
+    nsys_diff.set_defaults(func=cmd_nsys_diff)
+
+    nsys_timeline = sub.add_parser("nsys-timeline-html", help="export static html timeline from nsys sqlite")
+    nsys_timeline.add_argument("--sqlite", required=True, help="nsys exported sqlite path")
+    nsys_timeline.add_argument("--output", required=True, help="output html file path")
+    nsys_timeline.add_argument("--device-id", type=int, default=-1)
+    nsys_timeline.add_argument("--start-ns", type=int, default=-1)
+    nsys_timeline.add_argument("--end-ns", type=int, default=-1)
+    nsys_timeline.add_argument("--limit", type=int, default=100000)
+    nsys_timeline.add_argument("--width-px", type=int, default=1800)
+    nsys_timeline.set_defaults(func=cmd_nsys_timeline_html)
     return parser
 
 
