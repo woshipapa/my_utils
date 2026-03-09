@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from typing import Dict, List, Tuple
 
-from .nsys_sqlite_provider import NsysSqliteMetricsProvider
+from .nsys_sql_skills import NsysSqlSkillEngine
 
 
 def _index_by_name(rows: List[Dict[str, object]], key: str) -> Dict[str, Dict[str, object]]:
@@ -46,6 +47,35 @@ def _diff_named_rows(
     return diffs[: max(1, int(top_k))]
 
 
+def _analyze_side(
+    sqlite_path: str,
+    *,
+    device_id: int = -1,
+    start_ns: int = -1,
+    end_ns: int = -1,
+    top_k: int = 20,
+) -> Tuple[Dict[str, object], Dict[str, object], List[Dict[str, object]], List[Dict[str, object]]]:
+    """Open one SQLite file, run all needed analyses, return (summary, overlap, kernels, nvtx)."""
+    conn = sqlite3.connect(sqlite_path)
+    conn.row_factory = sqlite3.Row
+    try:
+        engine = NsysSqlSkillEngine(conn)
+        summary = engine.summarize_gpu_kernels(
+            device_id=device_id, start_ns=start_ns, end_ns=end_ns, top_k=top_k
+        )
+        overlap = engine.analyze_compute_comm_overlap(
+            device_id=device_id, start_ns=start_ns, end_ns=end_ns
+        )
+        kernel_rows = engine.execute("aggregate_kernels", device_id=device_id, limit=5000)
+        try:
+            nvtx_rows = engine.execute("aggregate_nvtx_ranges", limit=5000)
+        except Exception:
+            nvtx_rows = []
+        return summary, overlap, kernel_rows, nvtx_rows
+    finally:
+        conn.close()
+
+
 def diff_nsys_sqlite(
     before_sqlite: str,
     after_sqlite: str,
@@ -55,34 +85,13 @@ def diff_nsys_sqlite(
     end_ns: int = -1,
     top_k: int = 20,
 ) -> Dict[str, object]:
-    before_p = NsysSqliteMetricsProvider(before_sqlite)
-    after_p = NsysSqliteMetricsProvider(after_sqlite)
-
-    before_summary = before_p.summarize_gpu_kernels(
-        device_id=device_id,
-        start_ns=start_ns,
-        end_ns=end_ns,
-        top_k=top_k,
+    before_summary, before_overlap, before_k, before_nvtx = _analyze_side(
+        before_sqlite, device_id=device_id, start_ns=start_ns, end_ns=end_ns, top_k=top_k
     )
-    after_summary = after_p.summarize_gpu_kernels(
-        device_id=device_id,
-        start_ns=start_ns,
-        end_ns=end_ns,
-        top_k=top_k,
-    )
-    before_overlap = before_p.analyze_compute_comm_overlap(
-        device_id=device_id,
-        start_ns=start_ns,
-        end_ns=end_ns,
-    )
-    after_overlap = after_p.analyze_compute_comm_overlap(
-        device_id=device_id,
-        start_ns=start_ns,
-        end_ns=end_ns,
+    after_summary, after_overlap, after_k, after_nvtx = _analyze_side(
+        after_sqlite, device_id=device_id, start_ns=start_ns, end_ns=end_ns, top_k=top_k
     )
 
-    before_k = before_p.run_sql_skill("aggregate_kernels", device_id=device_id, limit=5000)
-    after_k = after_p.run_sql_skill("aggregate_kernels", device_id=device_id, limit=5000)
     kernel_diff = _diff_named_rows(
         before_k,
         after_k,
@@ -90,15 +99,6 @@ def diff_nsys_sqlite(
         value_key="total_ms",
         top_k=top_k,
     )
-
-    try:
-        before_nvtx = before_p.run_sql_skill("aggregate_nvtx_ranges", limit=5000)
-    except Exception:
-        before_nvtx = []
-    try:
-        after_nvtx = after_p.run_sql_skill("aggregate_nvtx_ranges", limit=5000)
-    except Exception:
-        after_nvtx = []
     nvtx_diff = _diff_named_rows(
         before_nvtx,
         after_nvtx,

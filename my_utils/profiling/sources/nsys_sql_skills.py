@@ -519,6 +519,25 @@ class NsysSqlSkillEngine:
         self.conn = conn
         self.schema = NsightSchema(conn)
         self._skills = _build_builtin_skills(self.schema)
+        # Cache schema fragments for internal kernel queries (avoids rebuilding per call)
+        self._kernel_table = _ident(self.schema.kernel_table or "CUPTI_ACTIVITY_KIND_KERNEL")
+        self._start_col = self.schema.resolve_column(self._kernel_table, ("start",))
+        self._end_col = self.schema.resolve_column(self._kernel_table, ("end",))
+        self._device_col = self.schema.resolve_column(self._kernel_table, ("deviceId",))
+        self._stream_col = self.schema.resolve_column(self._kernel_table, ("streamId",))
+        _string_table = self.schema.string_table
+        _short_col = self.schema.resolve_column(self._kernel_table, ("shortName",))
+        _demangled_col = self.schema.resolve_column(self._kernel_table, ("demangledName",))
+        self._name_expr = "CAST(k.shortName AS TEXT)"
+        self._name_join = ""
+        if _string_table and _short_col:
+            _st = _ident(_string_table)
+            self._name_join = f"JOIN {_st} s ON k.{_ident(_short_col)} = s.id"
+            self._name_expr = "s.value"
+        if _string_table and _demangled_col:
+            _st = _ident(_string_table)
+            self._name_join += f" LEFT JOIN {_st} d ON k.{_ident(_demangled_col)} = d.id"
+            self._name_expr = "COALESCE(d.value, s.value)" if _short_col else "d.value"
 
     def list_skills(self) -> List[str]:
         return sorted(self._skills.keys())
@@ -582,6 +601,116 @@ class NsysSqlSkillEngine:
             limit=int(limit),
         )
 
+    def _build_kernel_where(
+        self,
+        device_id: int,
+        start_ns: int,
+        end_ns: int,
+    ) -> Tuple[str, List[object]]:
+        """Build WHERE clause fragments and positional params for kernel queries."""
+        parts = ["1=1"]
+        params: List[object] = []
+        if self._device_col and device_id >= 0:
+            parts.append(f"k.{_ident(self._device_col)} = ?")
+            params.append(device_id)
+        if start_ns >= 0:
+            parts.append(f"k.{_ident(self._start_col)} >= ?")
+            params.append(start_ns)
+        if end_ns >= 0:
+            parts.append(f"k.[{_ident(self._end_col)}] <= ?")
+            params.append(end_ns)
+        return " AND ".join(parts), params
+
+    def _fetch_minimal_kernel_intervals(
+        self,
+        *,
+        device_id: int = -1,
+        start_ns: int = -1,
+        end_ns: int = -1,
+        limit: int = 2_000_000,
+    ) -> List[Tuple[int, int, str]]:
+        """Fetch (start_ns, end_ns, kernel_name) tuples — 3-column query for overlap analysis."""
+        if not self._start_col or not self._end_col:
+            return []
+        where, params = self._build_kernel_where(device_id, start_ns, end_ns)
+        params.append(limit)
+        sql = (
+            f"SELECT k.{_ident(self._start_col)}, k.[{_ident(self._end_col)}], {self._name_expr} "
+            f"FROM {self._kernel_table} k {self._name_join} "
+            f"WHERE {where} "
+            f"ORDER BY k.{_ident(self._start_col)} ASC LIMIT ?"
+        )
+        result: List[Tuple[int, int, str]] = []
+        for row in self.conn.execute(sql, params):
+            s, e, name = int(row[0] or 0), int(row[1] or 0), str(row[2] or "")
+            if e > s:
+                result.append((s, e, name))
+        return result
+
+    def _fetch_kernel_spans(
+        self,
+        *,
+        device_id: int = -1,
+        start_ns: int = -1,
+        end_ns: int = -1,
+        limit: int = 2_000_000,
+    ) -> List[Tuple[int, int]]:
+        """Fetch (start_ns, end_ns) pairs — minimal 2-column query for utilization interval merge."""
+        if not self._start_col or not self._end_col:
+            return []
+        where, params = self._build_kernel_where(device_id, start_ns, end_ns)
+        params.append(limit)
+        sql = (
+            f"SELECT k.{_ident(self._start_col)}, k.[{_ident(self._end_col)}] "
+            f"FROM {self._kernel_table} k "
+            f"WHERE {where} "
+            f"ORDER BY k.{_ident(self._start_col)} ASC LIMIT ?"
+        )
+        result: List[Tuple[int, int]] = []
+        for row in self.conn.execute(sql, params):
+            s, e = int(row[0] or 0), int(row[1] or 0)
+            if e > s:
+                result.append((s, e))
+        return result
+
+    def _query_kernel_aggregate(
+        self,
+        *,
+        device_id: int = -1,
+        start_ns: int = -1,
+        end_ns: int = -1,
+    ) -> Dict[str, object]:
+        """Single SQL aggregate: kernel_count, min/max timestamps, sum duration, stream count."""
+        if not self._start_col or not self._end_col:
+            return {}
+        where, params = self._build_kernel_where(device_id, start_ns, end_ns)
+        stream_select = (
+            f", COUNT(DISTINCT k.{_ident(self._stream_col)}) AS stream_count"
+            if self._stream_col
+            else ""
+        )
+        sql = (
+            f"SELECT COUNT(*) AS kernel_count, "
+            f"MIN(k.{_ident(self._start_col)}) AS min_start_ns, "
+            f"MAX(k.[{_ident(self._end_col)}]) AS max_end_ns, "
+            f"SUM(k.[{_ident(self._end_col)}] - k.{_ident(self._start_col)}) AS sum_duration_ns"
+            f"{stream_select} "
+            f"FROM {self._kernel_table} k "
+            f"WHERE {where}"
+        )
+        row = self.conn.execute(sql, params).fetchone()
+        if row is None:
+            return {}
+        result: Dict[str, object] = {
+            "kernel_count": int(row[0] or 0),
+            "min_start_ns": int(row[1] or 0),
+            "max_end_ns": int(row[2] or 0),
+            "sum_duration_ns": int(row[3] or 0),
+        }
+        if self._stream_col:
+            result["stream_count"] = int(row[4] or 0)
+        return result
+
     def analyze_compute_comm_overlap(
         self,
         *,
@@ -590,7 +719,7 @@ class NsysSqlSkillEngine:
         end_ns: int = -1,
         limit: int = 2_000_000,
     ) -> Dict[str, object]:
-        rows = self._kernel_rows_for_window(
+        triples = self._fetch_minimal_kernel_intervals(
             device_id=device_id,
             start_ns=start_ns,
             end_ns=end_ns,
@@ -598,12 +727,7 @@ class NsysSqlSkillEngine:
         )
         compute_iv: List[Tuple[int, int]] = []
         comm_iv: List[Tuple[int, int]] = []
-        for row in rows:
-            s = int(row.get("start_ns") or 0)
-            e = int(row.get("end_ns") or 0)
-            if e <= s:
-                continue
-            name = str(row.get("kernel_name") or "")
+        for s, e, name in triples:
             if _is_nccl_kernel(name):
                 comm_iv.append((s, e))
             else:
@@ -623,7 +747,7 @@ class NsysSqlSkillEngine:
         return {
             "device_id": int(device_id),
             "window": {"start_ns": int(start_ns), "end_ns": int(end_ns)},
-            "kernel_rows": len(rows),
+            "kernel_rows": len(triples),
             "compute_intervals": len(compute_m),
             "comm_intervals": len(comm_m),
             "compute_only_ms": round(compute_only_ns / 1e6, 6),
@@ -644,13 +768,13 @@ class NsysSqlSkillEngine:
         top_k: int = 10,
         limit: int = 2_000_000,
     ) -> Dict[str, object]:
-        rows = self._kernel_rows_for_window(
+        agg = self._query_kernel_aggregate(
             device_id=device_id,
             start_ns=start_ns,
             end_ns=end_ns,
-            limit=limit,
         )
-        if not rows:
+        kernel_count = int(agg.get("kernel_count") or 0)
+        if kernel_count == 0:
             return {
                 "device_id": int(device_id),
                 "window": {"start_ns": int(start_ns), "end_ns": int(end_ns)},
@@ -660,64 +784,30 @@ class NsysSqlSkillEngine:
                 "stream_count": 0,
             }
 
-        starts: List[int] = []
-        ends: List[int] = []
-        intervals: List[Tuple[int, int]] = []
-        sum_kernel_ns = 0
-        by_name_total_ns: Dict[str, int] = {}
-        by_name_count: Dict[str, int] = {}
-        stream_ids = set()
+        # Fetch minimal (start, end) spans for interval-merge utilization calculation
+        spans = self._fetch_kernel_spans(
+            device_id=device_id,
+            start_ns=start_ns,
+            end_ns=end_ns,
+            limit=limit,
+        )
 
-        for row in rows:
-            s = int(row.get("start_ns") or 0)
-            e = int(row.get("end_ns") or 0)
-            if e <= s:
-                continue
-            starts.append(s)
-            ends.append(e)
-            intervals.append((s, e))
-            dur = int(e - s)
-            sum_kernel_ns += dur
-            name = str(row.get("kernel_name") or "unknown")
-            by_name_total_ns[name] = by_name_total_ns.get(name, 0) + dur
-            by_name_count[name] = by_name_count.get(name, 0) + 1
-            stream_ids.add(str(row.get("stream_id")))
+        span_ns = int(agg.get("max_end_ns", 0)) - int(agg.get("min_start_ns", 0))
+        sum_kernel_ns = int(agg.get("sum_duration_ns") or 0)
+        stream_count = int(agg.get("stream_count") or 0)
 
-        if not intervals:
-            return {
-                "device_id": int(device_id),
-                "window": {"start_ns": int(start_ns), "end_ns": int(end_ns)},
-                "kernel_rows": len(rows),
-                "timing": {},
-                "top_kernels": [],
-                "stream_count": len(stream_ids),
-            }
-
-        span_ns = int(max(ends) - min(starts))
-        merged = _merge_intervals(intervals)
+        merged = _merge_intervals(spans)
         busy_ns = _covered_ns(merged)
         idle_ns = max(0, span_ns - busy_ns)
         util_pct = (100.0 * busy_ns / span_ns) if span_ns > 0 else 0.0
 
-        top_items = sorted(by_name_total_ns.items(), key=lambda kv: kv[1], reverse=True)[: max(1, int(top_k))]
-        top_rows: List[Dict[str, object]] = []
-        for name, total_ns in top_items:
-            count = by_name_count.get(name, 0)
-            avg_ns = (total_ns / count) if count > 0 else 0.0
-            top_rows.append(
-                {
-                    "kernel_name": name,
-                    "invocations": int(count),
-                    "total_ms": round(total_ns / 1e6, 6),
-                    "avg_ms": round(avg_ns / 1e6, 6),
-                }
-            )
+        top_rows = self.execute("top_kernels", device_id=device_id, limit=max(1, int(top_k)))
 
         return {
             "device_id": int(device_id),
             "window": {"start_ns": int(start_ns), "end_ns": int(end_ns)},
-            "kernel_rows": len(rows),
-            "stream_count": len(stream_ids),
+            "kernel_rows": kernel_count,
+            "stream_count": stream_count,
             "timing": {
                 "span_ms": round(span_ns / 1e6, 6),
                 "busy_ms": round(busy_ns / 1e6, 6),

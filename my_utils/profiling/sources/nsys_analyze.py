@@ -6,7 +6,8 @@ import statistics
 from typing import Dict, List, Optional
 
 from .nsys_mfu import compute_mfu_single, infer_peak_tflops
-from .nsys_sqlite_provider import NsysSqliteMetricsProvider
+from .nsys_schema_adapter import NsightSchema
+from .nsys_sql_skills import NsysSqlSkillEngine
 
 
 def _to_float(value) -> Optional[float]:
@@ -16,21 +17,16 @@ def _to_float(value) -> Optional[float]:
         return None
 
 
-def _first_gpu_name(sqlite_path: str) -> str:
+def _first_gpu_name_from_conn(conn: sqlite3.Connection) -> str:
     try:
-        conn = sqlite3.connect(sqlite_path)
-        conn.row_factory = sqlite3.Row
-        try:
-            tables = {
-                str(row["name"])
-                for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table';").fetchall()
-            }
-            if "TARGET_INFO_GPU" not in tables:
-                return ""
-            row = conn.execute("SELECT name FROM TARGET_INFO_GPU ORDER BY id LIMIT 1;").fetchone()
-            return str(row["name"] or "").strip() if row else ""
-        finally:
-            conn.close()
+        tables = {
+            str(row[0])
+            for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table';").fetchall()
+        }
+        if "TARGET_INFO_GPU" not in tables:
+            return ""
+        row = conn.execute("SELECT name FROM TARGET_INFO_GPU ORDER BY id LIMIT 1;").fetchone()
+        return str(row["name"] or "").strip() if row else ""
     except Exception:
         return ""
 
@@ -48,82 +44,105 @@ def analyze_nsys_sqlite(
     peak_precision: str = "fp16",
     limit: int = 500000,
 ) -> Dict[str, object]:
-    provider = NsysSqliteMetricsProvider(sqlite_path)
-    schema = provider.describe_schema()
-    summary = provider.summarize_gpu_kernels(
-        device_id=device_id,
-        start_ns=start_ns,
-        end_ns=end_ns,
-        top_k=top_k,
-        limit=limit,
-    )
-    overlap = provider.analyze_compute_comm_overlap(
-        device_id=device_id,
-        start_ns=start_ns,
-        end_ns=end_ns,
-        limit=limit,
-    )
-    top_kernels = provider.run_sql_skill(
-        "top_kernels",
-        device_id=device_id,
-        limit=max(int(top_k), 1),
-    )
-    nccl_breakdown = provider.run_sql_skill(
-        "nccl_breakdown",
-        device_id=device_id,
-        limit=max(int(top_k), 1),
-    )
-    iterations = provider.detect_iterations(
-        marker=iteration_marker,
-        device_id=device_id,
-        start_ns=start_ns,
-        end_ns=end_ns,
-        top_level_only=True,
-        limit=10000,
-    )
+    conn = sqlite3.connect(sqlite_path)
+    conn.row_factory = sqlite3.Row
+    try:
+        schema_obj = NsightSchema(conn)
+        engine = NsysSqlSkillEngine(conn)
 
-    warnings: List[str] = []
-    mfu: Optional[Dict[str, object]] = None
-    if model_flops_per_step is not None:
-        step_time_s: Optional[float] = None
-        if iterations:
-            iter_ms = [_to_float(item.get("duration_ms")) for item in iterations]
-            iter_ms = [x for x in iter_ms if x and x > 0]
-            if iter_ms:
-                step_time_s = float(statistics.median(iter_ms)) / 1000.0
-        if step_time_s is None:
-            span_ms = _to_float(((summary or {}).get("timing") or {}).get("span_ms"))
-            if span_ms and span_ms > 0:
-                step_time_s = float(span_ms) / 1000.0
-        if step_time_s is None:
-            warnings.append("MFU skipped: no usable step time from iterations or summary span.")
-        else:
-            resolved_peak = peak_tflops
-            if resolved_peak is None:
-                gpu_name = _first_gpu_name(sqlite_path)
-                resolved_peak = infer_peak_tflops(gpu_name, precision=peak_precision)
+        tables = list(schema_obj.tables)
+        schema: Dict[str, object] = {
+            "sqlite_path": sqlite_path,
+            "exists": True,
+            "table_count": len(tables),
+            "tables": tables,
+            "columns": {t: schema_obj.columns(t) for t in tables},
+            "schema_meta": dict(schema_obj.meta),
+            "canonical_tables": dict(schema_obj.summary().get("canonical_tables", {})),
+            "version_info": {
+                "exporter_version": schema_obj.version.exporter_version,
+                "export_schema_version": schema_obj.version.export_schema_version,
+                "adapter_family": schema_obj.version.adapter_family,
+                "known_version": schema_obj.version.known_version,
+            },
+        }
+
+        summary = engine.summarize_gpu_kernels(
+            device_id=device_id,
+            start_ns=start_ns,
+            end_ns=end_ns,
+            top_k=top_k,
+            limit=limit,
+        )
+        overlap = engine.analyze_compute_comm_overlap(
+            device_id=device_id,
+            start_ns=start_ns,
+            end_ns=end_ns,
+            limit=limit,
+        )
+        top_kernels = engine.execute(
+            "top_kernels",
+            device_id=device_id,
+            limit=max(int(top_k), 1),
+        )
+        nccl_breakdown = engine.execute(
+            "nccl_breakdown",
+            device_id=device_id,
+            limit=max(int(top_k), 1),
+        )
+        iterations = engine.detect_iterations(
+            marker=iteration_marker,
+            device_id=device_id,
+            start_ns=start_ns,
+            end_ns=end_ns,
+            top_level_only=True,
+            limit=10000,
+        )
+
+        warnings: List[str] = []
+        mfu: Optional[Dict[str, object]] = None
+        if model_flops_per_step is not None:
+            step_time_s: Optional[float] = None
+            if iterations:
+                iter_ms = [_to_float(item.get("duration_ms")) for item in iterations]
+                iter_ms = [x for x in iter_ms if x and x > 0]
+                if iter_ms:
+                    step_time_s = float(statistics.median(iter_ms)) / 1000.0
+            if step_time_s is None:
+                span_ms = _to_float(((summary or {}).get("timing") or {}).get("span_ms"))
+                if span_ms and span_ms > 0:
+                    step_time_s = float(span_ms) / 1000.0
+            if step_time_s is None:
+                warnings.append("MFU skipped: no usable step time from iterations or summary span.")
+            else:
+                resolved_peak = peak_tflops
                 if resolved_peak is None:
-                    warnings.append("MFU peak_tflops not provided and GPU name mapping failed.")
-            if resolved_peak is not None:
-                mfu = compute_mfu_single(
-                    step_time_s=float(step_time_s),
-                    model_flops_per_step=float(model_flops_per_step),
-                    peak_tflops=float(resolved_peak),
-                )
+                    gpu_name = _first_gpu_name_from_conn(conn)
+                    resolved_peak = infer_peak_tflops(gpu_name, precision=peak_precision)
+                    if resolved_peak is None:
+                        warnings.append("MFU peak_tflops not provided and GPU name mapping failed.")
+                if resolved_peak is not None:
+                    mfu = compute_mfu_single(
+                        step_time_s=float(step_time_s),
+                        model_flops_per_step=float(model_flops_per_step),
+                        peak_tflops=float(resolved_peak),
+                    )
 
-    return {
-        "sqlite_path": sqlite_path,
-        "device_id": int(device_id),
-        "window": {"start_ns": int(start_ns), "end_ns": int(end_ns)},
-        "schema": schema,
-        "summary": summary,
-        "overlap": overlap,
-        "top_kernels": top_kernels,
-        "nccl_breakdown": nccl_breakdown,
-        "iterations": iterations,
-        "mfu": mfu,
-        "warnings": warnings,
-    }
+        return {
+            "sqlite_path": sqlite_path,
+            "device_id": int(device_id),
+            "window": {"start_ns": int(start_ns), "end_ns": int(end_ns)},
+            "schema": schema,
+            "summary": summary,
+            "overlap": overlap,
+            "top_kernels": top_kernels,
+            "nccl_breakdown": nccl_breakdown,
+            "iterations": iterations,
+            "mfu": mfu,
+            "warnings": warnings,
+        }
+    finally:
+        conn.close()
 
 
 def analyze_to_markdown(result: Dict[str, object]) -> str:

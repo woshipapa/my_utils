@@ -268,6 +268,7 @@ class NsysSqliteMetricsProvider(BaseMetricsProvider):
         self._runtime_by_correlation: Dict[Tuple[Optional[str], int], Dict[str, str]] = {}
         self._schema_meta: Optional[Dict[str, str]] = None
         self._version_info: Optional[NsysVersionInfo] = None
+        self._schema_tags_cache: Optional[Dict[str, str]] = None
         self._gpu_metric_info_cache: Optional[Dict[Tuple[Optional[int], Optional[int]], Dict[str, str]]] = None
         self._network_metric_info_cache: Optional[Dict[Tuple[int, int], Dict[str, str]]] = None
         self._generic_event_type_cache: Optional[Dict[int, Dict[str, str]]] = None
@@ -299,9 +300,12 @@ class NsysSqliteMetricsProvider(BaseMetricsProvider):
 
         self._schema_meta = result
         self._version_info = detect_nsys_version(result)
+        self._schema_tags_cache = None  # invalidate on schema reload
         return result
 
     def _schema_tags(self) -> Dict[str, str]:
+        if self._schema_tags_cache is not None:
+            return self._schema_tags_cache
         meta = self._schema_meta or {}
         tags: Dict[str, str] = {}
         if "EXPORT_SCHEMA_VERSION" in meta:
@@ -321,6 +325,7 @@ class NsysSqliteMetricsProvider(BaseMetricsProvider):
             if version_info.export_schema_version:
                 tags["nsys_export_schema_version"] = version_info.export_schema_version
             tags["nsys_adapter_family"] = version_info.adapter_family
+        self._schema_tags_cache = tags
         return tags
 
     @staticmethod
@@ -339,6 +344,12 @@ class NsysSqliteMetricsProvider(BaseMetricsProvider):
                 value = _safe_float(row[key])
                 if value is not None:
                     return value
+        return None
+
+    @staticmethod
+    def _get_node_id(row: sqlite3.Row) -> Optional[str]:
+        if "_rowid" in row.keys() and row["_rowid"] is not None:
+            return str(row["_rowid"])
         return None
 
     def _table_exists(self, conn: sqlite3.Connection, table_name: str) -> bool:
@@ -782,7 +793,7 @@ class NsysSqliteMetricsProvider(BaseMetricsProvider):
         if start is None or end is None or end <= start:
             return None
         duration_us = (end - start) / 1000.0
-        node_id = str(row["_rowid"]) if "_rowid" in row.keys() and row["_rowid"] is not None else None
+        node_id = self._get_node_id(row)
         return MetricEvent(
             timestamp=now,
             name=name,
@@ -866,7 +877,7 @@ class NsysSqliteMetricsProvider(BaseMetricsProvider):
             if evt is not None:
                 events.append(evt)
 
-            node_id = str(row["_rowid"]) if "_rowid" in row.keys() and row["_rowid"] is not None else None
+            node_id = self._get_node_id(row)
             for col, metric_name, unit in (
                 ("registersPerThread", "compute.kernel.registers_per_thread", "count"),
                 ("staticSharedMemory", "memory.kernel.shared_static_bytes", "bytes"),
@@ -988,7 +999,7 @@ class NsysSqliteMetricsProvider(BaseMetricsProvider):
                 events.append(dur_evt)
 
             bytes_val = _safe_float(row["bytes"]) if "bytes" in row.keys() else None
-            node_id = str(row["_rowid"]) if "_rowid" in row.keys() and row["_rowid"] is not None else None
+            node_id = self._get_node_id(row)
             if bytes_val is not None:
                 events.append(
                     MetricEvent(
@@ -1049,7 +1060,7 @@ class NsysSqliteMetricsProvider(BaseMetricsProvider):
                 events.append(dur_evt)
 
             bytes_val = _safe_float(row["bytes"]) if "bytes" in row.keys() else None
-            node_id = str(row["_rowid"]) if "_rowid" in row.keys() and row["_rowid"] is not None else None
+            node_id = self._get_node_id(row)
             if bytes_val is not None:
                 events.append(
                     MetricEvent(
@@ -1167,7 +1178,7 @@ class NsysSqliteMetricsProvider(BaseMetricsProvider):
             if bytes_val is None:
                 continue
 
-            node_id = str(row["_rowid"]) if "_rowid" in row.keys() and row["_rowid"] is not None else None
+            node_id = self._get_node_id(row)
             if op_type == 0:
                 name = "memory.cuda.alloc.bytes"
             elif op_type == 1:
@@ -1235,7 +1246,7 @@ class NsysSqliteMetricsProvider(BaseMetricsProvider):
                 tags["memory_pool_type"] = CUDA_MEMPOOL_TYPE_MAP.get(pool_type, str(pool_type))
 
             self._attach_runtime_api_tag(tags, row)
-            node_id = str(row["_rowid"]) if "_rowid" in row.keys() and row["_rowid"] is not None else None
+            node_id = self._get_node_id(row)
             events.append(
                 MetricEvent(
                     timestamp=now,
@@ -1307,7 +1318,7 @@ class NsysSqliteMetricsProvider(BaseMetricsProvider):
             ts_ns = self._row_int(row, "timestamp", "rawTimestamp")
             if ts_ns is not None:
                 tags["sample_timestamp_ns"] = str(ts_ns)
-            node_id = str(row["_rowid"]) if "_rowid" in row.keys() and row["_rowid"] is not None else None
+            node_id = self._get_node_id(row)
             events.append(
                 MetricEvent(
                     timestamp=now,
@@ -1360,7 +1371,7 @@ class NsysSqliteMetricsProvider(BaseMetricsProvider):
             ts_ns = self._row_int(row, "timestamp", "rawTimestamp")
             if ts_ns is not None:
                 base_tags["sample_timestamp_ns"] = str(ts_ns)
-            node_id = str(row["_rowid"]) if "_rowid" in row.keys() and row["_rowid"] is not None else None
+            node_id = self._get_node_id(row)
 
             type_token = self._normalize_token(type_name)
             for key, value in flat.items():
@@ -1425,7 +1436,7 @@ class NsysSqliteMetricsProvider(BaseMetricsProvider):
             global_id = self._row_int(row, "globalId")
             if global_id is not None:
                 tags["global_id"] = str(global_id)
-            node_id = str(row["_rowid"]) if "_rowid" in row.keys() and row["_rowid"] is not None else None
+            node_id = self._get_node_id(row)
             events.append(
                 MetricEvent(
                     timestamp=now,
@@ -1520,7 +1531,7 @@ class NsysSqliteMetricsProvider(BaseMetricsProvider):
             if "globalVm" in row.keys() and row["globalVm"] is not None:
                 tags["global_vm"] = str(row["globalVm"])
 
-            node_id = str(row["_rowid"]) if "_rowid" in row.keys() and row["_rowid"] is not None else None
+            node_id = self._get_node_id(row)
             events.append(
                 MetricEvent(
                     timestamp=now,
@@ -1554,7 +1565,7 @@ class NsysSqliteMetricsProvider(BaseMetricsProvider):
                 tags["address"] = str(row["address"])
             if "CpuInstruction" in row.keys() and row["CpuInstruction"] is not None:
                 tags["cpu_instruction"] = str(row["CpuInstruction"])
-            node_id = str(row["_rowid"]) if "_rowid" in row.keys() and row["_rowid"] is not None else None
+            node_id = self._get_node_id(row)
             events.append(
                 MetricEvent(
                     timestamp=now,
@@ -1588,7 +1599,7 @@ class NsysSqliteMetricsProvider(BaseMetricsProvider):
                 tags["migration_cause"] = str(row["migrationCause"])
             if "accessType" in row.keys() and row["accessType"] is not None:
                 tags["access_type"] = str(row["accessType"])
-            node_id = str(row["_rowid"]) if "_rowid" in row.keys() and row["_rowid"] is not None else None
+            node_id = self._get_node_id(row)
             events.append(
                 MetricEvent(
                     timestamp=now,
@@ -1672,7 +1683,7 @@ class NsysSqliteMetricsProvider(BaseMetricsProvider):
                     if text:
                         tags["text"] = text
 
-                node_id = str(row["_rowid"]) if "_rowid" in row.keys() and row["_rowid"] is not None else None
+                node_id = self._get_node_id(row)
                 if table.startswith("MPI_"):
                     latency_name = f"latency.mpi.{table_token}"
                 else:
@@ -1771,7 +1782,7 @@ class NsysSqliteMetricsProvider(BaseMetricsProvider):
 
             start = _safe_float(row["start"]) if "start" in row.keys() else None
             end = _safe_float(row["end"]) if "end" in row.keys() else None
-            node_id = str(row["_rowid"]) if "_rowid" in row.keys() and row["_rowid"] is not None else None
+            node_id = self._get_node_id(row)
             if start is not None and end is not None and end > start:
                 duration_us = (end - start) / 1000.0
                 events.append(
