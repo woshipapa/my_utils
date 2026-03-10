@@ -81,29 +81,102 @@ engine.execute("top_kernels", device_id=0, limit=20)  # List[Dict]
 
 ### Built-in SQL Skills
 
-| Skill Name | Category | Description |
-|---|---|---|
-| `top_kernels` | kernels | Top kernels ranked by cumulative execution time (total_ms DESC) |
-| `aggregate_kernels` | kernels | All kernels grouped by name: count, total_ms, avg_ms, min_ms, max_ms |
-| `nccl_breakdown` | communication | Aggregate only NCCL kernels (name LIKE `%nccl%`) |
-| `kernel_map` | kernels | Raw kernel timeline: start_ns, end_ns, stream_id, correlation_id, kernel_name |
-| `gpu_idle_gaps` | kernels | Gaps between consecutive kernels on each stream (detects pipeline bubbles) |
-| `kernel_launch_overhead` | kernels | CPU runtime API duration vs kernel duration + launch latency (us) |
-| `aggregate_nvtx_ranges` | nvtx | NVTX ranges grouped by text: range_count, total_ms, avg_ms |
-| `nvtx_kernel_map` | nvtx | Map NVTX ranges to kernels launched inside each range |
-| `memcpy_in_window` | memory | Memcpy aggregated by copyKind in a time window |
-| `thread_utilization` | system | CPU thread utilization % from COMPOSITE_EVENTS |
-| `schema_inspect` | utility | Inspect table/column schema via `sqlite_master + pragma_table_info` |
+| # | Skill Name | Category | Required Tables | Key Output Columns |
+|---|---|---|---|---|
+| 1 | `top_kernels` | kernels | KERNEL | kernel_name, total_ms, avg_ms, invocations |
+| 2 | `aggregate_kernels` | kernels | KERNEL | kernel_name, total_ms, avg_ms, min_ms, max_ms, invocations |
+| 3 | `nccl_breakdown` | communication | KERNEL | kernel_name, total_ms, avg_ms, min_ms, max_ms, count |
+| 4 | `kernel_map` | kernels | KERNEL | start_ns, end_ns, stream_id, correlation_id, kernel_name |
+| 5 | `gpu_idle_gaps` | kernels | KERNEL | stream_id, gap_ms, before_kernel, after_kernel |
+| 6 | `kernel_launch_overhead` | kernels | KERNEL + RUNTIME | api_ms, kernel_ms, overhead_us |
+| 7 | `aggregate_nvtx_ranges` | nvtx | NVTX\_EVENTS | nvtx_name, range_count, total_ms, avg_ms |
+| 8 | `nvtx_kernel_map` | nvtx | NVTX\_EVENTS + KERNEL | nvtx_text, kernel_name, start_ns, end_ns |
+| 9 | `memcpy_in_window` | memory | MEMCPY | copy_kind, memcpy_count, total_ms |
+| 10 | `thread_utilization` | system | COMPOSITE\_EVENTS | global_tid, thread_name, cpu_pct, cpu_cycles |
+| 11 | `schema_inspect` | utility | sqlite_master | table_name, column_name, column_type |
+| 12 | `memcpy_bandwidth_analysis` | memory | MEMCPY | copy_kind, total_gb, total_ms, avg_gbps, min_gbps, max_gbps |
+| 13 | `sync_breakdown` | pipeline | SYNCHRONIZATION | sync_type, count, total_ms, avg_ms, max_ms |
+| 14 | `memset_breakdown` | memory | MEMSET | fill_value, count, total_gb, total_ms, avg_gbps |
+| 15 | `kernel_occupancy_estimate` | compute | KERNEL | kernel_name, threads_per_block, registersPerThread, total_shared_bytes, occupancy_pct_estimate |
+| 16 | `stream_parallelism` | pipeline | KERNEL | max_concurrent_streams, avg_concurrent_streams, pct_time_multi_stream |
+| 17 | `nvtx_memcpy_breakdown` | memory | NVTX\_EVENTS + MEMCPY | nvtx_text, copy_kind, total_gb, total_ms, avg_gbps |
 
-**Common parameters (most skills):**
+Skills 12–17 are **schema-guarded**: each skill silently absent from `list_skills()` if its required table does not exist in the SQLite export (e.g. older nsys versions without SYNCHRONIZATION or MEMSET tables).
 
-| Parameter | Type | Default | Description |
+**Common parameters:**
+
+| Parameter | Type | Default | Applies to |
 |---|---|---|---|
-| `device_id` | int | -1 | CUDA device ID; -1 = all devices |
-| `limit` | int | 15–30 | Max rows returned |
-| `start_ns` | int | -1 | Window start in nanoseconds; -1 = no filter |
-| `end_ns` | int | -1 | Window end in nanoseconds; -1 = no filter |
-| `min_gap_ns` | int | 1_000_000 | Minimum gap threshold for `gpu_idle_gaps` |
+| `device_id` | int | -1 | Most skills; -1 = all devices |
+| `limit` | int | 15–50 | Most skills |
+| `start_ns` | int | -1 | `kernel_map`, `memcpy_in_window`, `nvtx_kernel_map`; -1 = no filter |
+| `end_ns` | int | -1 | Same as start_ns |
+| `min_gap_ns` | int | 1\_000\_000 | `gpu_idle_gaps` |
+| `bucket_ns` | int | 1\_000\_000 | `stream_parallelism` (time bucket width) |
+
+**New skill details:**
+
+`memcpy_bandwidth_analysis` — Groups by `copyKind` (1=H2D, 2=D2H, 8=D2D) and reports bandwidth as
+`SUM(bytes) / SUM(duration_ns) * 1e9` (avg) and per-transfer MIN/MAX. Identifies PCIe vs NVLink saturation.
+
+`sync_breakdown` — Aggregates `CUPTI_ACTIVITY_KIND_SYNCHRONIZATION` events by `syncType`.
+Exposes hidden synchronization overhead such as `cudaDeviceSynchronize` stalls.
+
+`memset_breakdown` — Groups by fill `value` (0 = zero-init, non-zero = custom fill).
+Quantifies the cost of buffer initialization hidden inside training steps.
+
+`kernel_occupancy_estimate` — Estimates theoretical SM occupancy using:
+`occupancy_pct ≈ MIN(max_warps_per_sm=64, warps_per_block × 4) / 64 × 100`.
+Flags kernels with small `threads_per_block` or high register/shared-mem pressure.
+
+`stream_parallelism` — Divides timeline into `bucket_ns`-wide buckets and counts
+`DISTINCT stream_id` per bucket. Reports `pct_time_multi_stream` (fraction of buckets with >1 active stream).
+
+`nvtx_memcpy_breakdown` — Joins NVTX ranges with MEMCPY rows (`memcpy.start >= nvtx.start AND memcpy.end <= nvtx.end`).
+Identifies which training phase (forward / backward / optimizer step) drives the most data movement.
+
+### Engine Methods
+
+```python
+engine = NsysSqlSkillEngine(conn)
+
+# ── SQL skill execution ──────────────────────────────────────────────────────
+engine.list_skills()                          # List[str] — 17 entries when all tables present
+engine.describe_skill("sync_breakdown")       # dict with params metadata
+engine.execute("sync_breakdown", device_id=0, limit=50)  # List[Dict]
+
+# ── Compute/comm overlap (global window) ────────────────────────────────────
+engine.analyze_compute_comm_overlap(device_id=0, start_ns=-1, end_ns=-1)
+
+# ── GPU kernel summary ───────────────────────────────────────────────────────
+engine.summarize_gpu_kernels(device_id=0, top_k=10)
+
+# ── Iteration detection ──────────────────────────────────────────────────────
+engine.detect_iterations(marker="sample_0", device_id=0, top_level_only=True)
+
+# ── Per-iteration compute/comm breakdown (new) ───────────────────────────────
+engine.analyze_per_iteration_overlap(
+    marker="sample_0",
+    device_id=0,
+    top_level_only=True,
+    limit=200,
+)
+# Returns List[Dict] — one entry per iteration, all detect_iterations() fields plus:
+#   compute_ms, comm_ms, overlap_ms, comm_pct, kernel_count
+
+# ── Iteration outlier detection (new) ────────────────────────────────────────
+engine.detect_iteration_outliers(
+    marker="sample_0",
+    device_id=0,
+    threshold_sigma=2.0,   # flag iterations where |duration - median| > 2σ
+    limit=2000,
+)
+# Returns:
+#   {
+#     "stats":    {count, mean_ms, median_ms, std_ms, p95_ms, p99_ms},
+#     "outliers": [{iteration, duration_ms, deviation_sigma}, ...]
+#   }
+```
 
 ### Compute/Comm Overlap Analysis
 
@@ -299,10 +372,12 @@ result = analyze_nsys_sqlite(
         "overlap_pct_of_comm": float,
         "overlap_pct_of_compute": float,
     },
-    "top_kernels": [...],     # from SQL skill "top_kernels"
-    "nccl_breakdown": [...],  # from SQL skill "nccl_breakdown"
-    "iterations": [...],      # from detect_iterations()
-    "mfu": {                  # None if model_flops_per_step not provided
+    "top_kernels": [...],        # from SQL skill "top_kernels"
+    "nccl_breakdown": [...],     # from SQL skill "nccl_breakdown"
+    "iterations": [...],         # from detect_iterations()
+    "sync_breakdown": [...],     # from SQL skill "sync_breakdown" ([] if table absent)
+    "memcpy_bandwidth": [...],   # from SQL skill "memcpy_bandwidth_analysis" ([] if table absent)
+    "mfu": {                     # None if model_flops_per_step not provided
         "step_time_s": float,
         "achieved_model_tflops": float,
         "mfu_pct": float,
