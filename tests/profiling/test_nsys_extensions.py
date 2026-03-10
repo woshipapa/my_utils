@@ -312,6 +312,16 @@ def test_new_skill_outputs(tmp_path: Path) -> None:
     assert sm_nvtx is not None
     assert sm_nvtx["sample_count"] == 2
 
+    # Skill 6: kernel_launch_overhead should include API name for attribution.
+    rows_launch = engine.execute("kernel_launch_overhead", device_id=0, limit=20)
+    _show("Skill 6 - kernel_launch_overhead", rows_launch)
+    assert len(rows_launch) >= 1
+    assert "api_name" in rows_launch[0]
+    assert rows_launch[0]["api_name"] is not None
+    assert "api_ms" in rows_launch[0]
+    assert "kernel_ms" in rows_launch[0]
+    assert "overhead_us" in rows_launch[0]
+
     # 鈹€鈹€ Skill 12: memcpy_bandwidth_analysis 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
     rows = engine.execute("memcpy_bandwidth_analysis", device_id=0)
     _show("Skill 12 鈥?memcpy_bandwidth_analysis", rows)
@@ -382,10 +392,10 @@ def test_new_skill_outputs(tmp_path: Path) -> None:
     assert "total_gb" in rows[0]
 
     # 鈹€鈹€ Skill 18: nvtx_kernel_sm_detail 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
-    # sample_0 step=1 range [0, 22000] contains kernels at 0-10000 and 8000-20000
+    # sample_0 step=1 range [0, 22000] launch-attributed kernels by runtime->correlationId
     rows = engine.execute("nvtx_kernel_sm_detail", nvtx_text="%sample_0%", device_id=0)
     _show("Skill 18 鈥?nvtx_kernel_sm_detail (%sample_0%)", rows)
-    assert len(rows) >= 1, "Expected kernels inside sample_0 NVTX range"
+    assert len(rows) >= 1, "Expected launch-attributed kernels in sample_0 NVTX range"
     r = rows[0]
     assert "nvtx_text" in r
     assert "kernel_name" in r
@@ -416,13 +426,13 @@ def test_new_skill_outputs(tmp_path: Path) -> None:
         else:
             assert kind == "compute", f"non-nccl kernel '{name}' should be 'compute'"
 
-    # forward-only filter 鈥?should only return kernels that fit inside [0, 10000]
+    # forward-only filter: based on runtime launch in NVTX window, not kernel end-time containment.
+    # In fixture, NCCL launch runtime [7000,9000] is inside forward [0,10000], so comm can appear.
     rows_fwd = engine.execute("nvtx_kernel_sm_detail", nvtx_text="%forward%", device_id=0)
     _show("Skill 18 鈥?nvtx_kernel_sm_detail (%forward%)", rows_fwd)
     assert len(rows_fwd) >= 1
-    for r in rows_fwd:
-        assert r["nvtx_text"] == "forward"
-        assert r["kind"] == "compute"   # nccl kernel [8000-20000] does NOT fit inside forward [0-10000]
+    assert all((r["nvtx_text"] == "forward") for r in rows_fwd)
+    assert any((r["kind"] == "comm") for r in rows_fwd)
 
     # 鈹€鈹€ Skill 19: nvtx_ranges_hierarchy 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
     rows_all_nvtx = engine.execute("nvtx_ranges_hierarchy", nvtx_text="%", top_level_only=False, limit=100)

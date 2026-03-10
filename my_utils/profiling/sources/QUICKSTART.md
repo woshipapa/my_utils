@@ -116,8 +116,8 @@ myutils-profile nsys-sql-skill \
 | Show all NVTX names with nesting? | `nvtx_ranges_hierarchy` | `nvtx_text`, `depth`, `parent_nvtx_text` |
 | Which training phase moves most data? | `nvtx_memcpy_breakdown` | `nvtx_text`, `total_gb` |
 | Where are GPU idle bubbles? | `gpu_idle_gaps` | `gap_ms`, `before_kernel`, `after_kernel` |
-| How long does kernel launch take? | `kernel_launch_overhead` | `overhead_us`, `api_ms` |
-| What kernels run inside a phase? | `nvtx_kernel_sm_detail` | `kernel_name`, `kind`, `occupancy_pct_estimate` |
+| How long does kernel launch take? | `kernel_launch_overhead` | `api_name`, `overhead_us`, `api_ms` |
+| What kernels are launch-attributed to a phase? | `nvtx_kernel_sm_detail` | `kernel_name`, `kind`, `occupancy_pct_estimate` |
 
 ---
 
