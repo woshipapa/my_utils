@@ -567,6 +567,44 @@ def _build_builtin_skills(schema: NsightSchema) -> Dict[str, SqlSkill]:
         metrics_value_col = schema.metrics_value_col or schema.resolve_column(metrics_table, ("value", "metricValue", "val"))
         if metrics_ts_col and metrics_id_col and metrics_value_col:
             metrics_string_table = _ident(schema.string_table)
+            metrics_name_expr = "s.value"
+            metrics_name_join = f"JOIN {metrics_string_table} s ON g.{_ident(metrics_id_col)} = s.id "
+
+            # Prefer dedicated GPU metric dictionary table when available.
+            gpu_info_table = "TARGET_INFO_GPU_METRICS" if schema.table_exists("TARGET_INFO_GPU_METRICS") else None
+            if gpu_info_table:
+                gpu_info_tbl = _ident(gpu_info_table)
+                gpu_info_id_col = schema.resolve_column(gpu_info_tbl, ("metricId", "id", "metric_id"))
+                gpu_info_name_col = schema.resolve_column(gpu_info_tbl, ("name", "metricName", "metric_name", "value"))
+                if gpu_info_id_col and gpu_info_name_col:
+                    metrics_name_join += (
+                        f"LEFT JOIN {gpu_info_tbl} gm "
+                        f"ON g.{_ident(metrics_id_col)} = gm.{_ident(gpu_info_id_col)} "
+                    )
+                    metrics_name_expr = f"COALESCE(gm.{_ident(gpu_info_name_col)}, s.value)"
+
+            # Filter non-GPU generic sources when sourceId dictionary exists.
+            metrics_source_join = ""
+            metrics_source_where = ""
+            metrics_source_col = schema.resolve_column(metrics_table, ("sourceId", "source_id"))
+            if metrics_source_col and schema.table_exists("GENERIC_EVENT_SOURCES"):
+                ges_tbl = _ident("GENERIC_EVENT_SOURCES")
+                ges_id_col = schema.resolve_column(ges_tbl, ("sourceId", "id", "source_id"))
+                ges_name_col = schema.resolve_column(ges_tbl, ("name", "source", "sourceName"))
+                if ges_id_col and ges_name_col:
+                    metrics_source_join = (
+                        f"LEFT JOIN {ges_tbl} gs "
+                        f"ON g.{_ident(metrics_source_col)} = gs.{_ident(ges_id_col)} "
+                    )
+                    metrics_source_where = (
+                        "AND ("
+                        "{include_all_sources} = 1 "
+                        f"OR gs.{_ident(ges_name_col)} IS NULL "
+                        f"OR LOWER(gs.{_ident(ges_name_col)}) LIKE '%gpu%metric%' "
+                        f"OR LOWER(gs.{_ident(ges_name_col)}) = 'gpumetrics'"
+                        ") "
+                    )
+
             skill_map["gpu_metrics_aggregate"] = SqlSkill(
                 name="gpu_metrics_aggregate",
                 title="GPU Metrics Aggregate",
@@ -576,19 +614,21 @@ def _build_builtin_skills(schema: NsightSchema) -> Dict[str, SqlSkill]:
                 ),
                 category="metrics",
                 sql=(
-                    "SELECT s.value AS metric_name, "
+                    f"SELECT {metrics_name_expr} AS metric_name, "
                     "COUNT(*) AS sample_count, "
                     f"ROUND(AVG(CAST(g.{_ident(metrics_value_col)} AS REAL)), 3) AS avg_value, "
                     f"ROUND(MIN(CAST(g.{_ident(metrics_value_col)} AS REAL)), 3) AS min_value, "
                     f"ROUND(MAX(CAST(g.{_ident(metrics_value_col)} AS REAL)), 3) AS max_value "
                     f"FROM {metrics_table} g "
-                    f"JOIN {metrics_string_table} s ON g.{_ident(metrics_id_col)} = s.id "
+                    f"{metrics_name_join} "
+                    f"{metrics_source_join} "
                     "WHERE 1=1 "
                     f"AND ({{start_ns}} < 0 OR g.{_ident(metrics_ts_col)} >= {{start_ns}}) "
                     f"AND ({{end_ns}} < 0 OR g.{_ident(metrics_ts_col)} <= {{end_ns}}) "
-                    "AND ('{metric_name_like}' = '%' OR s.value LIKE '{metric_name_like}') "
+                    f"{metrics_source_where}"
+                    f"AND ('{{metric_name_like}}' = '%' OR {metrics_name_expr} LIKE '{{metric_name_like}}') "
                     f"AND g.{_ident(metrics_value_col)} IS NOT NULL "
-                    "GROUP BY s.value "
+                    f"GROUP BY {metrics_name_expr} "
                     "ORDER BY sample_count DESC, metric_name ASC "
                     "LIMIT {limit}"
                 ),
@@ -596,6 +636,13 @@ def _build_builtin_skills(schema: NsightSchema) -> Dict[str, SqlSkill]:
                     SqlSkillParam("start_ns", "window start ns, -1 to disable", "int", False, -1),
                     SqlSkillParam("end_ns", "window end ns, -1 to disable", "int", False, -1),
                     SqlSkillParam("metric_name_like", "metric name SQL LIKE pattern", "str", False, "%"),
+                    SqlSkillParam(
+                        "include_all_sources",
+                        "1 to include all generic sources (ETW/FTrace/etc), 0 to prefer GPU metrics sources only",
+                        "bool",
+                        False,
+                        False,
+                    ),
                     SqlSkillParam("limit", "max rows", "int", False, 500),
                 ],
                 tags=["gpu_metrics", "sampling", "sm_active", "tensor_active", "dram"],
