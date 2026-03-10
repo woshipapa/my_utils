@@ -96,9 +96,9 @@ class NsightSchema:
         self.sync_table = self._detect_first_existing(("CUPTI_ACTIVITY_KIND_SYNCHRONIZATION",))
         self.metrics_table = self._detect_first_existing(
             (
-                "GPU_METRICS",
                 "CUPTI_ACTIVITY_KIND_GPU_METRIC",
                 "CUPTI_ACTIVITY_KIND_METRIC",
+                "GPU_METRICS",
                 "TARGET_INFO_GPU_METRICS",
             )
         )

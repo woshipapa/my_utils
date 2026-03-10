@@ -157,18 +157,27 @@ def _init_sqlite(path: Path, *, scale: float = 1.0) -> None:
 
     cur.execute("CREATE TABLE TARGET_INFO_GPU (id INTEGER, name TEXT)")
     cur.execute("INSERT INTO TARGET_INFO_GPU VALUES (0, 'NVIDIA H100')")
+    cur.execute("CREATE TABLE GENERIC_EVENT_SOURCES (id INTEGER, name TEXT)")
+    cur.executemany(
+        "INSERT INTO GENERIC_EVENT_SOURCES VALUES (?, ?)",
+        [
+            (1, "GpuMetrics"),
+            (2, "ETW"),
+        ],
+    )
     cur.execute(
         "CREATE TABLE CUPTI_ACTIVITY_KIND_GPU_METRIC "
-        "(timestamp INTEGER, metricId INTEGER, value REAL)"
+        "(timestamp INTEGER, metricId INTEGER, value REAL, sourceId INTEGER)"
     )
     cur.executemany(
-        "INSERT INTO CUPTI_ACTIVITY_KIND_GPU_METRIC VALUES (?, ?, ?)",
+        "INSERT INTO CUPTI_ACTIVITY_KIND_GPU_METRIC VALUES (?, ?, ?, ?)",
         [
-            (int(1000 * s), 101, 62.5),
-            (int(2000 * s), 101, 70.0),
-            (int(3000 * s), 102, 41.0),
-            (int(4000 * s), 102, 44.5),
-            (int(5000 * s), 103, 57.25),
+            (int(1000 * s), 101, 62.5, 1),
+            (int(2000 * s), 101, 70.0, 1),
+            (int(3000 * s), 102, 41.0, 1),
+            (int(4000 * s), 102, 44.5, 1),
+            (int(5000 * s), 103, 57.25, 1),
+            (int(6000 * s), 101, 99.0, 2),
         ],
     )
     conn.commit()
@@ -267,6 +276,21 @@ def test_new_skill_outputs(tmp_path: Path) -> None:
         assert "avg_value" in r
         assert "min_value" in r
         assert "max_value" in r
+    # Default source filter should exclude non-GpuMetrics rows.
+    sm_row = next((r for r in rows if "sm__active" in str(r.get("metric_name", ""))), None)
+    assert sm_row is not None
+    assert sm_row["sample_count"] == 2
+
+    rows_all_sources = engine.execute(
+        "gpu_metrics_aggregate",
+        metric_name_like="%active%",
+        start_ns=-1,
+        end_ns=-1,
+        include_all_sources=1,
+    )
+    sm_row_all = next((r for r in rows_all_sources if "sm__active" in str(r.get("metric_name", ""))), None)
+    assert sm_row_all is not None
+    assert sm_row_all["sample_count"] == 3
 
     # 鈹€鈹€ Skill 12: memcpy_bandwidth_analysis 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
     rows = engine.execute("memcpy_bandwidth_analysis", device_id=0)

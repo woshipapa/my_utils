@@ -120,6 +120,7 @@ Common params:
 | `min_gap_ns` | int | 1_000_000 | `gpu_idle_gaps` |
 | `bucket_ns` | int | 1_000_000 | `stream_parallelism` |
 | `metric_name_like` | str | `%` | `gpu_metrics_aggregate` |
+| `include_all_sources` | bool | false | `gpu_metrics_aggregate`; false prefers GPU metric sources and filters ETW/FTrace-like generic sources |
 | `nvtx_text` | str | `%` or required | NVTX text filter skills |
 | `top_level_only` | bool | false | `nvtx_ranges_hierarchy` |
 
