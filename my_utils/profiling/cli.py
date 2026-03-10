@@ -257,6 +257,47 @@ def cmd_nsys_diff(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_nsys_iter_overlap(args: argparse.Namespace) -> int:
+    provider = NsysSqliteMetricsProvider(args.sqlite)
+    rows = provider.analyze_per_iteration_overlap(
+        marker=args.iteration_marker,
+        device_id=args.device_id,
+        start_ns=args.start_ns,
+        end_ns=args.end_ns,
+        top_level_only=not args.include_nested,
+        limit=args.limit,
+    )
+    text = json.dumps(rows, ensure_ascii=False, indent=2 if args.pretty else None)
+    if args.output:
+        path = Path(args.output)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+        print(f"[nsys-iter-overlap] wrote: {path}  ({len(rows)} iterations)")
+    else:
+        print(text)
+    return 0
+
+
+def cmd_nsys_iter_outliers(args: argparse.Namespace) -> int:
+    provider = NsysSqliteMetricsProvider(args.sqlite)
+    result = provider.detect_iteration_outliers(
+        marker=args.iteration_marker,
+        device_id=args.device_id,
+        threshold_sigma=args.sigma,
+        limit=args.limit,
+    )
+    text = json.dumps(result, ensure_ascii=False, indent=2 if args.pretty else None)
+    if args.output:
+        path = Path(args.output)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+        outlier_count = len((result.get("outliers") or []))
+        print(f"[nsys-iter-outliers] wrote: {path}  ({outlier_count} outliers)")
+    else:
+        print(text)
+    return 0
+
+
 def cmd_nsys_timeline_html(args: argparse.Namespace) -> int:
     output = export_timeline_html(
         args.sqlite,
@@ -403,6 +444,61 @@ def build_parser() -> argparse.ArgumentParser:
     nsys_timeline.add_argument("--limit", type=int, default=100000)
     nsys_timeline.add_argument("--width-px", type=int, default=1800)
     nsys_timeline.set_defaults(func=cmd_nsys_timeline_html)
+
+    nsys_iter_overlap = sub.add_parser(
+        "nsys-iter-overlap",
+        help="per-iteration compute/comm/overlap breakdown from NVTX markers",
+        description=(
+            "Detect training iterations via NVTX marker ranges, then for each iteration "
+            "compute the compute-only / comm-only / overlapping duration breakdown. "
+            "Kernels whose name contains 'nccl' (case-insensitive) are classified as comm; "
+            "all others are compute. Overlap is measured by intersecting merged interval sets."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    nsys_iter_overlap.add_argument("--sqlite", required=True, help="nsys exported sqlite path")
+    nsys_iter_overlap.add_argument(
+        "--iteration-marker", default="sample_0",
+        help="NVTX text substring that marks iteration boundaries (default: sample_0)",
+    )
+    nsys_iter_overlap.add_argument("--device-id", type=int, default=-1, help="CUDA device ID, -1 = all")
+    nsys_iter_overlap.add_argument("--start-ns", type=int, default=-1, help="global window start ns, -1 = no filter")
+    nsys_iter_overlap.add_argument("--end-ns", type=int, default=-1, help="global window end ns, -1 = no filter")
+    nsys_iter_overlap.add_argument(
+        "--include-nested", action="store_true",
+        help="include nested NVTX ranges with same marker (default: top-level only)",
+    )
+    nsys_iter_overlap.add_argument("--limit", type=int, default=2000, help="max iterations to process (default: 2000)")
+    nsys_iter_overlap.add_argument("--output", default="", help="optional JSON output path")
+    nsys_iter_overlap.add_argument("--pretty", action="store_true", help="pretty-print JSON output")
+    nsys_iter_overlap.set_defaults(func=cmd_nsys_iter_overlap)
+
+    nsys_iter_outliers = sub.add_parser(
+        "nsys-iter-outliers",
+        help="detect statistically anomalous training iterations by step duration",
+        description=(
+            "Detect training iterations via NVTX marker ranges, compute step duration statistics "
+            "(mean, median, std, p95, p99), and flag iterations whose duration deviates from the "
+            "median by more than --sigma standard deviations. "
+            "Useful for identifying GC pauses, NCCL stragglers, or system noise."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    nsys_iter_outliers.add_argument("--sqlite", required=True, help="nsys exported sqlite path")
+    nsys_iter_outliers.add_argument(
+        "--iteration-marker", default="sample_0",
+        help="NVTX text substring that marks iteration boundaries (default: sample_0)",
+    )
+    nsys_iter_outliers.add_argument("--device-id", type=int, default=-1, help="CUDA device ID, -1 = all")
+    nsys_iter_outliers.add_argument(
+        "--sigma", type=float, default=2.0,
+        help="flag iterations deviating more than this many σ from median (default: 2.0)",
+    )
+    nsys_iter_outliers.add_argument("--limit", type=int, default=2000, help="max iterations to scan (default: 2000)")
+    nsys_iter_outliers.add_argument("--output", default="", help="optional JSON output path")
+    nsys_iter_outliers.add_argument("--pretty", action="store_true", help="pretty-print JSON output")
+    nsys_iter_outliers.set_defaults(func=cmd_nsys_iter_outliers)
+
     return parser
 
 

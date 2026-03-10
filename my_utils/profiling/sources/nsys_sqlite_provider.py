@@ -1988,6 +1988,71 @@ class NsysSqliteMetricsProvider(BaseMetricsProvider):
         finally:
             conn.close()
 
+    def analyze_per_iteration_overlap(
+        self,
+        *,
+        marker: str = "sample_0",
+        device_id: int = -1,
+        start_ns: int = -1,
+        end_ns: int = -1,
+        top_level_only: bool = True,
+        limit: int = 2000,
+    ) -> List[Dict[str, object]]:
+        """
+        Per-iteration compute/comm/overlap breakdown.
+
+        Returns one dict per iteration with all detect_iterations() fields plus:
+        compute_ms, comm_ms, overlap_ms, comm_pct, kernel_count.
+        """
+        if not self.sqlite_path.exists():
+            return []
+        conn = sqlite3.connect(str(self.sqlite_path))
+        conn.row_factory = sqlite3.Row
+        try:
+            engine = NsysSqlSkillEngine(conn)
+            return engine.analyze_per_iteration_overlap(
+                marker=marker,
+                device_id=device_id,
+                start_ns=start_ns,
+                end_ns=end_ns,
+                top_level_only=top_level_only,
+                limit=limit,
+            )
+        finally:
+            conn.close()
+
+    def detect_iteration_outliers(
+        self,
+        *,
+        marker: str = "sample_0",
+        device_id: int = -1,
+        threshold_sigma: float = 2.0,
+        limit: int = 2000,
+    ) -> Dict[str, object]:
+        """
+        Statistical outlier detection on iteration step durations.
+
+        Returns:
+            {
+                "stats":    {count, mean_ms, median_ms, std_ms, p95_ms, p99_ms},
+                "outliers": [{iteration, duration_ms, deviation_sigma}, ...]
+            }
+        """
+        if not self.sqlite_path.exists():
+            return {"stats": {}, "outliers": []}
+        conn = sqlite3.connect(str(self.sqlite_path))
+        conn.row_factory = sqlite3.Row
+        try:
+            engine = NsysSqlSkillEngine(conn)
+            return engine.detect_iteration_outliers(
+                marker=marker,
+                device_id=device_id,
+                threshold_sigma=threshold_sigma,
+                limit=limit,
+            )
+        finally:
+            conn.close()
+
     def first_gpu_name(self) -> str:
         if not self.sqlite_path.exists():
             return ""

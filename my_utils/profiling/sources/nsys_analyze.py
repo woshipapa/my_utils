@@ -80,11 +80,8 @@ def analyze_nsys_sqlite(
             end_ns=end_ns,
             limit=limit,
         )
-        top_kernels = engine.execute(
-            "top_kernels",
-            device_id=device_id,
-            limit=max(int(top_k), 1),
-        )
+        # top_kernels is already computed inside summarize_gpu_kernels(); reuse it.
+        top_kernels = list((summary or {}).get("top_kernels") or [])
         nccl_breakdown = engine.execute(
             "nccl_breakdown",
             device_id=device_id,

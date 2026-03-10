@@ -759,6 +759,119 @@ def _build_builtin_skills(schema: NsightSchema) -> Dict[str, SqlSkill]:
                 tags=["nvtx", "memcpy", "bandwidth", "phase", "memory"],
             )
 
+    # 18) NVTX kernel SM/memory detail
+    # For a given NVTX range pattern, list every kernel that ran inside it with
+    # full SM launch config and theoretical occupancy.
+    if schema.table_exists(nvtx_table) and nvtx_start_col and nvtx_end_col:
+        # NVTX text expression — use alias "sv" to avoid collision with name_join aliases s/d
+        sk18_text_expr = "n.text"
+        sk18_nvtx_join = ""
+        if string_table:
+            sk18_text_id = schema.resolve_column(nvtx_table, ("textId", "nameId"))
+            if sk18_text_id:
+                sk18_nvtx_join = f" LEFT JOIN {_ident(string_table)} sv ON n.{_ident(sk18_text_id)} = sv.id "
+                sk18_text_expr = "COALESCE(n.text, sv.value)"
+
+        # SM columns — resolve fresh (may be None on older nsys exports)
+        sk18_bx = schema.resolve_column(kernel_table, ("blockX",))
+        sk18_by = schema.resolve_column(kernel_table, ("blockY",))
+        sk18_bz = schema.resolve_column(kernel_table, ("blockZ",))
+        sk18_gx = schema.resolve_column(kernel_table, ("gridX",))
+        sk18_gy = schema.resolve_column(kernel_table, ("gridY",))
+        sk18_gz = schema.resolve_column(kernel_table, ("gridZ",))
+        sk18_reg = schema.resolve_column(kernel_table, ("registersPerThread",))
+        sk18_static = schema.resolve_column(kernel_table, ("staticSharedMemory",))
+        sk18_dyn = schema.resolve_column(kernel_table, ("dynamicSharedMemory",))
+        sk18_local = schema.resolve_column(kernel_table, ("localMemoryPerThread",))
+
+        if sk18_bx and sk18_by and sk18_bz:
+            sk18_tpb = f"k.{_ident(sk18_bx)} * k.{_ident(sk18_by)} * k.{_ident(sk18_bz)}"
+            sk18_occ = (
+                f"ROUND(100.0 * MIN(64, ({sk18_tpb} + 31) / 32 * 4) / 64.0, 1)"
+            )
+        else:
+            sk18_tpb = "NULL"
+            sk18_occ = "NULL"
+
+        if sk18_static and sk18_dyn:
+            sk18_smem = f"k.{_ident(sk18_static)} + k.{_ident(sk18_dyn)}"
+        elif sk18_static:
+            sk18_smem = f"k.{_ident(sk18_static)}"
+        elif sk18_dyn:
+            sk18_smem = f"k.{_ident(sk18_dyn)}"
+        else:
+            sk18_smem = "NULL"
+
+        sk18_device_where = (
+            f"AND ({{device_id}} < 0 OR k.{_ident(device_col)} = {{device_id}}) "
+            if device_col else ""
+        )
+
+        # Optional columns: grid dims, local memory (present only in real nsys exports)
+        optional_cols = ""
+        if sk18_gx and sk18_gy and sk18_gz:
+            optional_cols += (
+                f"k.{_ident(sk18_gx)} * k.{_ident(sk18_gy)} * k.{_ident(sk18_gz)} AS total_blocks, "
+                f"k.{_ident(sk18_gx)} AS gridX, "
+                f"k.{_ident(sk18_gy)} AS gridY, "
+                f"k.{_ident(sk18_gz)} AS gridZ, "
+            )
+        if sk18_reg:
+            optional_cols += f"k.{_ident(sk18_reg)} AS registersPerThread, "
+        if sk18_local:
+            optional_cols += f"k.{_ident(sk18_local)} AS localMemoryPerThread, "
+
+        skill_map["nvtx_kernel_sm_detail"] = SqlSkill(
+            name="nvtx_kernel_sm_detail",
+            title="NVTX Kernel SM/Memory Detail",
+            description=(
+                "For each NVTX range matching the text pattern, list every kernel that ran "
+                "inside it with full SM launch config (threads/block, grid, registers, shared "
+                "memory, local memory) and theoretical SM occupancy. Kernels are labelled "
+                "'compute' or 'comm' (nccl). Useful for diagnosing launch-config problems "
+                "within a specific training phase."
+            ),
+            category="compute",
+            sql=(
+                f"SELECT {sk18_text_expr} AS nvtx_text, "
+                f"n.{_ident(nvtx_start_col)} AS nvtx_start_ns, "
+                f"n.[{_ident(nvtx_end_col)}] AS nvtx_end_ns, "
+                f"{name_expr} AS kernel_name, "
+                f"CASE WHEN LOWER({name_expr}) LIKE '%nccl%' THEN 'comm' ELSE 'compute' END AS kind, "
+                f"k.{_ident(start_col)} AS kernel_start_ns, "
+                f"k.[{_ident(end_col)}] AS kernel_end_ns, "
+                f"ROUND((k.[{_ident(end_col)}] - k.{_ident(start_col)}) / 1e6, 3) AS duration_ms, "
+                + (f"k.{_ident(stream_col)} AS stream_id, " if stream_col else "NULL AS stream_id, ")
+                + f"{sk18_tpb} AS threads_per_block, "
+                + optional_cols
+                + f"{sk18_smem} AS total_shared_bytes, "
+                + f"{sk18_occ} AS occupancy_pct_estimate "
+                + f"FROM {nvtx_table} n "
+                + f"{sk18_nvtx_join} "
+                + f"JOIN {kernel_table} k "
+                + f"  ON k.{_ident(start_col)} >= n.{_ident(nvtx_start_col)} "
+                + f"  AND k.[{_ident(end_col)}] <= n.[{_ident(nvtx_end_col)}] "
+                + f"{name_join} "
+                + f"WHERE {sk18_text_expr} LIKE '{{nvtx_text}}' "
+                + f"AND {sk18_text_expr} IS NOT NULL "
+                + f"AND n.[{_ident(nvtx_end_col)}] > n.{_ident(nvtx_start_col)} "
+                + sk18_device_where
+                + f"ORDER BY n.{_ident(nvtx_start_col)} ASC, k.{_ident(start_col)} ASC "
+                + "LIMIT {limit}"
+            ),
+            params=[
+                SqlSkillParam(
+                    "nvtx_text",
+                    "NVTX range text LIKE pattern, e.g. %forward% or %sample_0%",
+                    "str",
+                    True,
+                ),
+                SqlSkillParam("device_id", "CUDA deviceId, -1 means all devices", "int", False, -1),
+                SqlSkillParam("limit", "max rows", "int", False, 2000),
+            ],
+            tags=["nvtx", "kernel", "sm", "occupancy", "shared_memory", "launch_config", "detail"],
+        )
+
     return skill_map
 
 

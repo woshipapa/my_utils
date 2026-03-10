@@ -191,21 +191,28 @@ def test_all_17_skills_register_and_execute(tmp_path: Path) -> None:
     for s in skills:
         print(f"  - {s}")
 
-    EXPECTED_17 = {
+    EXPECTED_18 = {
         "aggregate_kernels", "top_kernels", "aggregate_nvtx_ranges",
         "memcpy_in_window", "kernel_map", "gpu_idle_gaps",
         "kernel_launch_overhead", "nccl_breakdown", "nvtx_kernel_map",
         "schema_inspect", "thread_utilization",
         "memcpy_bandwidth_analysis", "sync_breakdown", "memset_breakdown",
         "kernel_occupancy_estimate", "stream_parallelism", "nvtx_memcpy_breakdown",
+        "nvtx_kernel_sm_detail",
     }
-    missing = EXPECTED_17 - set(skills)
+    missing = EXPECTED_18 - set(skills)
     assert not missing, f"Missing skills: {missing}"
+
+    # Default params for skills that have required parameters
+    REQUIRED_DEFAULTS: dict = {
+        "nvtx_kernel_sm_detail": {"nvtx_text": "%"},
+    }
 
     errors: List[Tuple[str, str]] = []
     for name in skills:
         try:
-            rows = engine.execute(name)
+            kwargs = REQUIRED_DEFAULTS.get(name, {})
+            rows = engine.execute(name, **kwargs)
             print(f"  [{name}] OK  rows={len(rows)}")
         except Exception as exc:
             errors.append((name, str(exc)))
@@ -281,6 +288,37 @@ def test_new_skill_outputs(tmp_path: Path) -> None:
     assert len(rows) >= 1
     assert "nvtx_text" in rows[0]
     assert "total_gb" in rows[0]
+
+    # ── Skill 18: nvtx_kernel_sm_detail ──────────────────────────────────────
+    # sample_0 step=1 range [0, 22000] contains kernels at 0-10000 and 8000-20000
+    rows = engine.execute("nvtx_kernel_sm_detail", nvtx_text="%sample_0%", device_id=0)
+    _show("Skill 18 – nvtx_kernel_sm_detail (%sample_0%)", rows)
+    assert len(rows) >= 1, "Expected kernels inside sample_0 NVTX range"
+    r = rows[0]
+    assert "nvtx_text" in r
+    assert "kernel_name" in r
+    assert "kind" in r
+    assert r["kind"] in ("compute", "comm")
+    assert "duration_ms" in r
+    assert "threads_per_block" in r
+    assert "total_shared_bytes" in r
+    assert "occupancy_pct_estimate" in r
+
+    # kind labelling: nccl kernel must be 'comm', others 'compute'
+    kinds = {r["kernel_name"]: r["kind"] for r in rows}
+    for name, kind in kinds.items():
+        if "nccl" in name.lower():
+            assert kind == "comm", f"nccl kernel '{name}' should be labelled 'comm'"
+        else:
+            assert kind == "compute", f"non-nccl kernel '{name}' should be 'compute'"
+
+    # forward-only filter — should only return kernels that fit inside [0, 10000]
+    rows_fwd = engine.execute("nvtx_kernel_sm_detail", nvtx_text="%forward%", device_id=0)
+    _show("Skill 18 – nvtx_kernel_sm_detail (%forward%)", rows_fwd)
+    assert len(rows_fwd) >= 1
+    for r in rows_fwd:
+        assert r["nvtx_text"] == "forward"
+        assert r["kind"] == "compute"   # nccl kernel [8000-20000] does NOT fit inside forward [0-10000]
 
     conn.close()
 
@@ -389,6 +427,50 @@ def test_nsys_new_skills_and_methods(tmp_path: Path) -> None:
     assert len(iters) >= 1
     mfu = provider.compute_mfu(step_time_s=0.01, model_flops_per_step=1e12, peak_tflops=100)
     assert "mfu_pct" in mfu
+
+
+def test_cli_new_subcommands(tmp_path: Path) -> None:
+    db = tmp_path / "rank0.sqlite"
+    _init_sqlite(db)
+
+    overlap_json = tmp_path / "iter_overlap.json"
+    outliers_json = tmp_path / "iter_outliers.json"
+
+    # nsys-iter-overlap
+    assert main([
+        "nsys-iter-overlap",
+        "--sqlite", str(db),
+        "--iteration-marker", "sample_0",
+        "--device-id", "0",
+        "--limit", "100",
+        "--output", str(overlap_json),
+        "--pretty",
+    ]) == 0
+    assert overlap_json.exists()
+    import json
+    data = json.loads(overlap_json.read_text())
+    assert isinstance(data, list) and len(data) >= 1
+    assert "compute_ms" in data[0]
+    assert "comm_ms" in data[0]
+    assert "overlap_ms" in data[0]
+    assert "comm_pct" in data[0]
+    print(f"\n[nsys-iter-overlap] {len(data)} iterations written to {overlap_json}")
+
+    # nsys-iter-outliers
+    assert main([
+        "nsys-iter-outliers",
+        "--sqlite", str(db),
+        "--iteration-marker", "sample_0",
+        "--device-id", "0",
+        "--sigma", "0.5",
+        "--output", str(outliers_json),
+        "--pretty",
+    ]) == 0
+    assert outliers_json.exists()
+    data2 = json.loads(outliers_json.read_text())
+    assert "stats" in data2 and "outliers" in data2
+    assert data2["stats"]["count"] >= 1
+    print(f"[nsys-iter-outliers] stats={data2['stats']}  outliers={len(data2['outliers'])}")
 
 
 def test_cli_nsys_commands(tmp_path: Path) -> None:
