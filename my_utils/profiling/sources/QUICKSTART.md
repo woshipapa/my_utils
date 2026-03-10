@@ -113,6 +113,7 @@ myutils-profile nsys-sql-skill \
 | How much time is buffer zeroing? | `memset_breakdown` | `fill_value`, `total_ms`, `total_gb` |
 | Are my kernels underutilizing SMs? | `kernel_occupancy_estimate` | `occupancy_pct_estimate`, `threads_per_block` |
 | Is multi-stream overlap happening? | `stream_parallelism` | `pct_time_multi_stream` |
+| Show all NVTX names with nesting? | `nvtx_ranges_hierarchy` | `nvtx_text`, `depth`, `parent_nvtx_text` |
 | Which training phase moves most data? | `nvtx_memcpy_breakdown` | `nvtx_text`, `total_gb` |
 | Where are GPU idle bubbles? | `gpu_idle_gaps` | `gap_ms`, `before_kernel`, `after_kernel` |
 | How long does kernel launch take? | `kernel_launch_overhead` | `overhead_us`, `api_ms` |
@@ -243,6 +244,14 @@ myutils-profile nsys-sql-skill \
   --sqlite train_rank0.sqlite \
   --skill nvtx_kernel_sm_detail \
   --param nvtx_text=%forward% \
+  --pretty
+
+# List all NVTX ranges (including nested parent/child ranges)
+myutils-profile nsys-sql-skill \
+  --sqlite train_rank0.sqlite \
+  --skill nvtx_ranges_hierarchy \
+  --param nvtx_text=% \
+  --param top_level_only=false \
   --pretty
 
 # How much data is copied during the optimizer step?

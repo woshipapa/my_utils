@@ -1,4 +1,4 @@
-# sources
+﻿# sources
 
 Offline Nsight Systems SQLite post-processing parsers and analysis utilities.
 
@@ -8,7 +8,7 @@ Offline Nsight Systems SQLite post-processing parsers and analysis utilities.
 |---|---|
 | `nsys_schema_adapter.py` | SQLite schema auto-detection across nsys versions (`NsightSchema`, `detect_nsys_version`) |
 | `nsys_sql_skills.py` | Built-in SQL skill engine (`NsysSqlSkillEngine`) and compute/comm overlap analysis |
-| `nsys_sqlite_provider.py` | Main provider (`NsysSqliteMetricsProvider`) — wraps all analysis APIs |
+| `nsys_sqlite_provider.py` | Main provider (`NsysSqliteMetricsProvider`) 鈥?wraps all analysis APIs |
 | `nsys_iterations.py` | NVTX-marker-based training iteration detection (`detect_iterations`) |
 | `nsys_mfu.py` | MFU computation helpers (`compute_mfu_single`, `infer_peak_tflops`) |
 | `nsys_flat_export.py` | Flat kernel timeline export to JSON/CSV (`export_kernels_flat`) |
@@ -31,7 +31,7 @@ Auto-detects SQLite schema produced by `nsys export`. Handles differences across
 | `kernel_table` | `CUPTI_ACTIVITY_KIND_KERNEL` (or variant) |
 | `runtime_table` | `CUPTI_ACTIVITY_KIND_RUNTIME` |
 | `nvtx_table` | `NVTX_EVENTS` |
-| `string_table` | `StringIds` or `STRINGIDS` — maps integer IDs to kernel/nvtx name strings |
+| `string_table` | `StringIds` or `STRINGIDS` 鈥?maps integer IDs to kernel/nvtx name strings |
 | `memcpy_table` | `CUPTI_ACTIVITY_KIND_MEMCPY` |
 | `memset_table` | `CUPTI_ACTIVITY_KIND_MEMSET` |
 | `sync_table` | `CUPTI_ACTIVITY_KIND_SYNCHRONIZATION` |
@@ -101,86 +101,95 @@ engine.execute("top_kernels", device_id=0, limit=20)  # List[Dict]
 | 16 | `stream_parallelism` | pipeline | KERNEL | max_concurrent_streams, avg_concurrent_streams, pct_time_multi_stream |
 | 17 | `nvtx_memcpy_breakdown` | memory | NVTX\_EVENTS + MEMCPY | nvtx_text, copy_kind, total_gb, total_ms, avg_gbps |
 | 18 | `nvtx_kernel_sm_detail` | compute | NVTX\_EVENTS + KERNEL | nvtx_text, kernel_name, kind, duration_ms, stream_id, threads_per_block, registersPerThread, total_shared_bytes, occupancy_pct_estimate |
+| 19 | `nvtx_ranges_hierarchy` | nvtx | NVTX\_EVENTS | nvtx_text, start_ns, end_ns, depth, parent_nvtx_text, global_tid |
 
-Skills 12–18 are **schema-guarded**: each skill silently absent from `list_skills()` if its required table does not exist in the SQLite export (e.g. older nsys versions without SYNCHRONIZATION or MEMSET tables).
+Skills 12-19 are **schema-guarded**: each skill silently absent from `list_skills()` if its required table does not exist in the SQLite export (e.g. older nsys versions without SYNCHRONIZATION or MEMSET tables).
 
 **Common parameters:**
 
 | Parameter | Type | Default | Applies to |
 |---|---|---|---|
 | `device_id` | int | -1 | Most skills; -1 = all devices |
-| `limit` | int | 15–50 | Most skills |
+| `limit` | int | 15鈥?0 | Most skills |
 | `start_ns` | int | -1 | `kernel_map`, `memcpy_in_window`, `nvtx_kernel_map`; -1 = no filter |
 | `end_ns` | int | -1 | Same as start_ns |
 | `min_gap_ns` | int | 1\_000\_000 | `gpu_idle_gaps` |
 | `bucket_ns` | int | 1\_000\_000 | `stream_parallelism` (time bucket width) |
-| `nvtx_text` | str | *(required)* | `nvtx_kernel_sm_detail` — SQL LIKE pattern, e.g. `%forward%` |
+| `nvtx_text` | str | *(required)* | `nvtx_kernel_sm_detail` 鈥?SQL LIKE pattern, e.g. `%forward%` |
+| `top_level_only` | bool | false | `nvtx_ranges_hierarchy`; true means only root ranges |
 
 **New skill details:**
 
-`memcpy_bandwidth_analysis` — Groups by `copyKind` (1=H2D, 2=D2H, 8=D2D) and reports bandwidth as
+`memcpy_bandwidth_analysis` 鈥?Groups by `copyKind` (1=H2D, 2=D2H, 8=D2D) and reports bandwidth as
 `SUM(bytes) / SUM(duration_ns) * 1e9` (avg) and per-transfer MIN/MAX. Identifies PCIe vs NVLink saturation.
 
-`sync_breakdown` — Aggregates `CUPTI_ACTIVITY_KIND_SYNCHRONIZATION` events by `syncType`.
+`sync_breakdown` 鈥?Aggregates `CUPTI_ACTIVITY_KIND_SYNCHRONIZATION` events by `syncType`.
 Exposes hidden synchronization overhead such as `cudaDeviceSynchronize` stalls.
 
-`memset_breakdown` — Groups by fill `value` (0 = zero-init, non-zero = custom fill).
+`memset_breakdown` 鈥?Groups by fill `value` (0 = zero-init, non-zero = custom fill).
 Quantifies the cost of buffer initialization hidden inside training steps.
 
-`kernel_occupancy_estimate` — Estimates theoretical SM occupancy using:
-`occupancy_pct ≈ MIN(max_warps_per_sm=64, warps_per_block × 4) / 64 × 100`.
+`kernel_occupancy_estimate` 鈥?Estimates theoretical SM occupancy using:
+`occupancy_pct 鈮?MIN(max_warps_per_sm=64, warps_per_block 脳 4) / 64 脳 100`.
 Flags kernels with small `threads_per_block` or high register/shared-mem pressure.
 
-`stream_parallelism` — Divides timeline into `bucket_ns`-wide buckets and counts
+`stream_parallelism` 鈥?Divides timeline into `bucket_ns`-wide buckets and counts
 `DISTINCT stream_id` per bucket. Reports `pct_time_multi_stream` (fraction of buckets with >1 active stream).
 
-`nvtx_memcpy_breakdown` — Joins NVTX ranges with MEMCPY rows (`memcpy.start >= nvtx.start AND memcpy.end <= nvtx.end`).
+`nvtx_memcpy_breakdown` 鈥?Joins NVTX ranges with MEMCPY rows (`memcpy.start >= nvtx.start AND memcpy.end <= nvtx.end`).
 Identifies which training phase (forward / backward / optimizer step) drives the most data movement.
 
-`nvtx_kernel_sm_detail` — For each NVTX range matching `nvtx_text` (SQL LIKE), lists every kernel that ran **strictly inside** that range (`kernel.start >= nvtx.start AND kernel.end <= nvtx.end`) with full SM launch configuration:
+`nvtx_kernel_sm_detail` 鈥?For each NVTX range matching `nvtx_text` (SQL LIKE), lists every kernel that ran **strictly inside** that range (`kernel.start >= nvtx.start AND kernel.end <= nvtx.end`) with full SM launch configuration:
 - `kind`: `'compute'` or `'comm'` (name contains `nccl`)
-- `threads_per_block`: `blockX × blockY × blockZ`
+- `threads_per_block`: `blockX 脳 blockY 脳 blockZ`
 - `registersPerThread`: register pressure per thread
 - `total_shared_bytes`: `staticSharedMemory + dynamicSharedMemory`
-- `occupancy_pct_estimate`: `MIN(64, warps_per_block × 4) / 64 × 100`
+- `occupancy_pct_estimate`: `MIN(64, warps_per_block 脳 4) / 64 脳 100`
 - `gridX/Y/Z`, `total_blocks`, `localMemoryPerThread`: included when present in the export
 
 Use this skill to audit the launch configuration of every kernel inside a specific training phase, identify low-occupancy kernels, or confirm compute vs comm kernel mix within a range.
+
+`nvtx_ranges_hierarchy` — Lists raw NVTX ranges and annotates nesting:
+- depth=0 means root NVTX range.
+- depth>0 means nested child range.
+- parent_nvtx_text gives direct parent range text.
+
+Use this skill to enumerate all NVTX names including nested parent/child ranges, and inspect hierarchy structure per thread.
 
 ### Engine Methods
 
 ```python
 engine = NsysSqlSkillEngine(conn)
 
-# ── SQL skill execution ──────────────────────────────────────────────────────
-engine.list_skills()                          # List[str] — 17 entries when all tables present
+# 鈹€鈹€ SQL skill execution 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+engine.list_skills()                          # List[str] — 19 entries when all tables present
 engine.describe_skill("sync_breakdown")       # dict with params metadata
 engine.execute("sync_breakdown", device_id=0, limit=50)  # List[Dict]
 
-# ── Compute/comm overlap (global window) ────────────────────────────────────
+# 鈹€鈹€ Compute/comm overlap (global window) 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 engine.analyze_compute_comm_overlap(device_id=0, start_ns=-1, end_ns=-1)
 
-# ── GPU kernel summary ───────────────────────────────────────────────────────
+# 鈹€鈹€ GPU kernel summary 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 engine.summarize_gpu_kernels(device_id=0, top_k=10)
 
-# ── Iteration detection ──────────────────────────────────────────────────────
+# 鈹€鈹€ Iteration detection 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 engine.detect_iterations(marker="sample_0", device_id=0, top_level_only=True)
 
-# ── Per-iteration compute/comm breakdown (new) ───────────────────────────────
+# 鈹€鈹€ Per-iteration compute/comm breakdown (new) 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 engine.analyze_per_iteration_overlap(
     marker="sample_0",
     device_id=0,
     top_level_only=True,
     limit=200,
 )
-# Returns List[Dict] — one entry per iteration, all detect_iterations() fields plus:
+# Returns List[Dict] 鈥?one entry per iteration, all detect_iterations() fields plus:
 #   compute_ms, comm_ms, overlap_ms, comm_pct, kernel_count
 
-# ── Iteration outlier detection (new) ────────────────────────────────────────
+# 鈹€鈹€ Iteration outlier detection (new) 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 engine.detect_iteration_outliers(
     marker="sample_0",
     device_id=0,
-    threshold_sigma=2.0,   # flag iterations where |duration - median| > 2σ
+    threshold_sigma=2.0,   # flag iterations where |duration - median| > 2蟽
     limit=2000,
 )
 # Returns:
@@ -196,7 +205,7 @@ engine.detect_iteration_outliers(
 engine.analyze_compute_comm_overlap(device_id=0, start_ns=-1, end_ns=-1)
 ```
 
-**Classify kernels:** name contains `nccl` (case-insensitive) → comm; otherwise → compute.
+**Classify kernels:** name contains `nccl` (case-insensitive) 鈫?comm; otherwise 鈫?compute.
 
 **Algorithm:** merge overlapping intervals per class, then intersect the two merged sets.
 
@@ -352,7 +361,7 @@ result = analyze_nsys_sqlite(
 ```
 
 **step_time resolution order for MFU:**
-1. Median of `iterations[*].duration_ms` (preferred — excludes warm-up)
+1. Median of `iterations[*].duration_ms` (preferred 鈥?excludes warm-up)
 2. Fallback: `summary.timing.span_ms` (full profiled window)
 
 **Result structure:**
@@ -537,24 +546,22 @@ report = collector.analyze()
 ## Quick Reference: Analysis Pipeline
 
 ```
-nsys profile ... → .nsys-rep
-nsys export --sqlite → .sqlite
-        │
-        ├─ NsightSchema          (schema + version detection)
-        ├─ NsysSqlSkillEngine    (SQL queries: top_kernels, nccl_breakdown, ...)
-        ├─ detect_iterations     (NVTX marker → per-step stats)
-        ├─ compute_mfu_single    (MFU %)
-        ├─ analyze_compute_comm_overlap  (overlap_ms, overlap_pct)
-        ├─ summarize_gpu_kernels (busy_ms, idle_ms, utilization_pct)
-        │
-        ├─ analyze_nsys_sqlite   (all-in-one result dict)
-        ├─ diff_nsys_sqlite      (before vs after comparison)
-        ├─ export_kernels_flat   (flat JSON/CSV timeline)
-        └─ export_timeline_html  (static HTML timeline)
+nsys profile ... 鈫?.nsys-rep
+nsys export --sqlite 鈫?.sqlite
+        鈹?        鈹溾攢 NsightSchema          (schema + version detection)
+        鈹溾攢 NsysSqlSkillEngine    (SQL queries: top_kernels, nccl_breakdown, ...)
+        鈹溾攢 detect_iterations     (NVTX marker 鈫?per-step stats)
+        鈹溾攢 compute_mfu_single    (MFU %)
+        鈹溾攢 analyze_compute_comm_overlap  (overlap_ms, overlap_pct)
+        鈹溾攢 summarize_gpu_kernels (busy_ms, idle_ms, utilization_pct)
+        鈹?        鈹溾攢 analyze_nsys_sqlite   (all-in-one result dict)
+        鈹溾攢 diff_nsys_sqlite      (before vs after comparison)
+        鈹溾攢 export_kernels_flat   (flat JSON/CSV timeline)
+        鈹斺攢 export_timeline_html  (static HTML timeline)
 ```
 
 **All times are in nanoseconds internally; all reported values are in milliseconds.**
-**Compute vs comm classification: kernel name contains `nccl` (case-insensitive) → comm.**
+**Compute vs comm classification: kernel name contains `nccl` (case-insensitive) 鈫?comm.**
 
 ---
 
@@ -564,10 +571,10 @@ nsys export --sqlite → .sqlite
 
 | Subcommand | One-line purpose | Input | Output |
 |---|---|---|---|
-| `nsys-sql-skill` | Run any one of 17 SQL skills with custom params | 1 sqlite | JSON rows |
+| `nsys-sql-skill` | Run any one of 19 SQL skills with custom params | 1 sqlite | JSON rows |
 | `nsys-analyze` | All-in-one report: kernel/NCCL/overlap/sync/bandwidth/MFU | 1 sqlite | JSON or Markdown |
 | `nsys-iter-overlap` | Per-step compute / comm / overlap breakdown (interval-merge) | 1 sqlite | JSON list |
-| `nsys-iter-outliers` | Step duration statistics + σ-based anomaly detection | 1 sqlite | JSON {stats, outliers} |
+| `nsys-iter-outliers` | Step duration statistics + 蟽-based anomaly detection | 1 sqlite | JSON {stats, outliers} |
 | `nsys-export` | Raw kernel timeline rows, optionally annotated with step index | 1 sqlite | JSON or CSV |
 | `nsys-diff` | Before-vs-after delta on utilization, overlap, kernel times | 2 sqlite | JSON or Markdown |
 | `nsys-timeline-html` | Interactive HTML timeline for visual inspection | 1 sqlite | HTML |
@@ -578,40 +585,32 @@ nsys export --sqlite → .sqlite
 
 ```
 Have a .sqlite file from nsys export?
-│
-├─ Want a single comprehensive report?
-│   └─► nsys-analyze [--format markdown] [--model-flops-per-step N --peak-tflops N]
-│
-├─ Want one specific metric with custom parameters?
-│   └─► nsys-sql-skill --skill <name> --param key=val [--param ...]
-│        │
-│        ├─ Compute hotspots      → top_kernels / aggregate_kernels
-│        ├─ NCCL collectives      → nccl_breakdown
-│        ├─ Sync stalls           → sync_breakdown
-│        ├─ PCIe / NVLink BW      → memcpy_bandwidth_analysis
-│        ├─ Buffer init cost      → memset_breakdown
-│        ├─ SM occupancy          → kernel_occupancy_estimate
-│        ├─ Multi-stream overlap  → stream_parallelism
-│        ├─ Per-phase data moves  → nvtx_memcpy_breakdown
-│        ├─ CPU thread cost       → thread_utilization
-│        ├─ Pipeline bubbles      → gpu_idle_gaps
-│        ├─ Launch latency        → kernel_launch_overhead
-│        └─ Schema debug          → schema_inspect
-│
-├─ Want per-step compute / comm balance (parallel-stream-correct)?
-│   └─► nsys-iter-overlap --iteration-marker sample_0
-│
-├─ Want to find slow or anomalous training steps?
-│   └─► nsys-iter-outliers --sigma 2.0 --iteration-marker sample_0
-│
-├─ Want raw kernel rows for custom post-processing?
-│   └─► nsys-export --format csv [--attach-iteration]
-│
-├─ Want to visually inspect the kernel timeline?
-│   └─► nsys-timeline-html --output timeline.html
-│
-└─ Have two sqlite files and want to measure an optimization?
-    └─► nsys-diff --before-sqlite A.sqlite --after-sqlite B.sqlite
+鈹?鈹溾攢 Want a single comprehensive report?
+鈹?  鈹斺攢鈻?nsys-analyze [--format markdown] [--model-flops-per-step N --peak-tflops N]
+鈹?鈹溾攢 Want one specific metric with custom parameters?
+鈹?  鈹斺攢鈻?nsys-sql-skill --skill <name> --param key=val [--param ...]
+鈹?       鈹?鈹?       鈹溾攢 Compute hotspots      鈫?top_kernels / aggregate_kernels
+鈹?       鈹溾攢 NCCL collectives      鈫?nccl_breakdown
+鈹?       鈹溾攢 Sync stalls           鈫?sync_breakdown
+鈹?       鈹溾攢 PCIe / NVLink BW      鈫?memcpy_bandwidth_analysis
+鈹?       鈹溾攢 Buffer init cost      鈫?memset_breakdown
+鈹?       鈹溾攢 SM occupancy          鈫?kernel_occupancy_estimate
+鈹?       鈹溾攢 Multi-stream overlap  鈫?stream_parallelism
+鈹?       鈹溾攢 Per-phase data moves  鈫?nvtx_memcpy_breakdown
+鈹?       鈹溾攢 CPU thread cost       鈫?thread_utilization
+鈹?       鈹溾攢 Pipeline bubbles      鈫?gpu_idle_gaps
+鈹?       鈹溾攢 Launch latency        鈫?kernel_launch_overhead
+鈹?       鈹斺攢 Schema debug          鈫?schema_inspect
+鈹?鈹溾攢 Want per-step compute / comm balance (parallel-stream-correct)?
+鈹?  鈹斺攢鈻?nsys-iter-overlap --iteration-marker sample_0
+鈹?鈹溾攢 Want to find slow or anomalous training steps?
+鈹?  鈹斺攢鈻?nsys-iter-outliers --sigma 2.0 --iteration-marker sample_0
+鈹?鈹溾攢 Want raw kernel rows for custom post-processing?
+鈹?  鈹斺攢鈻?nsys-export --format csv [--attach-iteration]
+鈹?鈹溾攢 Want to visually inspect the kernel timeline?
+鈹?  鈹斺攢鈻?nsys-timeline-html --output timeline.html
+鈹?鈹斺攢 Have two sqlite files and want to measure an optimization?
+    鈹斺攢鈻?nsys-diff --before-sqlite A.sqlite --after-sqlite B.sqlite
 ```
 
 ---
@@ -638,27 +637,27 @@ Use `nsys-sql-skill` when you need a **different limit, a time window filter, or
 any of the 11 skills not included in `nsys-analyze`** (e.g. `kernel_occupancy_estimate`,
 `stream_parallelism`, `memset_breakdown`, `nvtx_memcpy_breakdown`, `gpu_idle_gaps`, etc.).
 
-#### `nsys-analyze` iterations vs `nsys-iter-overlap` — same field name, different algorithm
+#### `nsys-analyze` iterations vs `nsys-iter-overlap` 鈥?same field name, different algorithm
 
 Both expose `compute_ms` and `comm_ms` per iteration, but they are computed differently:
 
-| | `nsys-analyze` → `iterations[].compute_ms` | `nsys-iter-overlap` → `[].compute_ms` |
+| | `nsys-analyze` 鈫?`iterations[].compute_ms` | `nsys-iter-overlap` 鈫?`[].compute_ms` |
 |---|---|---|
 | Source | `detect_iterations()` in `nsys_iterations.py` | `analyze_per_iteration_overlap()` |
 | Formula | `SUM(kernel.duration)` for all non-NCCL kernels | `covered_ns(merge_intervals(non-NCCL))` |
-| Multi-stream parallel kernels | **Double-counted** (each kernel's full duration added independently) | **Correct** — overlapping kernels counted once (wall-clock) |
-| Has `overlap_ms` field? | No | Yes — `intersect(compute_intervals, comm_intervals)` |
+| Multi-stream parallel kernels | **Double-counted** (each kernel's full duration added independently) | **Correct** 鈥?overlapping kernels counted once (wall-clock) |
+| Has `overlap_ms` field? | No | Yes 鈥?`intersect(compute_intervals, comm_intervals)` |
 
 Example with two concurrent streams:
 
 ```
-stream 7: [gemm   0–8ms ]
-stream 8: [nccl     4–10ms]
+stream 7: [gemm   0鈥?ms ]
+stream 8: [nccl     4鈥?0ms]
 
 detect_iterations:              analyze_per_iteration_overlap:
   compute_ms = 8               compute_ms = 8   (wall-clock, merged)
   comm_ms    = 6               comm_ms    = 6
-  total      = 14  ← inflated  overlap_ms = 4   ← correct
+  total      = 14  鈫?inflated  overlap_ms = 4   鈫?correct
 ```
 
 **Rule of thumb:** if your training uses `--overlap-grad-reduce` or any asynchronous
@@ -667,7 +666,7 @@ sufficient for fully-sequential pipelines.
 
 #### `nsys-analyze` global overlap vs `nsys-iter-overlap` per-step overlap
 
-| | `nsys-analyze` → `overlap` key | `nsys-iter-overlap` |
+| | `nsys-analyze` 鈫?`overlap` key | `nsys-iter-overlap` |
 |---|---|---|
 | Granularity | Entire profiled window | Per training step |
 | Use case | Overall efficiency score | Find which step has worst overlap |
@@ -679,9 +678,9 @@ use `nsys-iter-overlap` to locate the specific steps causing the issue.
 
 Both call `detect_iterations()` internally. After that they diverge:
 
-- `nsys-iter-overlap` — for each iteration, fetches all kernel intervals and computes
+- `nsys-iter-overlap` 鈥?for each iteration, fetches all kernel intervals and computes
   compute/comm/overlap wall-clock durations. Expensive for many iterations.
-- `nsys-iter-outliers` — uses only the `duration_ms` field already returned by
+- `nsys-iter-outliers` 鈥?uses only the `duration_ms` field already returned by
   `detect_iterations()`. No additional per-iteration DB query. Fast.
 
 Run `nsys-iter-outliers` first to identify anomalous step indices, then use
@@ -695,13 +694,14 @@ per-iteration data. Use `nsys-analyze` separately on each file when you need tho
 
 ---
 
-### When `compute_ms` from `nsys-analyze` ≠ `nsys-iter-overlap`
+### When `compute_ms` from `nsys-analyze` 鈮?`nsys-iter-overlap`
 
 If you see discrepancies between the two, the cause is always one of:
 
-1. **Multi-stream parallelism** — kernels on different streams overlap in wall-clock
+1. **Multi-stream parallelism** 鈥?kernels on different streams overlap in wall-clock
    time. `detect_iterations` sums raw durations; `analyze_per_iteration_overlap` merges intervals.
-2. **NVTX window mismatch** — `nsys-analyze` uses the global `--start-ns`/`--end-ns` window;
+2. **NVTX window mismatch** 鈥?`nsys-analyze` uses the global `--start-ns`/`--end-ns` window;
    `nsys-iter-overlap` uses each NVTX range boundary per iteration.
-3. **`top_level_only`** — `nsys-analyze` always sets `top_level_only=True`;
+3. **`top_level_only`** 鈥?`nsys-analyze` always sets `top_level_only=True`;
    `nsys-iter-overlap` exposes `--include-nested` to override this.
+
