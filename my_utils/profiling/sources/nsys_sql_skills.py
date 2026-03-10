@@ -428,17 +428,31 @@ def _build_builtin_skills(schema: NsightSchema) -> Dict[str, SqlSkill]:
     runtime_start_col = schema.resolve_column(runtime_table, ("start",))
     runtime_end_col = schema.resolve_column(runtime_table, ("end",))
     if all([runtime_corr_col, runtime_start_col, runtime_end_col, corr_col]):
+        runtime_api_name_expr = "NULL"
+        runtime_api_name_join = ""
+        runtime_name_id_col = schema.resolve_column(runtime_table, ("nameId", "name_id"))
+        if string_table and runtime_name_id_col:
+            runtime_api_name_join = (
+                f" LEFT JOIN {_ident(string_table)} rs ON r.{_ident(runtime_name_id_col)} = rs.id "
+            )
+            runtime_api_name_expr = "rs.value"
+        else:
+            runtime_cbid_col = schema.resolve_column(runtime_table, ("cbid", "apiId", "functionId"))
+            if runtime_cbid_col:
+                runtime_api_name_expr = f"CAST(r.{_ident(runtime_cbid_col)} AS TEXT)"
         skill_map["kernel_launch_overhead"] = SqlSkill(
             name="kernel_launch_overhead",
             title="Kernel Launch Overhead",
-            description="CPU runtime API latency and launch overhead to kernel start by correlationId.",
+            description="CPU runtime API latency and launch overhead to kernel start by correlationId, including API name when available.",
             category="kernels",
             sql=(
                 f"SELECT {name_expr} AS kernel_name, "
+                f"{runtime_api_name_expr} AS api_name, "
                 f"ROUND((r.[{_ident(runtime_end_col)}] - r.{_ident(runtime_start_col)}) / 1e6, 3) AS api_ms, "
                 f"ROUND((k.[{_ident(end_col)}] - k.{_ident(start_col)}) / 1e6, 3) AS kernel_ms, "
                 f"ROUND((k.{_ident(start_col)} - r.{_ident(runtime_start_col)}) / 1e3, 3) AS overhead_us "
                 f"FROM {_ident(runtime_table)} r "
+                f"{runtime_api_name_join} "
                 f"JOIN {kernel_table} k ON r.{_ident(runtime_corr_col)} = k.{_ident(corr_col)} "
                 f"{name_join} "
                 "WHERE 1=1 "
@@ -1103,7 +1117,16 @@ def _build_builtin_skills(schema: NsightSchema) -> Dict[str, SqlSkill]:
     # 19) NVTX kernel SM/memory detail
     # For a given NVTX range pattern, list every kernel that ran inside it with
     # full SM launch config and theoretical occupancy.
-    if schema.table_exists(nvtx_table) and nvtx_start_col and nvtx_end_col:
+    if (
+        schema.table_exists(nvtx_table)
+        and schema.runtime_table
+        and nvtx_start_col
+        and nvtx_end_col
+        and runtime_corr_col
+        and runtime_start_for_nvtx
+        and runtime_end_for_nvtx
+        and corr_col
+    ):
         # NVTX text expression — use alias "sv" to avoid collision with name_join aliases s/d
         sk18_text_expr = "n.text"
         sk18_nvtx_join = ""
@@ -1112,6 +1135,11 @@ def _build_builtin_skills(schema: NsightSchema) -> Dict[str, SqlSkill]:
             if sk18_text_id:
                 sk18_nvtx_join = f" LEFT JOIN {_ident(string_table)} sv ON n.{_ident(sk18_text_id)} = sv.id "
                 sk18_text_expr = "COALESCE(n.text, sv.value)"
+        sk18_tid_join = ""
+        if runtime_global_tid_col and nvtx_global_tid_col:
+            sk18_tid_join = (
+                f" AND n.{_ident(nvtx_global_tid_col)} = r.{_ident(runtime_global_tid_col)} "
+            )
 
         # SM columns — resolve fresh (may be None on older nsys exports)
         sk18_bx = schema.resolve_column(kernel_table, ("blockX",))
@@ -1176,9 +1204,10 @@ def _build_builtin_skills(schema: NsightSchema) -> Dict[str, SqlSkill]:
             name="nvtx_kernel_sm_detail",
             title="NVTX Kernel SM/Memory Detail",
             description=(
-                "For each NVTX range matching the text pattern, list every kernel that ran "
-                "inside it with full SM launch config (threads/block, grid, registers, shared "
-                "memory, local memory). Kernels are labelled 'compute' or 'comm' (nccl). "
+                "For each NVTX range matching the text pattern, list every kernel whose launch "
+                "runtime API call falls inside the NVTX range, then join to GPU execution by "
+                "correlationId. Includes full SM launch config (threads/block, grid, registers, "
+                "shared memory, local memory). Kernels are labelled 'compute' or 'comm' (nccl). "
                 "If sqlite includes per-kernel theoretical occupancy it is returned; otherwise "
                 "use Python-side calculate_h100_occupancy(...) for H100."
             ),
@@ -1201,9 +1230,12 @@ def _build_builtin_skills(schema: NsightSchema) -> Dict[str, SqlSkill]:
                 + f"{sk18_occ} AS occupancy_pct_estimate "
                 + f"FROM {nvtx_table} n "
                 + f"{sk18_nvtx_join} "
+                + f"JOIN {_ident(runtime_table)} r "
+                + f"  ON n.{_ident(nvtx_start_col)} <= r.{_ident(runtime_start_for_nvtx)} "
+                + f"  AND n.[{_ident(nvtx_end_col)}] >= r.[{_ident(runtime_end_for_nvtx)}] "
+                + sk18_tid_join
                 + f"JOIN {kernel_table} k "
-                + f"  ON k.{_ident(start_col)} >= n.{_ident(nvtx_start_col)} "
-                + f"  AND k.[{_ident(end_col)}] <= n.[{_ident(nvtx_end_col)}] "
+                + f"  ON r.{_ident(runtime_corr_col)} = k.{_ident(corr_col)} "
                 + f"{name_join} "
                 + f"WHERE {sk18_text_expr} LIKE '{{nvtx_text}}' "
                 + f"AND {sk18_text_expr} IS NOT NULL "

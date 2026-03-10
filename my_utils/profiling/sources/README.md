@@ -92,7 +92,7 @@ engine.execute("top_kernels", device_id=0, limit=20)
 | 3 | `nccl_breakdown` | communication | KERNEL | NCCL kernel aggregates |
 | 4 | `kernel_map` | kernels | KERNEL | start_ns, end_ns, stream_id, correlation_id, kernel_name |
 | 5 | `gpu_idle_gaps` | kernels | KERNEL | stream gap analysis |
-| 6 | `kernel_launch_overhead` | kernels | KERNEL + RUNTIME | api_ms, kernel_ms, overhead_us |
+| 6 | `kernel_launch_overhead` | kernels | KERNEL + RUNTIME | api_name, api_ms, kernel_ms, overhead_us |
 | 7 | `aggregate_nvtx_ranges` | nvtx | NVTX_EVENTS | nvtx_name, range_count, total_ms, avg_ms |
 | 8 | `nvtx_kernel_map` | nvtx | NVTX_EVENTS + RUNTIME + KERNEL | launch-attribution map |
 | 9 | `memcpy_in_window` | memory | MEMCPY | copy_kind, count, total_ms |
@@ -106,7 +106,7 @@ engine.execute("top_kernels", device_id=0, limit=20)
 | 17 | `stream_parallelism` | pipeline | KERNEL | bucket-based concurrent stream stats (cross-bucket kernel expansion) |
 | 18 | `nvtx_memcpy_breakdown` | memory | NVTX_EVENTS + MEMCPY | nvtx_text + memcpy aggregates |
 | 19 | `nvtx_gpu_metrics_breakdown` | metrics | NVTX_EVENTS + GPU_METRICS + StringIds | metric sampling stats per NVTX range: metric_name, sample_count, avg/min/max value |
-| 20 | `nvtx_kernel_sm_detail` | compute | NVTX_EVENTS + KERNEL | per-kernel launch config in NVTX range, including static/dynamic shared memory; occupancy_pct_estimate uses sqlite theoretical occupancy when available |
+| 20 | `nvtx_kernel_sm_detail` | compute | NVTX_EVENTS + RUNTIME + KERNEL | per-kernel launch config in NVTX range via launch attribution (`NVTX -> runtime -> correlationId -> kernel`), including static/dynamic shared memory; occupancy_pct_estimate uses sqlite theoretical occupancy when available |
 | 21 | `nvtx_ranges_hierarchy` | nvtx | NVTX_EVENTS | raw NVTX rows; hierarchy derived in Python O(N) |
 
 Skills are schema-guarded and appear only when required tables/columns exist.
