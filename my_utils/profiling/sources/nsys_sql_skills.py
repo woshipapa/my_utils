@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import sqlite3
 from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional, Sequence, Tuple
@@ -120,6 +121,76 @@ def _is_nccl_kernel(name: str) -> bool:
     if not text:
         return False
     return "nccl" in text
+
+
+def calculate_h100_occupancy(
+    threads_per_block: object,
+    registers_per_thread: object,
+    shared_bytes: object,
+) -> Optional[float]:
+    """
+    Estimate theoretical occupancy for NVIDIA H100 (sm_90).
+
+    Hardware limits and allocation granularity used:
+    - max_threads_per_sm = 2048 (implicitly reflected by 64 warps x 32)
+    - max_warps_per_sm = 64
+    - max_blocks_per_sm = 32
+    - max_registers_per_sm = 65536
+    - max_shared_memory_per_sm = 233472 bytes
+    - register allocation granularity = 256 registers per warp
+    - shared memory allocation granularity = 128 bytes
+    """
+    try:
+        tpb = int(threads_per_block)
+    except Exception:
+        return None
+    if tpb <= 0:
+        return None
+
+    warps_per_block = int(math.ceil(tpb / 32.0))
+    if warps_per_block <= 0:
+        return None
+
+    # Thread/warp limit
+    blocks_limit_threads = int(math.floor(64 / warps_per_block))
+
+    # Register limit
+    regs = None
+    try:
+        if registers_per_thread is not None:
+            regs = int(registers_per_thread)
+    except Exception:
+        regs = None
+    if regs is None or regs <= 0:
+        blocks_limit_regs = 32
+    else:
+        # H100 architectural limit: max registers per thread is 255.
+        if regs > 255:
+            blocks_limit_regs = 0
+        else:
+            regs_per_warp = int(math.ceil((regs * 32) / 256.0) * 256)
+            regs_per_block = regs_per_warp * warps_per_block
+            blocks_limit_regs = int(math.floor(65536 / regs_per_block)) if regs_per_block > 0 else 0
+
+    # Shared memory limit
+    smem = None
+    try:
+        if shared_bytes is not None:
+            smem = int(shared_bytes)
+    except Exception:
+        smem = None
+    if smem is None or smem <= 0:
+        blocks_limit_smem = 32
+    else:
+        smem_per_block = int(math.ceil(smem / 128.0) * 128)
+        blocks_limit_smem = int(math.floor(233472 / smem_per_block)) if smem_per_block > 0 else 0
+
+    active_blocks = min(blocks_limit_threads, blocks_limit_regs, blocks_limit_smem, 32)
+    if active_blocks <= 0:
+        return 0.0
+
+    occupancy_pct = (active_blocks * warps_per_block) / 64.0 * 100.0
+    return round(float(occupancy_pct), 1)
 
 
 def _build_builtin_skills(schema: NsightSchema) -> Dict[str, SqlSkill]:
@@ -628,7 +699,7 @@ def _build_builtin_skills(schema: NsightSchema) -> Dict[str, SqlSkill]:
                 tags=["memset", "zero-init", "memory", "overhead"],
             )
 
-    # 15) Kernel occupancy estimate
+    # 15) Kernel occupancy estimate (raw launch metrics; occupancy computed in Python)
     occ_block_x = schema.resolve_column(kernel_table, ("blockX",))
     occ_block_y = schema.resolve_column(kernel_table, ("blockY",))
     occ_block_z = schema.resolve_column(kernel_table, ("blockZ",))
@@ -637,33 +708,39 @@ def _build_builtin_skills(schema: NsightSchema) -> Dict[str, SqlSkill]:
     occ_dyn_smem = schema.resolve_column(kernel_table, ("dynamicSharedMemory",))
     if occ_block_x and occ_block_y and occ_block_z:
         if occ_static_smem and occ_dyn_smem:
-            occ_shared_expr = f"k.{_ident(occ_static_smem)} + k.{_ident(occ_dyn_smem)}"
+            occ_shared_expr = f"(COALESCE(k.{_ident(occ_static_smem)}, 0) + COALESCE(k.{_ident(occ_dyn_smem)}, 0))"
         elif occ_static_smem:
-            occ_shared_expr = f"k.{_ident(occ_static_smem)}"
+            occ_shared_expr = f"COALESCE(k.{_ident(occ_static_smem)}, 0)"
         elif occ_dyn_smem:
-            occ_shared_expr = f"k.{_ident(occ_dyn_smem)}"
+            occ_shared_expr = f"COALESCE(k.{_ident(occ_dyn_smem)}, 0)"
         else:
-            occ_shared_expr = "0"
-        occ_reg_select = f"k.{_ident(occ_reg_col)} AS registersPerThread, " if occ_reg_col else ""
-        occ_tpb_expr = f"k.{_ident(occ_block_x)} * k.{_ident(occ_block_y)} * k.{_ident(occ_block_z)}"
+            occ_shared_expr = "NULL"
+        occ_reg_expr = f"k.{_ident(occ_reg_col)}" if occ_reg_col else "NULL"
+        occ_tpb_expr = f"(k.{_ident(occ_block_x)} * k.{_ident(occ_block_y)} * k.{_ident(occ_block_z)})"
         skill_map["kernel_occupancy_estimate"] = SqlSkill(
             name="kernel_occupancy_estimate",
             title="Kernel Occupancy Estimate",
-            description="Estimate theoretical SM occupancy from launch configuration (threads/block, registers, shared mem).",
+            description=(
+                "Export raw launch-config metrics for occupancy analysis: threads_per_block, "
+                "registersPerThread, total_shared_bytes. For H100(sm_90), compute occupancy "
+                "in Python via calculate_h100_occupancy(...)."
+            ),
             category="compute",
             sql=(
                 f"SELECT {name_expr} AS kernel_name, "
                 f"{occ_tpb_expr} AS threads_per_block, "
-                f"{occ_reg_select}"
-                f"({occ_shared_expr}) AS total_shared_bytes, "
+                f"{occ_reg_expr} AS registersPerThread, "
+                f"{occ_shared_expr} AS total_shared_bytes, "
                 "COUNT(*) AS invocations, "
-                f"ROUND(100.0 * MIN(64, ({occ_tpb_expr} + 31) / 32 * 4) / 64.0, 1) AS occupancy_pct_estimate "
+                f"ROUND(SUM(k.[{_ident(end_col)}] - k.{_ident(start_col)}) / 1e6, 3) AS total_ms, "
+                f"ROUND(AVG(k.[{_ident(end_col)}] - k.{_ident(start_col)}) / 1e6, 3) AS avg_ms, "
+                "NULL AS occupancy_pct_estimate "
                 f"FROM {kernel_table} k "
                 f"{name_join} "
                 "WHERE 1=1 "
                 f"{kernel_where_device} "
-                f"GROUP BY {name_expr} "
-                "ORDER BY invocations DESC "
+                "GROUP BY 1,2,3,4 "
+                "ORDER BY total_ms DESC "
                 "LIMIT {limit}"
             ),
             params=[
@@ -681,19 +758,31 @@ def _build_builtin_skills(schema: NsightSchema) -> Dict[str, SqlSkill]:
         skill_map["stream_parallelism"] = SqlSkill(
             name="stream_parallelism",
             title="Stream Parallelism",
-            description="Analyze concurrent stream utilization via time-bucket approach — exposes whether multi-stream overlap is happening.",
+            description=(
+                "Analyze concurrent stream utilization via time buckets. "
+                "Each kernel contributes to all buckets it overlaps (not only its start bucket)."
+            ),
             category="pipeline",
             sql=(
-                "WITH kernel_buckets AS ( "
-                f"  SELECT (k.{_ident(start_col)} / {{bucket_ns}}) AS bucket, "
+                "WITH kernels AS ( "
+                f"  SELECT CAST(k.{_ident(start_col)} / {{bucket_ns}} AS INTEGER) AS start_bucket, "
+                f"         CAST((k.[{_ident(end_col)}] - 1) / {{bucket_ns}} AS INTEGER) AS end_bucket, "
                 f"         k.{_ident(stream_col)} AS stream_id "
                 f"  FROM {kernel_table} k "
                 "  WHERE 1=1 "
                 f"  {sp_device_where} "
+                f"  AND k.[{_ident(end_col)}] > k.{_ident(start_col)} "
+                "), "
+                "expanded(bucket, end_bucket, stream_id) AS ( "
+                "  SELECT start_bucket, end_bucket, stream_id FROM kernels "
+                "  UNION ALL "
+                "  SELECT bucket + 1, end_bucket, stream_id "
+                "  FROM expanded "
+                "  WHERE bucket < end_bucket "
                 "), "
                 "bucket_streams AS ( "
                 "  SELECT bucket, COUNT(DISTINCT stream_id) AS concurrent_streams "
-                "  FROM kernel_buckets "
+                "  FROM expanded "
                 "  GROUP BY bucket "
                 ") "
                 "SELECT "
@@ -785,20 +874,18 @@ def _build_builtin_skills(schema: NsightSchema) -> Dict[str, SqlSkill]:
         sk18_local = schema.resolve_column(kernel_table, ("localMemoryPerThread",))
 
         if sk18_bx and sk18_by and sk18_bz:
-            sk18_tpb = f"k.{_ident(sk18_bx)} * k.{_ident(sk18_by)} * k.{_ident(sk18_bz)}"
-            sk18_occ = (
-                f"ROUND(100.0 * MIN(64, ({sk18_tpb} + 31) / 32 * 4) / 64.0, 1)"
-            )
+            sk18_tpb = f"(k.{_ident(sk18_bx)} * k.{_ident(sk18_by)} * k.{_ident(sk18_bz)})"
         else:
             sk18_tpb = "NULL"
-            sk18_occ = "NULL"
+        # Occupancy is computed in Python with architecture-aware allocation rules.
+        sk18_occ = "NULL"
 
         if sk18_static and sk18_dyn:
-            sk18_smem = f"k.{_ident(sk18_static)} + k.{_ident(sk18_dyn)}"
+            sk18_smem = f"(COALESCE(k.{_ident(sk18_static)}, 0) + COALESCE(k.{_ident(sk18_dyn)}, 0))"
         elif sk18_static:
-            sk18_smem = f"k.{_ident(sk18_static)}"
+            sk18_smem = f"COALESCE(k.{_ident(sk18_static)}, 0)"
         elif sk18_dyn:
-            sk18_smem = f"k.{_ident(sk18_dyn)}"
+            sk18_smem = f"COALESCE(k.{_ident(sk18_dyn)}, 0)"
         else:
             sk18_smem = "NULL"
 
@@ -818,6 +905,8 @@ def _build_builtin_skills(schema: NsightSchema) -> Dict[str, SqlSkill]:
             )
         if sk18_reg:
             optional_cols += f"k.{_ident(sk18_reg)} AS registersPerThread, "
+        else:
+            optional_cols += "NULL AS registersPerThread, "
         if sk18_local:
             optional_cols += f"k.{_ident(sk18_local)} AS localMemoryPerThread, "
 
@@ -827,9 +916,9 @@ def _build_builtin_skills(schema: NsightSchema) -> Dict[str, SqlSkill]:
             description=(
                 "For each NVTX range matching the text pattern, list every kernel that ran "
                 "inside it with full SM launch config (threads/block, grid, registers, shared "
-                "memory, local memory) and theoretical SM occupancy. Kernels are labelled "
-                "'compute' or 'comm' (nccl). Useful for diagnosing launch-config problems "
-                "within a specific training phase."
+                "memory, local memory). Kernels are labelled 'compute' or 'comm' (nccl). "
+                "Occupancy should be computed in Python via calculate_h100_occupancy(...) "
+                "for architecture-correct estimation on H100."
             ),
             category="compute",
             sql=(
@@ -891,66 +980,29 @@ def _build_builtin_skills(schema: NsightSchema) -> Dict[str, SqlSkill]:
             sk19_event_type_select = (
                 f"n.{_ident(sk19_event_type_col)} AS event_type " if sk19_event_type_col else "NULL AS event_type "
             )
-            sk19_same_tid = (
-                " AND p.global_tid = r.global_tid "
-                if sk19_tid_col
-                else ""
-            )
 
             skill_map["nvtx_ranges_hierarchy"] = SqlSkill(
                 name="nvtx_ranges_hierarchy",
                 title="NVTX Ranges Hierarchy",
                 description=(
-                    "List every NVTX range (raw rows) and annotate hierarchy depth plus direct parent range. "
-                    "Useful for inspecting parent/child nested ranges and complete NVTX naming coverage."
+                    "List NVTX ranges as raw rows (sorted). Parent/child hierarchy is derived "
+                    "in Python with an O(N) stack algorithm."
                 ),
                 category="nvtx",
                 sql=(
-                    "WITH ranges AS ( "
-                    f"  SELECT n.rowid AS nvtx_rowid, "
-                    f"         {sk19_text_expr} AS nvtx_text, "
-                    f"         n.{_ident(sk19_start_col)} AS start_ns, "
-                    f"         n.[{_ident(sk19_end_col)}] AS end_ns, "
-                    f"         ROUND((n.[{_ident(sk19_end_col)}] - n.{_ident(sk19_start_col)}) / 1e6, 3) AS duration_ms, "
-                    f"         {sk19_tid_select}"
-                    f"         {sk19_event_type_select}"
-                    f"  FROM {nvtx_table} n "
-                    f"  {sk19_nvtx_join} "
-                    f"  WHERE {sk19_text_expr} IS NOT NULL "
-                    f"    AND n.[{_ident(sk19_end_col)}] > n.{_ident(sk19_start_col)} "
-                    f"    AND ('{{nvtx_text}}' = '%' OR {sk19_text_expr} LIKE '{{nvtx_text}}') "
-                    "), "
-                    "annotated AS ( "
-                    "  SELECT r.*, "
-                    "         ( "
-                    "           SELECT COUNT(*) "
-                    "           FROM ranges p "
-                    "           WHERE p.start_ns <= r.start_ns "
-                    "             AND p.end_ns >= r.end_ns "
-                    "             AND (p.start_ns < r.start_ns OR p.end_ns > r.end_ns) "
-                    f"             {sk19_same_tid}"
-                    "         ) AS depth, "
-                    "         ( "
-                    "           SELECT p.nvtx_rowid "
-                    "           FROM ranges p "
-                    "           WHERE p.start_ns <= r.start_ns "
-                    "             AND p.end_ns >= r.end_ns "
-                    "             AND (p.start_ns < r.start_ns OR p.end_ns > r.end_ns) "
-                    f"             {sk19_same_tid}"
-                    "           ORDER BY (p.end_ns - p.start_ns) ASC, p.start_ns DESC "
-                    "           LIMIT 1 "
-                    "         ) AS parent_rowid "
-                    "  FROM ranges r "
-                    ") "
-                    "SELECT a.nvtx_text, a.start_ns, a.end_ns, a.duration_ms, "
-                    "       a.global_tid, a.event_type, a.depth, "
-                    "       p.nvtx_text AS parent_nvtx_text, "
-                    "       p.start_ns AS parent_start_ns, "
-                    "       p.end_ns AS parent_end_ns "
-                    "FROM annotated a "
-                    "LEFT JOIN ranges p ON p.nvtx_rowid = a.parent_rowid "
-                    "WHERE ({top_level_only} = 0 OR a.depth = 0) "
-                    "ORDER BY a.start_ns ASC, a.end_ns DESC "
+                    f"SELECT n.rowid AS nvtx_rowid, "
+                    f"       {sk19_text_expr} AS nvtx_text, "
+                    f"       n.{_ident(sk19_start_col)} AS start_ns, "
+                    f"       n.[{_ident(sk19_end_col)}] AS end_ns, "
+                    f"       ROUND((n.[{_ident(sk19_end_col)}] - n.{_ident(sk19_start_col)}) / 1e6, 3) AS duration_ms, "
+                    f"       {sk19_tid_select}"
+                    f"       {sk19_event_type_select}"
+                    f"FROM {nvtx_table} n "
+                    f"{sk19_nvtx_join} "
+                    f"WHERE {sk19_text_expr} IS NOT NULL "
+                    f"  AND n.[{_ident(sk19_end_col)}] > n.{_ident(sk19_start_col)} "
+                    f"  AND ('{{nvtx_text}}' = '%' OR {sk19_text_expr} LIKE '{{nvtx_text}}') "
+                    "ORDER BY global_tid ASC, start_ns ASC, end_ns DESC "
                     "LIMIT {limit}"
                 ),
                 params=[
@@ -1028,11 +1080,108 @@ class NsysSqlSkillEngine:
                 result.append(payload)
         return result
 
+    @staticmethod
+    def _as_bool(value: object, default: bool = False) -> bool:
+        if value is None:
+            return bool(default)
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return bool(value)
+        text = str(value).strip().lower()
+        if text in {"1", "true", "yes", "y", "on"}:
+            return True
+        if text in {"0", "false", "no", "n", "off"}:
+            return False
+        return bool(default)
+
+    def _build_nvtx_hierarchy(self, rows: Sequence[Dict[str, object]], *, top_level_only: bool) -> List[Dict[str, object]]:
+        """
+        Build NVTX parent/child hierarchy in O(N) using per-thread stacks.
+        Input rows must be sorted by (global_tid, start_ns asc, end_ns desc).
+        """
+        stacks: Dict[str, List[Dict[str, object]]] = {}
+        out: List[Dict[str, object]] = []
+
+        for raw in rows:
+            row = dict(raw)
+            tid_key = str(row.get("global_tid"))
+            if not tid_key:
+                tid_key = "__none__"
+            stack = stacks.setdefault(tid_key, [])
+
+            start_ns = int(row.get("start_ns") or 0)
+            end_ns = int(row.get("end_ns") or 0)
+            if end_ns <= start_ns:
+                continue
+
+            # Pop finished/non-containing ancestors.
+            while stack and (start_ns >= int(stack[-1]["end_ns"]) or end_ns > int(stack[-1]["end_ns"])):
+                stack.pop()
+
+            parent = stack[-1] if stack else None
+            depth = len(stack)
+            row["depth"] = depth
+            row["parent_nvtx_text"] = parent.get("nvtx_text") if parent else None
+            row["parent_start_ns"] = parent.get("start_ns") if parent else None
+            row["parent_end_ns"] = parent.get("end_ns") if parent else None
+
+            if (not top_level_only) or depth == 0:
+                out.append(row)
+
+            stack.append(
+                {
+                    "nvtx_text": row.get("nvtx_text"),
+                    "start_ns": start_ns,
+                    "end_ns": end_ns,
+                }
+            )
+        return out
+
     def execute(self, name: str, **kwargs) -> List[Dict[str, object]]:
-        skill = self.get_skill(name)
+        skill_name = str(name)
+        skill = self.get_skill(skill_name)
         if skill is None:
             raise KeyError(f"Unknown SQL skill: {name}")
-        return skill.execute(self.conn, **kwargs)
+        rows = skill.execute(self.conn, **kwargs)
+        if skill_name == "nvtx_ranges_hierarchy":
+            return self._build_nvtx_hierarchy(
+                rows,
+                top_level_only=self._as_bool(kwargs.get("top_level_only"), default=False),
+            )
+        return rows
+
+    def execute_kernel_occupancy_estimate_h100(self, **kwargs) -> List[Dict[str, object]]:
+        """
+        Execute `kernel_occupancy_estimate` and attach H100(sm_90) occupancy estimate in Python.
+        """
+        rows = self.execute("kernel_occupancy_estimate", **kwargs)
+        result: List[Dict[str, object]] = []
+        for row in rows:
+            item = dict(row)
+            item["occupancy_pct_h100_estimate"] = calculate_h100_occupancy(
+                item.get("threads_per_block"),
+                item.get("registersPerThread"),
+                item.get("total_shared_bytes"),
+            )
+            result.append(item)
+        return result
+
+    def execute_nvtx_kernel_sm_detail_h100(self, **kwargs) -> List[Dict[str, object]]:
+        """
+        Execute `nvtx_kernel_sm_detail` and attach H100(sm_90) occupancy estimate in Python.
+        """
+        rows = self.execute("nvtx_kernel_sm_detail", **kwargs)
+        result: List[Dict[str, object]] = []
+        for row in rows:
+            item = dict(row)
+            item["occupancy_pct_h100_estimate"] = calculate_h100_occupancy(
+                item.get("threads_per_block"),
+                item.get("registersPerThread"),
+                item.get("total_shared_bytes"),
+            )
+            result.append(item)
+        return result
 
     def _kernel_rows_for_window(
         self,

@@ -5,7 +5,10 @@ from pathlib import Path
 from typing import List, Tuple
 
 from my_utils.profiling.cli import main
-from my_utils.profiling.sources.nsys_sql_skills import NsysSqlSkillEngine
+from my_utils.profiling.sources.nsys_sql_skills import (
+    NsysSqlSkillEngine,
+    calculate_h100_occupancy,
+)
 from my_utils.profiling.sources.nsys_sqlite_provider import NsysSqliteMetricsProvider
 
 
@@ -264,14 +267,22 @@ def test_new_skill_outputs(tmp_path: Path) -> None:
     assert zero_rows, "Expected a zero-init (fill_value=0) row"
     assert abs(zero_rows[0]["total_gb"] - 9 / 1024) < 0.001
 
-    # ── Skill 15: kernel_occupancy_estimate ──────────────────────────────────
+    # ── Skill 15: kernel_occupancy_estimate (raw metrics) ───────────────────
     rows = engine.execute("kernel_occupancy_estimate", device_id=0, limit=10)
     _show("Skill 15 – kernel_occupancy_estimate", rows)
     assert len(rows) >= 1
     assert "threads_per_block" in rows[0]
+    assert "registersPerThread" in rows[0]
+    assert "total_shared_bytes" in rows[0]
     assert "occupancy_pct_estimate" in rows[0]
-    for r in rows:
-        assert 0 < r["occupancy_pct_estimate"] <= 100
+    # SQL side no longer computes occupancy; occupancy is computed in Python for H100.
+    assert all((r["occupancy_pct_estimate"] is None) for r in rows)
+
+    rows_occ_h100 = engine.execute_kernel_occupancy_estimate_h100(device_id=0, limit=10)
+    _show("Skill 15 + H100 occupancy", rows_occ_h100)
+    assert len(rows_occ_h100) == len(rows)
+    assert "occupancy_pct_h100_estimate" in rows_occ_h100[0]
+    assert rows_occ_h100[0]["occupancy_pct_h100_estimate"] is not None
 
     # ── Skill 16: stream_parallelism ─────────────────────────────────────────
     rows = engine.execute("stream_parallelism", device_id=0, bucket_ns=5000)
@@ -281,6 +292,8 @@ def test_new_skill_outputs(tmp_path: Path) -> None:
     assert "max_concurrent_streams" in r
     assert "pct_time_multi_stream" in r
     assert r["max_concurrent_streams"] >= 2   # we have 3 streams
+    # With cross-bucket expansion, long kernels should contribute beyond start bucket.
+    assert r["total_buckets"] >= 5
 
     # ── Skill 17: nvtx_memcpy_breakdown ──────────────────────────────────────
     rows = engine.execute("nvtx_memcpy_breakdown", limit=20)
@@ -304,6 +317,14 @@ def test_new_skill_outputs(tmp_path: Path) -> None:
     assert "threads_per_block" in r
     assert "total_shared_bytes" in r
     assert "occupancy_pct_estimate" in r
+    assert r["occupancy_pct_estimate"] is None
+
+    # Python-side H100 occupancy estimation
+    rows_h100 = engine.execute_nvtx_kernel_sm_detail_h100(nvtx_text="%sample_0%", device_id=0)
+    _show("Skill 18 + H100 occupancy", rows_h100)
+    assert len(rows_h100) == len(rows)
+    assert "occupancy_pct_h100_estimate" in rows_h100[0]
+    assert rows_h100[0]["occupancy_pct_h100_estimate"] is not None
 
     # kind labelling: nccl kernel must be 'comm', others 'compute'
     kinds = {r["kernel_name"]: r["kind"] for r in rows}
@@ -341,6 +362,24 @@ def test_new_skill_outputs(tmp_path: Path) -> None:
     assert all((r["depth"] == 0) for r in rows_root_nvtx)
 
     conn.close()
+
+
+def test_calculate_h100_occupancy() -> None:
+    # 128 threads/block -> 4 warps/block.
+    # regs=32 => regs_per_warp=1024, regs/block=4096 => reg-limited blocks=16
+    # smem=4096 => smem-limited blocks=57
+    # thread-limited blocks=16, final active_blocks=min(16,16,57,32)=16
+    # occupancy=16*4/64*100 = 100.0
+    occ = calculate_h100_occupancy(128, 32, 4096)
+    assert occ == 100.0
+
+    # Invalid threads_per_block -> None
+    assert calculate_h100_occupancy(None, 32, 0) is None
+    assert calculate_h100_occupancy(0, 32, 0) is None
+
+    # Very high registers/thread should make occupancy collapse to 0 on H100 rule.
+    occ_zero = calculate_h100_occupancy(256, 512, 0)
+    assert occ_zero == 0.0
 
 
 # ===========================================================================
