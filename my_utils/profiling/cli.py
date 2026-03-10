@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sqlite3
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
@@ -16,6 +17,7 @@ from .metrics.provider_registry import DEFAULT_PROVIDER_REGISTRY
 from .sources.nsys_analyze import analyze_nsys_sqlite, analyze_to_markdown
 from .sources.nsys_diff import diff_nsys_sqlite, diff_to_markdown
 from .sources.nsys_flat_export import export_kernels_flat
+from .sources.nsys_sql_skills import NsysSqlSkillEngine
 from .sources.nsys_sqlite_provider import NsysSqliteMetricsProvider
 from .sources.nsys_timeline_html import export_timeline_html
 
@@ -78,6 +80,44 @@ def _parse_kv_params(values: Iterable[str]) -> Dict[str, Any]:
             continue
         out[key] = _auto_parse_value(value)
     return out
+
+
+def _sqlite_table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=? LIMIT 1;",
+        (str(table_name),),
+    ).fetchone()
+    return bool(row)
+
+
+def _detect_gpu_name_from_sqlite(sqlite_path: str) -> str:
+    """
+    Best-effort GPU name detection from nsys sqlite.
+    Returns empty string when unavailable.
+    """
+    try:
+        conn = sqlite3.connect(str(sqlite_path))
+        conn.row_factory = sqlite3.Row
+    except Exception:
+        return ""
+    try:
+        if _sqlite_table_exists(conn, "TARGET_INFO_GPU"):
+            row = conn.execute(
+                "SELECT name FROM TARGET_INFO_GPU ORDER BY id ASC LIMIT 1;"
+            ).fetchone()
+            if row and row[0]:
+                return str(row[0])
+        if _sqlite_table_exists(conn, "TARGET_INFO_CUDA_GPU"):
+            row = conn.execute(
+                "SELECT name FROM TARGET_INFO_CUDA_GPU ORDER BY id ASC LIMIT 1;"
+            ).fetchone()
+            if row and row[0]:
+                return str(row[0])
+    except Exception:
+        return ""
+    finally:
+        conn.close()
+    return ""
 
 
 def cmd_ingest(args: argparse.Namespace) -> int:
@@ -179,7 +219,30 @@ def cmd_nsys_sql_skill(args: argparse.Namespace) -> int:
         return 2
 
     params = _parse_kv_params(args.param)
-    rows = provider.run_sql_skill(args.skill, **params)
+    skill_name = str(args.skill or "").strip()
+    occ_arch = str(getattr(args, "occupancy_arch", "auto") or "auto").strip().lower()
+    use_h100_occupancy = False
+    if skill_name in {"kernel_occupancy_estimate", "nvtx_kernel_sm_detail"} and occ_arch != "none":
+        if occ_arch == "h100":
+            use_h100_occupancy = True
+        elif occ_arch == "auto":
+            gpu_name = _detect_gpu_name_from_sqlite(args.sqlite)
+            use_h100_occupancy = "h100" in str(gpu_name).lower()
+
+    if use_h100_occupancy:
+        conn = sqlite3.connect(str(args.sqlite))
+        conn.row_factory = sqlite3.Row
+        try:
+            engine = NsysSqlSkillEngine(conn)
+            if skill_name == "kernel_occupancy_estimate":
+                rows = engine.execute_kernel_occupancy_estimate_h100(**params)
+            else:
+                rows = engine.execute_nvtx_kernel_sm_detail_h100(**params)
+        finally:
+            conn.close()
+    else:
+        rows = provider.run_sql_skill(skill_name, **params)
+
     text = json.dumps(rows, ensure_ascii=False, indent=2 if args.pretty else None)
     if args.output:
         path = Path(args.output)
@@ -390,6 +453,16 @@ def build_parser() -> argparse.ArgumentParser:
         action="append",
         default=[],
         help="skill parameter in key=value format (can repeat), e.g. --param device_id=0 --param limit=20",
+    )
+    nsys_sql.add_argument(
+        "--occupancy-arch",
+        default="auto",
+        choices=["auto", "none", "h100"],
+        help=(
+            "occupancy enrichment mode for occupancy-related skills: "
+            "auto=detect H100 from sqlite and compute in Python, "
+            "none=keep SQL field (NULL), h100=force H100 occupancy computation"
+        ),
     )
     nsys_sql.add_argument("--output", default="", help="optional json output path")
     nsys_sql.add_argument("--pretty", action="store_true", help="pretty-print JSON output")
