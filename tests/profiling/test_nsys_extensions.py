@@ -578,6 +578,31 @@ def test_cli_new_subcommands(tmp_path: Path) -> None:
     assert occ_rows[0]["occupancy_pct_h100_estimate"] is not None
 
 
+def test_cli_sql_skill_reports_missing_gpu_metrics(tmp_path: Path, capsys) -> None:
+    db = tmp_path / "no_metrics.sqlite"
+    _init_sqlite(db)
+
+    conn = sqlite3.connect(str(db))
+    conn.execute("DROP TABLE CUPTI_ACTIVITY_KIND_GPU_METRIC")
+    conn.commit()
+    conn.close()
+
+    rc = main(
+        [
+            "nsys-sql-skill",
+            "--sqlite",
+            str(db),
+            "--skill",
+            "gpu_metrics_aggregate",
+        ]
+    )
+    assert rc == 2
+    captured = capsys.readouterr()
+    msg = (captured.err or "") + (captured.out or "")
+    assert "unavailable" in msg.lower()
+    assert "gpu metrics table" in msg.lower()
+
+
 def test_cli_nsys_commands(tmp_path: Path) -> None:
     db_a = tmp_path / "a.sqlite"
     db_b = tmp_path / "b.sqlite"

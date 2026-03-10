@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import sqlite3
+import sys
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
@@ -120,6 +121,38 @@ def _detect_gpu_name_from_sqlite(sqlite_path: str) -> str:
     return ""
 
 
+def _infer_unavailable_skill_reason(skill_name: str, schema_info: Dict[str, Any]) -> str:
+    canonical = dict(schema_info.get("canonical_tables") or {})
+    columns = dict(schema_info.get("columns") or {})
+    skill = str(skill_name or "").strip()
+
+    if skill == "gpu_metrics_aggregate":
+        metrics_table = canonical.get("metrics")
+        if not metrics_table:
+            return (
+                "no GPU metrics table detected in sqlite "
+                "(expected one of GPU_METRICS / CUPTI_ACTIVITY_KIND_GPU_METRIC / "
+                "CUPTI_ACTIVITY_KIND_METRIC / TARGET_INFO_GPU_METRICS). "
+                "Likely profile/export did not include GPU metrics sampling."
+            )
+        metric_cols = set(columns.get(str(metrics_table), []) or [])
+        missing_aliases: List[str] = []
+        if not any(x in metric_cols for x in ("timestamp", "start", "time")):
+            missing_aliases.append("timestamp/start/time")
+        if not any(x in metric_cols for x in ("metricId", "nameId", "eventId")):
+            missing_aliases.append("metricId/nameId/eventId")
+        if not any(x in metric_cols for x in ("value", "metricValue", "val")):
+            missing_aliases.append("value/metricValue/val")
+        string_table = canonical.get("string_ids")
+        if not string_table:
+            missing_aliases.append("StringIds/STRINGIDS")
+        if missing_aliases:
+            return "metrics schema columns/tables missing: " + ", ".join(missing_aliases)
+        return "skill is schema-guarded and unavailable under current sqlite schema."
+
+    return "skill is schema-guarded and unavailable under current sqlite schema."
+
+
 def cmd_ingest(args: argparse.Namespace) -> int:
     collector = MetricsCollector.from_config(args.config)
     tags = _parse_tags(args.tags)
@@ -220,6 +253,22 @@ def cmd_nsys_sql_skill(args: argparse.Namespace) -> int:
 
     params = _parse_kv_params(args.param)
     skill_name = str(args.skill or "").strip()
+    available_skills = set(provider.list_sql_skills())
+    if skill_name not in available_skills:
+        print(
+            f"[nsys-sql-skill] skill '{skill_name}' is unavailable for this sqlite.",
+            file=sys.stderr,
+        )
+        schema_info = provider.describe_schema()
+        reason = _infer_unavailable_skill_reason(skill_name, schema_info)
+        if reason:
+            print(f"[nsys-sql-skill] reason: {reason}", file=sys.stderr)
+        print(
+            "[nsys-sql-skill] hint: run with --list-skills to see skills supported by current sqlite.",
+            file=sys.stderr,
+        )
+        return 2
+
     occ_arch = str(getattr(args, "occupancy_arch", "auto") or "auto").strip().lower()
     use_h100_occupancy = False
     if skill_name in {"kernel_occupancy_estimate", "nvtx_kernel_sm_detail"} and occ_arch != "none":
@@ -242,6 +291,25 @@ def cmd_nsys_sql_skill(args: argparse.Namespace) -> int:
             conn.close()
     else:
         rows = provider.run_sql_skill(skill_name, **params)
+
+    if not rows:
+        print(
+            f"[nsys-sql-skill] warning: skill '{skill_name}' returned 0 rows.",
+            file=sys.stderr,
+        )
+        if skill_name == "gpu_metrics_aggregate":
+            print(
+                "[nsys-sql-skill] hint: check metric_name_like/start_ns/end_ns filters, "
+                "and confirm profile/export included GPU metrics sampling.",
+                file=sys.stderr,
+            )
+
+    if skill_name in {"kernel_occupancy_estimate", "nvtx_kernel_sm_detail"} and not use_h100_occupancy:
+        print(
+            "[nsys-sql-skill] note: SQL occupancy field is NULL by design; "
+            "use --occupancy-arch h100 (or auto on H100) to attach occupancy_pct_h100_estimate.",
+            file=sys.stderr,
+        )
 
     text = json.dumps(rows, ensure_ascii=False, indent=2 if args.pretty else None)
     if args.output:
