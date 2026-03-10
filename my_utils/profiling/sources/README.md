@@ -241,6 +241,8 @@ Tip:
 - use `nsys-iter-overlap` when stream overlap matters
 - for `kernel_occupancy_estimate` / `nvtx_kernel_sm_detail`, CLI supports `--occupancy-arch auto|h100|none` (default `auto`)
   to attach `occupancy_pct_h100_estimate` when GPU is H100.
+- if a skill is unavailable for current sqlite schema (for example missing GPU metrics table),
+  `nsys-sql-skill` now prints explicit reason/hint instead of failing silently.
 
 ---
 
