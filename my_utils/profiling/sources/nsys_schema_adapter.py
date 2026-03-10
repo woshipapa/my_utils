@@ -94,6 +94,26 @@ class NsightSchema:
         self.memcpy_table = self._detect_first_existing(("CUPTI_ACTIVITY_KIND_MEMCPY",))
         self.memset_table = self._detect_first_existing(("CUPTI_ACTIVITY_KIND_MEMSET",))
         self.sync_table = self._detect_first_existing(("CUPTI_ACTIVITY_KIND_SYNCHRONIZATION",))
+        self.metrics_table = self._detect_first_existing(
+            (
+                "GPU_METRICS",
+                "CUPTI_ACTIVITY_KIND_GPU_METRIC",
+                "CUPTI_ACTIVITY_KIND_METRIC",
+                "TARGET_INFO_GPU_METRICS",
+            )
+        )
+        self.metrics_timestamp_col = (
+            self.resolve_column(self.metrics_table, ("timestamp", "start", "time"))
+            if self.metrics_table else None
+        )
+        self.metrics_id_col = (
+            self.resolve_column(self.metrics_table, ("metricId", "nameId", "eventId"))
+            if self.metrics_table else None
+        )
+        self.metrics_value_col = (
+            self.resolve_column(self.metrics_table, ("value", "metricValue", "val"))
+            if self.metrics_table else None
+        )
 
     def _load_tables(self) -> List[str]:
         rows = self._conn.execute("SELECT name FROM sqlite_master WHERE type='table';").fetchall()
@@ -196,5 +216,11 @@ class NsightSchema:
                 "memcpy": self.memcpy_table,
                 "memset": self.memset_table,
                 "sync": self.sync_table,
+                "metrics": self.metrics_table,
+            },
+            "metrics_columns": {
+                "timestamp": self.metrics_timestamp_col,
+                "metric_id": self.metrics_id_col,
+                "value": self.metrics_value_col,
             },
         }

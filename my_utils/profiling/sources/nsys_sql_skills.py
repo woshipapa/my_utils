@@ -543,7 +543,49 @@ def _build_builtin_skills(schema: NsightSchema) -> Dict[str, SqlSkill]:
         tags=["schema", "tables", "columns"],
     )
 
-    # 11) Thread utilization
+    # 11) GPU metrics aggregate (nsys --gpu-metrics-device style hardware sampling)
+    if schema.metrics_table and schema.string_table:
+        metrics_table = _ident(schema.metrics_table)
+        metrics_ts_col = schema.metrics_timestamp_col or schema.resolve_column(metrics_table, ("timestamp", "start", "time"))
+        metrics_id_col = schema.metrics_id_col or schema.resolve_column(metrics_table, ("metricId", "nameId", "eventId"))
+        metrics_value_col = schema.metrics_value_col or schema.resolve_column(metrics_table, ("value", "metricValue", "val"))
+        if metrics_ts_col and metrics_id_col and metrics_value_col:
+            metrics_string_table = _ident(schema.string_table)
+            skill_map["gpu_metrics_aggregate"] = SqlSkill(
+                name="gpu_metrics_aggregate",
+                title="GPU Metrics Aggregate",
+                description=(
+                    "Aggregate Nsight GPU hardware sampling metrics (for example sm__active, "
+                    "tensor__active, dram bandwidth counters) by metric name."
+                ),
+                category="metrics",
+                sql=(
+                    "SELECT s.value AS metric_name, "
+                    "COUNT(*) AS sample_count, "
+                    f"ROUND(AVG(CAST(g.{_ident(metrics_value_col)} AS REAL)), 3) AS avg_value, "
+                    f"ROUND(MIN(CAST(g.{_ident(metrics_value_col)} AS REAL)), 3) AS min_value, "
+                    f"ROUND(MAX(CAST(g.{_ident(metrics_value_col)} AS REAL)), 3) AS max_value "
+                    f"FROM {metrics_table} g "
+                    f"JOIN {metrics_string_table} s ON g.{_ident(metrics_id_col)} = s.id "
+                    "WHERE 1=1 "
+                    f"AND ({{start_ns}} < 0 OR g.{_ident(metrics_ts_col)} >= {{start_ns}}) "
+                    f"AND ({{end_ns}} < 0 OR g.{_ident(metrics_ts_col)} <= {{end_ns}}) "
+                    "AND ('{metric_name_like}' = '%' OR s.value LIKE '{metric_name_like}') "
+                    f"AND g.{_ident(metrics_value_col)} IS NOT NULL "
+                    "GROUP BY s.value "
+                    "ORDER BY sample_count DESC, metric_name ASC "
+                    "LIMIT {limit}"
+                ),
+                params=[
+                    SqlSkillParam("start_ns", "window start ns, -1 to disable", "int", False, -1),
+                    SqlSkillParam("end_ns", "window end ns, -1 to disable", "int", False, -1),
+                    SqlSkillParam("metric_name_like", "metric name SQL LIKE pattern", "str", False, "%"),
+                    SqlSkillParam("limit", "max rows", "int", False, 500),
+                ],
+                tags=["gpu_metrics", "sampling", "sm_active", "tensor_active", "dram"],
+            )
+
+    # 12) Thread utilization
     if schema.table_exists("COMPOSITE_EVENTS"):
         ce_cpu_col = schema.resolve_column("COMPOSITE_EVENTS", ("cpuCycles", "cycles", "CpuCycles"))
         ce_tid_col = schema.resolve_column("COMPOSITE_EVENTS", ("globalTid", "global_tid"))

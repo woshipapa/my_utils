@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import sqlite3
 from pathlib import Path
@@ -21,7 +21,7 @@ def _init_sqlite(path: Path, *, scale: float = 1.0) -> None:
     conn = sqlite3.connect(path)
     cur = conn.cursor()
 
-    # ── meta ────────────────────────────────────────────────────────────────
+    # 鈹€鈹€ meta 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
     cur.execute("CREATE TABLE META_DATA_EXPORT (name TEXT, value TEXT)")
     cur.executemany(
         "INSERT INTO META_DATA_EXPORT VALUES (?, ?)",
@@ -31,7 +31,7 @@ def _init_sqlite(path: Path, *, scale: float = 1.0) -> None:
         ],
     )
 
-    # ── string table ─────────────────────────────────────────────────────────
+    # 鈹€鈹€ string table 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
     cur.execute("CREATE TABLE StringIds (id INTEGER PRIMARY KEY, value TEXT)")
     cur.executemany(
         "INSERT INTO StringIds(id, value) VALUES (?, ?)",
@@ -41,10 +41,13 @@ def _init_sqlite(path: Path, *, scale: float = 1.0) -> None:
             (3, "cudaLaunchKernel"),
             (4, "worker_main"),
             (5, "void attention_kernel()"),
+            (101, "sm__active.avg.pct_of_peak_sustained_elapsed"),
+            (102, "tensor__active.avg.pct_of_peak_sustained_elapsed"),
+            (103, "dram__throughput.avg.pct_of_peak_sustained_elapsed"),
         ],
     )
 
-    # ── kernel table (includes block/register columns for skill 15) ──────────
+    # 鈹€鈹€ kernel table (includes block/register columns for skill 15) 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
     cur.execute(
         "CREATE TABLE CUPTI_ACTIVITY_KIND_KERNEL ("
         "start INTEGER, [end] INTEGER, streamId INTEGER, correlationId INTEGER, "
@@ -64,7 +67,7 @@ def _init_sqlite(path: Path, *, scale: float = 1.0) -> None:
         ],
     )
 
-    # ── runtime table ────────────────────────────────────────────────────────
+    # 鈹€鈹€ runtime table 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
     cur.execute(
         "CREATE TABLE CUPTI_ACTIVITY_KIND_RUNTIME ("
         "start INTEGER, [end] INTEGER, correlationId INTEGER, nameId INTEGER, globalTid INTEGER)"
@@ -79,7 +82,7 @@ def _init_sqlite(path: Path, *, scale: float = 1.0) -> None:
         ],
     )
 
-    # ── NVTX events ──────────────────────────────────────────────────────────
+    # 鈹€鈹€ NVTX events 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
     cur.execute(
         "CREATE TABLE NVTX_EVENTS ("
         "start INTEGER, [end] INTEGER, text TEXT, textId INTEGER, eventType INTEGER, globalTid INTEGER)"
@@ -94,7 +97,7 @@ def _init_sqlite(path: Path, *, scale: float = 1.0) -> None:
         ],
     )
 
-    # ── memcpy table (skill 4, 12, 17) ───────────────────────────────────────
+    # 鈹€鈹€ memcpy table (skill 4, 12, 17) 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
     cur.execute(
         "CREATE TABLE CUPTI_ACTIVITY_KIND_MEMCPY "
         "(start INTEGER, [end] INTEGER, copyKind INTEGER, bytes INTEGER, deviceId INTEGER)"
@@ -108,7 +111,7 @@ def _init_sqlite(path: Path, *, scale: float = 1.0) -> None:
         ],
     )
 
-    # ── memset table (skill 14) ───────────────────────────────────────────────
+    # 鈹€鈹€ memset table (skill 14) 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
     cur.execute(
         "CREATE TABLE CUPTI_ACTIVITY_KIND_MEMSET "
         "(start INTEGER, [end] INTEGER, bytes INTEGER, value INTEGER, deviceId INTEGER)"
@@ -122,7 +125,7 @@ def _init_sqlite(path: Path, *, scale: float = 1.0) -> None:
         ],
     )
 
-    # ── synchronization table (skill 13) ─────────────────────────────────────
+    # 鈹€鈹€ synchronization table (skill 13) 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
     cur.execute(
         "CREATE TABLE CUPTI_ACTIVITY_KIND_SYNCHRONIZATION "
         "(start INTEGER, [end] INTEGER, syncType INTEGER, streamId INTEGER, deviceId INTEGER)"
@@ -136,7 +139,7 @@ def _init_sqlite(path: Path, *, scale: float = 1.0) -> None:
         ],
     )
 
-    # ── CPU events (skill 11) ─────────────────────────────────────────────────
+    # 鈹€鈹€ CPU events (skill 11) 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
     cur.execute("CREATE TABLE COMPOSITE_EVENTS (globalTid INTEGER, cpuCycles INTEGER)")
     cur.executemany(
         "INSERT INTO COMPOSITE_EVENTS VALUES (?, ?)",
@@ -153,6 +156,20 @@ def _init_sqlite(path: Path, *, scale: float = 1.0) -> None:
 
     cur.execute("CREATE TABLE TARGET_INFO_GPU (id INTEGER, name TEXT)")
     cur.execute("INSERT INTO TARGET_INFO_GPU VALUES (0, 'NVIDIA H100')")
+    cur.execute(
+        "CREATE TABLE CUPTI_ACTIVITY_KIND_GPU_METRIC "
+        "(timestamp INTEGER, metricId INTEGER, value REAL)"
+    )
+    cur.executemany(
+        "INSERT INTO CUPTI_ACTIVITY_KIND_GPU_METRIC VALUES (?, ?, ?)",
+        [
+            (int(1000 * s), 101, 62.5),
+            (int(2000 * s), 101, 70.0),
+            (int(3000 * s), 102, 41.0),
+            (int(4000 * s), 102, 44.5),
+            (int(5000 * s), 103, 57.25),
+        ],
+    )
     conn.commit()
     conn.close()
 
@@ -178,7 +195,7 @@ def _show(title: str, rows, *, limit: int = 5) -> None:
 
 
 # ===========================================================================
-# Test 1 – all skills register and execute without error
+# Test 1 鈥?all skills register and execute without error
 # ===========================================================================
 
 def test_all_skills_register_and_execute(tmp_path: Path) -> None:
@@ -194,17 +211,17 @@ def test_all_skills_register_and_execute(tmp_path: Path) -> None:
     for s in skills:
         print(f"  - {s}")
 
-    EXPECTED_19 = {
+    EXPECTED_20 = {
         "aggregate_kernels", "top_kernels", "aggregate_nvtx_ranges",
         "memcpy_in_window", "kernel_map", "gpu_idle_gaps",
         "kernel_launch_overhead", "nccl_breakdown", "nvtx_kernel_map",
-        "schema_inspect", "thread_utilization",
+        "schema_inspect", "gpu_metrics_aggregate", "thread_utilization",
         "memcpy_bandwidth_analysis", "sync_breakdown", "memset_breakdown",
         "kernel_occupancy_estimate", "stream_parallelism", "nvtx_memcpy_breakdown",
         "nvtx_kernel_sm_detail",
         "nvtx_ranges_hierarchy",
     }
-    missing = EXPECTED_19 - set(skills)
+    missing = EXPECTED_20 - set(skills)
     assert not missing, f"Missing skills: {missing}"
 
     # Default params for skills that have required parameters
@@ -227,7 +244,7 @@ def test_all_skills_register_and_execute(tmp_path: Path) -> None:
 
 
 # ===========================================================================
-# Test 2 – new skills return correct columns and values
+# Test 2 鈥?new skills return correct columns and values
 # ===========================================================================
 
 def test_new_skill_outputs(tmp_path: Path) -> None:
@@ -238,27 +255,39 @@ def test_new_skill_outputs(tmp_path: Path) -> None:
     conn.row_factory = sqlite3.Row
     engine = NsysSqlSkillEngine(conn)
 
-    # ── Skill 12: memcpy_bandwidth_analysis ─────────────────────────────────
+    rows = engine.execute("gpu_metrics_aggregate", metric_name_like="%active%", start_ns=-1, end_ns=-1)
+    _show("Skill 11 - gpu_metrics_aggregate", rows)
+    assert len(rows) >= 2
+    names = {r["metric_name"] for r in rows}
+    assert any("sm__active" in n for n in names)
+    assert any("tensor__active" in n for n in names)
+    for r in rows:
+        assert "sample_count" in r
+        assert "avg_value" in r
+        assert "min_value" in r
+        assert "max_value" in r
+
+    # 鈹€鈹€ Skill 12: memcpy_bandwidth_analysis 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
     rows = engine.execute("memcpy_bandwidth_analysis", device_id=0)
-    _show("Skill 12 – memcpy_bandwidth_analysis", rows)
+    _show("Skill 12 鈥?memcpy_bandwidth_analysis", rows)
     assert len(rows) == 3, f"expected 3 copyKind groups, got {len(rows)}"
     for r in rows:
         assert "copy_kind" in r
         assert "avg_gbps" in r
         assert r["avg_gbps"] is not None and r["avg_gbps"] > 0
 
-    # ── Skill 13: sync_breakdown ─────────────────────────────────────────────
+    # 鈹€鈹€ Skill 13: sync_breakdown 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
     rows = engine.execute("sync_breakdown", device_id=0)
-    _show("Skill 13 – sync_breakdown", rows)
+    _show("Skill 13 鈥?sync_breakdown", rows)
     assert len(rows) >= 1
     assert "sync_type" in rows[0]
     assert "total_ms" in rows[0]
     total_sync_ms = sum(r["total_ms"] for r in rows)
     assert total_sync_ms > 0
 
-    # ── Skill 14: memset_breakdown ───────────────────────────────────────────
+    # 鈹€鈹€ Skill 14: memset_breakdown 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
     rows = engine.execute("memset_breakdown", device_id=0)
-    _show("Skill 14 – memset_breakdown", rows)
+    _show("Skill 14 鈥?memset_breakdown", rows)
     assert len(rows) >= 1
     assert "fill_value" in rows[0]
     assert "total_gb" in rows[0]
@@ -267,9 +296,9 @@ def test_new_skill_outputs(tmp_path: Path) -> None:
     assert zero_rows, "Expected a zero-init (fill_value=0) row"
     assert abs(zero_rows[0]["total_gb"] - 9 / 1024) < 0.001
 
-    # ── Skill 15: kernel_occupancy_estimate (raw metrics) ───────────────────
+    # 鈹€鈹€ Skill 15: kernel_occupancy_estimate (raw metrics) 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
     rows = engine.execute("kernel_occupancy_estimate", device_id=0, limit=10)
-    _show("Skill 15 – kernel_occupancy_estimate", rows)
+    _show("Skill 15 鈥?kernel_occupancy_estimate", rows)
     assert len(rows) >= 1
     assert "threads_per_block" in rows[0]
     assert "registersPerThread" in rows[0]
@@ -284,9 +313,9 @@ def test_new_skill_outputs(tmp_path: Path) -> None:
     assert "occupancy_pct_h100_estimate" in rows_occ_h100[0]
     assert rows_occ_h100[0]["occupancy_pct_h100_estimate"] is not None
 
-    # ── Skill 16: stream_parallelism ─────────────────────────────────────────
+    # 鈹€鈹€ Skill 16: stream_parallelism 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
     rows = engine.execute("stream_parallelism", device_id=0, bucket_ns=5000)
-    _show("Skill 16 – stream_parallelism", rows)
+    _show("Skill 16 鈥?stream_parallelism", rows)
     assert len(rows) == 1           # single aggregate row
     r = rows[0]
     assert "max_concurrent_streams" in r
@@ -295,18 +324,18 @@ def test_new_skill_outputs(tmp_path: Path) -> None:
     # With cross-bucket expansion, long kernels should contribute beyond start bucket.
     assert r["total_buckets"] >= 5
 
-    # ── Skill 17: nvtx_memcpy_breakdown ──────────────────────────────────────
+    # 鈹€鈹€ Skill 17: nvtx_memcpy_breakdown 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
     rows = engine.execute("nvtx_memcpy_breakdown", limit=20)
-    _show("Skill 17 – nvtx_memcpy_breakdown", rows)
+    _show("Skill 17 鈥?nvtx_memcpy_breakdown", rows)
     # memcpy rows fall inside NVTX ranges (forward/backward/step ranges)
     assert len(rows) >= 1
     assert "nvtx_text" in rows[0]
     assert "total_gb" in rows[0]
 
-    # ── Skill 18: nvtx_kernel_sm_detail ──────────────────────────────────────
+    # 鈹€鈹€ Skill 18: nvtx_kernel_sm_detail 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
     # sample_0 step=1 range [0, 22000] contains kernels at 0-10000 and 8000-20000
     rows = engine.execute("nvtx_kernel_sm_detail", nvtx_text="%sample_0%", device_id=0)
-    _show("Skill 18 – nvtx_kernel_sm_detail (%sample_0%)", rows)
+    _show("Skill 18 鈥?nvtx_kernel_sm_detail (%sample_0%)", rows)
     assert len(rows) >= 1, "Expected kernels inside sample_0 NVTX range"
     r = rows[0]
     assert "nvtx_text" in r
@@ -334,17 +363,17 @@ def test_new_skill_outputs(tmp_path: Path) -> None:
         else:
             assert kind == "compute", f"non-nccl kernel '{name}' should be 'compute'"
 
-    # forward-only filter — should only return kernels that fit inside [0, 10000]
+    # forward-only filter 鈥?should only return kernels that fit inside [0, 10000]
     rows_fwd = engine.execute("nvtx_kernel_sm_detail", nvtx_text="%forward%", device_id=0)
-    _show("Skill 18 – nvtx_kernel_sm_detail (%forward%)", rows_fwd)
+    _show("Skill 18 鈥?nvtx_kernel_sm_detail (%forward%)", rows_fwd)
     assert len(rows_fwd) >= 1
     for r in rows_fwd:
         assert r["nvtx_text"] == "forward"
         assert r["kind"] == "compute"   # nccl kernel [8000-20000] does NOT fit inside forward [0-10000]
 
-    # ── Skill 19: nvtx_ranges_hierarchy ──────────────────────────────────────
+    # 鈹€鈹€ Skill 19: nvtx_ranges_hierarchy 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
     rows_all_nvtx = engine.execute("nvtx_ranges_hierarchy", nvtx_text="%", top_level_only=False, limit=100)
-    _show("Skill 19 – nvtx_ranges_hierarchy (all)", rows_all_nvtx)
+    _show("Skill 19 鈥?nvtx_ranges_hierarchy (all)", rows_all_nvtx)
     assert len(rows_all_nvtx) >= 4
     by_text = {r["nvtx_text"]: r for r in rows_all_nvtx}
     assert "sample_0 step=1 rank=0" in by_text
@@ -357,7 +386,7 @@ def test_new_skill_outputs(tmp_path: Path) -> None:
     assert by_text["backward"]["depth"] >= 1
 
     rows_root_nvtx = engine.execute("nvtx_ranges_hierarchy", nvtx_text="%", top_level_only=True, limit=100)
-    _show("Skill 19 – nvtx_ranges_hierarchy (top-level)", rows_root_nvtx)
+    _show("Skill 19 鈥?nvtx_ranges_hierarchy (top-level)", rows_root_nvtx)
     assert len(rows_root_nvtx) >= 1
     assert all((r["depth"] == 0) for r in rows_root_nvtx)
 
@@ -383,7 +412,7 @@ def test_calculate_h100_occupancy() -> None:
 
 
 # ===========================================================================
-# Test 3 – new engine methods
+# Test 3 鈥?new engine methods
 # ===========================================================================
 
 def test_new_engine_methods(tmp_path: Path) -> None:
@@ -394,7 +423,7 @@ def test_new_engine_methods(tmp_path: Path) -> None:
     conn.row_factory = sqlite3.Row
     engine = NsysSqlSkillEngine(conn)
 
-    # ── analyze_per_iteration_overlap ────────────────────────────────────────
+    # 鈹€鈹€ analyze_per_iteration_overlap 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
     per_iter = engine.analyze_per_iteration_overlap(
         marker="sample_0", device_id=0, top_level_only=True, limit=100
     )
@@ -410,9 +439,9 @@ def test_new_engine_methods(tmp_path: Path) -> None:
         assert entry["kernel_count"] >= 0
         assert 0.0 <= entry["comm_pct"] <= 100.0
 
-    # ── detect_iteration_outliers ────────────────────────────────────────────
+    # 鈹€鈹€ detect_iteration_outliers 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
     result = engine.detect_iteration_outliers(
-        marker="sample_0", device_id=0, threshold_sigma=0.0  # sigma=0 → all are outliers
+        marker="sample_0", device_id=0, threshold_sigma=0.0  # sigma=0 鈫?all are outliers
     )
     _show("Engine: detect_iteration_outliers (sigma=0)", result)
     assert "stats" in result
@@ -435,7 +464,7 @@ def test_new_engine_methods(tmp_path: Path) -> None:
 
 
 # ===========================================================================
-# Test 4 – analyze_nsys_sqlite result dict has new keys
+# Test 4 鈥?analyze_nsys_sqlite result dict has new keys
 # ===========================================================================
 
 def test_analyze_nsys_sqlite_new_keys(tmp_path: Path) -> None:
@@ -494,6 +523,7 @@ def test_cli_new_subcommands(tmp_path: Path) -> None:
 
     overlap_json = tmp_path / "iter_overlap.json"
     outliers_json = tmp_path / "iter_outliers.json"
+    occ_json = tmp_path / "occ_h100.json"
 
     # nsys-iter-overlap
     assert main([
@@ -530,6 +560,22 @@ def test_cli_new_subcommands(tmp_path: Path) -> None:
     assert "stats" in data2 and "outliers" in data2
     assert data2["stats"]["count"] >= 1
     print(f"[nsys-iter-outliers] stats={data2['stats']}  outliers={len(data2['outliers'])}")
+
+    # nsys-sql-skill: occupancy should be enriched for H100 by default (--occupancy-arch auto)
+    assert main([
+        "nsys-sql-skill",
+        "--sqlite", str(db),
+        "--skill", "kernel_occupancy_estimate",
+        "--param", "device_id=0",
+        "--param", "limit=10",
+        "--output", str(occ_json),
+        "--pretty",
+    ]) == 0
+    assert occ_json.exists()
+    occ_rows = json.loads(occ_json.read_text())
+    assert isinstance(occ_rows, list) and len(occ_rows) >= 1
+    assert "occupancy_pct_h100_estimate" in occ_rows[0]
+    assert occ_rows[0]["occupancy_pct_h100_estimate"] is not None
 
 
 def test_cli_nsys_commands(tmp_path: Path) -> None:
