@@ -14,7 +14,7 @@ from my_utils.profiling.sources.nsys_sqlite_provider import NsysSqliteMetricsPro
 # ---------------------------------------------------------------------------
 
 def _init_sqlite(path: Path, *, scale: float = 1.0) -> None:
-    """Build a minimal but complete nsys-like SQLite covering all 17 skills."""
+    """Build a minimal but complete nsys-like SQLite covering all current skills."""
     conn = sqlite3.connect(path)
     cur = conn.cursor()
 
@@ -175,10 +175,10 @@ def _show(title: str, rows, *, limit: int = 5) -> None:
 
 
 # ===========================================================================
-# Test 1 – all 17 skills register and execute without error
+# Test 1 – all skills register and execute without error
 # ===========================================================================
 
-def test_all_17_skills_register_and_execute(tmp_path: Path) -> None:
+def test_all_skills_register_and_execute(tmp_path: Path) -> None:
     db = tmp_path / "rank0.sqlite"
     _init_sqlite(db)
 
@@ -191,7 +191,7 @@ def test_all_17_skills_register_and_execute(tmp_path: Path) -> None:
     for s in skills:
         print(f"  - {s}")
 
-    EXPECTED_18 = {
+    EXPECTED_19 = {
         "aggregate_kernels", "top_kernels", "aggregate_nvtx_ranges",
         "memcpy_in_window", "kernel_map", "gpu_idle_gaps",
         "kernel_launch_overhead", "nccl_breakdown", "nvtx_kernel_map",
@@ -199,8 +199,9 @@ def test_all_17_skills_register_and_execute(tmp_path: Path) -> None:
         "memcpy_bandwidth_analysis", "sync_breakdown", "memset_breakdown",
         "kernel_occupancy_estimate", "stream_parallelism", "nvtx_memcpy_breakdown",
         "nvtx_kernel_sm_detail",
+        "nvtx_ranges_hierarchy",
     }
-    missing = EXPECTED_18 - set(skills)
+    missing = EXPECTED_19 - set(skills)
     assert not missing, f"Missing skills: {missing}"
 
     # Default params for skills that have required parameters
@@ -319,6 +320,25 @@ def test_new_skill_outputs(tmp_path: Path) -> None:
     for r in rows_fwd:
         assert r["nvtx_text"] == "forward"
         assert r["kind"] == "compute"   # nccl kernel [8000-20000] does NOT fit inside forward [0-10000]
+
+    # ── Skill 19: nvtx_ranges_hierarchy ──────────────────────────────────────
+    rows_all_nvtx = engine.execute("nvtx_ranges_hierarchy", nvtx_text="%", top_level_only=False, limit=100)
+    _show("Skill 19 – nvtx_ranges_hierarchy (all)", rows_all_nvtx)
+    assert len(rows_all_nvtx) >= 4
+    by_text = {r["nvtx_text"]: r for r in rows_all_nvtx}
+    assert "sample_0 step=1 rank=0" in by_text
+    assert "forward" in by_text
+    assert "backward" in by_text
+    # nested ranges should point to sample_0 step=1
+    assert by_text["forward"]["parent_nvtx_text"] == "sample_0 step=1 rank=0"
+    assert by_text["backward"]["parent_nvtx_text"] == "sample_0 step=1 rank=0"
+    assert by_text["forward"]["depth"] >= 1
+    assert by_text["backward"]["depth"] >= 1
+
+    rows_root_nvtx = engine.execute("nvtx_ranges_hierarchy", nvtx_text="%", top_level_only=True, limit=100)
+    _show("Skill 19 – nvtx_ranges_hierarchy (top-level)", rows_root_nvtx)
+    assert len(rows_root_nvtx) >= 1
+    assert all((r["depth"] == 0) for r in rows_root_nvtx)
 
     conn.close()
 
@@ -575,4 +595,3 @@ def test_cli_nsys_commands(tmp_path: Path) -> None:
         == 0
     )
     assert timeline_html.exists()
-

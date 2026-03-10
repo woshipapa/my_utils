@@ -872,6 +872,95 @@ def _build_builtin_skills(schema: NsightSchema) -> Dict[str, SqlSkill]:
             tags=["nvtx", "kernel", "sm", "occupancy", "shared_memory", "launch_config", "detail"],
         )
 
+    # 19) NVTX ranges hierarchy (raw rows + parent/child relation)
+    if schema.table_exists(nvtx_table):
+        sk19_start_col = schema.resolve_column(nvtx_table, ("start",))
+        sk19_end_col = schema.resolve_column(nvtx_table, ("end",))
+        sk19_tid_col = schema.resolve_column(nvtx_table, ("globalTid", "global_tid"))
+        sk19_event_type_col = schema.resolve_column(nvtx_table, ("eventType", "event_type", "type"))
+        if sk19_start_col and sk19_end_col:
+            sk19_text_expr = "n.text"
+            sk19_nvtx_join = ""
+            if string_table:
+                sk19_text_id = schema.resolve_column(nvtx_table, ("textId", "nameId"))
+                if sk19_text_id:
+                    sk19_nvtx_join = f" LEFT JOIN {_ident(string_table)} sv19 ON n.{_ident(sk19_text_id)} = sv19.id "
+                    sk19_text_expr = "COALESCE(n.text, sv19.value)"
+
+            sk19_tid_select = f"n.{_ident(sk19_tid_col)} AS global_tid, " if sk19_tid_col else "NULL AS global_tid, "
+            sk19_event_type_select = (
+                f"n.{_ident(sk19_event_type_col)} AS event_type " if sk19_event_type_col else "NULL AS event_type "
+            )
+            sk19_same_tid = (
+                " AND p.global_tid = r.global_tid "
+                if sk19_tid_col
+                else ""
+            )
+
+            skill_map["nvtx_ranges_hierarchy"] = SqlSkill(
+                name="nvtx_ranges_hierarchy",
+                title="NVTX Ranges Hierarchy",
+                description=(
+                    "List every NVTX range (raw rows) and annotate hierarchy depth plus direct parent range. "
+                    "Useful for inspecting parent/child nested ranges and complete NVTX naming coverage."
+                ),
+                category="nvtx",
+                sql=(
+                    "WITH ranges AS ( "
+                    f"  SELECT n.rowid AS nvtx_rowid, "
+                    f"         {sk19_text_expr} AS nvtx_text, "
+                    f"         n.{_ident(sk19_start_col)} AS start_ns, "
+                    f"         n.[{_ident(sk19_end_col)}] AS end_ns, "
+                    f"         ROUND((n.[{_ident(sk19_end_col)}] - n.{_ident(sk19_start_col)}) / 1e6, 3) AS duration_ms, "
+                    f"         {sk19_tid_select}"
+                    f"         {sk19_event_type_select}"
+                    f"  FROM {nvtx_table} n "
+                    f"  {sk19_nvtx_join} "
+                    f"  WHERE {sk19_text_expr} IS NOT NULL "
+                    f"    AND n.[{_ident(sk19_end_col)}] > n.{_ident(sk19_start_col)} "
+                    f"    AND ('{{nvtx_text}}' = '%' OR {sk19_text_expr} LIKE '{{nvtx_text}}') "
+                    "), "
+                    "annotated AS ( "
+                    "  SELECT r.*, "
+                    "         ( "
+                    "           SELECT COUNT(*) "
+                    "           FROM ranges p "
+                    "           WHERE p.start_ns <= r.start_ns "
+                    "             AND p.end_ns >= r.end_ns "
+                    "             AND (p.start_ns < r.start_ns OR p.end_ns > r.end_ns) "
+                    f"             {sk19_same_tid}"
+                    "         ) AS depth, "
+                    "         ( "
+                    "           SELECT p.nvtx_rowid "
+                    "           FROM ranges p "
+                    "           WHERE p.start_ns <= r.start_ns "
+                    "             AND p.end_ns >= r.end_ns "
+                    "             AND (p.start_ns < r.start_ns OR p.end_ns > r.end_ns) "
+                    f"             {sk19_same_tid}"
+                    "           ORDER BY (p.end_ns - p.start_ns) ASC, p.start_ns DESC "
+                    "           LIMIT 1 "
+                    "         ) AS parent_rowid "
+                    "  FROM ranges r "
+                    ") "
+                    "SELECT a.nvtx_text, a.start_ns, a.end_ns, a.duration_ms, "
+                    "       a.global_tid, a.event_type, a.depth, "
+                    "       p.nvtx_text AS parent_nvtx_text, "
+                    "       p.start_ns AS parent_start_ns, "
+                    "       p.end_ns AS parent_end_ns "
+                    "FROM annotated a "
+                    "LEFT JOIN ranges p ON p.nvtx_rowid = a.parent_rowid "
+                    "WHERE ({top_level_only} = 0 OR a.depth = 0) "
+                    "ORDER BY a.start_ns ASC, a.end_ns DESC "
+                    "LIMIT {limit}"
+                ),
+                params=[
+                    SqlSkillParam("nvtx_text", "NVTX text LIKE pattern, default % for all ranges", "str", False, "%"),
+                    SqlSkillParam("top_level_only", "1 to keep only root ranges, 0 for full hierarchy", "bool", False, False),
+                    SqlSkillParam("limit", "max rows", "int", False, 5000),
+                ],
+                tags=["nvtx", "hierarchy", "parent", "child", "ranges", "raw"],
+            )
+
     return skill_map
 
 
