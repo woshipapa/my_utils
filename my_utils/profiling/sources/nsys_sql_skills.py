@@ -129,67 +129,83 @@ def calculate_h100_occupancy(
     shared_bytes: object,
 ) -> Optional[float]:
     """
-    Estimate theoretical occupancy for NVIDIA H100 (sm_90).
-
-    Hardware limits and allocation granularity used:
-    - max_threads_per_sm = 2048 (implicitly reflected by 64 warps x 32)
-    - max_warps_per_sm = 64
-    - max_blocks_per_sm = 32
-    - max_registers_per_sm = 65536
-    - max_shared_memory_per_sm = 233472 bytes
-    - register allocation granularity = 256 registers per warp
-    - shared memory allocation granularity = 128 bytes
+    Estimate theoretical occupancy for NVIDIA H100 (sm_90) strictly matching
+    the official NVIDIA CUDA Occupancy Calculator allocation rules.
     """
     try:
         tpb = int(threads_per_block)
     except Exception:
         return None
-    if tpb <= 0:
+
+    # CUDA hard limits: at least 1 thread, max 1024 threads per block
+    if tpb <= 0 or tpb > 1024:
         return None
 
+    # Warps per block (warp size is always 32)
     warps_per_block = int(math.ceil(tpb / 32.0))
-    if warps_per_block <= 0:
-        return None
 
-    # Thread/warp limit
+    # --- Limit 1: Threads / Warps Capacity ---
+    # H100 supports max 64 warps per SM
     blocks_limit_threads = int(math.floor(64 / warps_per_block))
 
-    # Register limit
+    # --- Limit 2: Register Capacity ---
     regs = None
     try:
         if registers_per_thread is not None:
             regs = int(registers_per_thread)
     except Exception:
-        regs = None
-    if regs is None or regs <= 0:
-        blocks_limit_regs = 32
-    else:
-        # H100 architectural limit: max registers per thread is 255.
-        if regs > 255:
-            blocks_limit_regs = 0
-        else:
-            regs_per_warp = int(math.ceil((regs * 32) / 256.0) * 256)
-            regs_per_block = regs_per_warp * warps_per_block
-            blocks_limit_regs = int(math.floor(65536 / regs_per_block)) if regs_per_block > 0 else 0
+        pass
 
-    # Shared memory limit
+    if regs is None or regs <= 0:
+        blocks_limit_regs = 32  # Not bottlenecked by registers
+    elif regs > 255:
+        return 0.0  # Launch failure: exceeds Hopper absolute max registers per thread
+    else:
+        # A. Register allocation granularity is 256 per warp
+        regs_per_warp = int(math.ceil((regs * 32) / 256.0) * 256)
+
+        # B. Calculate max total warps the SM's 64K register file can physically hold
+        max_warps_by_regs = math.floor(65536 / regs_per_warp)
+
+        # C. CRITICAL: Warp allocation granularity for sm_90 is 4.
+        # The hardware warp schedulers allocate warps in physical chunks of 4.
+        max_warps_by_regs_rounded = int(math.floor(max_warps_by_regs / 4.0) * 4)
+
+        # D. Translate the available physical warp slots into max active blocks
+        blocks_limit_regs = int(math.floor(max_warps_by_regs_rounded / warps_per_block))
+
+    # --- Limit 3: Shared Memory Capacity ---
     smem = None
     try:
         if shared_bytes is not None:
             smem = int(shared_bytes)
     except Exception:
-        smem = None
-    if smem is None or smem <= 0:
-        blocks_limit_smem = 32
-    else:
-        smem_per_block = int(math.ceil(smem / 128.0) * 128)
-        blocks_limit_smem = int(math.floor(233472 / smem_per_block)) if smem_per_block > 0 else 0
+        pass
 
+    if smem is None or smem <= 0:
+        blocks_limit_smem = 32  # Not bottlenecked by shared memory
+    else:
+        # Hopper Hard Limit: A single block CANNOT exceed 227 KB (232,448 bytes)
+        # Even though the SM has 228 KB, launching a 228KB block will fail.
+        if smem > 232448:
+            return 0.0
+
+        # Hopper SMEM allocation granularity is 128 bytes
+        smem_per_block = int(math.ceil(smem / 128.0) * 128)
+
+        # Hopper max shared memory per SM is 228 KB (233,472 bytes)
+        blocks_limit_smem = int(math.floor(233472 / smem_per_block))
+
+    # --- Final calculation ---
+    # Hopper max blocks per SM is 32. Actual active blocks is the bottleneck of all limits.
     active_blocks = min(blocks_limit_threads, blocks_limit_regs, blocks_limit_smem, 32)
+
     if active_blocks <= 0:
         return 0.0
 
+    # Theoretical Occupancy = Active Warps / Max Supported Warps (64)
     occupancy_pct = (active_blocks * warps_per_block) / 64.0 * 100.0
+
     return round(float(occupancy_pct), 1)
 
 
@@ -748,6 +764,10 @@ def _build_builtin_skills(schema: NsightSchema) -> Dict[str, SqlSkill]:
     occ_reg_col = schema.resolve_column(kernel_table, ("registersPerThread",))
     occ_static_smem = schema.resolve_column(kernel_table, ("staticSharedMemory",))
     occ_dyn_smem = schema.resolve_column(kernel_table, ("dynamicSharedMemory",))
+    occ_theoretical_col = schema.resolve_column(
+        kernel_table,
+        ("theoreticalOccupancyPct", "theoreticalOccupancy", "theoretical_occupancy_pct", "theoretical_occupancy"),
+    )
     if occ_block_x and occ_block_y and occ_block_z:
         if occ_static_smem and occ_dyn_smem:
             occ_shared_expr = f"(COALESCE(k.{_ident(occ_static_smem)}, 0) + COALESCE(k.{_ident(occ_dyn_smem)}, 0))"
@@ -757,31 +777,40 @@ def _build_builtin_skills(schema: NsightSchema) -> Dict[str, SqlSkill]:
             occ_shared_expr = f"COALESCE(k.{_ident(occ_dyn_smem)}, 0)"
         else:
             occ_shared_expr = "NULL"
+        occ_static_expr = f"k.{_ident(occ_static_smem)}" if occ_static_smem else "NULL"
+        occ_dyn_expr = f"k.{_ident(occ_dyn_smem)}" if occ_dyn_smem else "NULL"
         occ_reg_expr = f"k.{_ident(occ_reg_col)}" if occ_reg_col else "NULL"
         occ_tpb_expr = f"(k.{_ident(occ_block_x)} * k.{_ident(occ_block_y)} * k.{_ident(occ_block_z)})"
+        if occ_theoretical_col:
+            occ_estimate_expr = f"ROUND(AVG(CAST(k.{_ident(occ_theoretical_col)} AS REAL)), 3)"
+        else:
+            occ_estimate_expr = "NULL"
         skill_map["kernel_occupancy_estimate"] = SqlSkill(
             name="kernel_occupancy_estimate",
             title="Kernel Occupancy Estimate",
             description=(
                 "Export raw launch-config metrics for occupancy analysis: threads_per_block, "
-                "registersPerThread, total_shared_bytes. For H100(sm_90), compute occupancy "
-                "in Python via calculate_h100_occupancy(...)."
+                "registersPerThread, static/dynamic shared memory and total_shared_bytes. "
+                "If sqlite includes theoretical occupancy, it is returned in occupancy_pct_estimate; "
+                "otherwise use H100(sm_90) occupancy from calculate_h100_occupancy(...)."
             ),
             category="compute",
             sql=(
                 f"SELECT {name_expr} AS kernel_name, "
                 f"{occ_tpb_expr} AS threads_per_block, "
                 f"{occ_reg_expr} AS registersPerThread, "
+                f"{occ_static_expr} AS static_shared_bytes, "
+                f"{occ_dyn_expr} AS dynamic_shared_bytes, "
                 f"{occ_shared_expr} AS total_shared_bytes, "
                 "COUNT(*) AS invocations, "
                 f"ROUND(SUM(k.[{_ident(end_col)}] - k.{_ident(start_col)}) / 1e6, 3) AS total_ms, "
                 f"ROUND(AVG(k.[{_ident(end_col)}] - k.{_ident(start_col)}) / 1e6, 3) AS avg_ms, "
-                "NULL AS occupancy_pct_estimate "
+                f"{occ_estimate_expr} AS occupancy_pct_estimate "
                 f"FROM {kernel_table} k "
                 f"{name_join} "
                 "WHERE 1=1 "
                 f"{kernel_where_device} "
-                "GROUP BY 1,2,3,4 "
+                "GROUP BY 1,2,3,4,5,6 "
                 "ORDER BY total_ms DESC "
                 "LIMIT {limit}"
             ),
@@ -914,13 +943,23 @@ def _build_builtin_skills(schema: NsightSchema) -> Dict[str, SqlSkill]:
         sk18_static = schema.resolve_column(kernel_table, ("staticSharedMemory",))
         sk18_dyn = schema.resolve_column(kernel_table, ("dynamicSharedMemory",))
         sk18_local = schema.resolve_column(kernel_table, ("localMemoryPerThread",))
+        sk18_theoretical_occ = schema.resolve_column(
+            kernel_table,
+            ("theoreticalOccupancyPct", "theoreticalOccupancy", "theoretical_occupancy_pct", "theoretical_occupancy"),
+        )
 
         if sk18_bx and sk18_by and sk18_bz:
             sk18_tpb = f"(k.{_ident(sk18_bx)} * k.{_ident(sk18_by)} * k.{_ident(sk18_bz)})"
         else:
             sk18_tpb = "NULL"
-        # Occupancy is computed in Python with architecture-aware allocation rules.
-        sk18_occ = "NULL"
+        # Prefer sqlite theoretical occupancy when present; otherwise Python side can estimate.
+        if sk18_theoretical_occ:
+            sk18_occ = f"ROUND(CAST(k.{_ident(sk18_theoretical_occ)} AS REAL), 3)"
+        else:
+            sk18_occ = "NULL"
+
+        sk18_static_expr = f"k.{_ident(sk18_static)}" if sk18_static else "NULL"
+        sk18_dyn_expr = f"k.{_ident(sk18_dyn)}" if sk18_dyn else "NULL"
 
         if sk18_static and sk18_dyn:
             sk18_smem = f"(COALESCE(k.{_ident(sk18_static)}, 0) + COALESCE(k.{_ident(sk18_dyn)}, 0))"
@@ -959,8 +998,8 @@ def _build_builtin_skills(schema: NsightSchema) -> Dict[str, SqlSkill]:
                 "For each NVTX range matching the text pattern, list every kernel that ran "
                 "inside it with full SM launch config (threads/block, grid, registers, shared "
                 "memory, local memory). Kernels are labelled 'compute' or 'comm' (nccl). "
-                "Occupancy should be computed in Python via calculate_h100_occupancy(...) "
-                "for architecture-correct estimation on H100."
+                "If sqlite includes per-kernel theoretical occupancy it is returned; otherwise "
+                "use Python-side calculate_h100_occupancy(...) for H100."
             ),
             category="compute",
             sql=(
@@ -975,6 +1014,8 @@ def _build_builtin_skills(schema: NsightSchema) -> Dict[str, SqlSkill]:
                 + (f"k.{_ident(stream_col)} AS stream_id, " if stream_col else "NULL AS stream_id, ")
                 + f"{sk18_tpb} AS threads_per_block, "
                 + optional_cols
+                + f"{sk18_static_expr} AS static_shared_bytes, "
+                + f"{sk18_dyn_expr} AS dynamic_shared_bytes, "
                 + f"{sk18_smem} AS total_shared_bytes, "
                 + f"{sk18_occ} AS occupancy_pct_estimate "
                 + f"FROM {nvtx_table} n "
