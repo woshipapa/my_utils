@@ -576,11 +576,20 @@ def _build_builtin_skills(schema: NsightSchema) -> Dict[str, SqlSkill]:
                 gpu_info_tbl = _ident(gpu_info_table)
                 gpu_info_id_col = schema.resolve_column(gpu_info_tbl, ("metricId", "id", "metric_id"))
                 gpu_info_name_col = schema.resolve_column(gpu_info_tbl, ("name", "metricName", "metric_name", "value"))
+                metrics_type_col = schema.resolve_column(metrics_table, ("typeId", "type_id", "eventType", "event_type"))
+                gpu_info_type_col = schema.resolve_column(gpu_info_tbl, ("typeId", "type_id", "eventType", "event_type"))
                 if gpu_info_id_col and gpu_info_name_col:
-                    metrics_name_join += (
-                        f"LEFT JOIN {gpu_info_tbl} gm "
-                        f"ON g.{_ident(metrics_id_col)} = gm.{_ident(gpu_info_id_col)} "
-                    )
+                    if metrics_type_col and gpu_info_type_col:
+                        metrics_name_join += (
+                            f"LEFT JOIN {gpu_info_tbl} gm "
+                            f"ON g.{_ident(metrics_id_col)} = gm.{_ident(gpu_info_id_col)} "
+                            f"AND g.{_ident(metrics_type_col)} = gm.{_ident(gpu_info_type_col)} "
+                        )
+                    else:
+                        metrics_name_join += (
+                            f"LEFT JOIN {gpu_info_tbl} gm "
+                            f"ON g.{_ident(metrics_id_col)} = gm.{_ident(gpu_info_id_col)} "
+                        )
                     metrics_name_expr = f"COALESCE(gm.{_ident(gpu_info_name_col)}, s.value)"
 
             # Filter non-GPU generic sources when sourceId dictionary exists.
@@ -966,7 +975,132 @@ def _build_builtin_skills(schema: NsightSchema) -> Dict[str, SqlSkill]:
                 tags=["nvtx", "memcpy", "bandwidth", "phase", "memory"],
             )
 
-    # 18) NVTX kernel SM/memory detail
+    # 18) NVTX GPU metrics breakdown (per-range hardware sampling)
+    if schema.table_exists(nvtx_table) and schema.metrics_table and schema.string_table:
+        ngm_metrics_table = _ident(schema.metrics_table)
+        ngm_ts_col = schema.metrics_timestamp_col or schema.resolve_column(ngm_metrics_table, ("timestamp", "start", "time"))
+        ngm_id_col = schema.metrics_id_col or schema.resolve_column(ngm_metrics_table, ("metricId", "nameId", "eventId"))
+        ngm_val_col = schema.metrics_value_col or schema.resolve_column(ngm_metrics_table, ("value", "metricValue", "val"))
+        ngm_nvtx_start = schema.resolve_column(nvtx_table, ("start",))
+        ngm_nvtx_end = schema.resolve_column(nvtx_table, ("end",))
+        if ngm_ts_col and ngm_id_col and ngm_val_col and ngm_nvtx_start and ngm_nvtx_end:
+            ngm_nvtx_text_expr = "n.text"
+            ngm_nvtx_text_join = ""
+            if string_table:
+                ngm_text_id = schema.resolve_column(nvtx_table, ("textId", "nameId"))
+                if ngm_text_id:
+                    ngm_nvtx_text_join = f" LEFT JOIN {_ident(string_table)} sn ON n.{_ident(ngm_text_id)} = sn.id "
+                    ngm_nvtx_text_expr = "COALESCE(n.text, sn.value)"
+
+            ngm_string_table = _ident(schema.string_table)
+            ngm_metric_name_expr = "s.value"
+            ngm_metric_name_join = f"JOIN {ngm_string_table} s ON g.{_ident(ngm_id_col)} = s.id "
+
+            ngm_gpu_info_table = "TARGET_INFO_GPU_METRICS" if schema.table_exists("TARGET_INFO_GPU_METRICS") else None
+            if ngm_gpu_info_table:
+                ngm_gi_tbl = _ident(ngm_gpu_info_table)
+                ngm_gi_id_col = schema.resolve_column(ngm_gi_tbl, ("metricId", "id", "metric_id"))
+                ngm_gi_name_col = schema.resolve_column(ngm_gi_tbl, ("name", "metricName", "metric_name", "value"))
+                ngm_type_col = schema.resolve_column(ngm_metrics_table, ("typeId", "type_id", "eventType", "event_type"))
+                ngm_gi_type_col = schema.resolve_column(ngm_gi_tbl, ("typeId", "type_id", "eventType", "event_type"))
+                if ngm_gi_id_col and ngm_gi_name_col:
+                    if ngm_type_col and ngm_gi_type_col:
+                        ngm_metric_name_join += (
+                            f"LEFT JOIN {ngm_gi_tbl} gm "
+                            f"ON g.{_ident(ngm_id_col)} = gm.{_ident(ngm_gi_id_col)} "
+                            f"AND g.{_ident(ngm_type_col)} = gm.{_ident(ngm_gi_type_col)} "
+                        )
+                    else:
+                        ngm_metric_name_join += (
+                            f"LEFT JOIN {ngm_gi_tbl} gm "
+                            f"ON g.{_ident(ngm_id_col)} = gm.{_ident(ngm_gi_id_col)} "
+                        )
+                    ngm_metric_name_expr = f"COALESCE(gm.{_ident(ngm_gi_name_col)}, s.value)"
+
+            ngm_source_join = ""
+            ngm_source_where = ""
+            ngm_source_col = schema.resolve_column(ngm_metrics_table, ("sourceId", "source_id"))
+            if ngm_source_col and schema.table_exists("GENERIC_EVENT_SOURCES"):
+                ngm_ges_tbl = _ident("GENERIC_EVENT_SOURCES")
+                ngm_ges_id_col = schema.resolve_column(ngm_ges_tbl, ("sourceId", "id", "source_id"))
+                ngm_ges_name_col = schema.resolve_column(ngm_ges_tbl, ("name", "source", "sourceName"))
+                if ngm_ges_id_col and ngm_ges_name_col:
+                    ngm_source_join = (
+                        f"LEFT JOIN {ngm_ges_tbl} gs2 "
+                        f"ON g.{_ident(ngm_source_col)} = gs2.{_ident(ngm_ges_id_col)} "
+                    )
+                    ngm_source_where = (
+                        "AND ("
+                        "{include_all_sources} = 1 "
+                        f"OR gs2.{_ident(ngm_ges_name_col)} IS NULL "
+                        f"OR LOWER(gs2.{_ident(ngm_ges_name_col)}) LIKE '%gpu%metric%' "
+                        f"OR LOWER(gs2.{_ident(ngm_ges_name_col)}) = 'gpumetrics'"
+                        ") "
+                    )
+
+            ngm_device_where = ""
+            ngm_device_col = schema.resolve_column(ngm_metrics_table, ("deviceId", "gpuId", "device", "gpu"))
+            if ngm_device_col:
+                ngm_device_where = f"AND ({{device_id}} < 0 OR g.{_ident(ngm_device_col)} = {{device_id}}) "
+
+            skill_map["nvtx_gpu_metrics_breakdown"] = SqlSkill(
+                name="nvtx_gpu_metrics_breakdown",
+                title="NVTX GPU Metrics Breakdown",
+                description=(
+                    "For NVTX ranges matching nvtx_text, aggregate GPU hardware sampling points "
+                    "whose timestamps fall inside each range. Useful to inspect sm/tensor/dram "
+                    "metrics per training phase (forward/backward/sample_x)."
+                ),
+                category="metrics",
+                sql=(
+                    f"SELECT {ngm_nvtx_text_expr} AS nvtx_text, "
+                    f"n.{_ident(ngm_nvtx_start)} AS nvtx_start_ns, "
+                    f"n.[{_ident(ngm_nvtx_end)}] AS nvtx_end_ns, "
+                    f"{ngm_metric_name_expr} AS metric_name, "
+                    "COUNT(*) AS sample_count, "
+                    f"ROUND(AVG(CAST(g.{_ident(ngm_val_col)} AS REAL)), 3) AS avg_value, "
+                    f"ROUND(MIN(CAST(g.{_ident(ngm_val_col)} AS REAL)), 3) AS min_value, "
+                    f"ROUND(MAX(CAST(g.{_ident(ngm_val_col)} AS REAL)), 3) AS max_value "
+                    f"FROM {nvtx_table} n "
+                    f"{ngm_nvtx_text_join} "
+                    f"JOIN {ngm_metrics_table} g "
+                    f"  ON g.{_ident(ngm_ts_col)} >= n.{_ident(ngm_nvtx_start)} "
+                    f" AND g.{_ident(ngm_ts_col)} <= n.[{_ident(ngm_nvtx_end)}] "
+                    f"{ngm_metric_name_join} "
+                    f"{ngm_source_join} "
+                    "WHERE 1=1 "
+                    f"AND ('{{nvtx_text}}' = '%' OR {ngm_nvtx_text_expr} LIKE '{{nvtx_text}}') "
+                    f"AND ('{{metric_name_like}}' = '%' OR {ngm_metric_name_expr} LIKE '{{metric_name_like}}') "
+                    f"AND {ngm_nvtx_text_expr} IS NOT NULL "
+                    f"AND n.[{_ident(ngm_nvtx_end)}] > n.{_ident(ngm_nvtx_start)} "
+                    f"AND ({{start_ns}} < 0 OR n.{_ident(ngm_nvtx_start)} >= {{start_ns}}) "
+                    f"AND ({{end_ns}} < 0 OR n.[{_ident(ngm_nvtx_end)}] <= {{end_ns}}) "
+                    f"{ngm_source_where}"
+                    f"{ngm_device_where}"
+                    f"AND g.{_ident(ngm_val_col)} IS NOT NULL "
+                    f"GROUP BY {ngm_nvtx_text_expr}, n.{_ident(ngm_nvtx_start)}, n.[{_ident(ngm_nvtx_end)}], {ngm_metric_name_expr} "
+                    f"ORDER BY n.{_ident(ngm_nvtx_start)} ASC, sample_count DESC, metric_name ASC "
+                    "LIMIT {limit}"
+                ),
+                params=[
+                    SqlSkillParam("nvtx_text", "NVTX text LIKE pattern, default %", "str", False, "%"),
+                    SqlSkillParam("metric_name_like", "metric name SQL LIKE pattern", "str", False, "%"),
+                    SqlSkillParam("device_id", "CUDA deviceId if metric table provides it, -1 means all", "int", False, -1),
+                    SqlSkillParam("start_ns", "NVTX window start ns, -1 to disable", "int", False, -1),
+                    SqlSkillParam("end_ns", "NVTX window end ns, -1 to disable", "int", False, -1),
+                    SqlSkillParam(
+                        "include_all_sources",
+                        "1 to include all generic sources (ETW/FTrace/etc), 0 to prefer GPU metrics sources only",
+                        "bool",
+                        False,
+                        False,
+                    ),
+                    SqlSkillParam("limit", "max rows", "int", False, 5000),
+                ],
+                tags=["nvtx", "gpu_metrics", "sampling", "phase", "sm_active", "tensor_active", "dram"],
+            )
+
+    # 19) NVTX kernel SM/memory detail
     # For a given NVTX range pattern, list every kernel that ran inside it with
     # full SM launch config and theoretical occupancy.
     if schema.table_exists(nvtx_table) and nvtx_start_col and nvtx_end_col:
@@ -1091,7 +1225,7 @@ def _build_builtin_skills(schema: NsightSchema) -> Dict[str, SqlSkill]:
             tags=["nvtx", "kernel", "sm", "occupancy", "shared_memory", "launch_config", "detail"],
         )
 
-    # 19) NVTX ranges hierarchy (raw rows + parent/child relation)
+    # 20) NVTX ranges hierarchy (raw rows + parent/child relation)
     if schema.table_exists(nvtx_table):
         sk19_start_col = schema.resolve_column(nvtx_table, ("start",))
         sk19_end_col = schema.resolve_column(nvtx_table, ("end",))
