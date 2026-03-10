@@ -221,17 +221,17 @@ def test_all_skills_register_and_execute(tmp_path: Path) -> None:
     for s in skills:
         print(f"  - {s}")
 
-    EXPECTED_20 = {
+    EXPECTED_21 = {
         "aggregate_kernels", "top_kernels", "aggregate_nvtx_ranges",
         "memcpy_in_window", "kernel_map", "gpu_idle_gaps",
         "kernel_launch_overhead", "nccl_breakdown", "nvtx_kernel_map",
         "schema_inspect", "gpu_metrics_aggregate", "thread_utilization",
         "memcpy_bandwidth_analysis", "sync_breakdown", "memset_breakdown",
-        "kernel_occupancy_estimate", "stream_parallelism", "nvtx_memcpy_breakdown",
+        "kernel_occupancy_estimate", "stream_parallelism", "nvtx_memcpy_breakdown", "nvtx_gpu_metrics_breakdown",
         "nvtx_kernel_sm_detail",
         "nvtx_ranges_hierarchy",
     }
-    missing = EXPECTED_20 - set(skills)
+    missing = EXPECTED_21 - set(skills)
     assert not missing, f"Missing skills: {missing}"
 
     # Default params for skills that have required parameters
@@ -291,6 +291,26 @@ def test_new_skill_outputs(tmp_path: Path) -> None:
     sm_row_all = next((r for r in rows_all_sources if "sm__active" in str(r.get("metric_name", ""))), None)
     assert sm_row_all is not None
     assert sm_row_all["sample_count"] == 3
+
+    rows_nvtx_metrics = engine.execute(
+        "nvtx_gpu_metrics_breakdown",
+        nvtx_text="%sample_0%",
+        metric_name_like="%active%",
+        include_all_sources=0,
+        limit=100,
+    )
+    _show("Skill 18 - nvtx_gpu_metrics_breakdown", rows_nvtx_metrics)
+    assert len(rows_nvtx_metrics) >= 2
+    r0 = rows_nvtx_metrics[0]
+    assert "nvtx_text" in r0
+    assert "metric_name" in r0
+    assert "sample_count" in r0
+    assert "avg_value" in r0
+    assert "min_value" in r0
+    assert "max_value" in r0
+    sm_nvtx = next((r for r in rows_nvtx_metrics if "sm__active" in str(r.get("metric_name", ""))), None)
+    assert sm_nvtx is not None
+    assert sm_nvtx["sample_count"] == 2
 
     # 鈹€鈹€ Skill 12: memcpy_bandwidth_analysis 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
     rows = engine.execute("memcpy_bandwidth_analysis", device_id=0)
