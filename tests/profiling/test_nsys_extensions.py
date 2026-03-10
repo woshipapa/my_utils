@@ -53,17 +53,18 @@ def _init_sqlite(path: Path, *, scale: float = 1.0) -> None:
         "start INTEGER, [end] INTEGER, streamId INTEGER, correlationId INTEGER, "
         "shortName INTEGER, demangledName INTEGER, deviceId INTEGER, "
         "blockX INTEGER, blockY INTEGER, blockZ INTEGER, "
-        "registersPerThread INTEGER, staticSharedMemory INTEGER, dynamicSharedMemory INTEGER)"
+        "registersPerThread INTEGER, staticSharedMemory INTEGER, dynamicSharedMemory INTEGER, "
+        "theoreticalOccupancyPct REAL)"
     )
-    # rows: (start, end, stream, corr, short, demangled, dev, bx, by, bz, regs, static_smem, dyn_smem)
+    # rows: (start, end, stream, corr, short, demangled, dev, bx, by, bz, regs, static_smem, dyn_smem, theoretical_occupancy_pct)
     s = scale
     cur.executemany(
-        "INSERT INTO CUPTI_ACTIVITY_KIND_KERNEL VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        "INSERT INTO CUPTI_ACTIVITY_KIND_KERNEL VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         [
-            (0,           int(10000*s), 7, 1, 1, 1, 0, 128, 1, 1, 32, 4096, 0),   # gemm stream7
-            (int(8000*s), int(20000*s), 8, 2, 2, 2, 0, 256, 1, 1, 40, 0,    0),   # nccl  stream8
-            (int(25000*s),int(35000*s), 7, 3, 1, 1, 0, 128, 1, 1, 32, 4096, 0),   # gemm stream7
-            (int(5000*s), int(12000*s), 9, 4, 5, 5, 0,  64, 1, 1, 48, 8192, 2048),# attention stream9
+            (0,           int(10000*s), 7, 1, 1, 1, 0, 128, 1, 1, 32, 4096, 0,    87.5),  # gemm stream7
+            (int(8000*s), int(20000*s), 8, 2, 2, 2, 0, 256, 1, 1, 40, 0,    0,    62.5),  # nccl  stream8
+            (int(25000*s),int(35000*s), 7, 3, 1, 1, 0, 128, 1, 1, 32, 4096, 0,    87.5),  # gemm stream7
+            (int(5000*s), int(12000*s), 9, 4, 5, 5, 0,  64, 1, 1, 48, 8192, 2048, 50.0),  # attention stream9
         ],
     )
 
@@ -302,14 +303,18 @@ def test_new_skill_outputs(tmp_path: Path) -> None:
     assert len(rows) >= 1
     assert "threads_per_block" in rows[0]
     assert "registersPerThread" in rows[0]
+    assert "static_shared_bytes" in rows[0]
+    assert "dynamic_shared_bytes" in rows[0]
     assert "total_shared_bytes" in rows[0]
     assert "occupancy_pct_estimate" in rows[0]
-    # SQL side no longer computes occupancy; occupancy is computed in Python for H100.
-    assert all((r["occupancy_pct_estimate"] is None) for r in rows)
+    # sqlite theoretical occupancy is returned when available.
+    assert all((r["occupancy_pct_estimate"] is not None) for r in rows)
 
     rows_occ_h100 = engine.execute_kernel_occupancy_estimate_h100(device_id=0, limit=10)
     _show("Skill 15 + H100 occupancy", rows_occ_h100)
     assert len(rows_occ_h100) == len(rows)
+    assert "occupancy_pct_estimate" in rows_occ_h100[0]
+    assert rows_occ_h100[0]["occupancy_pct_estimate"] is not None
     assert "occupancy_pct_h100_estimate" in rows_occ_h100[0]
     assert rows_occ_h100[0]["occupancy_pct_h100_estimate"] is not None
 
@@ -344,14 +349,18 @@ def test_new_skill_outputs(tmp_path: Path) -> None:
     assert r["kind"] in ("compute", "comm")
     assert "duration_ms" in r
     assert "threads_per_block" in r
+    assert "static_shared_bytes" in r
+    assert "dynamic_shared_bytes" in r
     assert "total_shared_bytes" in r
     assert "occupancy_pct_estimate" in r
-    assert r["occupancy_pct_estimate"] is None
+    assert r["occupancy_pct_estimate"] is not None
 
     # Python-side H100 occupancy estimation
     rows_h100 = engine.execute_nvtx_kernel_sm_detail_h100(nvtx_text="%sample_0%", device_id=0)
     _show("Skill 18 + H100 occupancy", rows_h100)
     assert len(rows_h100) == len(rows)
+    assert "occupancy_pct_estimate" in rows_h100[0]
+    assert rows_h100[0]["occupancy_pct_estimate"] is not None
     assert "occupancy_pct_h100_estimate" in rows_h100[0]
     assert rows_h100[0]["occupancy_pct_h100_estimate"] is not None
 

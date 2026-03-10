@@ -306,8 +306,9 @@ def cmd_nsys_sql_skill(args: argparse.Namespace) -> int:
 
     if skill_name in {"kernel_occupancy_estimate", "nvtx_kernel_sm_detail"} and not use_h100_occupancy:
         print(
-            "[nsys-sql-skill] note: SQL occupancy field is NULL by design; "
-            "use --occupancy-arch h100 (or auto on H100) to attach occupancy_pct_h100_estimate.",
+            "[nsys-sql-skill] note: occupancy_pct_estimate depends on sqlite theoretical occupancy columns; "
+            "if absent it will be NULL. Use --occupancy-arch h100 (or auto on H100) to attach "
+            "occupancy_pct_h100_estimate.",
             file=sys.stderr,
         )
 

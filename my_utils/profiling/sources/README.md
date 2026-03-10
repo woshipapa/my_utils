@@ -102,10 +102,10 @@ engine.execute("top_kernels", device_id=0, limit=20)
 | 13 | `memcpy_bandwidth_analysis` | memory | MEMCPY | total_gb, total_ms, avg/min/max gbps |
 | 14 | `sync_breakdown` | pipeline | SYNCHRONIZATION | sync_type, count, total/avg/max ms |
 | 15 | `memset_breakdown` | memory | MEMSET | fill_value, total_gb, total_ms, avg_gbps |
-| 16 | `kernel_occupancy_estimate` | compute | KERNEL | raw launch metrics (threads_per_block, registersPerThread, total_shared_bytes), occupancy SQL field is NULL |
+| 16 | `kernel_occupancy_estimate` | compute | KERNEL | raw launch metrics (threads_per_block, registersPerThread, static_shared_bytes, dynamic_shared_bytes, total_shared_bytes); occupancy_pct_estimate uses sqlite theoretical occupancy when available |
 | 17 | `stream_parallelism` | pipeline | KERNEL | bucket-based concurrent stream stats (cross-bucket kernel expansion) |
 | 18 | `nvtx_memcpy_breakdown` | memory | NVTX_EVENTS + MEMCPY | nvtx_text + memcpy aggregates |
-| 19 | `nvtx_kernel_sm_detail` | compute | NVTX_EVENTS + KERNEL | kernel launch config per NVTX range, occupancy SQL field is NULL |
+| 19 | `nvtx_kernel_sm_detail` | compute | NVTX_EVENTS + KERNEL | per-kernel launch config in NVTX range, including static/dynamic shared memory; occupancy_pct_estimate uses sqlite theoretical occupancy when available |
 | 20 | `nvtx_ranges_hierarchy` | nvtx | NVTX_EVENTS | raw NVTX rows; hierarchy derived in Python O(N) |
 
 Skills are schema-guarded and appear only when required tables/columns exist.
@@ -125,9 +125,11 @@ Common params:
 
 ### Occupancy notes (H100)
 
-SQL occupancy formulas are intentionally removed from:
-- `kernel_occupancy_estimate`
-- `nvtx_kernel_sm_detail`
+For occupancy fields:
+- `occupancy_pct_estimate` comes from sqlite theoretical occupancy columns when present.
+- if sqlite does not provide that column, `occupancy_pct_estimate` is `NULL`.
+- H100 helper execution (`execute_*_h100`) keeps `occupancy_pct_estimate` and additionally appends
+  `occupancy_pct_h100_estimate`, so you can compare sqlite-reported theoretical occupancy vs our strict H100 calculation.
 
 Use Python helper for H100(sm_90):
 
