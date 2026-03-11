@@ -14,6 +14,7 @@ from .nsys_schema_adapter import NsightSchema
 from .nsys_sqlite_provider import NsysSqliteMetricsProvider
 
 _RANK_RE = re.compile(r"\brank(?:\s*|[:=_-])(\d+)\b", re.IGNORECASE)
+_GPU_IDX_RE = re.compile(r"(?:gpu|device)\s*[_:#=\- ]?\s*(\d+)", re.IGNORECASE)
 
 
 def _ident(name: str) -> str:
@@ -210,6 +211,27 @@ def _downsample_points(points: Sequence[Tuple[int, float]], max_points: int = 20
     return sampled
 
 
+def _metric_device_tag(device_id: object, source_name: object) -> Tuple[str, str]:
+    dev = _to_int(device_id, -1)
+    if dev >= 0:
+        return "gpu", str(dev)
+    src = str(source_name or "").strip()
+    if src:
+        m = _GPU_IDX_RE.search(src)
+        if m:
+            return "gpu", str(m.group(1))
+        return "source", src
+    return "unknown", "unknown"
+
+
+def _metric_series_name(metric_name: str, tag_kind: str, tag_value: str) -> str:
+    if tag_kind == "gpu":
+        return f"{metric_name} [gpu {tag_value}]"
+    if tag_kind == "source":
+        return f"{metric_name} [src {tag_value}]"
+    return f"{metric_name} [unknown]"
+
+
 def _collect_metric_samples(
     sqlite_path: str,
     *,
@@ -269,6 +291,7 @@ def _collect_metric_samples(
 
         source_join = ""
         source_where = ""
+        source_name_expr = "NULL"
         source_col = schema.resolve_column(metrics_table, ("sourceId", "source_id"))
         if source_col and schema.table_exists("GENERIC_EVENT_SOURCES"):
             ges_tbl = _ident("GENERIC_EVENT_SOURCES")
@@ -278,6 +301,7 @@ def _collect_metric_samples(
                 source_join = (
                     f"LEFT JOIN {ges_tbl} gs ON g.{_ident(source_col)} = gs.{_ident(ges_id_col)}"
                 )
+                source_name_expr = f"gs.{_ident(ges_name_col)}"
                 source_where = (
                     "AND (? = 1 "
                     f"OR gs.{_ident(ges_name_col)} IS NULL "
@@ -286,6 +310,7 @@ def _collect_metric_samples(
                 )
 
         device_where = ""
+        device_expr = "NULL"
         filter_params: List[object] = [
             int(start_ns),
             int(end_ns),
@@ -294,6 +319,7 @@ def _collect_metric_samples(
         ]
         device_col = schema.resolve_column(metrics_table, ("deviceId", "gpuId", "device", "gpu"))
         if device_col:
+            device_expr = f"CAST(g.{_ident(device_col)} AS INTEGER)"
             device_where = f"AND (? < 0 OR g.{_ident(device_col)} = ?) "
             filter_params.extend([int(device_id), int(device_id)])
 
@@ -311,6 +337,8 @@ def _collect_metric_samples(
         select_expr = (
             f"SELECT g.{_ident(ts_col)} AS ts_ns, "
             f"{name_expr} AS metric_name, "
+            f"{device_expr} AS metric_device_id, "
+            f"{source_name_expr} AS metric_source_name, "
             f"CAST(g.{_ident(val_col)} AS REAL) AS metric_value "
         )
         from_join_expr = (
@@ -350,12 +378,12 @@ def _collect_metric_samples(
                     + from_join_expr
                     + base_where
                     + "), numbered AS ("
-                    + "SELECT ts_ns, metric_name, metric_value, "
+                    + "SELECT ts_ns, metric_name, metric_device_id, metric_source_name, metric_value, "
                     + "ROW_NUMBER() OVER (ORDER BY ts_ns ASC) AS rn, "
                     + "COUNT(*) OVER () AS total_rows "
                     + "FROM base"
                     + ") "
-                    + "SELECT ts_ns, metric_name, metric_value "
+                    + "SELECT ts_ns, metric_name, metric_device_id, metric_source_name, metric_value "
                     + "FROM numbered "
                     + "WHERE ((rn - 1) % ?) = 0 OR rn = total_rows "
                     + "ORDER BY ts_ns ASC"
@@ -364,11 +392,12 @@ def _collect_metric_samples(
     finally:
         conn.close()
 
-    grouped: Dict[str, List[Tuple[int, float]]] = {}
+    grouped: Dict[Tuple[str, str, str], List[Tuple[int, float]]] = {}
     for row in rows:
         name = str(row["metric_name"] or "")
         if not name:
             continue
+        tag_kind, tag_value = _metric_device_tag(row["metric_device_id"], row["metric_source_name"])
         ts_ns = _to_int(row["ts_ns"], -1)
         if ts_ns < 0:
             continue
@@ -376,15 +405,16 @@ def _collect_metric_samples(
             value = float(row["metric_value"])
         except Exception:
             continue
-        grouped.setdefault(name, []).append((ts_ns, value))
+        grouped.setdefault((name, tag_kind, tag_value), []).append((ts_ns, value))
 
     series: List[Dict[str, object]] = []
-    for name in sorted(grouped.keys()):
-        points = _downsample_points(grouped[name], max_points=2000)
+    for name, tag_kind, tag_value in sorted(grouped.keys(), key=lambda x: (x[0], x[1], x[2])):
+        points = _downsample_points(grouped[(name, tag_kind, tag_value)], max_points=2000)
+        display_name = _metric_series_name(str(name), str(tag_kind), str(tag_value))
         series.append(
             {
-                "name": name,
-                "color": _color_for_name(name),
+                "name": display_name,
+                "color": _color_for_name(display_name),
                 "points": [[int(t), float(v)] for t, v in points],
             }
         )
