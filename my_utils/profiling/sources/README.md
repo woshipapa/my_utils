@@ -281,8 +281,8 @@ myutils-profile nsys-timeline-html \
 By default, `--nvtx-text` uses all matched NVTX scopes (`--nvtx-index -1`).
 Set `--nvtx-index N` only when you want a single matched scope.
 When NVTX texts include `rank=<id>`, timeline kernel lanes are grouped by rank (all ranks in one HTML).
-When metric magnitudes are highly imbalanced, timeline metric chart auto-switches to per-metric normalized mode
-to avoid flat/overlapped lines; legend shows each metric's raw min/max.
+Timeline metrics are rendered as multiple independent panels (one metric/device per panel),
+so each panel has its own Y-axis and avoids unit conflicts across metrics.
 When GPU metric rows include device dimension (`deviceId/gpuId`), timeline metric series are split as `[gpu N]`
 to avoid mixing multiple devices in one curve.
 
