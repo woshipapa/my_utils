@@ -131,13 +131,17 @@ def _collect_kernels_in_window(
             if selected_pairs:
                 if (ns, ne) not in selected_pairs:
                     continue
-            else:
-                if ns < int(start_ns) or ne > int(end_ns):
-                    continue
-            ks = _to_int(row.get("kernel_start_ns"), -1)
-            ke = _to_int(row.get("kernel_end_ns"), -1)
+            # Robust fallback: older payload variants may expose generic start/end names.
+            ks = _to_int(row.get("kernel_start_ns", row.get("start_ns")), -1)
+            ke = _to_int(row.get("kernel_end_ns", row.get("end_ns")), -1)
             if ks < 0 or ke <= ks:
                 continue
+            if not selected_pairs:
+                # Timeline window filtering must follow GPU execution timestamps.
+                # Using NVTX CPU-side timestamps here can drop valid kernels due to
+                # async CPU launch vs GPU execution lag.
+                if ke <= int(start_ns) or ks >= int(end_ns):
+                    continue
             uniq = (ks, ke, _to_int(row.get("stream_id"), 0), str(row.get("kernel_name") or ""))
             if uniq in seen:
                 continue
