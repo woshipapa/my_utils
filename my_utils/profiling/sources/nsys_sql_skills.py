@@ -607,6 +607,7 @@ def _build_builtin_skills(schema: NsightSchema) -> Dict[str, SqlSkill]:
                         )
                     metrics_name_expr = f"gm.{_ident(gpu_info_name_col)}"
                     metrics_name_not_null = f"AND gm.{_ident(gpu_info_name_col)} IS NOT NULL "
+            metrics_has_gpu_info_mapping = bool(metrics_name_expr.startswith("gm."))
 
             # Fallback to StringIds only when GPU metric dictionary is unavailable.
             if not metrics_name_expr and schema.string_table:
@@ -624,7 +625,7 @@ def _build_builtin_skills(schema: NsightSchema) -> Dict[str, SqlSkill]:
             metrics_source_where = ""
             metrics_source_name_expr = "NULL"
             metrics_source_col = schema.resolve_column(metrics_table, ("sourceId", "source_id"))
-            if metrics_source_col and schema.table_exists("GENERIC_EVENT_SOURCES"):
+            if metrics_source_col and schema.table_exists("GENERIC_EVENT_SOURCES") and (not metrics_has_gpu_info_mapping):
                 ges_tbl = _ident("GENERIC_EVENT_SOURCES")
                 ges_id_col = schema.resolve_column(ges_tbl, ("sourceId", "id", "source_id"))
                 ges_name_col = schema.resolve_column(ges_tbl, ("name", "source", "sourceName"))
@@ -1059,6 +1060,7 @@ def _build_builtin_skills(schema: NsightSchema) -> Dict[str, SqlSkill]:
                         )
                     ngm_metric_name_expr = f"gm.{_ident(ngm_gi_name_col)}"
                     ngm_metric_name_not_null = f"AND gm.{_ident(ngm_gi_name_col)} IS NOT NULL "
+            ngm_has_gpu_info_mapping = bool(ngm_metric_name_expr.startswith("gm."))
 
             if not ngm_metric_name_expr and schema.string_table:
                 ngm_string_table = _ident(schema.string_table)
@@ -1074,7 +1076,7 @@ def _build_builtin_skills(schema: NsightSchema) -> Dict[str, SqlSkill]:
             ngm_source_where = ""
             ngm_source_name_expr = "NULL"
             ngm_source_col = schema.resolve_column(ngm_metrics_table, ("sourceId", "source_id"))
-            if ngm_source_col and schema.table_exists("GENERIC_EVENT_SOURCES"):
+            if ngm_source_col and schema.table_exists("GENERIC_EVENT_SOURCES") and (not ngm_has_gpu_info_mapping):
                 ngm_ges_tbl = _ident("GENERIC_EVENT_SOURCES")
                 ngm_ges_id_col = schema.resolve_column(ngm_ges_tbl, ("sourceId", "id", "source_id"))
                 ngm_ges_name_col = schema.resolve_column(ngm_ges_tbl, ("name", "source", "sourceName"))
