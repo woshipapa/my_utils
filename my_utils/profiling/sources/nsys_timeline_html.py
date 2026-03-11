@@ -224,18 +224,18 @@ def _collect_metric_samples(
     conn.row_factory = sqlite3.Row
     try:
         schema = NsightSchema(conn)
-        if not schema.metrics_table or not schema.string_table:
+        if not schema.metrics_table:
             return []
         metrics_table = _ident(schema.metrics_table)
-        string_table = _ident(schema.string_table)
         ts_col = schema.metrics_timestamp_col or schema.resolve_column(metrics_table, ("timestamp", "start", "time"))
         id_col = schema.metrics_id_col or schema.resolve_column(metrics_table, ("metricId", "nameId", "eventId"))
         val_col = schema.metrics_value_col or schema.resolve_column(metrics_table, ("value", "metricValue", "val"))
         if not ts_col or not id_col or not val_col:
             return []
 
-        name_expr = "s.value"
-        joins = [f"JOIN {string_table} s ON g.{_ident(id_col)} = s.id"]
+        name_expr = ""
+        name_not_null = ""
+        joins: List[str] = []
 
         if schema.table_exists("TARGET_INFO_GPU_METRICS"):
             gm_tbl = _ident("TARGET_INFO_GPU_METRICS")
@@ -246,15 +246,26 @@ def _collect_metric_samples(
             if gm_id_col and gm_name_col:
                 if g_type_col and gm_type_col:
                     joins.append(
-                        f"LEFT JOIN {gm_tbl} gm "
+                        f"JOIN {gm_tbl} gm "
                         f"ON g.{_ident(id_col)} = gm.{_ident(gm_id_col)} "
                         f"AND g.{_ident(g_type_col)} = gm.{_ident(gm_type_col)}"
                     )
                 else:
                     joins.append(
-                        f"LEFT JOIN {gm_tbl} gm ON g.{_ident(id_col)} = gm.{_ident(gm_id_col)}"
+                        f"JOIN {gm_tbl} gm ON g.{_ident(id_col)} = gm.{_ident(gm_id_col)}"
                     )
-                name_expr = f"COALESCE(gm.{_ident(gm_name_col)}, s.value)"
+                name_expr = f"gm.{_ident(gm_name_col)}"
+                name_not_null = f"AND gm.{_ident(gm_name_col)} IS NOT NULL "
+
+        if not name_expr and schema.string_table:
+            string_table = _ident(schema.string_table)
+            joins.append(f"JOIN {string_table} s ON g.{_ident(id_col)} = s.id")
+            name_expr = "s.value"
+            name_not_null = "AND s.value IS NOT NULL "
+
+        if not name_expr:
+            name_expr = f"CAST(g.{_ident(id_col)} AS TEXT)"
+            name_not_null = ""
 
         source_join = ""
         source_where = ""
@@ -296,6 +307,7 @@ def _collect_metric_samples(
             + " "
             + "WHERE g.{ts} >= ? AND g.{ts} <= ? ".format(ts=_ident(ts_col))
             + "AND (? = '%' OR {name_expr} LIKE ?) ".format(name_expr=name_expr)
+            + name_not_null
             + device_where
             + source_where
             + f"AND g.{_ident(val_col)} IS NOT NULL "
@@ -496,18 +508,36 @@ def _render_html(
             "  const x0 = padL, y0 = padT, cw = W - padL - padR, ch = H - padT - padB;",
             "  let minV = Number.POSITIVE_INFINITY;",
             "  let maxV = Number.NEGATIVE_INFINITY;",
+            "  const stats = [];",
             "  for (const s of d.metrics) {",
+            "    let sMin = Number.POSITIVE_INFINITY;",
+            "    let sMax = Number.NEGATIVE_INFINITY;",
             "    for (const p of (s.points || [])) {",
             "      const v = Number(p[1]);",
-            "      if (Number.isFinite(v)) { minV = Math.min(minV, v); maxV = Math.max(maxV, v); }",
+            "      if (Number.isFinite(v)) {",
+            "        minV = Math.min(minV, v);",
+            "        maxV = Math.max(maxV, v);",
+            "        sMin = Math.min(sMin, v);",
+            "        sMax = Math.max(sMax, v);",
+            "      }",
             "    }",
+            "    if (!Number.isFinite(sMin) || !Number.isFinite(sMax)) { sMin = 0; sMax = 1; }",
+            "    if (Math.abs(sMax - sMin) < 1e-12) { sMax = sMin + 1.0; }",
+            "    stats.push({min:sMin, max:sMax, span:(sMax - sMin)});",
             "  }",
             "  if (!Number.isFinite(minV) || !Number.isFinite(maxV)) { minV = 0; maxV = 1; }",
             "  if (Math.abs(maxV - minV) < 1e-12) { maxV = minV + 1.0; }",
+            "  let maxSpan = 0.0, minSpan = Number.POSITIVE_INFINITY;",
+            "  for (const st of stats) {",
+            "    maxSpan = Math.max(maxSpan, Number(st.span || 0));",
+            "    if (Number(st.span || 0) > 0) minSpan = Math.min(minSpan, Number(st.span || 0));",
+            "  }",
+            "  const useNormalized = stats.length > 1 && Number.isFinite(minSpan) && minSpan > 0 && (maxSpan / minSpan) > 1e3;",
             "  const span = Math.max(1, Number(d.span_ns || 1));",
             "  const startNs = Number(d.window_start_ns || 0);",
             "  const x = (t) => x0 + ((Number(t) - startNs) / span) * cw;",
             "  const y = (v) => y0 + (1.0 - ((Number(v) - minV) / (maxV - minV))) * ch;",
+            "  const yNorm = (v, st) => y0 + (1.0 - ((Number(v) - Number(st.min)) / Math.max(1e-12, Number(st.max) - Number(st.min)))) * ch;",
             "  const mk = (tag, attrs) => {",
             "    const el = document.createElementNS('http://www.w3.org/2000/svg', tag);",
             "    for (const [k,v] of Object.entries(attrs)) el.setAttribute(k, String(v));",
@@ -517,16 +547,28 @@ def _render_html(
             "  svg.appendChild(mk('line', {x1:x0, y1:y0+ch, x2:x0+cw, y2:y0+ch, stroke:'#55637f'}));",
             "  svg.appendChild(mk('line', {x1:x0, y1:y0, x2:x0, y2:y0+ch, stroke:'#55637f'}));",
             "  const yMinText = mk('text', {x:6, y:y0+ch, fill:'#9aa7be', 'font-size':11});",
-            "  yMinText.textContent = minV.toFixed(3); svg.appendChild(yMinText);",
+            "  yMinText.textContent = useNormalized ? '0.0' : minV.toFixed(3); svg.appendChild(yMinText);",
             "  const yMaxText = mk('text', {x:6, y:y0+10, fill:'#9aa7be', 'font-size':11});",
-            "  yMaxText.textContent = maxV.toFixed(3); svg.appendChild(yMaxText);",
-            "  for (const s of d.metrics) {",
-            "    const pts = (s.points || []).map((p) => `${x(p[0]).toFixed(2)},${y(p[1]).toFixed(2)}`).join(' ');",
+            "  yMaxText.textContent = useNormalized ? '1.0' : maxV.toFixed(3); svg.appendChild(yMaxText);",
+            "  const modeText = mk('text', {x:x0 + 8, y:y0 + 14, fill:'#9aa7be', 'font-size':11});",
+            "  modeText.textContent = useNormalized ? 'mode: normalized per metric (raw min/max in legend)' : 'mode: raw value';",
+            "  svg.appendChild(modeText);",
+            "  const fmt = (v) => {",
+            "    const x = Number(v);",
+            "    if (!Number.isFinite(x)) return 'nan';",
+            "    const ax = Math.abs(x);",
+            "    if (ax >= 1e6 || (ax > 0 && ax < 1e-3)) return x.toExponential(2);",
+            "    return x.toFixed(3);",
+            "  };",
+            "  for (let i = 0; i < d.metrics.length; ++i) {",
+            "    const s = d.metrics[i];",
+            "    const st = stats[i] || {min:0, max:1};",
+            "    const pts = (s.points || []).map((p) => `${x(p[0]).toFixed(2)},${(useNormalized ? yNorm(p[1], st) : y(p[1])).toFixed(2)}`).join(' ');",
             "    if (!pts) continue;",
             "    svg.appendChild(mk('polyline', {points:pts, fill:'none', stroke:s.color || '#88c', 'stroke-width':1.4, 'stroke-linejoin':'round', 'stroke-linecap':'round'}));",
             "    const item = document.createElement('div'); item.className = 'legend-item';",
             "    const sw = document.createElement('span'); sw.className = 'swatch'; sw.style.background = String(s.color || '#88c');",
-            "    const tx = document.createElement('span'); tx.textContent = `${s.name} (${(s.points || []).length})`;",
+            "    const tx = document.createElement('span'); tx.textContent = `${s.name} (${(s.points || []).length}, min=${fmt(st.min)}, max=${fmt(st.max)})`;",
             "    item.appendChild(sw); item.appendChild(tx); legend.appendChild(item);",
             "  }",
             "})();",

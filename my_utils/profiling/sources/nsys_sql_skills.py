@@ -575,15 +575,15 @@ def _build_builtin_skills(schema: NsightSchema) -> Dict[str, SqlSkill]:
     )
 
     # 11) GPU metrics aggregate (nsys --gpu-metrics-device style hardware sampling)
-    if schema.metrics_table and schema.string_table:
+    if schema.metrics_table:
         metrics_table = _ident(schema.metrics_table)
         metrics_ts_col = schema.metrics_timestamp_col or schema.resolve_column(metrics_table, ("timestamp", "start", "time"))
         metrics_id_col = schema.metrics_id_col or schema.resolve_column(metrics_table, ("metricId", "nameId", "eventId"))
         metrics_value_col = schema.metrics_value_col or schema.resolve_column(metrics_table, ("value", "metricValue", "val"))
         if metrics_ts_col and metrics_id_col and metrics_value_col:
-            metrics_string_table = _ident(schema.string_table)
-            metrics_name_expr = "s.value"
-            metrics_name_join = f"JOIN {metrics_string_table} s ON g.{_ident(metrics_id_col)} = s.id "
+            metrics_name_expr = ""
+            metrics_name_join = ""
+            metrics_name_not_null = ""
 
             # Prefer dedicated GPU metric dictionary table when available.
             gpu_info_table = "TARGET_INFO_GPU_METRICS" if schema.table_exists("TARGET_INFO_GPU_METRICS") else None
@@ -595,17 +595,29 @@ def _build_builtin_skills(schema: NsightSchema) -> Dict[str, SqlSkill]:
                 gpu_info_type_col = schema.resolve_column(gpu_info_tbl, ("typeId", "type_id", "eventType", "event_type"))
                 if gpu_info_id_col and gpu_info_name_col:
                     if metrics_type_col and gpu_info_type_col:
-                        metrics_name_join += (
-                            f"LEFT JOIN {gpu_info_tbl} gm "
+                        metrics_name_join = (
+                            f"JOIN {gpu_info_tbl} gm "
                             f"ON g.{_ident(metrics_id_col)} = gm.{_ident(gpu_info_id_col)} "
                             f"AND g.{_ident(metrics_type_col)} = gm.{_ident(gpu_info_type_col)} "
                         )
                     else:
-                        metrics_name_join += (
-                            f"LEFT JOIN {gpu_info_tbl} gm "
+                        metrics_name_join = (
+                            f"JOIN {gpu_info_tbl} gm "
                             f"ON g.{_ident(metrics_id_col)} = gm.{_ident(gpu_info_id_col)} "
                         )
-                    metrics_name_expr = f"COALESCE(gm.{_ident(gpu_info_name_col)}, s.value)"
+                    metrics_name_expr = f"gm.{_ident(gpu_info_name_col)}"
+                    metrics_name_not_null = f"AND gm.{_ident(gpu_info_name_col)} IS NOT NULL "
+
+            # Fallback to StringIds only when GPU metric dictionary is unavailable.
+            if not metrics_name_expr and schema.string_table:
+                metrics_string_table = _ident(schema.string_table)
+                metrics_name_expr = "s.value"
+                metrics_name_join = f"JOIN {metrics_string_table} s ON g.{_ident(metrics_id_col)} = s.id "
+                metrics_name_not_null = "AND s.value IS NOT NULL "
+
+            if not metrics_name_expr:
+                metrics_name_expr = f"CAST(g.{_ident(metrics_id_col)} AS TEXT)"
+                metrics_name_not_null = ""
 
             # Filter non-GPU generic sources when sourceId dictionary exists.
             metrics_source_join = ""
@@ -651,6 +663,7 @@ def _build_builtin_skills(schema: NsightSchema) -> Dict[str, SqlSkill]:
                     f"AND ({{end_ns}} < 0 OR g.{_ident(metrics_ts_col)} <= {{end_ns}}) "
                     f"{metrics_source_where}"
                     f"AND ('{{metric_name_like}}' = '%' OR {metrics_name_expr} LIKE '{{metric_name_like}}') "
+                    f"{metrics_name_not_null}"
                     f"AND g.{_ident(metrics_value_col)} IS NOT NULL "
                     f"GROUP BY {metrics_name_expr} "
                     "ORDER BY sample_count DESC, metric_name ASC "
@@ -991,7 +1004,7 @@ def _build_builtin_skills(schema: NsightSchema) -> Dict[str, SqlSkill]:
             )
 
     # 18) NVTX GPU metrics breakdown (per-range hardware sampling)
-    if schema.table_exists(nvtx_table) and schema.metrics_table and schema.string_table:
+    if schema.table_exists(nvtx_table) and schema.metrics_table:
         ngm_metrics_table = _ident(schema.metrics_table)
         ngm_ts_col = schema.metrics_timestamp_col or schema.resolve_column(ngm_metrics_table, ("timestamp", "start", "time"))
         ngm_id_col = schema.metrics_id_col or schema.resolve_column(ngm_metrics_table, ("metricId", "nameId", "eventId"))
@@ -1007,9 +1020,9 @@ def _build_builtin_skills(schema: NsightSchema) -> Dict[str, SqlSkill]:
                     ngm_nvtx_text_join = f" LEFT JOIN {_ident(string_table)} sn ON n.{_ident(ngm_text_id)} = sn.id "
                     ngm_nvtx_text_expr = "COALESCE(n.text, sn.value)"
 
-            ngm_string_table = _ident(schema.string_table)
-            ngm_metric_name_expr = "s.value"
-            ngm_metric_name_join = f"JOIN {ngm_string_table} s ON g.{_ident(ngm_id_col)} = s.id "
+            ngm_metric_name_expr = ""
+            ngm_metric_name_join = ""
+            ngm_metric_name_not_null = ""
 
             ngm_gpu_info_table = "TARGET_INFO_GPU_METRICS" if schema.table_exists("TARGET_INFO_GPU_METRICS") else None
             if ngm_gpu_info_table:
@@ -1020,17 +1033,28 @@ def _build_builtin_skills(schema: NsightSchema) -> Dict[str, SqlSkill]:
                 ngm_gi_type_col = schema.resolve_column(ngm_gi_tbl, ("typeId", "type_id", "eventType", "event_type"))
                 if ngm_gi_id_col and ngm_gi_name_col:
                     if ngm_type_col and ngm_gi_type_col:
-                        ngm_metric_name_join += (
-                            f"LEFT JOIN {ngm_gi_tbl} gm "
+                        ngm_metric_name_join = (
+                            f"JOIN {ngm_gi_tbl} gm "
                             f"ON g.{_ident(ngm_id_col)} = gm.{_ident(ngm_gi_id_col)} "
                             f"AND g.{_ident(ngm_type_col)} = gm.{_ident(ngm_gi_type_col)} "
                         )
                     else:
-                        ngm_metric_name_join += (
-                            f"LEFT JOIN {ngm_gi_tbl} gm "
+                        ngm_metric_name_join = (
+                            f"JOIN {ngm_gi_tbl} gm "
                             f"ON g.{_ident(ngm_id_col)} = gm.{_ident(ngm_gi_id_col)} "
                         )
-                    ngm_metric_name_expr = f"COALESCE(gm.{_ident(ngm_gi_name_col)}, s.value)"
+                    ngm_metric_name_expr = f"gm.{_ident(ngm_gi_name_col)}"
+                    ngm_metric_name_not_null = f"AND gm.{_ident(ngm_gi_name_col)} IS NOT NULL "
+
+            if not ngm_metric_name_expr and schema.string_table:
+                ngm_string_table = _ident(schema.string_table)
+                ngm_metric_name_expr = "s.value"
+                ngm_metric_name_join = f"JOIN {ngm_string_table} s ON g.{_ident(ngm_id_col)} = s.id "
+                ngm_metric_name_not_null = "AND s.value IS NOT NULL "
+
+            if not ngm_metric_name_expr:
+                ngm_metric_name_expr = f"CAST(g.{_ident(ngm_id_col)} AS TEXT)"
+                ngm_metric_name_not_null = ""
 
             ngm_source_join = ""
             ngm_source_where = ""
@@ -1092,6 +1116,7 @@ def _build_builtin_skills(schema: NsightSchema) -> Dict[str, SqlSkill]:
                     f"AND ({{end_ns}} < 0 OR n.[{_ident(ngm_nvtx_end)}] <= {{end_ns}}) "
                     f"{ngm_source_where}"
                     f"{ngm_device_where}"
+                    f"{ngm_metric_name_not_null}"
                     f"AND g.{_ident(ngm_val_col)} IS NOT NULL "
                     f"GROUP BY {ngm_nvtx_text_expr}, n.{_ident(ngm_nvtx_start)}, n.[{_ident(ngm_nvtx_end)}], {ngm_metric_name_expr} "
                     f"ORDER BY n.{_ident(ngm_nvtx_start)} ASC, sample_count DESC, metric_name ASC "

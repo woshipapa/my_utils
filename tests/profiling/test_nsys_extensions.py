@@ -10,6 +10,7 @@ from my_utils.profiling.sources.nsys_sql_skills import (
     NsysSqlSkillEngine,
     calculate_h100_occupancy,
 )
+from my_utils.profiling.sources.nsys_timeline_html import _collect_metric_samples
 from my_utils.profiling.sources.nsys_sqlite_provider import NsysSqliteMetricsProvider
 
 
@@ -455,6 +456,58 @@ def test_new_skill_outputs(tmp_path: Path) -> None:
     assert all((r["depth"] == 0) for r in rows_root_nvtx)
 
     conn.close()
+
+
+def test_gpu_metric_name_mapping_prefers_target_info(tmp_path: Path) -> None:
+    db = tmp_path / "rank0_target_info.sqlite"
+    _init_sqlite(db)
+
+    conn = sqlite3.connect(str(db))
+    cur = conn.cursor()
+    cur.execute(
+        "CREATE TABLE TARGET_INFO_GPU_METRICS ("
+        "typeId INTEGER, sourceId INTEGER, typeName TEXT, metricId INTEGER, metricName TEXT)"
+    )
+    cur.executemany(
+        "INSERT INTO TARGET_INFO_GPU_METRICS(typeId, sourceId, typeName, metricId, metricName) VALUES (?, ?, ?, ?, ?)",
+        [
+            (1, 1, "float", 101, "sm__active.avg.pct_of_peak_sustained_elapsed"),
+            (1, 1, "float", 102, "tensor__active.avg.pct_of_peak_sustained_elapsed"),
+            (1, 1, "float", 103, "dram__throughput.avg.pct_of_peak_sustained_elapsed"),
+        ],
+    )
+    # Inject a conflicting StringIds mapping. TARGET_INFO names should still win.
+    cur.execute("UPDATE StringIds SET value = 'BAD_STRING_METRIC_NAME' WHERE id = 101")
+    conn.commit()
+    conn.close()
+
+    conn = sqlite3.connect(str(db))
+    conn.row_factory = sqlite3.Row
+    engine = NsysSqlSkillEngine(conn)
+    rows = engine.execute(
+        "gpu_metrics_aggregate",
+        metric_name_like="%",
+        include_all_sources=0,
+        start_ns=-1,
+        end_ns=-1,
+    )
+    names = {str(r.get("metric_name", "")) for r in rows}
+    assert any("sm__active" in n for n in names), names
+    assert all("BAD_STRING_METRIC_NAME" not in n for n in names), names
+    conn.close()
+
+    timeline_rows = _collect_metric_samples(
+        str(db),
+        start_ns=-1,
+        end_ns=10_000_000,
+        metric_name_like="%",
+        include_all_sources=False,
+        device_id=-1,
+        limit=10000,
+    )
+    tnames = {str(r.get("name", "")) for r in timeline_rows}
+    assert any("sm__active" in n for n in tnames), tnames
+    assert all("BAD_STRING_METRIC_NAME" not in n for n in tnames), tnames
 
 
 def test_calculate_h100_occupancy() -> None:
