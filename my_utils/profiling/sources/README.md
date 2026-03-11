@@ -280,6 +280,7 @@ myutils-profile nsys-timeline-html \
 
 By default, `--nvtx-text` uses all matched NVTX scopes (`--nvtx-index -1`).
 Set `--nvtx-index N` only when you want a single matched scope.
+When NVTX texts include `rank=<id>`, timeline kernel lanes are grouped by rank (all ranks in one HTML).
 
 ---
 

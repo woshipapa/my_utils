@@ -4,6 +4,7 @@ import hashlib
 import html
 import json
 import math
+import re
 import sqlite3
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
@@ -11,6 +12,8 @@ from typing import Dict, List, Optional, Sequence, Tuple
 from .nsys_flat_export import collect_kernel_rows
 from .nsys_schema_adapter import NsightSchema
 from .nsys_sqlite_provider import NsysSqliteMetricsProvider
+
+_RANK_RE = re.compile(r"\brank(?:\s*|[:=_-])(\d+)\b", re.IGNORECASE)
 
 
 def _ident(name: str) -> str:
@@ -36,6 +39,17 @@ def _to_int(value: object, default: int = 0) -> int:
         return int(value)
     except Exception:
         return int(default)
+
+
+def _parse_rank_from_text(text: object) -> Optional[int]:
+    s = str(text or "")
+    m = _RANK_RE.search(s)
+    if not m:
+        return None
+    try:
+        return int(m.group(1))
+    except Exception:
+        return None
 
 
 def _select_nvtx_windows(
@@ -130,6 +144,7 @@ def _collect_kernels_in_window(
             rows.append(
                 {
                     "stream_id": _to_int(row.get("stream_id"), 0),
+                    "device_id": _to_int(row.get("device_id"), int(device_id)),
                     "kernel_name": str(row.get("kernel_name") or ""),
                     "start_ns": ks,
                     "end_ns": ke,
@@ -144,6 +159,7 @@ def _collect_kernels_in_window(
                     "nvtx_text": str(row.get("nvtx_text") or ""),
                     "nvtx_start_ns": ns,
                     "nvtx_end_ns": ne,
+                    "rank": _parse_rank_from_text(row.get("nvtx_text")),
                 }
             )
         if rows:
@@ -162,6 +178,7 @@ def _collect_kernels_in_window(
         rows.append(
             {
                 "stream_id": _to_int(row.get("stream_id"), 0),
+                "device_id": _to_int(row.get("device_id"), int(device_id)),
                 "kernel_name": str(row.get("kernel_name") or ""),
                 "start_ns": _to_int(row.get("start_ns"), 0),
                 "end_ns": _to_int(row.get("end_ns"), 0),
@@ -176,6 +193,7 @@ def _collect_kernels_in_window(
                 "nvtx_text": None,
                 "nvtx_start_ns": None,
                 "nvtx_end_ns": None,
+                "rank": None,
             }
         )
     return rows
@@ -326,13 +344,25 @@ def _render_html(
     include_metrics: bool,
 ) -> str:
     span = max(1, int(window_end_ns) - int(window_start_ns))
-    stream_ids = sorted({int(item.get("stream_id") or 0) for item in kernels})
-    by_stream: Dict[int, List[Dict[str, object]]] = {sid: [] for sid in stream_ids}
+    grouped: Dict[Tuple[Optional[int], int], Dict[int, List[Dict[str, object]]]] = {}
     for row in kernels:
-        by_stream[int(row.get("stream_id") or 0)].append(row)
+        rv = row.get("rank")
+        rank = int(rv) if isinstance(rv, int) else None
+        dev = _to_int(row.get("device_id"), -1)
+        sid = _to_int(row.get("stream_id"), 0)
+        key = (rank, dev)
+        grouped.setdefault(key, {}).setdefault(sid, []).append(row)
+    group_keys = sorted(
+        grouped.keys(),
+        key=lambda k: (k[0] is None, int(k[0]) if k[0] is not None else 10**9, int(k[1])),
+    )
+    stream_count = sum(len(streams) for streams in grouped.values())
+    known_ranks = sorted({int(k[0]) for k in group_keys if k[0] is not None})
+    has_unknown_rank = any(k[0] is None for k in group_keys)
 
     nvtx_count = len(list(nvtx_windows or []))
     meta_nvtx = f" | nvtx_scopes={nvtx_count}" if nvtx_count > 0 else ""
+    rank_meta = f" | ranks={len(known_ranks) + (1 if has_unknown_rank else 0)}"
 
     payload = {
         "window_start_ns": int(window_start_ns),
@@ -362,11 +392,12 @@ def _render_html(
         ".bar:hover{outline:1px solid #fff;}",
         ".axis-note{font-size:11px;color:#8792a8;margin-top:6px;}",
         ".empty{color:#8f9ab0;font-size:12px;padding:6px 0;}",
+        ".group-title{font-size:12px;color:#c9d3e8;margin:10px 0 4px 0;}",
         "</style></head><body>",
         "<h2>NSYS NVTX Window Timeline</h2>",
         (
             f"<div class='meta'>sqlite={html.escape(str(sqlite_path))} | "
-            f"kernels={len(kernels)} | streams={len(stream_ids)}{meta_nvtx}</div>"
+            f"kernels={len(kernels)} | streams={stream_count}{rank_meta}{meta_nvtx}</div>"
         ),
     ]
 
@@ -410,30 +441,39 @@ def _render_html(
     if not kernels:
         lines.append("<div class='empty'>No kernels in selected window.</div>")
     else:
-        for sid in stream_ids:
-            lines.append("<div class='row'>")
-            lines.append(f"<div class='label'>stream {sid}</div>")
-            lines.append("<div class='track'>")
-            for row in by_stream[sid]:
-                s = _to_int(row.get("start_ns"), 0)
-                e = _to_int(row.get("end_ns"), 0)
-                left = (s - int(window_start_ns)) / float(span)
-                width = max((e - s) / float(span), 1.0 / float(width_px))
-                left_px = int(left * width_px)
-                width_bar = max(1, int(width * width_px))
-                name = str(row.get("kernel_name") or "")
-                color = _color_for_name(name)
-                title = (
-                    f"{name} | kind={row.get('kind')} | dur_ms={row.get('duration_ms')} | "
-                    f"start_ns={s} | end_ns={e} | stream={sid} | "
-                    f"tpb={row.get('threads_per_block')} | regs={row.get('registers_per_thread')} | "
-                    f"smem={row.get('total_shared_bytes')} | occ={row.get('occupancy_pct_estimate')}"
-                )
-                lines.append(
-                    f"<div class='bar' style='left:{left_px}px;width:{width_bar}px;background:{color};' "
-                    f"title='{html.escape(title)}'></div>"
-                )
-            lines.append("</div></div>")
+        for rank, dev in group_keys:
+            if rank is None:
+                group_title = "Rank Unknown"
+            else:
+                group_title = f"Rank {rank}"
+            if int(dev) >= 0:
+                group_title += f" | Device {int(dev)}"
+            lines.append(f"<div class='group-title'>{html.escape(group_title)}</div>")
+            streams = grouped.get((rank, dev), {})
+            for sid in sorted(streams.keys()):
+                lines.append("<div class='row'>")
+                lines.append(f"<div class='label'>stream {sid}</div>")
+                lines.append("<div class='track'>")
+                for row in streams[sid]:
+                    s = _to_int(row.get("start_ns"), 0)
+                    e = _to_int(row.get("end_ns"), 0)
+                    left = (s - int(window_start_ns)) / float(span)
+                    width = max((e - s) / float(span), 1.0 / float(width_px))
+                    left_px = int(left * width_px)
+                    width_bar = max(1, int(width * width_px))
+                    name = str(row.get("kernel_name") or "")
+                    color = _color_for_name(name)
+                    title = (
+                        f"{name} | kind={row.get('kind')} | dur_ms={row.get('duration_ms')} | "
+                        f"start_ns={s} | end_ns={e} | stream={sid} | device={dev} | rank={rank} | "
+                        f"tpb={row.get('threads_per_block')} | regs={row.get('registers_per_thread')} | "
+                        f"smem={row.get('total_shared_bytes')} | occ={row.get('occupancy_pct_estimate')}"
+                    )
+                    lines.append(
+                        f"<div class='bar' style='left:{left_px}px;width:{width_bar}px;background:{color};' "
+                        f"title='{html.escape(title)}'></div>"
+                    )
+                lines.append("</div></div>")
     lines.extend(["</div>"])
 
     lines.extend(
