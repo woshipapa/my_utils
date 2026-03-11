@@ -544,6 +544,9 @@ def test_timeline_metric_sampling_spans_whole_window(tmp_path: Path) -> None:
         for p in s.get("points", [])
         if isinstance(p, list) and len(p) >= 2
     )
+    names = {str(s.get("name", "")) for s in series}
+    assert any("sm__active" in n for n in names), names
+    assert any("tensor__active" in n for n in names), names
     assert all_ts, "expected sampled metric points"
     # Must cover both beginning and end of the selected window.
     assert all_ts[0] <= start_ns + 5_000
