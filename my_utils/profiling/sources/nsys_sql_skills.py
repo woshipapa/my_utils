@@ -622,6 +622,7 @@ def _build_builtin_skills(schema: NsightSchema) -> Dict[str, SqlSkill]:
             # Filter non-GPU generic sources when sourceId dictionary exists.
             metrics_source_join = ""
             metrics_source_where = ""
+            metrics_source_name_expr = "NULL"
             metrics_source_col = schema.resolve_column(metrics_table, ("sourceId", "source_id"))
             if metrics_source_col and schema.table_exists("GENERIC_EVENT_SOURCES"):
                 ges_tbl = _ident("GENERIC_EVENT_SOURCES")
@@ -632,6 +633,7 @@ def _build_builtin_skills(schema: NsightSchema) -> Dict[str, SqlSkill]:
                         f"LEFT JOIN {ges_tbl} gs "
                         f"ON g.{_ident(metrics_source_col)} = gs.{_ident(ges_id_col)} "
                     )
+                    metrics_source_name_expr = f"gs.{_ident(ges_name_col)}"
                     metrics_source_where = (
                         "AND ("
                         "{include_all_sources} = 1 "
@@ -640,6 +642,15 @@ def _build_builtin_skills(schema: NsightSchema) -> Dict[str, SqlSkill]:
                         f"OR LOWER(gs.{_ident(ges_name_col)}) = 'gpumetrics'"
                         ") "
                     )
+
+            metrics_device_expr = "'unknown'"
+            metrics_device_where = ""
+            metrics_device_col = schema.resolve_column(metrics_table, ("deviceId", "gpuId", "device", "gpu"))
+            if metrics_device_col:
+                metrics_device_expr = f"CAST(g.{_ident(metrics_device_col)} AS TEXT)"
+                metrics_device_where = f"AND ({{device_id}} < 0 OR g.{_ident(metrics_device_col)} = {{device_id}}) "
+            elif metrics_source_name_expr != "NULL":
+                metrics_device_expr = f"COALESCE({metrics_source_name_expr}, 'unknown')"
 
             skill_map["gpu_metrics_aggregate"] = SqlSkill(
                 name="gpu_metrics_aggregate",
@@ -651,6 +662,7 @@ def _build_builtin_skills(schema: NsightSchema) -> Dict[str, SqlSkill]:
                 category="metrics",
                 sql=(
                     f"SELECT {metrics_name_expr} AS metric_name, "
+                    f"{metrics_device_expr} AS metric_device, "
                     "COUNT(*) AS sample_count, "
                     f"ROUND(AVG(CAST(g.{_ident(metrics_value_col)} AS REAL)), 3) AS avg_value, "
                     f"ROUND(MIN(CAST(g.{_ident(metrics_value_col)} AS REAL)), 3) AS min_value, "
@@ -662,17 +674,19 @@ def _build_builtin_skills(schema: NsightSchema) -> Dict[str, SqlSkill]:
                     f"AND ({{start_ns}} < 0 OR g.{_ident(metrics_ts_col)} >= {{start_ns}}) "
                     f"AND ({{end_ns}} < 0 OR g.{_ident(metrics_ts_col)} <= {{end_ns}}) "
                     f"{metrics_source_where}"
+                    f"{metrics_device_where}"
                     f"AND ('{{metric_name_like}}' = '%' OR {metrics_name_expr} LIKE '{{metric_name_like}}') "
                     f"{metrics_name_not_null}"
                     f"AND g.{_ident(metrics_value_col)} IS NOT NULL "
-                    f"GROUP BY {metrics_name_expr} "
-                    "ORDER BY sample_count DESC, metric_name ASC "
+                    f"GROUP BY {metrics_name_expr}, {metrics_device_expr} "
+                    "ORDER BY sample_count DESC, metric_name ASC, metric_device ASC "
                     "LIMIT {limit}"
                 ),
                 params=[
                     SqlSkillParam("start_ns", "window start ns, -1 to disable", "int", False, -1),
                     SqlSkillParam("end_ns", "window end ns, -1 to disable", "int", False, -1),
                     SqlSkillParam("metric_name_like", "metric name SQL LIKE pattern", "str", False, "%"),
+                    SqlSkillParam("device_id", "CUDA deviceId if metrics table provides it, -1 means all", "int", False, -1),
                     SqlSkillParam(
                         "include_all_sources",
                         "1 to include all generic sources (ETW/FTrace/etc), 0 to prefer GPU metrics sources only",
@@ -1058,6 +1072,7 @@ def _build_builtin_skills(schema: NsightSchema) -> Dict[str, SqlSkill]:
 
             ngm_source_join = ""
             ngm_source_where = ""
+            ngm_source_name_expr = "NULL"
             ngm_source_col = schema.resolve_column(ngm_metrics_table, ("sourceId", "source_id"))
             if ngm_source_col and schema.table_exists("GENERIC_EVENT_SOURCES"):
                 ngm_ges_tbl = _ident("GENERIC_EVENT_SOURCES")
@@ -1068,6 +1083,7 @@ def _build_builtin_skills(schema: NsightSchema) -> Dict[str, SqlSkill]:
                         f"LEFT JOIN {ngm_ges_tbl} gs2 "
                         f"ON g.{_ident(ngm_source_col)} = gs2.{_ident(ngm_ges_id_col)} "
                     )
+                    ngm_source_name_expr = f"gs2.{_ident(ngm_ges_name_col)}"
                     ngm_source_where = (
                         "AND ("
                         "{include_all_sources} = 1 "
@@ -1081,6 +1097,11 @@ def _build_builtin_skills(schema: NsightSchema) -> Dict[str, SqlSkill]:
             ngm_device_col = schema.resolve_column(ngm_metrics_table, ("deviceId", "gpuId", "device", "gpu"))
             if ngm_device_col:
                 ngm_device_where = f"AND ({{device_id}} < 0 OR g.{_ident(ngm_device_col)} = {{device_id}}) "
+                ngm_metric_device_expr = f"CAST(g.{_ident(ngm_device_col)} AS TEXT)"
+            elif ngm_source_name_expr != "NULL":
+                ngm_metric_device_expr = f"COALESCE({ngm_source_name_expr}, 'unknown')"
+            else:
+                ngm_metric_device_expr = "'unknown'"
 
             skill_map["nvtx_gpu_metrics_breakdown"] = SqlSkill(
                 name="nvtx_gpu_metrics_breakdown",
@@ -1096,6 +1117,7 @@ def _build_builtin_skills(schema: NsightSchema) -> Dict[str, SqlSkill]:
                     f"n.{_ident(ngm_nvtx_start)} AS nvtx_start_ns, "
                     f"n.[{_ident(ngm_nvtx_end)}] AS nvtx_end_ns, "
                     f"{ngm_metric_name_expr} AS metric_name, "
+                    f"{ngm_metric_device_expr} AS metric_device, "
                     "COUNT(*) AS sample_count, "
                     f"ROUND(AVG(CAST(g.{_ident(ngm_val_col)} AS REAL)), 3) AS avg_value, "
                     f"ROUND(MIN(CAST(g.{_ident(ngm_val_col)} AS REAL)), 3) AS min_value, "
@@ -1118,8 +1140,8 @@ def _build_builtin_skills(schema: NsightSchema) -> Dict[str, SqlSkill]:
                     f"{ngm_device_where}"
                     f"{ngm_metric_name_not_null}"
                     f"AND g.{_ident(ngm_val_col)} IS NOT NULL "
-                    f"GROUP BY {ngm_nvtx_text_expr}, n.{_ident(ngm_nvtx_start)}, n.[{_ident(ngm_nvtx_end)}], {ngm_metric_name_expr} "
-                    f"ORDER BY n.{_ident(ngm_nvtx_start)} ASC, sample_count DESC, metric_name ASC "
+                    f"GROUP BY {ngm_nvtx_text_expr}, n.{_ident(ngm_nvtx_start)}, n.[{_ident(ngm_nvtx_end)}], {ngm_metric_name_expr}, {ngm_metric_device_expr} "
+                    f"ORDER BY n.{_ident(ngm_nvtx_start)} ASC, sample_count DESC, metric_name ASC, metric_device ASC "
                     "LIMIT {limit}"
                 ),
                 params=[

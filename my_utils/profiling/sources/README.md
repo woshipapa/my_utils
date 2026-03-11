@@ -98,14 +98,14 @@ engine.execute("top_kernels", device_id=0, limit=20)
 | 9 | `memcpy_in_window` | memory | MEMCPY | copy_kind, count, total_ms |
 | 10 | `thread_utilization` | system | COMPOSITE_EVENTS | global_tid, thread_name, cpu_pct |
 | 11 | `schema_inspect` | utility | sqlite_master | table/column metadata; CLI can render grouped columns and Mermaid relation graph |
-| 12 | `gpu_metrics_aggregate` | metrics | GPU_METRICS (+ TARGET_INFO_GPU_METRICS or StringIds) | metric_name, sample_count, avg/min/max value |
+| 12 | `gpu_metrics_aggregate` | metrics | GPU_METRICS (+ TARGET_INFO_GPU_METRICS or StringIds) | metric_name, metric_device, sample_count, avg/min/max value |
 | 13 | `memcpy_bandwidth_analysis` | memory | MEMCPY | total_gb, total_ms, avg/min/max gbps |
 | 14 | `sync_breakdown` | pipeline | SYNCHRONIZATION | sync_type, count, total/avg/max ms |
 | 15 | `memset_breakdown` | memory | MEMSET | fill_value, total_gb, total_ms, avg_gbps |
 | 16 | `kernel_occupancy_estimate` | compute | KERNEL | raw launch metrics (threads_per_block, registersPerThread, static_shared_bytes, dynamic_shared_bytes, total_shared_bytes); occupancy_pct_estimate uses sqlite theoretical occupancy when available |
 | 17 | `stream_parallelism` | pipeline | KERNEL | bucket-based concurrent stream stats (cross-bucket kernel expansion) |
 | 18 | `nvtx_memcpy_breakdown` | memory | NVTX_EVENTS + MEMCPY | nvtx_text + memcpy aggregates |
-| 19 | `nvtx_gpu_metrics_breakdown` | metrics | NVTX_EVENTS + GPU_METRICS (+ TARGET_INFO_GPU_METRICS or StringIds) | metric sampling stats per NVTX range: metric_name, sample_count, avg/min/max value |
+| 19 | `nvtx_gpu_metrics_breakdown` | metrics | NVTX_EVENTS + GPU_METRICS (+ TARGET_INFO_GPU_METRICS or StringIds) | metric sampling stats per NVTX range: metric_name, metric_device, sample_count, avg/min/max value |
 | 20 | `nvtx_kernel_sm_detail` | compute | NVTX_EVENTS + RUNTIME + KERNEL | per-kernel launch config in NVTX range via launch attribution (`NVTX -> runtime -> correlationId -> kernel`), including static/dynamic shared memory; occupancy_pct_estimate uses sqlite theoretical occupancy when available |
 | 21 | `nvtx_ranges_hierarchy` | nvtx | NVTX_EVENTS | raw NVTX rows; hierarchy derived in Python O(N) |
 
@@ -283,6 +283,8 @@ Set `--nvtx-index N` only when you want a single matched scope.
 When NVTX texts include `rank=<id>`, timeline kernel lanes are grouped by rank (all ranks in one HTML).
 When metric magnitudes are highly imbalanced, timeline metric chart auto-switches to per-metric normalized mode
 to avoid flat/overlapped lines; legend shows each metric's raw min/max.
+When GPU metric rows include device dimension (`deviceId/gpuId`), timeline metric series are split as `[gpu N]`
+to avoid mixing multiple devices in one curve.
 
 ---
 

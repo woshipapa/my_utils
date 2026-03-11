@@ -290,9 +290,9 @@ def test_new_skill_outputs(tmp_path: Path) -> None:
         end_ns=-1,
         include_all_sources=1,
     )
-    sm_row_all = next((r for r in rows_all_sources if "sm__active" in str(r.get("metric_name", ""))), None)
-    assert sm_row_all is not None
-    assert sm_row_all["sample_count"] == 3
+    sm_rows_all = [r for r in rows_all_sources if "sm__active" in str(r.get("metric_name", ""))]
+    assert sm_rows_all
+    assert sum(int(r.get("sample_count") or 0) for r in sm_rows_all) == 3
 
     rows_nvtx_metrics = engine.execute(
         "nvtx_gpu_metrics_breakdown",
@@ -548,6 +548,54 @@ def test_timeline_metric_sampling_spans_whole_window(tmp_path: Path) -> None:
     # Must cover both beginning and end of the selected window.
     assert all_ts[0] <= start_ns + 5_000
     assert all_ts[-1] >= start_ns + 3_990_000
+
+
+def test_gpu_metrics_split_by_device_dimension(tmp_path: Path) -> None:
+    db = tmp_path / "rank0_multi_device.sqlite"
+    _init_sqlite(db)
+
+    conn = sqlite3.connect(str(db))
+    cur = conn.cursor()
+    cur.execute("ALTER TABLE CUPTI_ACTIVITY_KIND_GPU_METRIC ADD COLUMN deviceId INTEGER")
+    cur.execute("UPDATE CUPTI_ACTIVITY_KIND_GPU_METRIC SET deviceId = 0")
+    cur.executemany(
+        "INSERT INTO CUPTI_ACTIVITY_KIND_GPU_METRIC(timestamp, metricId, value, sourceId, deviceId) VALUES (?, ?, ?, ?, ?)",
+        [
+            (7000, 101, 55.0, 1, 1),
+            (8000, 101, 65.0, 1, 1),
+            (9000, 102, 35.0, 1, 1),
+        ],
+    )
+    conn.commit()
+    conn.close()
+
+    conn = sqlite3.connect(str(db))
+    conn.row_factory = sqlite3.Row
+    engine = NsysSqlSkillEngine(conn)
+    rows = engine.execute(
+        "gpu_metrics_aggregate",
+        metric_name_like="%active%",
+        include_all_sources=0,
+        device_id=-1,
+        start_ns=-1,
+        end_ns=-1,
+    )
+    conn.close()
+    dev_set = {str(r.get("metric_device", "")) for r in rows}
+    assert "0" in dev_set and "1" in dev_set, rows
+
+    timeline_rows = _collect_metric_samples(
+        str(db),
+        start_ns=-1,
+        end_ns=20_000,
+        metric_name_like="%active%",
+        include_all_sources=False,
+        device_id=-1,
+        limit=1000,
+    )
+    names = {str(r.get("name", "")) for r in timeline_rows}
+    assert any("[gpu 0]" in n for n in names), names
+    assert any("[gpu 1]" in n for n in names), names
 
 
 def test_calculate_h100_occupancy() -> None:
