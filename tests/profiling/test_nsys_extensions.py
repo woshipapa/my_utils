@@ -510,6 +510,46 @@ def test_gpu_metric_name_mapping_prefers_target_info(tmp_path: Path) -> None:
     assert all("BAD_STRING_METRIC_NAME" not in n for n in tnames), tnames
 
 
+def test_timeline_metric_sampling_spans_whole_window(tmp_path: Path) -> None:
+    db = tmp_path / "rank0_sampling.sqlite"
+    _init_sqlite(db)
+
+    conn = sqlite3.connect(str(db))
+    cur = conn.cursor()
+    extra_rows = []
+    start_ns = 1_000_000
+    for i in range(4000):
+        ts = start_ns + i * 1000
+        metric_id = 101 if (i % 2 == 0) else 102
+        extra_rows.append((ts, metric_id, float(i % 100), 1))
+    cur.executemany(
+        "INSERT INTO CUPTI_ACTIVITY_KIND_GPU_METRIC(timestamp, metricId, value, sourceId) VALUES (?, ?, ?, ?)",
+        extra_rows,
+    )
+    conn.commit()
+    conn.close()
+
+    series = _collect_metric_samples(
+        str(db),
+        start_ns=start_ns,
+        end_ns=start_ns + 3_999_000,
+        metric_name_like="%active%",
+        include_all_sources=False,
+        device_id=-1,
+        limit=80,  # force sampling
+    )
+    all_ts = sorted(
+        int(p[0])
+        for s in series
+        for p in s.get("points", [])
+        if isinstance(p, list) and len(p) >= 2
+    )
+    assert all_ts, "expected sampled metric points"
+    # Must cover both beginning and end of the selected window.
+    assert all_ts[0] <= start_ns + 5_000
+    assert all_ts[-1] >= start_ns + 3_990_000
+
+
 def test_calculate_h100_occupancy() -> None:
     # 128 threads/block -> 4 warps/block.
     # regs=32 => regs_per_warp=1024, regs/block=4096 => reg-limited blocks=16
