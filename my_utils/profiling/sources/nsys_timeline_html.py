@@ -57,6 +57,29 @@ def _intervals_overlap(start_a: int, end_a: int, start_b: int, end_b: int) -> bo
     return int(end_a) > int(start_b) and int(start_a) < int(end_b)
 
 
+def _merge_intervals(intervals: Sequence[Tuple[int, int]]) -> List[Tuple[int, int]]:
+    merged: List[Tuple[int, int]] = []
+    items: List[Tuple[int, int]] = []
+    for s, e in intervals:
+        ss = _to_int(s, -1)
+        ee = _to_int(e, -1)
+        if ss < 0 or ee <= ss:
+            continue
+        items.append((ss, ee))
+    if not items:
+        return merged
+    items.sort(key=lambda x: (x[0], x[1]))
+    cur_s, cur_e = items[0]
+    for s, e in items[1:]:
+        if s <= cur_e:
+            cur_e = max(cur_e, e)
+            continue
+        merged.append((cur_s, cur_e))
+        cur_s, cur_e = s, e
+    merged.append((cur_s, cur_e))
+    return merged
+
+
 def _noop_debug(_: str) -> None:
     return
 
@@ -85,8 +108,13 @@ def _preview_dict_rows(
     keys: Sequence[str],
     limit: int = 3,
 ) -> str:
+    try:
+        max_rows = int(limit)
+    except Exception:
+        max_rows = 3
     out: List[Dict[str, object]] = []
-    for row in list(rows)[: max(0, int(limit))]:
+    selected = list(rows) if max_rows <= 0 else list(rows)[:max_rows]
+    for row in selected:
         item: Dict[str, object] = {}
         for key in keys:
             item[key] = row.get(key)
@@ -164,8 +192,13 @@ def _collect_kernels_in_window(
     device_id: int,
     limit: int,
     debug_log: Optional[Callable[[str], None]] = None,
+    debug_rows: int = 3,
 ) -> List[Dict[str, object]]:
     debug = debug_log or _noop_debug
+    try:
+        debug_rows_i = int(debug_rows)
+    except Exception:
+        debug_rows_i = 3
     rows: List[Dict[str, object]] = []
     seen = set()
     selected_windows: List[Tuple[int, int]] = []
@@ -303,7 +336,7 @@ def _collect_kernels_in_window(
                 _preview_dict_rows(
                     rows,
                     keys=("kernel_name", "stream_id", "device_id", "start_ns", "end_ns", "kind"),
-                    limit=3,
+                    limit=debug_rows_i,
                 )
             )
         )
@@ -311,6 +344,8 @@ def _collect_kernels_in_window(
 
 
 def _downsample_points(points: Sequence[Tuple[int, float]], max_points: int = 2000) -> List[Tuple[int, float]]:
+    if int(max_points) <= 0:
+        return [(int(t), float(v)) for t, v in points]
     if len(points) <= max_points:
         return [(int(t), float(v)) for t, v in points]
     step = max(1, int(math.ceil(len(points) / float(max_points))))
@@ -350,10 +385,17 @@ def _collect_metric_samples(
     metric_name_like: str = "%",
     include_all_sources: bool = False,
     device_id: int = -1,
-    limit: int = 300000,
+    limit: int = -1,
+    max_points_per_series: int = -1,
+    restrict_to_intervals: Optional[Sequence[Tuple[int, int]]] = None,
     debug_log: Optional[Callable[[str], None]] = None,
+    debug_rows: int = 3,
 ) -> List[Dict[str, object]]:
     debug = debug_log or _noop_debug
+    try:
+        debug_rows_i = int(debug_rows)
+    except Exception:
+        debug_rows_i = 3
     conn = sqlite3.connect(str(sqlite_path))
     conn.row_factory = sqlite3.Row
     try:
@@ -362,10 +404,17 @@ def _collect_metric_samples(
             debug("metrics table not detected in schema")
             return []
         metrics_table = _ident(schema.metrics_table)
-        ts_col = schema.metrics_timestamp_col or schema.resolve_column(metrics_table, ("timestamp", "rawTimestamp", "start", "time"))
+        ts_col = schema.resolve_column(metrics_table, ("timestamp",))
         id_col = schema.metrics_id_col or schema.resolve_column(metrics_table, ("metricId", "nameId", "eventId"))
         val_col = schema.metrics_value_col or schema.resolve_column(metrics_table, ("value", "metricValue", "val"))
-        if not ts_col or not id_col or not val_col:
+        if not ts_col:
+            debug(
+                "metrics timestamp unresolved table={} required_col=timestamp (rawTimestamp fallback disabled)".format(
+                    metrics_table
+                )
+            )
+            return []
+        if not id_col or not val_col:
             debug(
                 "metrics columns unresolved table={} ts_col={} id_col={} val_col={}".format(
                     metrics_table, ts_col, id_col, val_col
@@ -460,21 +509,6 @@ def _collect_metric_samples(
         if source_where:
             filter_params.append(1 if bool(include_all_sources) else 0)
 
-        base_where = (
-            "WHERE g.{ts} >= ? AND g.{ts} <= ? ".format(ts=_ident(ts_col))
-            + "AND (? = '%' OR {name_expr} LIKE ?) ".format(name_expr=name_expr)
-            + name_not_null
-            + device_where
-            + source_where
-            + f"AND g.{_ident(val_col)} IS NOT NULL "
-        )
-        select_expr = (
-            f"SELECT g.{_ident(ts_col)} AS ts_ns, "
-            f"{name_expr} AS metric_name, "
-            f"{device_expr} AS metric_device_id, "
-            f"{source_name_expr} AS metric_source_name, "
-            f"CAST(g.{_ident(val_col)} AS REAL) AS metric_value "
-        )
         from_join_expr = (
             f"FROM {metrics_table} g "
             + " ".join(joins)
@@ -485,31 +519,52 @@ def _collect_metric_samples(
 
         limit_i = int(limit)
         tmp_tbl = "_myu_metrics_base"
-        conn.execute(f"DROP TABLE IF EXISTS {tmp_tbl}")
-        create_tmp_sql = (
-            f"CREATE TEMP TABLE {tmp_tbl} AS "
-            + select_expr
-            + from_join_expr
-            + base_where
-        )
-        conn.execute(create_tmp_sql, filter_params)
-        total_rows = int(conn.execute(f"SELECT COUNT(*) FROM {tmp_tbl}").fetchone()[0] or 0)
-        debug("metrics temp rows={} sampling_limit={}".format(total_rows, int(limit_i)))
-        if total_rows > 0:
-            sample_rows = conn.execute(
-                f"SELECT ts_ns, metric_name, metric_device_id, metric_source_name, metric_value "
-                f"FROM {tmp_tbl} ORDER BY ts_ns ASC LIMIT 3"
-            ).fetchall()
-            debug("metrics temp sample={}".format(json.dumps([dict(x) for x in sample_rows], ensure_ascii=False)))
+        def _materialize_rows() -> Tuple[int, List[sqlite3.Row]]:
+            ts_ident = _ident(str(ts_col))
+            base_where = (
+                "WHERE g.{ts} >= ? AND g.{ts} <= ? ".format(ts=ts_ident)
+                + "AND (? = '%' OR {name_expr} LIKE ?) ".format(name_expr=name_expr)
+                + name_not_null
+                + device_where
+                + source_where
+                + f"AND g.{_ident(val_col)} IS NOT NULL "
+            )
+            select_expr = (
+                f"SELECT g.{ts_ident} AS ts_ns, "
+                f"{name_expr} AS metric_name, "
+                f"{device_expr} AS metric_device_id, "
+                f"{source_name_expr} AS metric_source_name, "
+                f"CAST(g.{_ident(val_col)} AS REAL) AS metric_value "
+            )
+            conn.execute(f"DROP TABLE IF EXISTS {tmp_tbl}")
+            create_tmp_sql = (
+                f"CREATE TEMP TABLE {tmp_tbl} AS "
+                + select_expr
+                + from_join_expr
+                + base_where
+            )
+            conn.execute(create_tmp_sql, filter_params)
+            total = int(conn.execute(f"SELECT COUNT(*) FROM {tmp_tbl}").fetchone()[0] or 0)
+            debug("metrics temp rows={} ts_col={} sampling_limit={}".format(total, ts_col, int(limit_i)))
+            if total > 0:
+                sample_sql = (
+                    f"SELECT ts_ns, metric_name, metric_device_id, metric_source_name, metric_value "
+                    f"FROM {tmp_tbl} ORDER BY ts_ns ASC"
+                )
+                if debug_rows_i > 0:
+                    sample_sql += f" LIMIT {int(debug_rows_i)}"
+                sample_rows = conn.execute(sample_sql).fetchall()
+                debug("metrics temp sample ts_col={} data={}".format(ts_col, json.dumps([dict(x) for x in sample_rows], ensure_ascii=False)))
 
-        if total_rows <= 0:
-            rows = []
-        elif limit_i <= 0 or total_rows <= limit_i:
-            rows = conn.execute(
-                f"SELECT ts_ns, metric_name, metric_device_id, metric_source_name, metric_value "
-                f"FROM {tmp_tbl} ORDER BY ts_ns ASC"
-            ).fetchall()
-        else:
+            if total <= 0:
+                return total, []
+            if limit_i <= 0 or total <= limit_i:
+                data_rows = conn.execute(
+                    f"SELECT ts_ns, metric_name, metric_device_id, metric_source_name, metric_value "
+                    f"FROM {tmp_tbl} ORDER BY ts_ns ASC"
+                ).fetchall()
+                return total, data_rows
+
             # Distribute sampling budget by metric/device series, so each series keeps timeline coverage.
             series_rows = conn.execute(
                 f"SELECT metric_name, metric_device_id, metric_source_name, COUNT(*) AS cnt "
@@ -549,8 +604,38 @@ def _collect_metric_samples(
                     [metric_name, metric_device_id, metric_source_name, int(stride)],
                 ).fetchall()
                 collected.extend(sampled_rows)
-            rows = sorted(collected, key=lambda r: (_to_int(r["ts_ns"], 0), str(r["metric_name"] or "")))
-        debug("metrics rows after sampling={}".format(len(rows)))
+            data_rows = sorted(collected, key=lambda r: (_to_int(r["ts_ns"], 0), str(r["metric_name"] or "")))
+            return total, data_rows
+
+        total_rows, rows = _materialize_rows()
+        if restrict_to_intervals:
+            merged_intervals = _merge_intervals(restrict_to_intervals)
+            before = len(rows)
+            if not merged_intervals:
+                rows = []
+            else:
+                filtered_rows: List[sqlite3.Row] = []
+                idx = 0
+                for row in rows:
+                    ts = _to_int(row["ts_ns"], -1)
+                    if ts < 0:
+                        continue
+                    while idx < len(merged_intervals) and ts > merged_intervals[idx][1]:
+                        idx += 1
+                    if idx >= len(merged_intervals):
+                        break
+                    lo, hi = merged_intervals[idx]
+                    if ts >= lo and ts <= hi:
+                        filtered_rows.append(row)
+                rows = filtered_rows
+            debug(
+                "metrics interval filter applied intervals={} rows_before={} rows_after={}".format(
+                    len(merged_intervals) if restrict_to_intervals else 0,
+                    int(before),
+                    int(len(rows)),
+                )
+            )
+        debug("metrics rows after sampling={} using_ts_col={}".format(len(rows), ts_col))
     finally:
         conn.close()
 
@@ -571,7 +656,10 @@ def _collect_metric_samples(
 
     series: List[Dict[str, object]] = []
     for name, tag_kind, tag_value in sorted(grouped.keys(), key=lambda x: (x[0], x[1], x[2])):
-        points = _downsample_points(grouped[(name, tag_kind, tag_value)], max_points=2000)
+        points = _downsample_points(
+            grouped[(name, tag_kind, tag_value)],
+            max_points=int(max_points_per_series),
+        )
         display_name = _metric_series_name(str(name), str(tag_kind), str(tag_value))
         series.append(
             {
@@ -581,11 +669,17 @@ def _collect_metric_samples(
             }
         )
     total_points = sum(len(item.get("points", [])) for item in series)
-    debug("metrics series={} total_points={}".format(len(series), int(total_points)))
+    debug(
+        "metrics series={} total_points={} max_points_per_series={}".format(
+            len(series),
+            int(total_points),
+            int(max_points_per_series),
+        )
+    )
     if series:
         debug(
             "metrics series sample={}".format(
-                _preview_dict_rows(series, keys=("name", "color"), limit=3)
+                _preview_dict_rows(series, keys=("name", "color"), limit=debug_rows_i)
             )
         )
     return series
@@ -601,6 +695,7 @@ def _render_html(
     nvtx_windows: Optional[Sequence[Dict[str, object]]],
     width_px: int,
     include_metrics: bool,
+    overlay_metrics_per_track: int,
 ) -> str:
     span = max(1, int(window_end_ns) - int(window_start_ns))
     grouped: Dict[Tuple[Optional[int], int], Dict[int, List[Dict[str, object]]]] = {}
@@ -623,12 +718,48 @@ def _render_html(
     meta_nvtx = f" | nvtx_scopes={nvtx_count}" if nvtx_count > 0 else ""
     rank_meta = f" | ranks={len(known_ranks) + (1 if has_unknown_rank else 0)}"
 
+    all_stream_groups: List[Dict[str, object]] = []
+    for rank, dev in group_keys:
+        stream_rows: List[Dict[str, object]] = []
+        streams = grouped.get((rank, dev), {})
+        for sid in sorted(streams.keys()):
+            kernels_payload: List[Dict[str, object]] = []
+            for row in streams[sid]:
+                ks = _to_int(row.get("start_ns"), 0)
+                ke = _to_int(row.get("end_ns"), 0)
+                kname = str(row.get("kernel_name") or "")
+                kernels_payload.append(
+                    {
+                        "kernel_name": kname,
+                        "start_ns": ks,
+                        "end_ns": ke,
+                        "kind": str(row.get("kind") or ""),
+                        "duration_ms": row.get("duration_ms"),
+                        "color": _color_for_name(kname),
+                    }
+                )
+            stream_rows.append(
+                {
+                    "stream_id": int(sid),
+                    "kernels": kernels_payload,
+                }
+            )
+        all_stream_groups.append(
+            {
+                "rank": rank,
+                "device_id": int(dev),
+                "streams": stream_rows,
+            }
+        )
+
     payload = {
         "window_start_ns": int(window_start_ns),
         "window_end_ns": int(window_end_ns),
         "span_ns": int(span),
         "metrics": metric_series if include_metrics else [],
         "chart_width": int(width_px),
+        "all_stream_groups": all_stream_groups,
+        "overlay_metrics_per_track": int(max(0, int(overlay_metrics_per_track))),
     }
     payload_json = json.dumps(payload, ensure_ascii=False)
 
@@ -653,6 +784,21 @@ def _render_html(
         f".track{{position:relative;height:24px;width:{int(width_px)}px;background:#1a1f2b;border-radius:4px;overflow:hidden;}}",
         ".bar{position:absolute;height:18px;top:3px;border-radius:3px;}",
         ".bar:hover{outline:1px solid #fff;}",
+        ".stream-track{height:56px;background:#171d2b;}",
+        ".stream-track .bar{top:34px;height:18px;}",
+        ".metric-overlay{position:absolute;left:0;top:2px;width:100%;height:30px;pointer-events:none;}",
+        ".metric-overlay line{stroke:#5b6c8e;stroke-width:1;opacity:0.7;}",
+        ".metric-overlay polyline{fill:none;stroke-width:1.2;stroke-linejoin:round;stroke-linecap:round;opacity:0.92;}",
+        ".stream-overlay-hint{font-size:11px;color:#94a3bd;margin-top:8px;}",
+        ".allstream-root{display:flex;flex-direction:column;gap:10px;}",
+        ".allstream-panel{background:#121826;border:1px solid #2a3243;border-radius:6px;padding:8px;}",
+        ".allstream-title{font-size:12px;color:#d6deef;margin:0 0 6px 0;}",
+        ".allstream-scroll{overflow-x:auto;overflow-y:hidden;border:1px solid #29344a;border-radius:4px;background:#0f1522;}",
+        ".allstream-controls{display:flex;flex-wrap:wrap;gap:6px 10px;margin-bottom:6px;}",
+        ".shift-row{display:flex;align-items:center;gap:6px;font-size:11px;color:#9fb0ca;background:#101725;border:1px solid #2a3243;border-radius:4px;padding:3px 6px;}",
+        ".shift-btn{background:#1a2538;color:#dbe6ff;border:1px solid #3d4f70;border-radius:3px;padding:1px 6px;cursor:pointer;font-size:11px;}",
+        ".shift-btn:hover{background:#22314a;}",
+        ".allstream-svg{display:block;}",
         ".axis-note{font-size:11px;color:#8792a8;margin-top:6px;}",
         ".empty{color:#8f9ab0;font-size:12px;padding:6px 0;}",
         ".group-title{font-size:12px;color:#c9d3e8;margin:10px 0 4px 0;}",
@@ -674,6 +820,21 @@ def _render_html(
                 "</div>",
             ]
         )
+
+    lines.extend(
+        [
+            "<div class='card'>",
+            "<h3 class='panel-title'>All Streams Overlap + Metrics Alignment</h3>",
+            "<div id='allstream-root' class='allstream-root'></div>",
+            (
+                "<div class='axis-note'>"
+                "All streams for the same rank/device are merged into one wide panel. "
+                "Use +/- controls to shift each metric curve vertically while keeping the same shared X-axis."
+                "</div>"
+            ),
+            "</div>",
+        ]
+    )
 
     if nvtx_count > 0:
         lines.extend(["<div class='card'>", "<h3 class='panel-title'>Matched NVTX Scopes</h3>"])
@@ -713,9 +874,15 @@ def _render_html(
             lines.append(f"<div class='group-title'>{html.escape(group_title)}</div>")
             streams = grouped.get((rank, dev), {})
             for sid in sorted(streams.keys()):
+                rank_attr = "" if rank is None else str(rank)
                 lines.append("<div class='row'>")
                 lines.append(f"<div class='label'>stream {sid}</div>")
-                lines.append("<div class='track'>")
+                lines.append(
+                    "<div class='track stream-track' "
+                    f"data-rank='{html.escape(rank_attr)}' "
+                    f"data-device='{int(dev)}' "
+                    f"data-stream='{int(sid)}'>"
+                )
                 for row in streams[sid]:
                     s = _to_int(row.get("start_ns"), 0)
                     e = _to_int(row.get("end_ns"), 0)
@@ -736,6 +903,13 @@ def _render_html(
                         f"title='{html.escape(title)}'></div>"
                     )
                 lines.append("</div></div>")
+        if include_metrics and int(overlay_metrics_per_track) > 0:
+            lines.append(
+                "<div class='stream-overlay-hint'>"
+                "Per-stream attribution overlay: metric curves are stacked above kernel bars in each stream lane "
+                "(metrics are selected per device by highest variation)."
+                "</div>"
+            )
     lines.extend(["</div>"])
 
     lines.extend(
@@ -803,6 +977,281 @@ def _render_html(
             "    card.appendChild(sub);",
             "    grid.appendChild(card);",
             "  }",
+            "  const parseGpuTag = (name) => {",
+            "    const m = String(name || '').match(/\\[gpu\\s+(\\d+)\\]/i);",
+            "    return m ? Number(m[1]) : null;",
+            "  };",
+            "  const seriesScore = (s) => {",
+            "    const ptsRaw = Array.isArray(s.points) ? s.points : [];",
+            "    if (!ptsRaw.length) return 0;",
+            "    let minV = Number.POSITIVE_INFINITY;",
+            "    let maxV = Number.NEGATIVE_INFINITY;",
+            "    for (const p of ptsRaw) {",
+            "      const v = Number(p[1]);",
+            "      if (Number.isFinite(v)) { minV = Math.min(minV, v); maxV = Math.max(maxV, v); }",
+            "    }",
+            "    if (!Number.isFinite(minV) || !Number.isFinite(maxV)) return 0;",
+            "    return Math.abs(maxV - minV);",
+            "  };",
+            "  const overlayCount = Math.max(0, Number(d.overlay_metrics_per_track || 0));",
+            "  const tracks = Array.from(document.querySelectorAll('.stream-track'));",
+            "  if (overlayCount > 0 && tracks.length > 0) {",
+            "    for (const track of tracks) {",
+            "      const dev = Number(track.dataset.device || -1);",
+            "      let selected = series.filter((s) => {",
+            "        const g = parseGpuTag(s.name);",
+            "        return g !== null && g === dev;",
+            "      });",
+            "      if (selected.length === 0) selected = series;",
+            "      selected = [...selected].sort((a,b) => seriesScore(b) - seriesScore(a)).slice(0, overlayCount);",
+            "      if (!selected.length) continue;",
+            "      const tw = Math.max(1, Number(track.clientWidth || d.chart_width || 1));",
+            "      const svgH = 30;",
+            "      const yTop = 3;",
+            "      const yBottom = 27;",
+            "      const svg = mk('svg', {class:'metric-overlay', width:tw, height:svgH, viewBox:`0 0 ${tw} ${svgH}`, preserveAspectRatio:'none'});",
+            "      svg.appendChild(mk('line', {x1:0, y1:yBottom, x2:tw, y2:yBottom}));",
+            "      const xTrack = (t) => ((Number(t) - startNs) / span) * tw;",
+            "      for (const ms of selected) {",
+            "        const ptsRaw = Array.isArray(ms.points) ? ms.points : [];",
+            "        if (!ptsRaw.length) continue;",
+            "        let minV = Number.POSITIVE_INFINITY;",
+            "        let maxV = Number.NEGATIVE_INFINITY;",
+            "        for (const p of ptsRaw) {",
+            "          const v = Number(p[1]);",
+            "          if (Number.isFinite(v)) { minV = Math.min(minV, v); maxV = Math.max(maxV, v); }",
+            "        }",
+            "        if (!Number.isFinite(minV) || !Number.isFinite(maxV)) continue;",
+            "        if (Math.abs(maxV - minV) < 1e-12) maxV = minV + 1.0;",
+            "        const pts = [];",
+            "        for (const p of ptsRaw) {",
+            "          const tx = xTrack(p[0]);",
+            "          const v = Number(p[1]);",
+            "          if (!Number.isFinite(tx) || !Number.isFinite(v)) continue;",
+            "          const ty = yTop + (1.0 - ((v - minV) / (maxV - minV))) * (yBottom - yTop);",
+            "          pts.push(`${tx.toFixed(2)},${ty.toFixed(2)}`);",
+            "        }",
+            "        if (pts.length >= 2) {",
+            "          svg.appendChild(mk('polyline', {points:pts.join(' '), stroke:ms.color || '#88c'}));",
+            "        }",
+            "      }",
+            "      track.appendChild(svg);",
+            "      const names = selected.map((s) => String(s.name || '')).join(' | ');",
+            "      if (names) {",
+            "        const oldTitle = String(track.getAttribute('title') || '');",
+            "        const title = oldTitle ? `${oldTitle} || overlay_metrics=${names}` : `overlay_metrics=${names}`;",
+            "        track.setAttribute('title', title);",
+            "      }",
+            "    }",
+            "  }",
+            "})();",
+            "</script>",
+            "<script>",
+            "(function(){",
+            "  const d = TIMELINE_DATA;",
+            "  const root = document.getElementById('allstream-root');",
+            "  if (!root) return;",
+            "  const groups = Array.isArray(d.all_stream_groups) ? d.all_stream_groups : [];",
+            "  if (!groups.length) {",
+            "    root.innerHTML = \"<div class='empty'>No kernels available for all-stream view.</div>\";",
+            "    return;",
+            "  }",
+            "  const metricsAll = Array.isArray(d.metrics) ? d.metrics : [];",
+            "  const overlayCount = Math.max(0, Number(d.overlay_metrics_per_track || 0));",
+            "  const span = Math.max(1, Number(d.span_ns || 1));",
+            "  const startNs = Number(d.window_start_ns || 0);",
+            "  const basePlotW = Math.max(2200, Math.round(Number(d.chart_width || 1800) * 1.35));",
+            "  const parseGpuTag = (name) => {",
+            "    const m = String(name || '').match(/\\[gpu\\s+(\\d+)\\]/i);",
+            "    return m ? Number(m[1]) : null;",
+            "  };",
+            "  const mkSvg = (tag, attrs) => {",
+            "    const el = document.createElementNS('http://www.w3.org/2000/svg', tag);",
+            "    for (const [k,v] of Object.entries(attrs)) el.setAttribute(k, String(v));",
+            "    return el;",
+            "  };",
+            "  const metricRange = (series) => {",
+            "    const pts = Array.isArray(series.points) ? series.points : [];",
+            "    let minV = Number.POSITIVE_INFINITY;",
+            "    let maxV = Number.NEGATIVE_INFINITY;",
+            "    for (const p of pts) {",
+            "      const v = Number(p[1]);",
+            "      if (Number.isFinite(v)) { minV = Math.min(minV, v); maxV = Math.max(maxV, v); }",
+            "    }",
+            "    if (!Number.isFinite(minV) || !Number.isFinite(maxV)) return 0;",
+            "    return Math.abs(maxV - minV);",
+            "  };",
+            "  const shortName = (name) => {",
+            "    const s = String(name || 'metric');",
+            "    return s.length <= 52 ? s : (s.slice(0, 49) + '...');",
+            "  };",
+            "  for (const g of groups) {",
+            "    const panel = document.createElement('div');",
+            "    panel.className = 'allstream-panel';",
+            "    const title = document.createElement('div');",
+            "    title.className = 'allstream-title';",
+            "    const rankText = (g.rank === null || g.rank === undefined) ? 'Rank Unknown' : `Rank ${g.rank}`;",
+            "    const devText = Number(g.device_id) >= 0 ? `Device ${g.device_id}` : 'Device Unknown';",
+            "    title.textContent = `${rankText} | ${devText}`;",
+            "    panel.appendChild(title);",
+            "",
+            "    const streamRows = Array.isArray(g.streams) ? g.streams : [];",
+            "    if (!streamRows.length) {",
+            "      const empty = document.createElement('div');",
+            "      empty.className = 'empty';",
+            "      empty.textContent = 'No stream rows in this group.';",
+            "      panel.appendChild(empty);",
+            "      root.appendChild(panel);",
+            "      continue;",
+            "    }",
+            "",
+            "    let selectedMetrics = [];",
+            "    if (overlayCount > 0 && metricsAll.length > 0) {",
+            "      const dev = Number(g.device_id);",
+            "      const exact = metricsAll.filter((s) => parseGpuTag(s.name) === dev);",
+            "      selectedMetrics = (exact.length > 0 ? exact : metricsAll).slice();",
+            "      selectedMetrics.sort((a,b) => metricRange(b) - metricRange(a));",
+            "      selectedMetrics = selectedMetrics.slice(0, overlayCount);",
+            "    }",
+            "",
+            "    const metricState = selectedMetrics.map((s) => ({series:s, offset:0, visible:true}));",
+            "    if (metricState.length > 0) {",
+            "      const ctrls = document.createElement('div');",
+            "      ctrls.className = 'allstream-controls';",
+            "      panel.appendChild(ctrls);",
+            "      for (const st of metricState) {",
+            "        const row = document.createElement('div');",
+            "        row.className = 'shift-row';",
+            "        const sw = document.createElement('span');",
+            "        sw.style.width = '10px';",
+            "        sw.style.height = '10px';",
+            "        sw.style.borderRadius = '2px';",
+            "        sw.style.display = 'inline-block';",
+            "        sw.style.background = String(st.series.color || '#88c');",
+            "        row.appendChild(sw);",
+            "        const lbl = document.createElement('span');",
+            "        lbl.textContent = shortName(st.series.name);",
+            "        row.appendChild(lbl);",
+            "        const dy = document.createElement('span');",
+            "        dy.textContent = 'dy=0';",
+            "        row.appendChild(dy);",
+            "        const mkBtn = (text) => {",
+            "          const b = document.createElement('button');",
+            "          b.type = 'button';",
+            "          b.className = 'shift-btn';",
+            "          b.textContent = text;",
+            "          return b;",
+            "        };",
+            "        const up = mkBtn('up');",
+            "        const down = mkBtn('down');",
+            "        const reset = mkBtn('reset');",
+            "        const toggle = mkBtn('hide');",
+            "        row.appendChild(up);",
+            "        row.appendChild(down);",
+            "        row.appendChild(reset);",
+            "        row.appendChild(toggle);",
+            "        ctrls.appendChild(row);",
+            "        st._dyEl = dy;",
+            "        st._toggleEl = toggle;",
+            "        st._btnUp = up;",
+            "        st._btnDown = down;",
+            "        st._btnReset = reset;",
+            "      }",
+            "    }",
+            "",
+            "    const scroll = document.createElement('div');",
+            "    scroll.className = 'allstream-scroll';",
+            "    panel.appendChild(scroll);",
+            "    const laneH = 18;",
+            "    const laneGap = 6;",
+            "    const labelW = 88;",
+            "    const rightPad = 18;",
+            "    const metricBandH = metricState.length > 0 ? 132 : 0;",
+            "    const lanesH = streamRows.length * (laneH + laneGap);",
+            "    const svgH = metricBandH + lanesH + 38;",
+            "    const svgW = labelW + basePlotW + rightPad;",
+            "    const svg = mkSvg('svg', {class:'allstream-svg', width:svgW, height:svgH, viewBox:`0 0 ${svgW} ${svgH}`});",
+            "    scroll.appendChild(svg);",
+            "    const x = (t) => labelW + ((Number(t) - startNs) / span) * basePlotW;",
+            "    const yMetricTop = 8;",
+            "    const yMetricBottom = metricBandH > 0 ? (metricBandH - 14) : 0;",
+            "",
+            "    const render = () => {",
+            "      while (svg.firstChild) svg.removeChild(svg.firstChild);",
+            "      svg.appendChild(mkSvg('rect', {x:0, y:0, width:svgW, height:svgH, fill:'#0f1522'}));",
+            "      if (metricBandH > 0) {",
+            "        svg.appendChild(mkSvg('rect', {x:labelW, y:2, width:basePlotW, height:metricBandH-4, fill:'#111a2b', stroke:'#30405c'}));",
+            "      }",
+            "      const yStreamsTop = metricBandH + 10;",
+            "      svg.appendChild(mkSvg('rect', {x:labelW, y:yStreamsTop-2, width:basePlotW, height:lanesH+8, fill:'#131c2a', stroke:'#30405c'}));",
+            "      svg.appendChild(mkSvg('line', {x1:labelW, y1:yStreamsTop-2, x2:labelW+basePlotW, y2:yStreamsTop-2, stroke:'#55637f'}));",
+            "      const tStart = mkSvg('text', {x:labelW, y:svgH-6, fill:'#7f8daa', 'font-size':10});",
+            "      tStart.textContent = String(Math.round(startNs));",
+            "      svg.appendChild(tStart);",
+            "      const tEnd = mkSvg('text', {x:labelW+basePlotW-95, y:svgH-6, fill:'#7f8daa', 'font-size':10});",
+            "      tEnd.textContent = String(Math.round(startNs + span));",
+            "      svg.appendChild(tEnd);",
+            "",
+            "      if (metricBandH > 0) {",
+            "        for (const st of metricState) {",
+            "          if (!st.visible) continue;",
+            "          const ptsRaw = Array.isArray(st.series.points) ? st.series.points : [];",
+            "          if (!ptsRaw.length) continue;",
+            "          let minV = Number.POSITIVE_INFINITY;",
+            "          let maxV = Number.NEGATIVE_INFINITY;",
+            "          for (const p of ptsRaw) {",
+            "            const v = Number(p[1]);",
+            "            if (Number.isFinite(v)) { minV = Math.min(minV, v); maxV = Math.max(maxV, v); }",
+            "          }",
+            "          if (!Number.isFinite(minV) || !Number.isFinite(maxV)) continue;",
+            "          if (Math.abs(maxV - minV) < 1e-12) maxV = minV + 1.0;",
+            "          const points = [];",
+            "          for (const p of ptsRaw) {",
+            "            const tx = x(p[0]);",
+            "            const v = Number(p[1]);",
+            "            if (!Number.isFinite(tx) || !Number.isFinite(v)) continue;",
+            "            const tyNorm = yMetricTop + (1.0 - ((v - minV) / (maxV - minV))) * (yMetricBottom - yMetricTop);",
+            "            const ty = tyNorm + st.offset;",
+            "            points.push(`${tx.toFixed(2)},${ty.toFixed(2)}`);",
+            "          }",
+            "          if (points.length >= 2) {",
+            "            svg.appendChild(mkSvg('polyline', {points:points.join(' '), fill:'none', stroke:String(st.series.color || '#88c'), 'stroke-width':1.2, 'stroke-linejoin':'round', 'stroke-linecap':'round'}));",
+            "          }",
+            "        }",
+            "      }",
+            "",
+            "      for (let i = 0; i < streamRows.length; i++) {",
+            "        const srow = streamRows[i];",
+            "        const laneY = yStreamsTop + i * (laneH + laneGap);",
+            "        const lbl = mkSvg('text', {x:4, y:laneY + 13, fill:'#98a9c5', 'font-size':11});",
+            "        lbl.textContent = `stream ${srow.stream_id}`;",
+            "        svg.appendChild(lbl);",
+            "        svg.appendChild(mkSvg('line', {x1:labelW, y1:laneY + laneH + 1, x2:labelW + basePlotW, y2:laneY + laneH + 1, stroke:'#2d3a52'}));",
+            "        const kernels = Array.isArray(srow.kernels) ? srow.kernels : [];",
+            "        for (const k of kernels) {",
+            "          const s = Number(k.start_ns || 0);",
+            "          const e = Number(k.end_ns || 0);",
+            "          if (!(e > s)) continue;",
+            "          const left = x(s);",
+            "          const width = Math.max(1, ((e - s) / span) * basePlotW);",
+            "          const rect = mkSvg('rect', {x:left, y:laneY, width:width, height:laneH, rx:2, ry:2, fill:String(k.color || '#6699cc'), opacity:0.92});",
+            "          const ttl = mkSvg('title', {});",
+            "          ttl.textContent = `${k.kernel_name || ''} | stream=${srow.stream_id} | start_ns=${s} | end_ns=${e} | kind=${k.kind || ''}`;",
+            "          rect.appendChild(ttl);",
+            "          svg.appendChild(rect);",
+            "        }",
+            "      }",
+            "    };",
+            "",
+            "    for (const st of metricState) {",
+            "      if (st._btnUp) st._btnUp.onclick = () => { st.offset -= 10; st._dyEl.textContent = `dy=${st.offset}`; render(); };",
+            "      if (st._btnDown) st._btnDown.onclick = () => { st.offset += 10; st._dyEl.textContent = `dy=${st.offset}`; render(); };",
+            "      if (st._btnReset) st._btnReset.onclick = () => { st.offset = 0; st.visible = true; st._dyEl.textContent = 'dy=0'; if (st._toggleEl) st._toggleEl.textContent = 'hide'; render(); };",
+            "      if (st._toggleEl) st._toggleEl.onclick = () => { st.visible = !st.visible; st._toggleEl.textContent = st.visible ? 'hide' : 'show'; render(); };",
+            "    }",
+            "    render();",
+            "    root.appendChild(panel);",
+            "  }",
             "})();",
             "</script>",
             "</body></html>",
@@ -824,14 +1273,21 @@ def export_timeline_html(
     nvtx_index: int = -1,
     include_metrics: bool = False,
     metric_name_like: str = "%",
-    metrics_limit: int = 300000,
+    metrics_limit: int = -1,
+    metrics_max_points: int = -1,
+    overlay_metrics_per_track: int = 2,
     include_all_metric_sources: bool = False,
     debug: bool = False,
+    debug_rows: int = -1,
     debug_log_fn: Optional[Callable[[str], None]] = None,
 ) -> str:
     debug_log = _build_debug_logger(enabled=bool(debug), log_fn=debug_log_fn)
+    try:
+        debug_rows_i = int(debug_rows)
+    except Exception:
+        debug_rows_i = -1
     debug_log(
-        "start sqlite={} output={} device_id={} start_ns={} end_ns={} nvtx_text={} nvtx_index={} include_metrics={}".format(
+        "start sqlite={} output={} device_id={} start_ns={} end_ns={} nvtx_text={} nvtx_index={} include_metrics={} metrics_limit={} metrics_max_points={} overlay_metrics_per_track={} debug_rows={}".format(
             str(sqlite_path),
             str(output_path),
             int(device_id),
@@ -840,6 +1296,10 @@ def export_timeline_html(
             str(nvtx_text or ""),
             int(nvtx_index),
             int(bool(include_metrics)),
+            int(metrics_limit),
+            int(metrics_max_points),
+            int(overlay_metrics_per_track),
+            int(debug_rows_i),
         )
     )
     try:
@@ -903,7 +1363,7 @@ def export_timeline_html(
                     _preview_dict_rows(
                         selected_nvtx_windows,
                         keys=("nvtx_text", "start_ns", "end_ns", "duration_ms"),
-                        limit=3,
+                        limit=debug_rows_i,
                     )
                 )
             )
@@ -952,19 +1412,71 @@ def export_timeline_html(
         device_id=int(device_id),
         limit=int(limit),
         debug_log=debug_log,
+        debug_rows=debug_rows_i,
     )
+
+    render_start_ns = int(effective_start_ns)
+    render_end_ns = int(effective_end_ns)
+    kernel_intervals = _merge_intervals(
+        [
+            (_to_int(row.get("start_ns"), -1), _to_int(row.get("end_ns"), -1))
+            for row in kernels
+        ]
+    )
+    if kernel_intervals:
+        kernel_span_start = kernel_intervals[0][0]
+        kernel_span_end = kernel_intervals[-1][1]
+        new_render_start = min(int(render_start_ns), int(kernel_span_start))
+        new_render_end = max(int(render_end_ns), int(kernel_span_end))
+        if new_render_start != int(render_start_ns) or new_render_end != int(render_end_ns):
+            debug_log(
+                "extend render window with kernel span start_ns={} end_ns={} (old=[{}, {}], new=[{}, {}])".format(
+                    int(kernel_span_start),
+                    int(kernel_span_end),
+                    int(render_start_ns),
+                    int(render_end_ns),
+                    int(new_render_start),
+                    int(new_render_end),
+                )
+            )
+            render_start_ns = int(new_render_start)
+            render_end_ns = int(new_render_end)
 
     metric_series: List[Dict[str, object]] = []
     if bool(include_metrics):
+        metric_query_start_ns = int(render_start_ns)
+        metric_query_end_ns = int(render_end_ns)
+        metric_restrict_intervals: Optional[List[Tuple[int, int]]] = None
+        if kernel_intervals:
+            metric_restrict_intervals = list(kernel_intervals)
+            metric_query_start_ns = int(kernel_intervals[0][0])
+            metric_query_end_ns = int(kernel_intervals[-1][1])
+            debug_log(
+                "metrics query uses GPU kernel window start_ns={} end_ns={} intervals={}".format(
+                    int(metric_query_start_ns),
+                    int(metric_query_end_ns),
+                    len(metric_restrict_intervals),
+                )
+            )
+        else:
+            debug_log(
+                "metrics query fallback to render window start_ns={} end_ns={} (no kernels)".format(
+                    int(metric_query_start_ns),
+                    int(metric_query_end_ns),
+                )
+            )
         metric_series = _collect_metric_samples(
             sqlite_path,
-            start_ns=int(effective_start_ns),
-            end_ns=int(effective_end_ns),
+            start_ns=int(metric_query_start_ns),
+            end_ns=int(metric_query_end_ns),
             metric_name_like=str(metric_name_like or "%"),
             include_all_sources=bool(include_all_metric_sources),
             device_id=int(device_id),
             limit=int(metrics_limit),
+            max_points_per_series=int(metrics_max_points),
+            restrict_to_intervals=metric_restrict_intervals,
             debug_log=debug_log,
+            debug_rows=debug_rows_i,
         )
     else:
         debug_log("metrics disabled (include_metrics=0)")
@@ -973,11 +1485,12 @@ def export_timeline_html(
         sqlite_path=str(sqlite_path),
         kernels=kernels,
         metric_series=metric_series,
-        window_start_ns=int(effective_start_ns),
-        window_end_ns=int(effective_end_ns),
+        window_start_ns=int(render_start_ns),
+        window_end_ns=int(render_end_ns),
         nvtx_windows=selected_nvtx_windows,
         width_px=int(width_px),
         include_metrics=bool(include_metrics),
+        overlay_metrics_per_track=int(overlay_metrics_per_track),
     )
     out = Path(output_path)
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -987,8 +1500,8 @@ def export_timeline_html(
             str(out),
             len(kernels),
             len(metric_series),
-            int(effective_start_ns),
-            int(effective_end_ns),
+            int(render_start_ns),
+            int(render_end_ns),
         )
     )
     return str(out)

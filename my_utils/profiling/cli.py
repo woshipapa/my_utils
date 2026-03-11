@@ -137,8 +137,8 @@ def _infer_unavailable_skill_reason(skill_name: str, schema_info: Dict[str, Any]
             )
         metric_cols = set(columns.get(str(metrics_table), []) or [])
         missing_aliases: List[str] = []
-        if not any(x in metric_cols for x in ("timestamp", "start", "time")):
-            missing_aliases.append("timestamp/start/time")
+        if "timestamp" not in metric_cols:
+            missing_aliases.append("timestamp")
         if not any(x in metric_cols for x in ("metricId", "nameId", "eventId")):
             missing_aliases.append("metricId/nameId/eventId")
         if not any(x in metric_cols for x in ("value", "metricValue", "val")):
@@ -397,6 +397,11 @@ def cmd_nsys_sql_skill(args: argparse.Namespace) -> int:
         return 2
 
     params = _parse_kv_params(args.param)
+    exec_params = dict(params)
+    debug_enabled = bool(getattr(args, "debug", True))
+    exec_params["debug"] = bool(debug_enabled)
+    if debug_enabled:
+        exec_params["debug_rows"] = int(getattr(args, "debug_rows", -1) or -1)
     skill_name = str(args.skill or "").strip()
     available_skills = set(provider.list_sql_skills())
     if skill_name not in available_skills:
@@ -429,13 +434,13 @@ def cmd_nsys_sql_skill(args: argparse.Namespace) -> int:
         try:
             engine = NsysSqlSkillEngine(conn)
             if skill_name == "kernel_occupancy_estimate":
-                rows = engine.execute_kernel_occupancy_estimate_h100(**params)
+                rows = engine.execute_kernel_occupancy_estimate_h100(**exec_params)
             else:
-                rows = engine.execute_nvtx_kernel_sm_detail_h100(**params)
+                rows = engine.execute_nvtx_kernel_sm_detail_h100(**exec_params)
         finally:
             conn.close()
     else:
-        rows = provider.run_sql_skill(skill_name, **params)
+        rows = provider.run_sql_skill(skill_name, **exec_params)
 
     if not rows:
         print(
@@ -605,8 +610,11 @@ def cmd_nsys_timeline_html(args: argparse.Namespace) -> int:
         include_metrics=bool(args.include_metrics),
         metric_name_like=args.metric_name_like,
         metrics_limit=args.metrics_limit,
+        metrics_max_points=args.metrics_max_points,
+        overlay_metrics_per_track=args.overlay_metrics_per_track,
         include_all_metric_sources=bool(args.include_all_metric_sources),
         debug=bool(args.debug),
+        debug_rows=int(args.debug_rows),
     )
     print(f"[nsys-timeline-html] wrote: {output}")
     return 0
@@ -690,6 +698,25 @@ def build_parser() -> argparse.ArgumentParser:
         action="append",
         default=[],
         help="skill parameter in key=value format (can repeat), e.g. --param device_id=0 --param limit=20",
+    )
+    nsys_sql.add_argument(
+        "--debug",
+        dest="debug",
+        action="store_true",
+        default=True,
+        help="enable per-skill query debug logs (default: enabled)",
+    )
+    nsys_sql.add_argument(
+        "--no-debug",
+        dest="debug",
+        action="store_false",
+        help="disable per-skill query debug logs",
+    )
+    nsys_sql.add_argument(
+        "--debug-rows",
+        type=int,
+        default=-1,
+        help="sample row count for debug logs; <=0 means no limit",
     )
     nsys_sql.add_argument(
         "--occupancy-arch",
@@ -787,8 +814,20 @@ def build_parser() -> argparse.ArgumentParser:
     nsys_timeline.add_argument(
         "--metrics-limit",
         type=int,
-        default=300000,
-        help="max metric samples loaded for timeline rendering",
+        default=-1,
+        help="max metric samples loaded before per-series sampling; <=0 means no global sampling limit (default: -1)",
+    )
+    nsys_timeline.add_argument(
+        "--metrics-max-points",
+        type=int,
+        default=-1,
+        help="max rendered points per metric series; <=0 means keep all points (default: -1)",
+    )
+    nsys_timeline.add_argument(
+        "--overlay-metrics-per-track",
+        type=int,
+        default=2,
+        help="number of metric series overlaid on each stream track for attribution view (0 to disable)",
     )
     nsys_timeline.add_argument(
         "--include-all-metric-sources",
@@ -797,8 +836,22 @@ def build_parser() -> argparse.ArgumentParser:
     )
     nsys_timeline.add_argument(
         "--debug",
+        dest="debug",
         action="store_true",
-        help="print debug diagnostics (selected tables, row counts, sample rows) during timeline export",
+        default=True,
+        help="enable timeline debug diagnostics (default: enabled)",
+    )
+    nsys_timeline.add_argument(
+        "--no-debug",
+        dest="debug",
+        action="store_false",
+        help="disable timeline debug diagnostics",
+    )
+    nsys_timeline.add_argument(
+        "--debug-rows",
+        type=int,
+        default=-1,
+        help="sample row count for timeline debug logs; <=0 means no limit",
     )
     nsys_timeline.set_defaults(func=cmd_nsys_timeline_html)
 

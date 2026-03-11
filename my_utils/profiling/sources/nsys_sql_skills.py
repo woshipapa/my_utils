@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import math
 import sqlite3
 from dataclasses import dataclass, field
@@ -17,6 +18,38 @@ def _ident(name: str) -> str:
         if not (ch.isalnum() or ch == "_"):
             raise ValueError(f"unsafe SQL identifier: {name}")
     return text
+
+
+def _noop_debug(_: str) -> None:
+    return
+
+
+def _build_debug_logger(
+    *,
+    enabled: bool,
+    log_fn: Optional[Callable[[str], None]] = None,
+) -> Callable[[str], None]:
+    if not bool(enabled):
+        return _noop_debug
+    sink = log_fn or print
+
+    def _emit(message: str) -> None:
+        try:
+            sink(f"[nsys-sql-skill][debug] {message}")
+        except Exception:
+            pass
+
+    return _emit
+
+
+def _preview_rows(rows: Sequence[Dict[str, object]], *, limit: int = 3) -> str:
+    try:
+        max_rows = int(limit)
+    except Exception:
+        max_rows = 3
+    all_rows = list(rows)
+    picked = all_rows if max_rows <= 0 else all_rows[:max_rows]
+    return json.dumps(picked, ensure_ascii=False)
 
 
 @dataclass
@@ -64,11 +97,34 @@ class SqlSkill:
         return resolved
 
     def execute(self, conn: sqlite3.Connection, **kwargs) -> List[Dict[str, object]]:
-        resolved = self._resolve_params(dict(kwargs))
+        local_kwargs = dict(kwargs)
+        debug = bool(local_kwargs.pop("__debug", False))
+        debug_rows = local_kwargs.pop("__debug_rows", 3)
+        try:
+            debug_rows_i = int(debug_rows)
+        except Exception:
+            debug_rows_i = 3
+        debug_log_raw = local_kwargs.pop("__debug_log", None)
+        debug_log = debug_log_raw if callable(debug_log_raw) else _noop_debug
+
+        resolved = self._resolve_params(local_kwargs)
         sql = self.sql.format(**resolved) if resolved else self.sql
-        cursor = conn.execute(sql)
-        columns = [desc[0] for desc in (cursor.description or [])]
-        return [dict(zip(columns, row)) for row in cursor.fetchall()]
+        if debug:
+            debug_log(f"skill={self.name} params={json.dumps(resolved, ensure_ascii=False)}")
+            debug_log(f"skill={self.name} sql={sql}")
+        try:
+            cursor = conn.execute(sql)
+            columns = [desc[0] for desc in (cursor.description or [])]
+            rows = [dict(zip(columns, row)) for row in cursor.fetchall()]
+        except Exception as exc:
+            if debug:
+                debug_log(f"skill={self.name} query_error={exc}")
+            raise
+        if debug:
+            debug_log(f"skill={self.name} rows={len(rows)} columns={columns}")
+            if rows:
+                debug_log(f"skill={self.name} sample={_preview_rows(rows, limit=debug_rows_i)}")
+        return rows
 
     def run(self, conn: sqlite3.Connection, **kwargs) -> object:
         rows = self.execute(conn, **kwargs)
@@ -578,7 +634,7 @@ def _build_builtin_skills(schema: NsightSchema) -> Dict[str, SqlSkill]:
     # 11) GPU metrics aggregate (nsys --gpu-metrics-device style hardware sampling)
     if schema.metrics_table:
         metrics_table = _ident(schema.metrics_table)
-        metrics_ts_col = schema.metrics_timestamp_col or schema.resolve_column(metrics_table, ("timestamp", "rawTimestamp", "start", "time"))
+        metrics_ts_col = schema.resolve_column(metrics_table, ("timestamp",))
         metrics_id_col = schema.metrics_id_col or schema.resolve_column(metrics_table, ("metricId", "nameId", "eventId"))
         metrics_value_col = schema.metrics_value_col or schema.resolve_column(metrics_table, ("value", "metricValue", "val"))
         if metrics_ts_col and metrics_id_col and metrics_value_col:
@@ -1022,7 +1078,7 @@ def _build_builtin_skills(schema: NsightSchema) -> Dict[str, SqlSkill]:
     # 18) NVTX GPU metrics breakdown (per-range hardware sampling)
     if schema.table_exists(nvtx_table) and schema.metrics_table:
         ngm_metrics_table = _ident(schema.metrics_table)
-        ngm_ts_col = schema.metrics_timestamp_col or schema.resolve_column(ngm_metrics_table, ("timestamp", "rawTimestamp", "start", "time"))
+        ngm_ts_col = schema.resolve_column(ngm_metrics_table, ("timestamp",))
         ngm_id_col = schema.metrics_id_col or schema.resolve_column(ngm_metrics_table, ("metricId", "nameId", "eventId"))
         ngm_val_col = schema.metrics_value_col or schema.resolve_column(ngm_metrics_table, ("value", "metricValue", "val"))
         ngm_nvtx_start = schema.resolve_column(nvtx_table, ("start",))
@@ -1491,12 +1547,54 @@ class NsysSqlSkillEngine:
         skill = self.get_skill(skill_name)
         if skill is None:
             raise KeyError(f"Unknown SQL skill: {name}")
-        rows = skill.execute(self.conn, **kwargs)
-        if skill_name == "nvtx_ranges_hierarchy":
-            return self._build_nvtx_hierarchy(
-                rows,
-                top_level_only=self._as_bool(kwargs.get("top_level_only"), default=False),
+
+        local_kwargs = dict(kwargs)
+        debug = self._as_bool(local_kwargs.pop("debug", False), default=False)
+        debug = debug or self._as_bool(local_kwargs.pop("__debug", False), default=False)
+        debug_rows_raw = local_kwargs.pop("debug_rows", local_kwargs.pop("__debug_rows", 3))
+        try:
+            debug_rows = max(0, int(debug_rows_raw))
+        except Exception:
+            debug_rows = 3
+        debug_log_fn = local_kwargs.pop("debug_log_fn", local_kwargs.pop("__debug_log_fn", None))
+        debug_log = _build_debug_logger(enabled=bool(debug), log_fn=debug_log_fn if callable(debug_log_fn) else None)
+        if debug:
+            debug_log(
+                "execute skill={} category={} schema(kernel={}, runtime={}, nvtx={}, metrics={})".format(
+                    skill_name,
+                    skill.category,
+                    self.schema.kernel_table,
+                    self.schema.runtime_table,
+                    self.schema.nvtx_table,
+                    self.schema.metrics_table,
+                )
             )
+
+        rows = skill.execute(
+            self.conn,
+            __debug=bool(debug),
+            __debug_rows=int(debug_rows),
+            __debug_log=debug_log,
+            **local_kwargs,
+        )
+        if skill_name == "nvtx_ranges_hierarchy":
+            hier = self._build_nvtx_hierarchy(
+                rows,
+                top_level_only=self._as_bool(local_kwargs.get("top_level_only"), default=False),
+            )
+            if debug:
+                debug_log(
+                    "skill={} hierarchy_rows={} top_level_only={}".format(
+                        skill_name,
+                        len(hier),
+                        int(self._as_bool(local_kwargs.get("top_level_only"), default=False)),
+                    )
+                )
+                if hier:
+                    debug_log(f"skill={skill_name} hierarchy_sample={_preview_rows(hier, limit=debug_rows)}")
+            return hier
+        if debug and not rows:
+            debug_log(f"skill={skill_name} returned 0 rows")
         return rows
 
     def execute_kernel_occupancy_estimate_h100(self, **kwargs) -> List[Dict[str, object]]:
