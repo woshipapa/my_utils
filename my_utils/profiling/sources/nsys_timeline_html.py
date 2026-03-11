@@ -53,6 +53,10 @@ def _parse_rank_from_text(text: object) -> Optional[int]:
         return None
 
 
+def _intervals_overlap(start_a: int, end_a: int, start_b: int, end_b: int) -> bool:
+    return int(end_a) > int(start_b) and int(start_a) < int(end_b)
+
+
 def _select_nvtx_windows(
     provider: NsysSqliteMetricsProvider,
     *,
@@ -111,10 +115,17 @@ def _collect_kernels_in_window(
     limit: int,
 ) -> List[Dict[str, object]]:
     rows: List[Dict[str, object]] = []
+    seen = set()
+    selected_windows: List[Tuple[int, int]] = []
     selected_pairs = set()
     if nvtx_windows:
         for item in nvtx_windows:
-            selected_pairs.add((_to_int(item.get("start_ns"), -1), _to_int(item.get("end_ns"), -1)))
+            ws = _to_int(item.get("start_ns"), -1)
+            we = _to_int(item.get("end_ns"), -1)
+            if we <= ws:
+                continue
+            selected_pairs.add((ws, we))
+            selected_windows.append((ws, we))
 
     # Prefer launch-attribution view (NVTX -> Runtime -> correlationId -> Kernel).
     if "nvtx_kernel_sm_detail" in set(provider.list_sql_skills()):
@@ -124,7 +135,6 @@ def _collect_kernels_in_window(
             device_id=int(device_id),
             limit=int(limit),
         )
-        seen = set()
         for row in detailed:
             ns = _to_int(row.get("nvtx_start_ns"), -1)
             ne = _to_int(row.get("nvtx_end_ns"), -1)
@@ -136,11 +146,11 @@ def _collect_kernels_in_window(
             ke = _to_int(row.get("kernel_end_ns", row.get("end_ns")), -1)
             if ks < 0 or ke <= ks:
                 continue
-            if not selected_pairs:
+            if not selected_pairs and int(start_ns) >= 0 and int(end_ns) > int(start_ns):
                 # Timeline window filtering must follow GPU execution timestamps.
                 # Using NVTX CPU-side timestamps here can drop valid kernels due to
                 # async CPU launch vs GPU execution lag.
-                if ke <= int(start_ns) or ks >= int(end_ns):
+                if not _intervals_overlap(ks, ke, int(start_ns), int(end_ns)):
                     continue
             uniq = (ks, ke, _to_int(row.get("stream_id"), 0), str(row.get("kernel_name") or ""))
             if uniq in seen:
@@ -167,10 +177,9 @@ def _collect_kernels_in_window(
                     "rank": _parse_rank_from_text(row.get("nvtx_text")),
                 }
             )
-        if rows:
-            return rows
 
-    # Fallback: plain kernel rows in time window.
+    # Fallback/补齐: plain kernel rows in time window.
+    # This keeps timeline complete when launch-attribution misses some kernels.
     fallback = collect_kernel_rows(
         provider,
         device_id=int(device_id),
@@ -180,13 +189,27 @@ def _collect_kernels_in_window(
         attach_iteration=False,
     )
     for row in fallback:
+        ks = _to_int(row.get("start_ns"), -1)
+        ke = _to_int(row.get("end_ns"), -1)
+        if ks < 0 or ke <= ks:
+            continue
+        if selected_windows:
+            if not any(_intervals_overlap(ks, ke, ws, we) for ws, we in selected_windows):
+                continue
+        elif int(start_ns) >= 0 and int(end_ns) > int(start_ns):
+            if not _intervals_overlap(ks, ke, int(start_ns), int(end_ns)):
+                continue
+        uniq = (ks, ke, _to_int(row.get("stream_id"), 0), str(row.get("kernel_name") or ""))
+        if uniq in seen:
+            continue
+        seen.add(uniq)
         rows.append(
             {
                 "stream_id": _to_int(row.get("stream_id"), 0),
                 "device_id": _to_int(row.get("device_id"), int(device_id)),
                 "kernel_name": str(row.get("kernel_name") or ""),
-                "start_ns": _to_int(row.get("start_ns"), 0),
-                "end_ns": _to_int(row.get("end_ns"), 0),
+                "start_ns": ks,
+                "end_ns": ke,
                 "duration_ms": float(row.get("duration_ms") or 0.0),
                 "kind": "comm" if bool(row.get("is_nccl")) else "compute",
                 "registers_per_thread": None,
@@ -201,6 +224,7 @@ def _collect_kernels_in_window(
                 "rank": None,
             }
         )
+    rows.sort(key=lambda x: (_to_int(x.get("start_ns"), 0), _to_int(x.get("end_ns"), 0), _to_int(x.get("stream_id"), 0)))
     return rows
 
 
@@ -253,7 +277,7 @@ def _collect_metric_samples(
         if not schema.metrics_table:
             return []
         metrics_table = _ident(schema.metrics_table)
-        ts_col = schema.metrics_timestamp_col or schema.resolve_column(metrics_table, ("timestamp", "start", "time"))
+        ts_col = schema.metrics_timestamp_col or schema.resolve_column(metrics_table, ("timestamp", "rawTimestamp", "start", "time"))
         id_col = schema.metrics_id_col or schema.resolve_column(metrics_table, ("metricId", "nameId", "eventId"))
         val_col = schema.metrics_value_col or schema.resolve_column(metrics_table, ("value", "metricValue", "val"))
         if not ts_col or not id_col or not val_col:
