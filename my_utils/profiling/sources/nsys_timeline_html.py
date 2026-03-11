@@ -278,6 +278,7 @@ def _collect_metric_samples(
                     )
                 name_expr = f"gm.{_ident(gm_name_col)}"
                 name_not_null = f"AND gm.{_ident(gm_name_col)} IS NOT NULL "
+        has_gpu_info_mapping = bool(name_expr.startswith("gm."))
 
         if not name_expr and schema.string_table:
             string_table = _ident(schema.string_table)
@@ -293,7 +294,7 @@ def _collect_metric_samples(
         source_where = ""
         source_name_expr = "NULL"
         source_col = schema.resolve_column(metrics_table, ("sourceId", "source_id"))
-        if source_col and schema.table_exists("GENERIC_EVENT_SOURCES"):
+        if source_col and schema.table_exists("GENERIC_EVENT_SOURCES") and (not has_gpu_info_mapping):
             ges_tbl = _ident("GENERIC_EVENT_SOURCES")
             ges_id_col = schema.resolve_column(ges_tbl, ("sourceId", "id", "source_id"))
             ges_name_col = schema.resolve_column(ges_tbl, ("name", "source", "sourceName"))
