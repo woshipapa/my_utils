@@ -94,16 +94,9 @@ class NsightSchema:
         self.memcpy_table = self._detect_first_existing(("CUPTI_ACTIVITY_KIND_MEMCPY",))
         self.memset_table = self._detect_first_existing(("CUPTI_ACTIVITY_KIND_MEMSET",))
         self.sync_table = self._detect_first_existing(("CUPTI_ACTIVITY_KIND_SYNCHRONIZATION",))
-        self.metrics_table = self._detect_first_existing(
-            (
-                "CUPTI_ACTIVITY_KIND_GPU_METRIC",
-                "CUPTI_ACTIVITY_KIND_METRIC",
-                "GPU_METRICS",
-                "TARGET_INFO_GPU_METRICS",
-            )
-        )
+        self.metrics_table = self._detect_metrics_table()
         self.metrics_timestamp_col = (
-            self.resolve_column(self.metrics_table, ("timestamp", "start", "time"))
+            self.resolve_column(self.metrics_table, ("timestamp", "rawTimestamp", "start", "time"))
             if self.metrics_table else None
         )
         self.metrics_id_col = (
@@ -148,6 +141,42 @@ class NsightSchema:
             if table in table_set:
                 return table
         return None
+
+    def _table_has_rows(self, table_name: str) -> bool:
+        try:
+            row = self._conn.execute(f"SELECT 1 FROM {table_name} LIMIT 1;").fetchone()
+            return row is not None
+        except sqlite3.Error:
+            return False
+
+    def _is_metrics_fact_table(self, table_name: str) -> bool:
+        return bool(
+            self.resolve_column(table_name, ("timestamp", "rawTimestamp", "start", "time"))
+            and self.resolve_column(table_name, ("metricId", "nameId", "eventId"))
+            and self.resolve_column(table_name, ("value", "metricValue", "val"))
+        )
+
+    def _detect_metrics_table(self) -> Optional[str]:
+        candidates = (
+            "GPU_METRICS",
+            "CUPTI_ACTIVITY_KIND_GPU_METRIC",
+            "CUPTI_ACTIVITY_KIND_METRIC",
+            "TARGET_INFO_GPU_METRICS",
+        )
+        first_existing: Optional[str] = None
+        # Prefer a non-empty fact table to avoid selecting empty compatibility tables.
+        for table_name in candidates:
+            if not self.table_exists(table_name):
+                continue
+            if first_existing is None:
+                first_existing = table_name
+            if self._is_metrics_fact_table(table_name) and self._table_has_rows(table_name):
+                return table_name
+        # Fallback to structurally valid metrics fact table even if empty.
+        for table_name in candidates:
+            if self.table_exists(table_name) and self._is_metrics_fact_table(table_name):
+                return table_name
+        return first_existing
 
     def _detect_kernel_table(self) -> Optional[str]:
         if "CUPTI_ACTIVITY_KIND_KERNEL" in self.tables:

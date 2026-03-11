@@ -10,7 +10,10 @@ from my_utils.profiling.sources.nsys_sql_skills import (
     NsysSqlSkillEngine,
     calculate_h100_occupancy,
 )
-from my_utils.profiling.sources.nsys_timeline_html import _collect_metric_samples
+from my_utils.profiling.sources.nsys_timeline_html import (
+    _collect_kernels_in_window,
+    _collect_metric_samples,
+)
 from my_utils.profiling.sources.nsys_sqlite_provider import NsysSqliteMetricsProvider
 
 
@@ -599,6 +602,97 @@ def test_gpu_metrics_split_by_device_dimension(tmp_path: Path) -> None:
     names = {str(r.get("name", "")) for r in timeline_rows}
     assert any("[gpu 0]" in n for n in names), names
     assert any("[gpu 1]" in n for n in names), names
+
+
+def test_timeline_metrics_support_raw_timestamp_and_nonempty_table_preference(tmp_path: Path) -> None:
+    db = tmp_path / "raw_ts.sqlite"
+    conn = sqlite3.connect(str(db))
+    cur = conn.cursor()
+    cur.execute("CREATE TABLE StringIds (id INTEGER PRIMARY KEY, value TEXT)")
+    cur.execute(
+        "INSERT INTO StringIds(id, value) VALUES (?, ?)",
+        (101, "sm__active.avg.pct_of_peak_sustained_elapsed"),
+    )
+    # Keep CUPTI table present but empty; metrics should still come from non-empty GPU_METRICS.
+    cur.execute(
+        "CREATE TABLE CUPTI_ACTIVITY_KIND_GPU_METRIC "
+        "(timestamp INTEGER, metricId INTEGER, value REAL, sourceId INTEGER)"
+    )
+    cur.execute(
+        "CREATE TABLE GPU_METRICS "
+        "(rawTimestamp INTEGER, metricId INTEGER, value REAL, sourceId INTEGER)"
+    )
+    cur.executemany(
+        "INSERT INTO GPU_METRICS(rawTimestamp, metricId, value, sourceId) VALUES (?, ?, ?, ?)",
+        [
+            (1000, 101, 11.0, 1),
+            (2000, 101, 22.0, 1),
+        ],
+    )
+    conn.commit()
+    conn.close()
+
+    rows = _collect_metric_samples(
+        str(db),
+        start_ns=0,
+        end_ns=10_000,
+        metric_name_like="%active%",
+        include_all_sources=False,
+        device_id=-1,
+        limit=100,
+    )
+    assert rows, "expected timeline metric rows from GPU_METRICS.rawTimestamp"
+    names = {str(r.get("name", "")) for r in rows}
+    assert any("sm__active" in n for n in names), names
+    ts = sorted(
+        int(p[0])
+        for s in rows
+        for p in s.get("points", [])
+        if isinstance(p, list) and len(p) >= 2
+    )
+    assert ts and ts[0] == 1000 and ts[-1] == 2000, ts
+
+
+def test_timeline_kernel_fallback_keeps_overlap_rows(tmp_path: Path) -> None:
+    db = tmp_path / "kernel_overlap.sqlite"
+    conn = sqlite3.connect(str(db))
+    cur = conn.cursor()
+    cur.execute("CREATE TABLE StringIds (id INTEGER PRIMARY KEY, value TEXT)")
+    cur.executemany(
+        "INSERT INTO StringIds(id, value) VALUES (?, ?)",
+        [(1, "k_overlap"), (2, "k_inside"), (3, "k_outside")],
+    )
+    cur.execute(
+        "CREATE TABLE CUPTI_ACTIVITY_KIND_KERNEL ("
+        "start INTEGER, [end] INTEGER, streamId INTEGER, correlationId INTEGER, "
+        "shortName INTEGER, demangledName INTEGER, deviceId INTEGER)"
+    )
+    cur.executemany(
+        "INSERT INTO CUPTI_ACTIVITY_KIND_KERNEL VALUES (?, ?, ?, ?, ?, ?, ?)",
+        [
+            (100, 220, 7, 1, 1, 1, 0),   # overlaps [150, 210]
+            (160, 170, 7, 2, 2, 2, 0),   # inside [150, 210]
+            (0, 50, 7, 3, 3, 3, 0),      # outside
+        ],
+    )
+    conn.commit()
+    conn.close()
+
+    provider = NsysSqliteMetricsProvider(str(db))
+    rows = _collect_kernels_in_window(
+        provider,
+        start_ns=150,
+        end_ns=210,
+        nvtx_text="%",
+        nvtx_windows=None,
+        device_id=0,
+        limit=100,
+    )
+    names = {str(r.get("kernel_name", "")) for r in rows}
+    assert "k_overlap" in names, names
+    assert "k_inside" in names, names
+    assert "k_outside" not in names, names
+    assert any((int(r.get("start_ns") or 0), int(r.get("end_ns") or 0)) == (100, 220) for r in rows), rows
 
 
 def test_calculate_h100_occupancy() -> None:

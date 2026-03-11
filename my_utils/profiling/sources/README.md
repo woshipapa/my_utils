@@ -36,7 +36,7 @@ Key attributes:
 | `memset_table` | `CUPTI_ACTIVITY_KIND_MEMSET` |
 | `sync_table` | `CUPTI_ACTIVITY_KIND_SYNCHRONIZATION` |
 | `metrics_table` | GPU sampling metrics table (`GPU_METRICS` / `CUPTI_ACTIVITY_KIND_GPU_METRIC` / variants) |
-| `metrics_timestamp_col` | timestamp column alias (`timestamp` / `start` / `time`) |
+| `metrics_timestamp_col` | timestamp column alias (`timestamp` / `rawTimestamp` / `start` / `time`) |
 | `metrics_id_col` | metric id alias (`metricId` / `nameId` / `eventId`) |
 | `metrics_value_col` | metric value alias (`value` / `metricValue` / `val`) |
 | `meta_table` | `META_DATA_EXPORT` / `EXPORT_META_DATA` |

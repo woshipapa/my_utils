@@ -372,8 +372,9 @@ def _build_builtin_skills(schema: NsightSchema) -> Dict[str, SqlSkill]:
                 f"{name_join} "
                 "WHERE 1=1 "
                 f"{kernel_where_device} "
-                f"AND ({{start_ns}} < 0 OR k.{_ident(start_col)} >= {{start_ns}}) "
-                f"AND ({{end_ns}} < 0 OR k.[{_ident(end_col)}] <= {{end_ns}}) "
+                # Keep kernels that overlap the window (not only fully contained ones).
+                f"AND ({{end_ns}} < 0 OR k.{_ident(start_col)} < {{end_ns}}) "
+                f"AND ({{start_ns}} < 0 OR k.[{_ident(end_col)}] > {{start_ns}}) "
                 f"ORDER BY k.{_ident(start_col)} ASC "
                 "LIMIT {limit}"
             ),
@@ -577,7 +578,7 @@ def _build_builtin_skills(schema: NsightSchema) -> Dict[str, SqlSkill]:
     # 11) GPU metrics aggregate (nsys --gpu-metrics-device style hardware sampling)
     if schema.metrics_table:
         metrics_table = _ident(schema.metrics_table)
-        metrics_ts_col = schema.metrics_timestamp_col or schema.resolve_column(metrics_table, ("timestamp", "start", "time"))
+        metrics_ts_col = schema.metrics_timestamp_col or schema.resolve_column(metrics_table, ("timestamp", "rawTimestamp", "start", "time"))
         metrics_id_col = schema.metrics_id_col or schema.resolve_column(metrics_table, ("metricId", "nameId", "eventId"))
         metrics_value_col = schema.metrics_value_col or schema.resolve_column(metrics_table, ("value", "metricValue", "val"))
         if metrics_ts_col and metrics_id_col and metrics_value_col:
@@ -1021,7 +1022,7 @@ def _build_builtin_skills(schema: NsightSchema) -> Dict[str, SqlSkill]:
     # 18) NVTX GPU metrics breakdown (per-range hardware sampling)
     if schema.table_exists(nvtx_table) and schema.metrics_table:
         ngm_metrics_table = _ident(schema.metrics_table)
-        ngm_ts_col = schema.metrics_timestamp_col or schema.resolve_column(ngm_metrics_table, ("timestamp", "start", "time"))
+        ngm_ts_col = schema.metrics_timestamp_col or schema.resolve_column(ngm_metrics_table, ("timestamp", "rawTimestamp", "start", "time"))
         ngm_id_col = schema.metrics_id_col or schema.resolve_column(ngm_metrics_table, ("metricId", "nameId", "eventId"))
         ngm_val_col = schema.metrics_value_col or schema.resolve_column(ngm_metrics_table, ("value", "metricValue", "val"))
         ngm_nvtx_start = schema.resolve_column(nvtx_table, ("start",))
