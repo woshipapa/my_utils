@@ -1,5 +1,6 @@
 ﻿from __future__ import annotations
 
+import json
 import sqlite3
 from pathlib import Path
 from typing import List, Tuple
@@ -599,7 +600,6 @@ def test_cli_new_subcommands(tmp_path: Path) -> None:
         "--pretty",
     ]) == 0
     assert overlap_json.exists()
-    import json
     data = json.loads(overlap_json.read_text())
     assert isinstance(data, list) and len(data) >= 1
     assert "compute_ms" in data[0]
@@ -666,6 +666,39 @@ def test_cli_sql_skill_reports_missing_gpu_metrics(tmp_path: Path, capsys) -> No
     assert "gpu metrics table" in msg.lower()
 
 
+def test_cli_schema_inspect_grouped_and_mermaid(tmp_path: Path) -> None:
+    db = tmp_path / "schema.sqlite"
+    _init_sqlite(db)
+    out_json = tmp_path / "schema_inspect.json"
+
+    rc = main(
+        [
+            "nsys-sql-skill",
+            "--sqlite",
+            str(db),
+            "--skill",
+            "schema_inspect",
+            "--output",
+            str(out_json),
+            "--pretty",
+        ]
+    )
+    assert rc == 0
+    payload = json.loads(out_json.read_text(encoding="utf-8"))
+    assert "tables" in payload
+    assert "relations" in payload
+    assert "mermaid" in payload
+    tables = payload["tables"]
+    assert isinstance(tables, list) and len(tables) >= 1
+    by_name = {t["table_name"]: t for t in tables}
+    assert "CUPTI_ACTIVITY_KIND_KERNEL" in by_name
+    assert "correlationId" in set(by_name["CUPTI_ACTIVITY_KIND_KERNEL"]["columns"])
+    mermaid = str(payload["mermaid"])
+    assert "flowchart LR" in mermaid
+    assert "CUPTI_ACTIVITY_KIND_RUNTIME" in mermaid
+    assert "CUPTI_ACTIVITY_KIND_KERNEL" in mermaid
+
+
 def test_cli_nsys_commands(tmp_path: Path) -> None:
     db_a = tmp_path / "a.sqlite"
     db_b = tmp_path / "b.sqlite"
@@ -677,6 +710,7 @@ def test_cli_nsys_commands(tmp_path: Path) -> None:
     analyze_json = tmp_path / "analyze.json"
     diff_json = tmp_path / "diff.json"
     timeline_html = tmp_path / "timeline.html"
+    timeline_nvtx_html = tmp_path / "timeline_nvtx_metrics.html"
 
     assert (
         main(
@@ -768,3 +802,32 @@ def test_cli_nsys_commands(tmp_path: Path) -> None:
         == 0
     )
     assert timeline_html.exists()
+
+    assert (
+        main(
+            [
+                "nsys-timeline-html",
+                "--sqlite",
+                str(db_a),
+                "--output",
+                str(timeline_nvtx_html),
+                "--device-id",
+                "0",
+                "--nvtx-text",
+                "%sample_0%",
+                "--include-metrics",
+                "--metric-name-like",
+                "%active%",
+                "--metrics-limit",
+                "10000",
+            ]
+        )
+        == 0
+    )
+    assert timeline_nvtx_html.exists()
+    timeline_text = timeline_nvtx_html.read_text(encoding="utf-8")
+    assert "GPU Metrics In Window" in timeline_text
+    assert "Kernel Timeline By Stream" in timeline_text
+    assert "sample_0 step=1 rank=0" in timeline_text
+    assert "sample_0 step=2 rank=0" in timeline_text
+    assert "nvtx_scopes=2" in timeline_text

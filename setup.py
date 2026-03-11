@@ -53,6 +53,13 @@ setup(
     entry_points={
         "console_scripts": [
             "myutils-profile=my_utils.profiling.cli:main",
+            "nsys-sql-skill=my_utils.profiling.cli:entry_nsys_sql_skill",
+            "nsys-export=my_utils.profiling.cli:entry_nsys_export",
+            "nsys-analyze=my_utils.profiling.cli:entry_nsys_analyze",
+            "nsys-diff=my_utils.profiling.cli:entry_nsys_diff",
+            "nsys-timeline-html=my_utils.profiling.cli:entry_nsys_timeline_html",
+            "nsys-iter-overlap=my_utils.profiling.cli:entry_nsys_iter_overlap",
+            "nsys-iter-outliers=my_utils.profiling.cli:entry_nsys_iter_outliers",
         ]
     },
     install_requires=install_requires,

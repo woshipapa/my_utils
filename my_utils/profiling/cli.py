@@ -153,6 +153,151 @@ def _infer_unavailable_skill_reason(skill_name: str, schema_info: Dict[str, Any]
     return "skill is schema-guarded and unavailable under current sqlite schema."
 
 
+def _schema_tables_grouped(schema_info: Dict[str, Any]) -> List[Dict[str, Any]]:
+    columns = dict(schema_info.get("columns") or {})
+    out: List[Dict[str, Any]] = []
+    for table_name in sorted(columns.keys()):
+        cols = list(columns.get(table_name) or [])
+        out.append(
+            {
+                "table_name": str(table_name),
+                "column_count": len(cols),
+                "columns": cols,
+            }
+        )
+    return out
+
+
+def _schema_relations(schema_info: Dict[str, Any]) -> List[Dict[str, str]]:
+    tables = set((schema_info.get("tables") or []))
+    columns = {str(k): set(v or []) for k, v in dict(schema_info.get("columns") or {}).items()}
+    canonical = dict(schema_info.get("canonical_tables") or {})
+    relations: List[Dict[str, str]] = []
+    seen = set()
+
+    def _add(frm: str, to: str, on: str, rel_type: str) -> None:
+        if not frm or not to or frm == to:
+            return
+        if frm not in tables or to not in tables:
+            return
+        key = (frm, to, on, rel_type)
+        if key in seen:
+            return
+        seen.add(key)
+        relations.append(
+            {
+                "from_table": frm,
+                "to_table": to,
+                "on": on,
+                "type": rel_type,
+            }
+        )
+
+    kernel = str(canonical.get("kernel") or "")
+    runtime = str(canonical.get("runtime") or "")
+    nvtx = str(canonical.get("nvtx") or "")
+    string_ids = str(canonical.get("string_ids") or "")
+    metrics = str(canonical.get("metrics") or "")
+    memcpy = str(canonical.get("memcpy") or "")
+    memset = str(canonical.get("memset") or "")
+    sync = str(canonical.get("sync") or "")
+
+    if kernel and runtime:
+        if "correlationId" in columns.get(kernel, set()) and "correlationId" in columns.get(runtime, set()):
+            _add(runtime, kernel, "correlationId", "id_join")
+    if nvtx and runtime:
+        if "start" in columns.get(nvtx, set()) and "end" in columns.get(nvtx, set()) and "start" in columns.get(runtime, set()):
+            if "globalTid" in columns.get(nvtx, set()) and "globalTid" in columns.get(runtime, set()):
+                _add(nvtx, runtime, "start/end window + globalTid", "time_window")
+            else:
+                _add(nvtx, runtime, "start/end window", "time_window")
+    if nvtx and kernel and runtime:
+        if (
+            "start" in columns.get(nvtx, set())
+            and "end" in columns.get(nvtx, set())
+            and "start" in columns.get(runtime, set())
+            and "correlationId" in columns.get(runtime, set())
+            and "correlationId" in columns.get(kernel, set())
+        ):
+            _add(nvtx, kernel, "NVTX->Runtime->correlationId", "derived")
+    if metrics and nvtx:
+        ts_candidates = {"timestamp", "start", "time"}
+        if ts_candidates.intersection(columns.get(metrics, set())) and "start" in columns.get(nvtx, set()) and "end" in columns.get(nvtx, set()):
+            _add(nvtx, metrics, "timestamp in [nvtx.start, nvtx.end]", "time_window")
+    if string_ids:
+        if kernel:
+            if "shortName" in columns.get(kernel, set()):
+                _add(kernel, string_ids, "shortName -> id", "id_join")
+            if "demangledName" in columns.get(kernel, set()):
+                _add(kernel, string_ids, "demangledName -> id", "id_join")
+        if runtime and "nameId" in columns.get(runtime, set()):
+            _add(runtime, string_ids, "nameId -> id", "id_join")
+        if nvtx:
+            if "textId" in columns.get(nvtx, set()):
+                _add(nvtx, string_ids, "textId -> id", "id_join")
+            if "nameId" in columns.get(nvtx, set()):
+                _add(nvtx, string_ids, "nameId -> id", "id_join")
+        if metrics:
+            for col in ("metricId", "nameId", "eventId"):
+                if col in columns.get(metrics, set()):
+                    _add(metrics, string_ids, f"{col} -> id", "id_join")
+                    break
+    if metrics and "TARGET_INFO_GPU_METRICS" in tables:
+        metric_cols = columns.get(metrics, set())
+        gm_cols = columns.get("TARGET_INFO_GPU_METRICS", set())
+        if "metricId" in metric_cols and "metricId" in gm_cols:
+            if "typeId" in metric_cols and "typeId" in gm_cols:
+                _add(metrics, "TARGET_INFO_GPU_METRICS", "metricId + typeId", "id_join")
+            else:
+                _add(metrics, "TARGET_INFO_GPU_METRICS", "metricId", "id_join")
+    if metrics and "GENERIC_EVENT_SOURCES" in tables:
+        metric_cols = columns.get(metrics, set())
+        ges_cols = columns.get("GENERIC_EVENT_SOURCES", set())
+        if ("sourceId" in metric_cols or "source_id" in metric_cols) and ("sourceId" in ges_cols or "id" in ges_cols or "source_id" in ges_cols):
+            _add(metrics, "GENERIC_EVENT_SOURCES", "sourceId", "id_join")
+    if "COMPOSITE_EVENTS" in tables and "ThreadNames" in tables:
+        ce_cols = columns.get("COMPOSITE_EVENTS", set())
+        tn_cols = columns.get("ThreadNames", set())
+        if "globalTid" in ce_cols and "globalTid" in tn_cols:
+            _add("COMPOSITE_EVENTS", "ThreadNames", "globalTid", "id_join")
+    if "ThreadNames" in tables and string_ids and "nameId" in columns.get("ThreadNames", set()):
+        _add("ThreadNames", string_ids, "nameId -> id", "id_join")
+
+    # Helpful same-key hints for tables that share core ids.
+    shared_keys = ("correlationId", "globalTid", "deviceId", "streamId")
+    table_list = sorted(tables)
+    for i, a in enumerate(table_list):
+        for b in table_list[i + 1 :]:
+            ca = columns.get(a, set())
+            cb = columns.get(b, set())
+            for key in shared_keys:
+                if key in ca and key in cb:
+                    _add(a, b, key, "shared_key_hint")
+                    break
+
+    return relations
+
+
+def _schema_mermaid(schema_info: Dict[str, Any], relations: List[Dict[str, str]]) -> str:
+    tables = sorted(set((schema_info.get("tables") or [])))
+    if not tables:
+        return "flowchart LR\n  EMPTY[\"No tables\"]\n"
+    node_ids: Dict[str, str] = {table: f"T{i}" for i, table in enumerate(tables)}
+    lines: List[str] = ["flowchart LR"]
+    for table in tables:
+        nid = node_ids[table]
+        label = str(table).replace('"', '\\"')
+        lines.append(f'  {nid}["{label}"]')
+    for rel in relations:
+        frm = str(rel.get("from_table") or "")
+        to = str(rel.get("to_table") or "")
+        if frm not in node_ids or to not in node_ids:
+            continue
+        on = str(rel.get("on") or "").replace('"', '\\"')
+        lines.append(f'  {node_ids[frm]} -->|"{on}"| {node_ids[to]}')
+    return "\n".join(lines) + "\n"
+
+
 def cmd_ingest(args: argparse.Namespace) -> int:
     collector = MetricsCollector.from_config(args.config)
     tags = _parse_tags(args.tags)
@@ -312,7 +457,23 @@ def cmd_nsys_sql_skill(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
 
-    text = json.dumps(rows, ensure_ascii=False, indent=2 if args.pretty else None)
+    payload: Any = rows
+    if skill_name == "schema_inspect":
+        schema_view = str(getattr(args, "schema_view", "both") or "both").strip().lower()
+        schema_info = provider.describe_schema()
+        grouped = _schema_tables_grouped(schema_info)
+        relations = _schema_relations(schema_info)
+        mermaid = _schema_mermaid(schema_info, relations)
+        if schema_view == "flat":
+            payload = rows
+        elif schema_view == "grouped":
+            payload = {"tables": grouped}
+        elif schema_view == "mermaid":
+            payload = {"relations": relations, "mermaid": mermaid}
+        else:
+            payload = {"tables": grouped, "relations": relations, "mermaid": mermaid}
+
+    text = json.dumps(payload, ensure_ascii=False, indent=2 if args.pretty else None)
     if args.output:
         path = Path(args.output)
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -439,6 +600,12 @@ def cmd_nsys_timeline_html(args: argparse.Namespace) -> int:
         end_ns=args.end_ns,
         limit=args.limit,
         width_px=args.width_px,
+        nvtx_text=args.nvtx_text,
+        nvtx_index=args.nvtx_index,
+        include_metrics=bool(args.include_metrics),
+        metric_name_like=args.metric_name_like,
+        metrics_limit=args.metrics_limit,
+        include_all_metric_sources=bool(args.include_all_metric_sources),
     )
     print(f"[nsys-timeline-html] wrote: {output}")
     return 0
@@ -534,6 +701,16 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     nsys_sql.add_argument("--output", default="", help="optional json output path")
+    nsys_sql.add_argument(
+        "--schema-view",
+        default="both",
+        choices=["flat", "grouped", "mermaid", "both"],
+        help=(
+            "schema_inspect output mode: "
+            "flat=raw rows, grouped=all columns grouped by table, "
+            "mermaid=relations+mermaid graph, both=grouped tables + relations + mermaid"
+        ),
+    )
     nsys_sql.add_argument("--pretty", action="store_true", help="pretty-print JSON output")
     nsys_sql.set_defaults(func=cmd_nsys_sql_skill)
 
@@ -585,6 +762,38 @@ def build_parser() -> argparse.ArgumentParser:
     nsys_timeline.add_argument("--end-ns", type=int, default=-1)
     nsys_timeline.add_argument("--limit", type=int, default=100000)
     nsys_timeline.add_argument("--width-px", type=int, default=1800)
+    nsys_timeline.add_argument(
+        "--nvtx-text",
+        default="",
+        help="optional NVTX text LIKE pattern; when set, timeline focuses on the selected NVTX range",
+    )
+    nsys_timeline.add_argument(
+        "--nvtx-index",
+        type=int,
+        default=-1,
+        help="index of matched NVTX range after time-sort when --nvtx-text is set; -1 means all matches (default: -1)",
+    )
+    nsys_timeline.add_argument(
+        "--include-metrics",
+        action="store_true",
+        help="overlay GPU metrics line chart in the same time window",
+    )
+    nsys_timeline.add_argument(
+        "--metric-name-like",
+        default="%",
+        help="metric name LIKE filter when --include-metrics is set (default: %)",
+    )
+    nsys_timeline.add_argument(
+        "--metrics-limit",
+        type=int,
+        default=300000,
+        help="max metric samples loaded for timeline rendering",
+    )
+    nsys_timeline.add_argument(
+        "--include-all-metric-sources",
+        action="store_true",
+        help="include non-GPU generic sources (ETW/FTrace/etc) in metrics panel",
+    )
     nsys_timeline.set_defaults(func=cmd_nsys_timeline_html)
 
     nsys_iter_overlap = sub.add_parser(
@@ -648,6 +857,38 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     return int(args.func(args))
+
+
+def _run_nsys_alias(subcommand: str) -> int:
+    return main([str(subcommand)] + list(sys.argv[1:]))
+
+
+def entry_nsys_sql_skill() -> int:
+    return _run_nsys_alias("nsys-sql-skill")
+
+
+def entry_nsys_export() -> int:
+    return _run_nsys_alias("nsys-export")
+
+
+def entry_nsys_analyze() -> int:
+    return _run_nsys_alias("nsys-analyze")
+
+
+def entry_nsys_diff() -> int:
+    return _run_nsys_alias("nsys-diff")
+
+
+def entry_nsys_timeline_html() -> int:
+    return _run_nsys_alias("nsys-timeline-html")
+
+
+def entry_nsys_iter_overlap() -> int:
+    return _run_nsys_alias("nsys-iter-overlap")
+
+
+def entry_nsys_iter_outliers() -> int:
+    return _run_nsys_alias("nsys-iter-outliers")
 
 
 if __name__ == "__main__":

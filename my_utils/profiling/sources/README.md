@@ -97,7 +97,7 @@ engine.execute("top_kernels", device_id=0, limit=20)
 | 8 | `nvtx_kernel_map` | nvtx | NVTX_EVENTS + RUNTIME + KERNEL | launch-attribution map |
 | 9 | `memcpy_in_window` | memory | MEMCPY | copy_kind, count, total_ms |
 | 10 | `thread_utilization` | system | COMPOSITE_EVENTS | global_tid, thread_name, cpu_pct |
-| 11 | `schema_inspect` | utility | sqlite_master | table/column metadata |
+| 11 | `schema_inspect` | utility | sqlite_master | table/column metadata; CLI can render grouped columns and Mermaid relation graph |
 | 12 | `gpu_metrics_aggregate` | metrics | GPU_METRICS + StringIds | metric_name, sample_count, avg/min/max value |
 | 13 | `memcpy_bandwidth_analysis` | memory | MEMCPY | total_gb, total_ms, avg/min/max gbps |
 | 14 | `sync_breakdown` | pipeline | SYNCHRONIZATION | sync_type, count, total/avg/max ms |
@@ -124,6 +124,24 @@ Common params:
 | `include_all_sources` | bool | false | `gpu_metrics_aggregate`, `nvtx_gpu_metrics_breakdown`; false prefers GPU metric sources and filters ETW/FTrace-like generic sources |
 | `nvtx_text` | str | `%` or required | NVTX text filter skills |
 | `top_level_only` | bool | false | `nvtx_ranges_hierarchy` |
+
+### Schema Inspect Display
+
+When using CLI with `schema_inspect`, you can control how schema is rendered:
+
+```bash
+myutils-profile nsys-sql-skill \
+  --sqlite ./train_rank0.sqlite \
+  --skill schema_inspect \
+  --schema-view both \
+  --pretty
+```
+
+`--schema-view` options:
+- `flat`: raw row list (`table_name`, `column_name`, `column_type`, `is_pk`)
+- `grouped`: all columns grouped by each table
+- `mermaid`: inferred table relations + Mermaid flowchart string
+- `both`: grouped tables + relations + Mermaid (default)
 
 ### Occupancy notes (H100)
 
@@ -248,6 +266,20 @@ Tip:
   to attach `occupancy_pct_h100_estimate` when GPU is H100.
 - if a skill is unavailable for current sqlite schema (for example missing GPU metrics table),
   `nsys-sql-skill` now prints explicit reason/hint instead of failing silently.
+
+Timeline viewer can focus on a specific NVTX range and overlay GPU metrics:
+
+```bash
+myutils-profile nsys-timeline-html \
+  --sqlite ./train_rank0.sqlite \
+  --output ./timeline_nvtx.html \
+  --nvtx-text "%sample_0%" \
+  --include-metrics \
+  --metric-name-like "%active%"
+```
+
+By default, `--nvtx-text` uses all matched NVTX scopes (`--nvtx-index -1`).
+Set `--nvtx-index N` only when you want a single matched scope.
 
 ---
 

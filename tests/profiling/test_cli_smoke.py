@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+import sys
 import time
 from pathlib import Path
 
+import my_utils.profiling.cli as profiling_cli
 from my_utils.profiling.cli import main
 from my_utils.profiling.metrics_types import MetricEvent
 
@@ -98,3 +100,19 @@ def test_cli_analyze_and_diff(tmp_path: Path) -> None:
     payload = json.loads(trace_json.read_text(encoding="utf-8"))
     assert "traceEvents" in payload
     assert any(item.get("ph") == "X" for item in payload["traceEvents"])
+
+
+def test_cli_alias_entry_forwards_subcommand(monkeypatch) -> None:
+    captured = {}
+
+    def _fake_main(argv=None):
+        captured["argv"] = list(argv or [])
+        return 0
+
+    monkeypatch.setattr(profiling_cli, "main", _fake_main)
+    monkeypatch.setattr(sys, "argv", ["nsys-sql-skill", "--sqlite", "x.sqlite", "--list-skills"])
+    rc = profiling_cli.entry_nsys_sql_skill()
+    assert rc == 0
+    assert captured["argv"][0] == "nsys-sql-skill"
+    assert "--sqlite" in captured["argv"]
+    assert "x.sqlite" in captured["argv"]
