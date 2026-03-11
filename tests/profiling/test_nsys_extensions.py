@@ -1,6 +1,7 @@
 ﻿from __future__ import annotations
 
 import json
+import re
 import sqlite3
 from pathlib import Path
 from typing import List, Tuple
@@ -13,6 +14,7 @@ from my_utils.profiling.sources.nsys_sql_skills import (
 from my_utils.profiling.sources.nsys_timeline_html import (
     _collect_kernels_in_window,
     _collect_metric_samples,
+    export_timeline_html,
 )
 from my_utils.profiling.sources.nsys_sqlite_provider import NsysSqliteMetricsProvider
 
@@ -556,6 +558,89 @@ def test_timeline_metric_sampling_spans_whole_window(tmp_path: Path) -> None:
     assert all_ts[-1] >= start_ns + 3_990_000
 
 
+def test_timeline_metrics_disable_per_series_downsample(tmp_path: Path) -> None:
+    db = tmp_path / "rank0_no_downsample.sqlite"
+    _init_sqlite(db)
+
+    conn = sqlite3.connect(str(db))
+    cur = conn.cursor()
+    extra_rows = []
+    start_ns = 1_000_000
+    for i in range(5000):
+        ts = start_ns + i * 1000
+        extra_rows.append((ts, 101, float(i % 100), 1))
+    cur.executemany(
+        "INSERT INTO CUPTI_ACTIVITY_KIND_GPU_METRIC(timestamp, metricId, value, sourceId) VALUES (?, ?, ?, ?)",
+        extra_rows,
+    )
+    conn.commit()
+    conn.close()
+
+    series = _collect_metric_samples(
+        str(db),
+        start_ns=start_ns,
+        end_ns=start_ns + 4_999_000,
+        metric_name_like="%sm__active%",
+        include_all_sources=False,
+        device_id=-1,
+        limit=-1,                  # no global sampling
+        max_points_per_series=-1,  # no per-series downsample
+    )
+    assert series, "expected at least one metric series"
+    sm_series = next((s for s in series if "sm__active" in str(s.get("name", ""))), None)
+    assert sm_series is not None, series
+    # selected window covers only injected range, so all 5000 injected points should remain.
+    assert len(sm_series.get("points", [])) == 5000
+
+
+def test_cli_timeline_metrics_defaults_keep_all_points(tmp_path: Path) -> None:
+    db = tmp_path / "rank0_cli_default_full_metrics.sqlite"
+    _init_sqlite(db)
+
+    conn = sqlite3.connect(str(db))
+    cur = conn.cursor()
+    extra_rows = []
+    start_ns = 1_000_000
+    for i in range(5000):
+        ts = start_ns + i * 1000
+        extra_rows.append((ts, 101, float(i % 100), 1))
+    cur.executemany(
+        "INSERT INTO CUPTI_ACTIVITY_KIND_GPU_METRIC(timestamp, metricId, value, sourceId) VALUES (?, ?, ?, ?)",
+        extra_rows,
+    )
+    conn.commit()
+    conn.close()
+
+    out_html = tmp_path / "timeline_default_full_metrics.html"
+    rc = main(
+        [
+            "nsys-timeline-html",
+            "--sqlite",
+            str(db),
+            "--output",
+            str(out_html),
+            "--device-id",
+            "0",
+            "--start-ns",
+            str(start_ns),
+            "--end-ns",
+            str(start_ns + 4_999_000),
+            "--include-metrics",
+            "--metric-name-like",
+            "%sm__active%",
+        ]
+    )
+    assert rc == 0
+    text = out_html.read_text(encoding="utf-8")
+    m = re.search(r"const TIMELINE_DATA = (\{.*?\});", text, flags=re.S)
+    assert m is not None
+    payload = json.loads(m.group(1))
+    series = payload.get("metrics") or []
+    sm_series = next((s for s in series if "sm__active" in str(s.get("name", ""))), None)
+    assert sm_series is not None, series
+    assert len(sm_series.get("points", [])) == 5000
+
+
 def test_gpu_metrics_split_by_device_dimension(tmp_path: Path) -> None:
     db = tmp_path / "rank0_multi_device.sqlite"
     _init_sqlite(db)
@@ -604,7 +689,7 @@ def test_gpu_metrics_split_by_device_dimension(tmp_path: Path) -> None:
     assert any("[gpu 1]" in n for n in names), names
 
 
-def test_timeline_metrics_support_raw_timestamp_and_nonempty_table_preference(tmp_path: Path) -> None:
+def test_timeline_metrics_require_timestamp_column(tmp_path: Path) -> None:
     db = tmp_path / "raw_ts.sqlite"
     conn = sqlite3.connect(str(db))
     cur = conn.cursor()
@@ -613,7 +698,8 @@ def test_timeline_metrics_support_raw_timestamp_and_nonempty_table_preference(tm
         "INSERT INTO StringIds(id, value) VALUES (?, ?)",
         (101, "sm__active.avg.pct_of_peak_sustained_elapsed"),
     )
-    # Keep CUPTI table present but empty; metrics should still come from non-empty GPU_METRICS.
+    # Keep CUPTI table present but empty; GPU_METRICS has only rawTimestamp.
+    # Timeline metrics path is strict: timestamp-only (no rawTimestamp fallback).
     cur.execute(
         "CREATE TABLE CUPTI_ACTIVITY_KIND_GPU_METRIC "
         "(timestamp INTEGER, metricId INTEGER, value REAL, sourceId INTEGER)"
@@ -641,16 +727,99 @@ def test_timeline_metrics_support_raw_timestamp_and_nonempty_table_preference(tm
         device_id=-1,
         limit=100,
     )
-    assert rows, "expected timeline metric rows from GPU_METRICS.rawTimestamp"
-    names = {str(r.get("name", "")) for r in rows}
-    assert any("sm__active" in n for n in names), names
+    assert not rows, "expected no rows when metrics table lacks timestamp column"
+
+
+def test_timeline_metrics_no_raw_timestamp_fallback_when_timestamp_window_misses(tmp_path: Path) -> None:
+    db = tmp_path / "raw_ts_fallback.sqlite"
+    conn = sqlite3.connect(str(db))
+    cur = conn.cursor()
+    cur.execute("CREATE TABLE StringIds (id INTEGER PRIMARY KEY, value TEXT)")
+    cur.execute(
+        "INSERT INTO StringIds(id, value) VALUES (?, ?)",
+        (101, "sm__active.avg.pct_of_peak_sustained_elapsed"),
+    )
+    cur.execute(
+        "CREATE TABLE CUPTI_ACTIVITY_KIND_GPU_METRIC "
+        "(timestamp INTEGER, rawTimestamp INTEGER, metricId INTEGER, value REAL, sourceId INTEGER)"
+    )
+    # timestamp is far away from analysis window, while rawTimestamp is inside window.
+    # Timeline metrics path must not fallback to rawTimestamp.
+    cur.executemany(
+        "INSERT INTO CUPTI_ACTIVITY_KIND_GPU_METRIC(timestamp, rawTimestamp, metricId, value, sourceId) VALUES (?, ?, ?, ?, ?)",
+        [
+            (10_000_000, 1000, 101, 11.0, 1),
+            (10_000_500, 2000, 101, 22.0, 1),
+        ],
+    )
+    conn.commit()
+    conn.close()
+
+    rows = _collect_metric_samples(
+        str(db),
+        start_ns=0,
+        end_ns=5000,
+        metric_name_like="%active%",
+        include_all_sources=False,
+        device_id=-1,
+        limit=100,
+    )
+    assert not rows, "expected no rows when timestamp misses window and rawTimestamp fallback is disabled"
+
+
+def test_timeline_metrics_use_gpu_kernel_window_not_nvtx_cpu_window(tmp_path: Path) -> None:
+    db = tmp_path / "gpu_window_vs_nvtx.sqlite"
+    _init_sqlite(db)
+
+    conn = sqlite3.connect(str(db))
+    # CPU NVTX window is short; runtime launch is inside it, but GPU kernel executes later.
+    conn.execute(
+        "INSERT INTO NVTX_EVENTS VALUES (?, ?, ?, ?, ?, ?)",
+        (100_000, 100_500, "late_launch rank=0", None, 59, 12345678),
+    )
+    conn.execute(
+        "INSERT INTO CUPTI_ACTIVITY_KIND_RUNTIME VALUES (?, ?, ?, ?, ?)",
+        (100_100, 100_200, 999, 3, 12345678),
+    )
+    conn.execute(
+        "INSERT INTO CUPTI_ACTIVITY_KIND_KERNEL VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (101_000, 101_500, 7, 999, 1, 1, 0, 128, 1, 1, 32, 4096, 0, 75.0),
+    )
+    conn.execute(
+        "INSERT INTO CUPTI_ACTIVITY_KIND_GPU_METRIC(timestamp, metricId, value, sourceId) VALUES (?, ?, ?, ?)",
+        (101_100, 101, 77.0, 1),
+    )
+    conn.commit()
+    conn.close()
+
+    out_html = tmp_path / "gpu_window_vs_nvtx.html"
+    export_timeline_html(
+        str(db),
+        output_path=str(out_html),
+        device_id=0,
+        nvtx_text="%late_launch%",
+        nvtx_index=0,
+        include_metrics=True,
+        metric_name_like="%sm__active%",
+        metrics_limit=-1,
+        metrics_max_points=-1,
+        debug=False,
+    )
+    text = out_html.read_text(encoding="utf-8")
+    m = re.search(r"const TIMELINE_DATA = (\{.*?\});", text, flags=re.S)
+    assert m is not None
+    payload = json.loads(m.group(1))
+    series = payload.get("metrics") or []
+    assert series, "expected metrics from GPU execution window"
     ts = sorted(
         int(p[0])
-        for s in rows
+        for s in series
         for p in s.get("points", [])
         if isinstance(p, list) and len(p) >= 2
     )
-    assert ts and ts[0] == 1000 and ts[-1] == 2000, ts
+    assert 101_100 in ts, ts
+    # Render window should be extended to include delayed GPU execution.
+    assert int(payload.get("window_end_ns") or 0) >= 101_500
 
 
 def test_timeline_kernel_fallback_keeps_overlap_rows(tmp_path: Path) -> None:
@@ -904,6 +1073,34 @@ def test_cli_sql_skill_reports_missing_gpu_metrics(tmp_path: Path, capsys) -> No
     assert "gpu metrics table" in msg.lower()
 
 
+def test_cli_sql_skill_debug_logs(tmp_path: Path, capsys) -> None:
+    db = tmp_path / "debug.sqlite"
+    _init_sqlite(db)
+
+    rc = main(
+        [
+            "nsys-sql-skill",
+            "--sqlite",
+            str(db),
+            "--skill",
+            "top_kernels",
+            "--param",
+            "device_id=0",
+            "--param",
+            "limit=5",
+            "--debug",
+            "--debug-rows",
+            "2",
+        ]
+    )
+    assert rc == 0
+    captured = capsys.readouterr()
+    msg = (captured.err or "") + (captured.out or "")
+    assert "[nsys-sql-skill][debug]" in msg
+    assert "skill=top_kernels" in msg
+    assert "rows=" in msg
+
+
 def test_cli_schema_inspect_grouped_and_mermaid(tmp_path: Path) -> None:
     db = tmp_path / "schema.sqlite"
     _init_sqlite(db)
@@ -1083,6 +1280,8 @@ def test_cli_nsys_commands(tmp_path: Path) -> None:
     timeline_text = timeline_nvtx_html.read_text(encoding="utf-8")
     assert "GPU Metrics In Window" in timeline_text
     assert "Kernel Timeline By Stream" in timeline_text
+    assert "stream-track" in timeline_text
+    assert "overlay_metrics_per_track" in timeline_text
     assert "sample_0 step=1 rank=0" in timeline_text
     assert "sample_0 step=2 rank=0" in timeline_text
     assert "sample_0 step=1 rank=1" in timeline_text
