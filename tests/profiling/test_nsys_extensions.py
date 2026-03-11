@@ -704,6 +704,23 @@ def test_cli_nsys_commands(tmp_path: Path) -> None:
     db_b = tmp_path / "b.sqlite"
     _init_sqlite(db_a, scale=1.0)
     _init_sqlite(db_b, scale=1.2)
+    # Inject one additional rank=1 scope + runtime + kernel to validate
+    # multi-rank timeline rendering in a single HTML.
+    conn = sqlite3.connect(str(db_a))
+    conn.execute(
+        "INSERT INTO NVTX_EVENTS VALUES (?, ?, ?, ?, ?, ?)",
+        (37000, 47000, "sample_0 step=1 rank=1", None, 59, 32345678),
+    )
+    conn.execute(
+        "INSERT INTO CUPTI_ACTIVITY_KIND_RUNTIME VALUES (?, ?, ?, ?, ?)",
+        (38000, 38200, 101, 3, 32345678),
+    )
+    conn.execute(
+        "INSERT INTO CUPTI_ACTIVITY_KIND_KERNEL VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (39000, 43000, 11, 101, 1, 1, 0, 128, 1, 1, 32, 4096, 0, 75.0),
+    )
+    conn.commit()
+    conn.close()
 
     export_json = tmp_path / "kernels.json"
     export_csv = tmp_path / "kernels.csv"
@@ -830,4 +847,7 @@ def test_cli_nsys_commands(tmp_path: Path) -> None:
     assert "Kernel Timeline By Stream" in timeline_text
     assert "sample_0 step=1 rank=0" in timeline_text
     assert "sample_0 step=2 rank=0" in timeline_text
-    assert "nvtx_scopes=2" in timeline_text
+    assert "sample_0 step=1 rank=1" in timeline_text
+    assert "nvtx_scopes=3" in timeline_text
+    assert "Rank 0 | Device 0" in timeline_text
+    assert "Rank 1 | Device 0" in timeline_text

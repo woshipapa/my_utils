@@ -366,7 +366,8 @@ def _build_builtin_skills(schema: NsightSchema) -> Dict[str, SqlSkill]:
                 f"k.{_ident(start_col)} AS start_ns, "
                 f"k.[{_ident(end_col)}] AS end_ns, "
                 f"k.{_ident(stream_col)} AS stream_id, "
-                f"{name_expr} AS kernel_name "
+                + (f"k.{_ident(device_col)} AS device_id, " if device_col else "NULL AS device_id, ")
+                + f"{name_expr} AS kernel_name "
                 f"FROM {kernel_table} k "
                 f"{name_join} "
                 "WHERE 1=1 "
@@ -1222,6 +1223,7 @@ def _build_builtin_skills(schema: NsightSchema) -> Dict[str, SqlSkill]:
                 f"k.[{_ident(end_col)}] AS kernel_end_ns, "
                 f"ROUND((k.[{_ident(end_col)}] - k.{_ident(start_col)}) / 1e6, 3) AS duration_ms, "
                 + (f"k.{_ident(stream_col)} AS stream_id, " if stream_col else "NULL AS stream_id, ")
+                + (f"k.{_ident(device_col)} AS device_id, " if device_col else "NULL AS device_id, ")
                 + f"{sk18_tpb} AS threads_per_block, "
                 + optional_cols
                 + f"{sk18_static_expr} AS static_shared_bytes, "

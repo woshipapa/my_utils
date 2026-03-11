@@ -42,7 +42,7 @@ def collect_kernel_rows(
         name = str(row.get("kernel_name") or "")
         enriched.append(
             {
-                "device_id": int(device_id),
+                "device_id": _to_int(row.get("device_id"), int(device_id)),
                 "stream_id": _to_int(row.get("stream_id"), 0),
                 "correlation_id": _to_int(row.get("correlation_id"), 0),
                 "kernel_name": name,
@@ -133,4 +133,3 @@ def export_kernels_flat(
     if text in {"csv"}:
         return write_rows_csv(rows, output_path)
     return write_rows_json(rows, output_path)
-
