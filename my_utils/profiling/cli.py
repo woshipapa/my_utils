@@ -606,6 +606,7 @@ def cmd_nsys_timeline_html(args: argparse.Namespace) -> int:
         metric_name_like=args.metric_name_like,
         metrics_limit=args.metrics_limit,
         include_all_metric_sources=bool(args.include_all_metric_sources),
+        debug=bool(args.debug),
     )
     print(f"[nsys-timeline-html] wrote: {output}")
     return 0
@@ -793,6 +794,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--include-all-metric-sources",
         action="store_true",
         help="include non-GPU generic sources (ETW/FTrace/etc) in metrics panel",
+    )
+    nsys_timeline.add_argument(
+        "--debug",
+        action="store_true",
+        help="print debug diagnostics (selected tables, row counts, sample rows) during timeline export",
     )
     nsys_timeline.set_defaults(func=cmd_nsys_timeline_html)
 

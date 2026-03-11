@@ -7,7 +7,7 @@ import math
 import re
 import sqlite3
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 from .nsys_flat_export import collect_kernel_rows
 from .nsys_schema_adapter import NsightSchema
@@ -55,6 +55,56 @@ def _parse_rank_from_text(text: object) -> Optional[int]:
 
 def _intervals_overlap(start_a: int, end_a: int, start_b: int, end_b: int) -> bool:
     return int(end_a) > int(start_b) and int(start_a) < int(end_b)
+
+
+def _noop_debug(_: str) -> None:
+    return
+
+
+def _build_debug_logger(
+    *,
+    enabled: bool,
+    log_fn: Optional[Callable[[str], None]] = None,
+) -> Callable[[str], None]:
+    if not bool(enabled):
+        return _noop_debug
+    sink = log_fn or print
+
+    def _emit(message: str) -> None:
+        try:
+            sink(f"[nsys-timeline-html][debug] {message}")
+        except Exception:
+            pass
+
+    return _emit
+
+
+def _preview_dict_rows(
+    rows: Sequence[Dict[str, object]],
+    *,
+    keys: Sequence[str],
+    limit: int = 3,
+) -> str:
+    out: List[Dict[str, object]] = []
+    for row in list(rows)[: max(0, int(limit))]:
+        item: Dict[str, object] = {}
+        for key in keys:
+            item[key] = row.get(key)
+        out.append(item)
+    return json.dumps(out, ensure_ascii=False)
+
+
+def _safe_table_count(conn: sqlite3.Connection, table_name: str) -> Optional[int]:
+    try:
+        row = conn.execute(f"SELECT COUNT(*) FROM {_ident(table_name)}").fetchone()
+    except Exception:
+        return None
+    if not row:
+        return None
+    try:
+        return int(row[0] or 0)
+    except Exception:
+        return None
 
 
 def _select_nvtx_windows(
@@ -113,7 +163,9 @@ def _collect_kernels_in_window(
     nvtx_windows: Optional[Sequence[Dict[str, object]]] = None,
     device_id: int,
     limit: int,
+    debug_log: Optional[Callable[[str], None]] = None,
 ) -> List[Dict[str, object]]:
+    debug = debug_log or _noop_debug
     rows: List[Dict[str, object]] = []
     seen = set()
     selected_windows: List[Tuple[int, int]] = []
@@ -126,15 +178,27 @@ def _collect_kernels_in_window(
                 continue
             selected_pairs.add((ws, we))
             selected_windows.append((ws, we))
+    debug(
+        "kernel query window start_ns={} end_ns={} device_id={} selected_nvtx_windows={}".format(
+            int(start_ns),
+            int(end_ns),
+            int(device_id),
+            len(selected_windows),
+        )
+    )
 
     # Prefer launch-attribution view (NVTX -> Runtime -> correlationId -> Kernel).
-    if "nvtx_kernel_sm_detail" in set(provider.list_sql_skills()):
+    skills = set(provider.list_sql_skills())
+    debug("available skills={} has_nvtx_kernel_sm_detail={}".format(len(skills), "nvtx_kernel_sm_detail" in skills))
+    detailed_kept = 0
+    if "nvtx_kernel_sm_detail" in skills:
         detailed = provider.run_sql_skill(
             "nvtx_kernel_sm_detail",
             nvtx_text=str(nvtx_text or "%"),
             device_id=int(device_id),
             limit=int(limit),
         )
+        debug("skill nvtx_kernel_sm_detail returned {} rows before filtering".format(len(detailed)))
         for row in detailed:
             ns = _to_int(row.get("nvtx_start_ns"), -1)
             ne = _to_int(row.get("nvtx_end_ns"), -1)
@@ -156,6 +220,7 @@ def _collect_kernels_in_window(
             if uniq in seen:
                 continue
             seen.add(uniq)
+            detailed_kept += 1
             rows.append(
                 {
                     "stream_id": _to_int(row.get("stream_id"), 0),
@@ -177,6 +242,9 @@ def _collect_kernels_in_window(
                     "rank": _parse_rank_from_text(row.get("nvtx_text")),
                 }
             )
+        debug("skill nvtx_kernel_sm_detail kept {} rows after filtering/dedup".format(detailed_kept))
+    else:
+        debug("skill nvtx_kernel_sm_detail unavailable, fallback to kernel_map only")
 
     # Fallback/补齐: plain kernel rows in time window.
     # This keeps timeline complete when launch-attribution misses some kernels.
@@ -188,6 +256,8 @@ def _collect_kernels_in_window(
         limit=int(limit),
         attach_iteration=False,
     )
+    fallback_kept = 0
+    debug("skill kernel_map returned {} rows before fallback filtering".format(len(fallback)))
     for row in fallback:
         ks = _to_int(row.get("start_ns"), -1)
         ke = _to_int(row.get("end_ns"), -1)
@@ -203,6 +273,7 @@ def _collect_kernels_in_window(
         if uniq in seen:
             continue
         seen.add(uniq)
+        fallback_kept += 1
         rows.append(
             {
                 "stream_id": _to_int(row.get("stream_id"), 0),
@@ -225,6 +296,17 @@ def _collect_kernels_in_window(
             }
         )
     rows.sort(key=lambda x: (_to_int(x.get("start_ns"), 0), _to_int(x.get("end_ns"), 0), _to_int(x.get("stream_id"), 0)))
+    debug("kernel rows final={} (from detail={} + fallback_added={})".format(len(rows), detailed_kept, fallback_kept))
+    if rows:
+        debug(
+            "kernel sample={}".format(
+                _preview_dict_rows(
+                    rows,
+                    keys=("kernel_name", "stream_id", "device_id", "start_ns", "end_ns", "kind"),
+                    limit=3,
+                )
+            )
+        )
     return rows
 
 
@@ -269,19 +351,38 @@ def _collect_metric_samples(
     include_all_sources: bool = False,
     device_id: int = -1,
     limit: int = 300000,
+    debug_log: Optional[Callable[[str], None]] = None,
 ) -> List[Dict[str, object]]:
+    debug = debug_log or _noop_debug
     conn = sqlite3.connect(str(sqlite_path))
     conn.row_factory = sqlite3.Row
     try:
         schema = NsightSchema(conn)
         if not schema.metrics_table:
+            debug("metrics table not detected in schema")
             return []
         metrics_table = _ident(schema.metrics_table)
         ts_col = schema.metrics_timestamp_col or schema.resolve_column(metrics_table, ("timestamp", "rawTimestamp", "start", "time"))
         id_col = schema.metrics_id_col or schema.resolve_column(metrics_table, ("metricId", "nameId", "eventId"))
         val_col = schema.metrics_value_col or schema.resolve_column(metrics_table, ("value", "metricValue", "val"))
         if not ts_col or not id_col or not val_col:
+            debug(
+                "metrics columns unresolved table={} ts_col={} id_col={} val_col={}".format(
+                    metrics_table, ts_col, id_col, val_col
+                )
+            )
             return []
+        debug(
+            "metrics source table={} ts_col={} id_col={} val_col={} device_id={} include_all_sources={} metric_like={}".format(
+                metrics_table,
+                ts_col,
+                id_col,
+                val_col,
+                int(device_id),
+                int(bool(include_all_sources)),
+                str(metric_name_like or "%"),
+            )
+        )
 
         name_expr = ""
         name_not_null = ""
@@ -307,16 +408,20 @@ def _collect_metric_samples(
                 name_expr = f"gm.{_ident(gm_name_col)}"
                 name_not_null = f"AND gm.{_ident(gm_name_col)} IS NOT NULL "
         has_gpu_info_mapping = bool(name_expr.startswith("gm."))
+        if has_gpu_info_mapping:
+            debug("metrics name mapping=TARGET_INFO_GPU_METRICS")
 
         if not name_expr and schema.string_table:
             string_table = _ident(schema.string_table)
             joins.append(f"JOIN {string_table} s ON g.{_ident(id_col)} = s.id")
             name_expr = "s.value"
             name_not_null = "AND s.value IS NOT NULL "
+            debug("metrics name mapping=StringIds")
 
         if not name_expr:
             name_expr = f"CAST(g.{_ident(id_col)} AS TEXT)"
             name_not_null = ""
+            debug("metrics name mapping=CAST(metricId AS TEXT)")
 
         source_join = ""
         source_where = ""
@@ -389,6 +494,13 @@ def _collect_metric_samples(
         )
         conn.execute(create_tmp_sql, filter_params)
         total_rows = int(conn.execute(f"SELECT COUNT(*) FROM {tmp_tbl}").fetchone()[0] or 0)
+        debug("metrics temp rows={} sampling_limit={}".format(total_rows, int(limit_i)))
+        if total_rows > 0:
+            sample_rows = conn.execute(
+                f"SELECT ts_ns, metric_name, metric_device_id, metric_source_name, metric_value "
+                f"FROM {tmp_tbl} ORDER BY ts_ns ASC LIMIT 3"
+            ).fetchall()
+            debug("metrics temp sample={}".format(json.dumps([dict(x) for x in sample_rows], ensure_ascii=False)))
 
         if total_rows <= 0:
             rows = []
@@ -438,6 +550,7 @@ def _collect_metric_samples(
                 ).fetchall()
                 collected.extend(sampled_rows)
             rows = sorted(collected, key=lambda r: (_to_int(r["ts_ns"], 0), str(r["metric_name"] or "")))
+        debug("metrics rows after sampling={}".format(len(rows)))
     finally:
         conn.close()
 
@@ -466,6 +579,14 @@ def _collect_metric_samples(
                 "color": _color_for_name(display_name),
                 "points": [[int(t), float(v)] for t, v in points],
             }
+        )
+    total_points = sum(len(item.get("points", [])) for item in series)
+    debug("metrics series={} total_points={}".format(len(series), int(total_points)))
+    if series:
+        debug(
+            "metrics series sample={}".format(
+                _preview_dict_rows(series, keys=("name", "color"), limit=3)
+            )
         )
     return series
 
@@ -705,7 +826,60 @@ def export_timeline_html(
     metric_name_like: str = "%",
     metrics_limit: int = 300000,
     include_all_metric_sources: bool = False,
+    debug: bool = False,
+    debug_log_fn: Optional[Callable[[str], None]] = None,
 ) -> str:
+    debug_log = _build_debug_logger(enabled=bool(debug), log_fn=debug_log_fn)
+    debug_log(
+        "start sqlite={} output={} device_id={} start_ns={} end_ns={} nvtx_text={} nvtx_index={} include_metrics={}".format(
+            str(sqlite_path),
+            str(output_path),
+            int(device_id),
+            int(start_ns),
+            int(end_ns),
+            str(nvtx_text or ""),
+            int(nvtx_index),
+            int(bool(include_metrics)),
+        )
+    )
+    try:
+        conn = sqlite3.connect(str(sqlite_path))
+        conn.row_factory = sqlite3.Row
+        try:
+            schema = NsightSchema(conn)
+            debug_log(
+                "schema tables kernel={} runtime={} nvtx={} metrics={} string={}".format(
+                    schema.kernel_table,
+                    schema.runtime_table,
+                    schema.nvtx_table,
+                    schema.metrics_table,
+                    schema.string_table,
+                )
+            )
+            debug_log(
+                "metrics columns timestamp={} id={} value={}".format(
+                    schema.metrics_timestamp_col,
+                    schema.metrics_id_col,
+                    schema.metrics_value_col,
+                )
+            )
+            for table_name in (
+                schema.kernel_table,
+                schema.runtime_table,
+                schema.nvtx_table,
+                schema.metrics_table,
+                "TARGET_INFO_GPU_METRICS",
+                "GENERIC_EVENT_SOURCES",
+            ):
+                if not table_name:
+                    continue
+                count = _safe_table_count(conn, table_name)
+                debug_log("table count {}={}".format(table_name, "n/a" if count is None else count))
+        finally:
+            conn.close()
+    except Exception as exc:
+        debug_log("schema probe failed: {}".format(exc))
+
     provider = NsysSqliteMetricsProvider(sqlite_path)
 
     selected_nvtx_windows: List[Dict[str, object]] = []
@@ -717,9 +891,31 @@ def export_timeline_html(
             nvtx_text=str(nvtx_text),
         )
         selected_nvtx_windows = _pick_nvtx_windows(matched_nvtx, nvtx_index=int(nvtx_index))
+        debug_log(
+            "nvtx match count={} selected_count={}".format(
+                len(matched_nvtx),
+                len(selected_nvtx_windows),
+            )
+        )
+        if selected_nvtx_windows:
+            debug_log(
+                "selected nvtx sample={}".format(
+                    _preview_dict_rows(
+                        selected_nvtx_windows,
+                        keys=("nvtx_text", "start_ns", "end_ns", "duration_ms"),
+                        limit=3,
+                    )
+                )
+            )
         if selected_nvtx_windows:
             effective_start_ns = min(_to_int(item.get("start_ns"), -1) for item in selected_nvtx_windows)
             effective_end_ns = max(_to_int(item.get("end_ns"), -1) for item in selected_nvtx_windows)
+            debug_log(
+                "effective window from nvtx start_ns={} end_ns={}".format(
+                    int(effective_start_ns),
+                    int(effective_end_ns),
+                )
+            )
 
     if effective_start_ns < 0 or effective_end_ns < 0 or effective_end_ns <= effective_start_ns:
         # If no explicit valid window, infer from full kernel rows.
@@ -731,13 +927,21 @@ def export_timeline_html(
             limit=int(limit),
             attach_iteration=False,
         )
+        debug_log("infer window from kernel_map rows={}".format(len(base_rows)))
         if not base_rows:
             out = Path(output_path)
             out.parent.mkdir(parents=True, exist_ok=True)
             out.write_text("<html><body><h2>No kernels</h2></body></html>", encoding="utf-8")
+            debug_log("no kernels found; wrote empty html")
             return str(out)
         effective_start_ns = min(int(item["start_ns"]) for item in base_rows)
         effective_end_ns = max(int(item["end_ns"]) for item in base_rows)
+        debug_log(
+            "effective window from kernels start_ns={} end_ns={}".format(
+                int(effective_start_ns),
+                int(effective_end_ns),
+            )
+        )
 
     kernels = _collect_kernels_in_window(
         provider,
@@ -747,6 +951,7 @@ def export_timeline_html(
         nvtx_windows=selected_nvtx_windows or None,
         device_id=int(device_id),
         limit=int(limit),
+        debug_log=debug_log,
     )
 
     metric_series: List[Dict[str, object]] = []
@@ -759,7 +964,10 @@ def export_timeline_html(
             include_all_sources=bool(include_all_metric_sources),
             device_id=int(device_id),
             limit=int(metrics_limit),
+            debug_log=debug_log,
         )
+    else:
+        debug_log("metrics disabled (include_metrics=0)")
 
     text = _render_html(
         sqlite_path=str(sqlite_path),
@@ -774,4 +982,13 @@ def export_timeline_html(
     out = Path(output_path)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(text, encoding="utf-8")
+    debug_log(
+        "done output={} kernels={} metric_series={} window=[{}, {}]".format(
+            str(out),
+            len(kernels),
+            len(metric_series),
+            int(effective_start_ns),
+            int(effective_end_ns),
+        )
+    )
     return str(out)
