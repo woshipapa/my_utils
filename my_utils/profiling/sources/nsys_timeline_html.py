@@ -350,45 +350,65 @@ def _collect_metric_samples(
         )
 
         limit_i = int(limit)
-        if limit_i <= 0:
-            sql = (
-                select_expr
-                + from_join_expr
-                + base_where
-                + "ORDER BY g.{ts} ASC".format(ts=_ident(ts_col))
-            )
-            rows = conn.execute(sql, filter_params).fetchall()
+        tmp_tbl = "_myu_metrics_base"
+        conn.execute(f"DROP TABLE IF EXISTS {tmp_tbl}")
+        create_tmp_sql = (
+            f"CREATE TEMP TABLE {tmp_tbl} AS "
+            + select_expr
+            + from_join_expr
+            + base_where
+        )
+        conn.execute(create_tmp_sql, filter_params)
+        total_rows = int(conn.execute(f"SELECT COUNT(*) FROM {tmp_tbl}").fetchone()[0] or 0)
+
+        if total_rows <= 0:
+            rows = []
+        elif limit_i <= 0 or total_rows <= limit_i:
+            rows = conn.execute(
+                f"SELECT ts_ns, metric_name, metric_device_id, metric_source_name, metric_value "
+                f"FROM {tmp_tbl} ORDER BY ts_ns ASC"
+            ).fetchall()
         else:
-            count_sql = "SELECT COUNT(*) " + from_join_expr + base_where
-            total_rows = int(conn.execute(count_sql, filter_params).fetchone()[0] or 0)
-            if total_rows <= limit_i:
-                sql = (
-                    select_expr
-                    + from_join_expr
-                    + base_where
-                    + "ORDER BY g.{ts} ASC".format(ts=_ident(ts_col))
-                )
-                rows = conn.execute(sql, filter_params).fetchall()
-            else:
-                # Uniformly sample across the entire window instead of taking only earliest rows.
-                stride = max(1, int(math.ceil(float(total_rows) / float(limit_i))))
+            # Distribute sampling budget by metric/device series, so each series keeps timeline coverage.
+            series_rows = conn.execute(
+                f"SELECT metric_name, metric_device_id, metric_source_name, COUNT(*) AS cnt "
+                f"FROM {tmp_tbl} "
+                f"GROUP BY metric_name, metric_device_id, metric_source_name "
+                f"ORDER BY metric_name, metric_device_id, metric_source_name"
+            ).fetchall()
+            series_count = max(1, len(series_rows))
+            target_per_series = max(2, int(math.floor(float(limit_i) / float(series_count))))
+            collected: List[sqlite3.Row] = []
+            for sr in series_rows:
+                metric_name = sr["metric_name"]
+                metric_device_id = sr["metric_device_id"]
+                metric_source_name = sr["metric_source_name"]
+                cnt = int(sr["cnt"] or 0)
+                if cnt <= target_per_series:
+                    stride = 1
+                else:
+                    stride = max(1, int(math.ceil(float(cnt) / float(target_per_series))))
                 sampled_sql = (
-                    "WITH base AS ("
-                    + select_expr
-                    + from_join_expr
-                    + base_where
-                    + "), numbered AS ("
-                    + "SELECT ts_ns, metric_name, metric_device_id, metric_source_name, metric_value, "
-                    + "ROW_NUMBER() OVER (ORDER BY ts_ns ASC) AS rn, "
-                    + "COUNT(*) OVER () AS total_rows "
-                    + "FROM base"
-                    + ") "
-                    + "SELECT ts_ns, metric_name, metric_device_id, metric_source_name, metric_value "
-                    + "FROM numbered "
-                    + "WHERE ((rn - 1) % ?) = 0 OR rn = total_rows "
-                    + "ORDER BY ts_ns ASC"
+                    "WITH numbered AS ("
+                    f"SELECT ts_ns, metric_name, metric_device_id, metric_source_name, metric_value, "
+                    "ROW_NUMBER() OVER (ORDER BY ts_ns ASC) AS rn, "
+                    "COUNT(*) OVER () AS total_rows "
+                    f"FROM {tmp_tbl} "
+                    "WHERE metric_name = ? "
+                    "AND metric_device_id IS ? "
+                    "AND metric_source_name IS ?"
+                    ") "
+                    "SELECT ts_ns, metric_name, metric_device_id, metric_source_name, metric_value "
+                    "FROM numbered "
+                    "WHERE rn = 1 OR rn = total_rows OR ((rn - 1) % ?) = 0 "
+                    "ORDER BY ts_ns ASC"
                 )
-                rows = conn.execute(sampled_sql, [*filter_params, int(stride)]).fetchall()
+                sampled_rows = conn.execute(
+                    sampled_sql,
+                    [metric_name, metric_device_id, metric_source_name, int(stride)],
+                ).fetchall()
+                collected.extend(sampled_rows)
+            rows = sorted(collected, key=lambda r: (_to_int(r["ts_ns"], 0), str(r["metric_name"] or "")))
     finally:
         conn.close()
 
