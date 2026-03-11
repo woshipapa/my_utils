@@ -286,34 +286,81 @@ def _collect_metric_samples(
                 )
 
         device_where = ""
-        params: List[object] = [int(start_ns), int(end_ns), str(metric_name_like or "%"), str(metric_name_like or "%")]
+        filter_params: List[object] = [
+            int(start_ns),
+            int(end_ns),
+            str(metric_name_like or "%"),
+            str(metric_name_like or "%"),
+        ]
         device_col = schema.resolve_column(metrics_table, ("deviceId", "gpuId", "device", "gpu"))
         if device_col:
             device_where = f"AND (? < 0 OR g.{_ident(device_col)} = ?) "
-            params.extend([int(device_id), int(device_id)])
+            filter_params.extend([int(device_id), int(device_id)])
 
         if source_where:
-            params.append(1 if bool(include_all_sources) else 0)
+            filter_params.append(1 if bool(include_all_sources) else 0)
 
-        params.append(int(limit))
-        sql = (
-            f"SELECT g.{_ident(ts_col)} AS ts_ns, "
-            f"{name_expr} AS metric_name, "
-            f"CAST(g.{_ident(val_col)} AS REAL) AS metric_value "
-            f"FROM {metrics_table} g "
-            + " ".join(joins)
-            + " "
-            + source_join
-            + " "
-            + "WHERE g.{ts} >= ? AND g.{ts} <= ? ".format(ts=_ident(ts_col))
+        base_where = (
+            "WHERE g.{ts} >= ? AND g.{ts} <= ? ".format(ts=_ident(ts_col))
             + "AND (? = '%' OR {name_expr} LIKE ?) ".format(name_expr=name_expr)
             + name_not_null
             + device_where
             + source_where
             + f"AND g.{_ident(val_col)} IS NOT NULL "
-            + "ORDER BY g.{ts} ASC LIMIT ?".format(ts=_ident(ts_col))
         )
-        rows = conn.execute(sql, params).fetchall()
+        select_expr = (
+            f"SELECT g.{_ident(ts_col)} AS ts_ns, "
+            f"{name_expr} AS metric_name, "
+            f"CAST(g.{_ident(val_col)} AS REAL) AS metric_value "
+        )
+        from_join_expr = (
+            f"FROM {metrics_table} g "
+            + " ".join(joins)
+            + " "
+            + source_join
+            + " "
+        )
+
+        limit_i = int(limit)
+        if limit_i <= 0:
+            sql = (
+                select_expr
+                + from_join_expr
+                + base_where
+                + "ORDER BY g.{ts} ASC".format(ts=_ident(ts_col))
+            )
+            rows = conn.execute(sql, filter_params).fetchall()
+        else:
+            count_sql = "SELECT COUNT(*) " + from_join_expr + base_where
+            total_rows = int(conn.execute(count_sql, filter_params).fetchone()[0] or 0)
+            if total_rows <= limit_i:
+                sql = (
+                    select_expr
+                    + from_join_expr
+                    + base_where
+                    + "ORDER BY g.{ts} ASC".format(ts=_ident(ts_col))
+                )
+                rows = conn.execute(sql, filter_params).fetchall()
+            else:
+                # Uniformly sample across the entire window instead of taking only earliest rows.
+                stride = max(1, int(math.ceil(float(total_rows) / float(limit_i))))
+                sampled_sql = (
+                    "WITH base AS ("
+                    + select_expr
+                    + from_join_expr
+                    + base_where
+                    + "), numbered AS ("
+                    + "SELECT ts_ns, metric_name, metric_value, "
+                    + "ROW_NUMBER() OVER (ORDER BY ts_ns ASC) AS rn, "
+                    + "COUNT(*) OVER () AS total_rows "
+                    + "FROM base"
+                    + ") "
+                    + "SELECT ts_ns, metric_name, metric_value "
+                    + "FROM numbered "
+                    + "WHERE ((rn - 1) % ?) = 0 OR rn = total_rows "
+                    + "ORDER BY ts_ns ASC"
+                )
+                rows = conn.execute(sampled_sql, [*filter_params, int(stride)]).fetchall()
     finally:
         conn.close()
 
