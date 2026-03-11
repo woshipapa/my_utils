@@ -32,6 +32,7 @@ profiling/
 ## CLI Quick Commands
 
 All commands run via `python -m my_utils.profiling.cli <subcommand>` or the `myutils-profile` entry point.
+For nsys workflows, direct short aliases are also installed (for example `nsys-sql-skill`, `nsys-analyze`, `nsys-diff`).
 
 ```bash
 # list built-in providers
@@ -46,6 +47,12 @@ myutils-profile nsys-analyze --sqlite ./train_rank0.sqlite --device-id 0 --top-k
 myutils-profile nsys-export --sqlite ./train_rank0.sqlite --device-id 0 --format csv --output ./kernels_flat.csv
 myutils-profile nsys-diff --before-sqlite ./run_a.sqlite --after-sqlite ./run_b.sqlite --device-id 0 --output ./nsys_diff.json
 myutils-profile nsys-timeline-html --sqlite ./train_rank0.sqlite --device-id 0 --output ./timeline.html
+myutils-profile nsys-timeline-html --sqlite ./train_rank0.sqlite --output ./timeline_nvtx.html --nvtx-text "%sample_0%" --include-metrics --metric-name-like "%active%"
+
+# direct aliases (same behavior as above)
+nsys-sql-skill --sqlite ./train_rank0.sqlite --list-skills --pretty
+nsys-analyze --sqlite ./train_rank0.sqlite --device-id 0 --top-k 20 --output ./nsys_analyze.json
+nsys-timeline-html --sqlite ./train_rank0.sqlite --output ./timeline_nvtx.html --nvtx-text "%sample_0%" --include-metrics
 ```
 
 ## Nsight Systems Offline Analysis Reference
@@ -114,6 +121,22 @@ myutils-profile nsys-sql-skill \
 | `memcpy_in_window` | Memcpy by copyKind in a time window |
 | `thread_utilization` | CPU thread utilization % |
 | `schema_inspect` | Table/column schema viewer |
+
+For `schema_inspect`, CLI also supports richer display modes:
+
+```bash
+myutils-profile nsys-sql-skill \
+  --sqlite ./train_rank0.sqlite \
+  --skill schema_inspect \
+  --schema-view both \
+  --pretty
+```
+
+`--schema-view`:
+- `flat`: raw rows
+- `grouped`: grouped columns by table
+- `mermaid`: inferred table relations and Mermaid flowchart
+- `both`: grouped + mermaid (default)
 
 ### nsys-export
 
