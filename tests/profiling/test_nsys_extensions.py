@@ -759,6 +759,54 @@ def test_timeline_default_focus_metrics_filters_unrelated_series(tmp_path: Path)
     assert all("random_metric_should_be_filtered" not in n for n in names), names
 
 
+def test_timeline_default_focus_warps_metrics_keep_throughput_only(tmp_path: Path) -> None:
+    db = tmp_path / "timeline_focus_warps_throughput_only.sqlite"
+    _init_sqlite(db)
+
+    conn = sqlite3.connect(str(db))
+    cur = conn.cursor()
+    cur.executemany(
+        "INSERT INTO StringIds(id, value) VALUES (?, ?)",
+        [
+            (778, "Compute Warps in Flight [Avg Warps Per Cycle]"),
+            (779, "Compute Warps in Flight [Throughput %]"),
+        ],
+    )
+    cur.executemany(
+        "INSERT INTO CUPTI_ACTIVITY_KIND_GPU_METRIC(timestamp, metricId, value, sourceId) VALUES (?, ?, ?, ?)",
+        [
+            (2100, 778, 3.25, 1),
+            (2200, 778, 3.55, 1),
+            (2100, 779, 61.0, 1),
+            (2200, 779, 66.0, 1),
+        ],
+    )
+    conn.commit()
+    conn.close()
+
+    out_html = tmp_path / "timeline_focus_warps_throughput_only.html"
+    rc = main(
+        [
+            "nsys-timeline-html",
+            "--sqlite",
+            str(db),
+            "--output",
+            str(out_html),
+            "--device-id",
+            "0",
+            "--include-metrics",
+        ]
+    )
+    assert rc == 0
+    text = out_html.read_text(encoding="utf-8")
+    m = re.search(r"const TIMELINE_DATA = (\{.*?\});", text, flags=re.S)
+    assert m is not None
+    payload = json.loads(m.group(1))
+    names = {str(s.get("name", "")).lower() for s in (payload.get("metrics") or [])}
+    assert any("compute warps in flight" in n and "throughput" in n for n in names), names
+    assert all("avg warps per cycle" not in n for n in names), names
+
+
 def test_gpu_metrics_split_by_device_dimension(tmp_path: Path) -> None:
     db = tmp_path / "rank0_multi_device.sqlite"
     _init_sqlite(db)
