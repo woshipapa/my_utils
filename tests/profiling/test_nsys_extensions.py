@@ -1448,9 +1448,22 @@ def test_cli_nsys_commands(tmp_path: Path) -> None:
     assert "Kernel Timeline By Stream" in timeline_text
     assert "stream-track" in timeline_text
     assert "overlay_metrics_per_track" in timeline_text
+    assert "Kernel Theoretical Occupancy Sum [%]" in timeline_text
+    assert "occ_theoretical_pct=" in timeline_text
     assert "sample_0 step=1 rank=0" in timeline_text
     assert "sample_0 step=2 rank=0" in timeline_text
     assert "sample_0 step=1 rank=1" in timeline_text
     assert "nvtx_scopes=3" in timeline_text
     assert "Rank 0 | Device 0" in timeline_text
     assert "Rank 1 | Device 0" in timeline_text
+    m = re.search(r"const TIMELINE_DATA = (\{.*?\});", timeline_text, flags=re.S)
+    assert m is not None
+    payload = json.loads(m.group(1))
+    all_groups = payload.get("all_stream_groups") or []
+    assert all_groups, payload
+    first_group = all_groups[0]
+    stream_rows = first_group.get("streams") or []
+    assert stream_rows, first_group
+    kernels = stream_rows[0].get("kernels") or []
+    assert kernels, stream_rows[0]
+    assert "occupancy_pct_estimate" in kernels[0], kernels[0]

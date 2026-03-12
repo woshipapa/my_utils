@@ -822,6 +822,7 @@ def _render_html(
                         "end_ns": ke,
                         "kind": str(row.get("kind") or ""),
                         "duration_ms": row.get("duration_ms"),
+                        "occupancy_pct_estimate": row.get("occupancy_pct_estimate"),
                         "color": _color_for_name(kname),
                     }
                 )
@@ -922,7 +923,8 @@ def _render_html(
             (
                 "<div class='axis-note'>"
                 "All streams for the same rank/device are merged into one wide panel. "
-                "Use +/- controls to shift each metric curve vertically while keeping the same shared X-axis."
+                "Kernel Theoretical Occupancy Sum [%] is auto-derived by summing overlapping kernels, and "
+                "you can use +/- controls to shift each metric curve vertically while keeping the same shared X-axis."
                 "</div>"
             ),
             "</div>",
@@ -989,7 +991,7 @@ def _render_html(
                         f"{name} | kind={row.get('kind')} | dur_ms={row.get('duration_ms')} | "
                         f"start_ns={s} | end_ns={e} | stream={sid} | device={dev} | rank={rank} | "
                         f"tpb={row.get('threads_per_block')} | regs={row.get('registers_per_thread')} | "
-                        f"smem={row.get('total_shared_bytes')} | occ={row.get('occupancy_pct_estimate')}"
+                        f"smem={row.get('total_shared_bytes')} | occ_theoretical_pct={row.get('occupancy_pct_estimate')}"
                     )
                     lines.append(
                         f"<div class='bar' style='left:{left_px}px;width:{width_bar}px;background:{color};' "
@@ -1365,6 +1367,46 @@ def _render_html(
             "    const ts1 = (idx + 1 < pts.length) ? Number(pts[idx + 1][0]) : null;",
             "    return {value:value, start_ns:ts0, end_ns:Number.isFinite(ts1) ? ts1 : null};",
             "  };",
+            "  const buildKernelOccSumSeries = (streamRows) => {",
+            "    const events = new Map();",
+            "    const addEvent = (ts, delta) => {",
+            "      const t = Number(ts);",
+            "      const d = Number(delta);",
+            "      if (!Number.isFinite(t) || !Number.isFinite(d)) return;",
+            "      events.set(t, Number(events.get(t) || 0) + d);",
+            "    };",
+            "    for (const srow of (Array.isArray(streamRows) ? streamRows : [])) {",
+            "      const kernels = Array.isArray(srow.kernels) ? srow.kernels : [];",
+            "      for (const k of kernels) {",
+            "        const s = Number(k.start_ns);",
+            "        const e = Number(k.end_ns);",
+            "        const occRaw = k.occupancy_pct_estimate;",
+            "        if (occRaw === null || occRaw === undefined || occRaw === '') continue;",
+            "        const occ = Number(occRaw);",
+            "        if (!Number.isFinite(s) || !Number.isFinite(e) || !(e > s) || !Number.isFinite(occ)) continue;",
+            "        addEvent(s, occ);",
+            "        addEvent(e, -occ);",
+            "      }",
+            "    }",
+            "    const times = [...events.keys()].sort((a,b) => a - b);",
+            "    const points = [];",
+            "    let running = 0.0;",
+            "    const wndStart = Number(startNs);",
+            "    const wndEnd = Number(startNs + span);",
+            "    if (times.length > 0 && wndStart < times[0]) points.push([wndStart, 0.0]);",
+            "    for (const t of times) {",
+            "      running += Number(events.get(t) || 0);",
+            "      if (Math.abs(running) < 1e-9) running = 0.0;",
+            "      points.push([t, running]);",
+            "    }",
+            "    if (times.length > 0 && times[times.length - 1] < wndEnd) points.push([wndEnd, running]);",
+            "    return {",
+            "      name: 'Kernel Theoretical Occupancy Sum [%]',",
+            "      color: '#7fd96b',",
+            "      points: points,",
+            "      metric_kind: 'kernel_occ_sum'",
+            "    };",
+            "  };",
             "  for (const g of groups) {",
                 "    const panel = document.createElement('div');",
                 "    panel.className = 'allstream-panel';",
@@ -1406,7 +1448,12 @@ def _render_html(
             "      }",
             "    }",
             "",
-            "    const metricState = selectedMetrics.map((s) => ({series:s, offset:0, visible:true}));",
+            "    const occSumSeries = buildKernelOccSumSeries(streamRows);",
+            "    const metricState = [];",
+            "    if (Array.isArray(occSumSeries.points) && occSumSeries.points.length > 0) {",
+            "      metricState.push({series:occSumSeries, offset:0, visible:true});",
+            "    }",
+            "    for (const s of selectedMetrics) metricState.push({series:s, offset:0, visible:true});",
             "    for (const st of metricState) st._pts = toNumericPoints(st.series);",
             "    if (metricState.length > 0) {",
                 "      const ctrls = document.createElement('div');",
@@ -1638,7 +1685,7 @@ def _render_html(
             "          const width = Math.max(1, ((e - s) / span) * basePlotW);",
             "          const rect = mkSvg('rect', {x:left, y:laneY, width:width, height:laneH, rx:2, ry:2, fill:String(k.color || '#6699cc'), opacity:0.92});",
             "          const ttl = mkSvg('title', {});",
-            "          ttl.textContent = `${k.kernel_name || ''} | stream=${srow.stream_id} | start_ns=${s} | end_ns=${e} | kind=${k.kind || ''}`;",
+            "          ttl.textContent = `${k.kernel_name || ''} | stream=${srow.stream_id} | start_ns=${s} | end_ns=${e} | kind=${k.kind || ''} | occ_theoretical_pct=${k.occupancy_pct_estimate}`;",
             "          rect.appendChild(ttl);",
             "          svg.appendChild(rect);",
             "        }",
