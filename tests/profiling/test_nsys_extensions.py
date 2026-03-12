@@ -746,6 +746,7 @@ def test_timeline_default_focus_metrics_filters_unrelated_series(tmp_path: Path)
             "--device-id",
             "0",
             "--include-metrics",
+            "--default-focus-metrics",
         ]
     )
     assert rc == 0
@@ -795,6 +796,7 @@ def test_timeline_default_focus_warps_metrics_keep_throughput_only(tmp_path: Pat
             "--device-id",
             "0",
             "--include-metrics",
+            "--default-focus-metrics",
         ]
     )
     assert rc == 0

@@ -1783,7 +1783,7 @@ def export_timeline_html(
     metrics_limit: int = -1,
     metrics_max_points: int = -1,
     overlay_metrics_per_track: int = 7,
-    default_focus_metrics: bool = True,
+    default_focus_metrics: bool = False,
     include_all_metric_sources: bool = False,
     debug: bool = False,
     debug_rows: int = -1,
@@ -1956,24 +1956,13 @@ def export_timeline_html(
         metric_query_start_ns = int(render_start_ns)
         metric_query_end_ns = int(render_end_ns)
         metric_restrict_intervals: Optional[List[Tuple[int, int]]] = None
-        if kernel_intervals:
-            metric_restrict_intervals = list(kernel_intervals)
-            metric_query_start_ns = int(kernel_intervals[0][0])
-            metric_query_end_ns = int(kernel_intervals[-1][1])
-            debug_log(
-                "metrics query uses GPU kernel window start_ns={} end_ns={} intervals={}".format(
-                    int(metric_query_start_ns),
-                    int(metric_query_end_ns),
-                    len(metric_restrict_intervals),
-                )
+        debug_log(
+            "metrics query uses render window start_ns={} end_ns={} (no kernel-interval restriction, kernel_intervals={})".format(
+                int(metric_query_start_ns),
+                int(metric_query_end_ns),
+                len(kernel_intervals),
             )
-        else:
-            debug_log(
-                "metrics query fallback to render window start_ns={} end_ns={} (no kernels)".format(
-                    int(metric_query_start_ns),
-                    int(metric_query_end_ns),
-                )
-            )
+        )
         apply_focus_filter = bool(default_focus_metrics) and str(metric_name_like or "%").strip() in ("", "%")
         debug_log(
             "metrics focus filter active={} metric_name_like={}".format(
