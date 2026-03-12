@@ -681,25 +681,42 @@ def _build_builtin_skills(schema: NsightSchema) -> Dict[str, SqlSkill]:
             metrics_source_join = ""
             metrics_source_where = ""
             metrics_source_name_expr = "NULL"
+            metrics_source_key_expr = ""
             metrics_source_col = schema.resolve_column(metrics_table, ("sourceId", "source_id"))
-            if metrics_source_col and schema.table_exists("GENERIC_EVENT_SOURCES") and (not metrics_has_gpu_info_mapping):
+            if metrics_source_col:
+                metrics_source_key_expr = f"g.{_ident(metrics_source_col)}"
+            elif metrics_has_gpu_info_mapping:
+                metrics_gm_source_col = schema.resolve_column(gpu_info_tbl, ("sourceId", "source_id"))
+                if metrics_gm_source_col:
+                    metrics_source_key_expr = f"gm.{_ident(metrics_gm_source_col)}"
+
+            if metrics_source_key_expr and schema.table_exists("GENERIC_EVENT_SOURCES"):
                 ges_tbl = _ident("GENERIC_EVENT_SOURCES")
                 ges_id_col = schema.resolve_column(ges_tbl, ("sourceId", "id", "source_id"))
                 ges_name_col = schema.resolve_column(ges_tbl, ("name", "source", "sourceName"))
-                if ges_id_col and ges_name_col:
+                ges_name_id_col = schema.resolve_column(ges_tbl, ("nameId", "name_id"))
+                if ges_id_col:
                     metrics_source_join = (
                         f"LEFT JOIN {ges_tbl} gs "
-                        f"ON g.{_ident(metrics_source_col)} = gs.{_ident(ges_id_col)} "
+                        f"ON {metrics_source_key_expr} = gs.{_ident(ges_id_col)} "
                     )
-                    metrics_source_name_expr = f"gs.{_ident(ges_name_col)}"
-                    metrics_source_where = (
-                        "AND ("
-                        "{include_all_sources} = 1 "
-                        f"OR gs.{_ident(ges_name_col)} IS NULL "
-                        f"OR LOWER(gs.{_ident(ges_name_col)}) LIKE '%gpu%metric%' "
-                        f"OR LOWER(gs.{_ident(ges_name_col)}) = 'gpumetrics'"
-                        ") "
-                    )
+                    if ges_name_col:
+                        metrics_source_name_expr = f"gs.{_ident(ges_name_col)}"
+                    elif ges_name_id_col and string_table:
+                        metrics_source_join += (
+                            f"LEFT JOIN {_ident(string_table)} gss "
+                            f"ON gs.{_ident(ges_name_id_col)} = gss.id "
+                        )
+                        metrics_source_name_expr = "gss.value"
+                    if metrics_source_name_expr != "NULL":
+                        metrics_source_where = (
+                            "AND ("
+                            "{include_all_sources} = 1 "
+                            f"OR {metrics_source_name_expr} IS NULL "
+                            f"OR LOWER({metrics_source_name_expr}) LIKE '%gpu%metric%' "
+                            f"OR LOWER({metrics_source_name_expr}) = 'gpumetrics'"
+                            ") "
+                        )
 
             metrics_device_expr = "'unknown'"
             metrics_device_where = ""
@@ -1132,25 +1149,42 @@ def _build_builtin_skills(schema: NsightSchema) -> Dict[str, SqlSkill]:
             ngm_source_join = ""
             ngm_source_where = ""
             ngm_source_name_expr = "NULL"
+            ngm_source_key_expr = ""
             ngm_source_col = schema.resolve_column(ngm_metrics_table, ("sourceId", "source_id"))
-            if ngm_source_col and schema.table_exists("GENERIC_EVENT_SOURCES") and (not ngm_has_gpu_info_mapping):
+            if ngm_source_col:
+                ngm_source_key_expr = f"g.{_ident(ngm_source_col)}"
+            elif ngm_has_gpu_info_mapping:
+                ngm_gm_source_col = schema.resolve_column(ngm_gi_tbl, ("sourceId", "source_id"))
+                if ngm_gm_source_col:
+                    ngm_source_key_expr = f"gm.{_ident(ngm_gm_source_col)}"
+
+            if ngm_source_key_expr and schema.table_exists("GENERIC_EVENT_SOURCES"):
                 ngm_ges_tbl = _ident("GENERIC_EVENT_SOURCES")
                 ngm_ges_id_col = schema.resolve_column(ngm_ges_tbl, ("sourceId", "id", "source_id"))
                 ngm_ges_name_col = schema.resolve_column(ngm_ges_tbl, ("name", "source", "sourceName"))
-                if ngm_ges_id_col and ngm_ges_name_col:
+                ngm_ges_name_id_col = schema.resolve_column(ngm_ges_tbl, ("nameId", "name_id"))
+                if ngm_ges_id_col:
                     ngm_source_join = (
                         f"LEFT JOIN {ngm_ges_tbl} gs2 "
-                        f"ON g.{_ident(ngm_source_col)} = gs2.{_ident(ngm_ges_id_col)} "
+                        f"ON {ngm_source_key_expr} = gs2.{_ident(ngm_ges_id_col)} "
                     )
-                    ngm_source_name_expr = f"gs2.{_ident(ngm_ges_name_col)}"
-                    ngm_source_where = (
-                        "AND ("
-                        "{include_all_sources} = 1 "
-                        f"OR gs2.{_ident(ngm_ges_name_col)} IS NULL "
-                        f"OR LOWER(gs2.{_ident(ngm_ges_name_col)}) LIKE '%gpu%metric%' "
-                        f"OR LOWER(gs2.{_ident(ngm_ges_name_col)}) = 'gpumetrics'"
-                        ") "
-                    )
+                    if ngm_ges_name_col:
+                        ngm_source_name_expr = f"gs2.{_ident(ngm_ges_name_col)}"
+                    elif ngm_ges_name_id_col and string_table:
+                        ngm_source_join += (
+                            f"LEFT JOIN {_ident(string_table)} gs2s "
+                            f"ON gs2.{_ident(ngm_ges_name_id_col)} = gs2s.id "
+                        )
+                        ngm_source_name_expr = "gs2s.value"
+                    if ngm_source_name_expr != "NULL":
+                        ngm_source_where = (
+                            "AND ("
+                            "{include_all_sources} = 1 "
+                            f"OR {ngm_source_name_expr} IS NULL "
+                            f"OR LOWER({ngm_source_name_expr}) LIKE '%gpu%metric%' "
+                            f"OR LOWER({ngm_source_name_expr}) = 'gpumetrics'"
+                            ") "
+                        )
 
             ngm_device_where = ""
             ngm_device_col = schema.resolve_column(ngm_metrics_table, ("deviceId", "gpuId", "device", "gpu"))

@@ -515,6 +515,83 @@ def test_gpu_metric_name_mapping_prefers_target_info(tmp_path: Path) -> None:
     assert all("BAD_STRING_METRIC_NAME" not in n for n in tnames), tnames
 
 
+def test_gpu_metrics_source_nameid_chain_maps_device(tmp_path: Path) -> None:
+    db = tmp_path / "metrics_source_nameid_chain.sqlite"
+    conn = sqlite3.connect(str(db))
+    cur = conn.cursor()
+    cur.execute("CREATE TABLE StringIds (id INTEGER PRIMARY KEY, value TEXT)")
+    cur.executemany(
+        "INSERT INTO StringIds(id, value) VALUES (?, ?)",
+        [
+            (101, "sm__active.avg.pct_of_peak_sustained_elapsed"),
+            (9001, "GPU 2 Metrics"),
+        ],
+    )
+    cur.execute(
+        "CREATE TABLE GPU_METRICS ("
+        "timestamp INTEGER, metricId INTEGER, typeId INTEGER, value REAL)"
+    )
+    cur.execute(
+        "CREATE TABLE TARGET_INFO_GPU_METRICS ("
+        "metricId INTEGER, typeId INTEGER, sourceId INTEGER, metricName TEXT)"
+    )
+    cur.execute(
+        "CREATE TABLE CUPTI_ACTIVITY_KIND_KERNEL ("
+        "start INTEGER, [end] INTEGER)"
+    )
+    cur.execute(
+        "CREATE TABLE GENERIC_EVENT_SOURCES ("
+        "sourceId INTEGER, nameId INTEGER)"
+    )
+    cur.execute(
+        "INSERT INTO TARGET_INFO_GPU_METRICS(metricId, typeId, sourceId, metricName) VALUES (?, ?, ?, ?)",
+        (101, 1, 7, "sm__active.avg.pct_of_peak_sustained_elapsed"),
+    )
+    cur.execute(
+        "INSERT INTO GENERIC_EVENT_SOURCES(sourceId, nameId) VALUES (?, ?)",
+        (7, 9001),
+    )
+    cur.executemany(
+        "INSERT INTO GPU_METRICS(timestamp, metricId, typeId, value) VALUES (?, ?, ?, ?)",
+        [
+            (1000, 101, 1, 50.0),
+            (2000, 101, 1, 70.0),
+        ],
+    )
+    conn.commit()
+    conn.close()
+
+    timeline_rows = _collect_metric_samples(
+        str(db),
+        start_ns=0,
+        end_ns=10_000,
+        metric_name_like="%active%",
+        include_all_sources=False,
+        device_id=-1,
+        limit=-1,
+        max_points_per_series=-1,
+    )
+    assert timeline_rows, "expected timeline metric rows"
+    timeline_names = {str(r.get("name", "")) for r in timeline_rows}
+    assert any("[gpu 2]" in n for n in timeline_names), timeline_names
+
+    conn = sqlite3.connect(str(db))
+    conn.row_factory = sqlite3.Row
+    engine = NsysSqlSkillEngine(conn)
+    rows = engine.execute(
+        "gpu_metrics_aggregate",
+        metric_name_like="%active%",
+        include_all_sources=0,
+        start_ns=0,
+        end_ns=10_000,
+        device_id=-1,
+    )
+    conn.close()
+    assert rows, "expected gpu_metrics_aggregate rows"
+    devices = {str(r.get("metric_device", "")) for r in rows}
+    assert any("GPU 2 Metrics" in d for d in devices), devices
+
+
 def test_timeline_metric_sampling_spans_whole_window(tmp_path: Path) -> None:
     db = tmp_path / "rank0_sampling.sqlite"
     _init_sqlite(db)
@@ -639,6 +716,47 @@ def test_cli_timeline_metrics_defaults_keep_all_points(tmp_path: Path) -> None:
     sm_series = next((s for s in series if "sm__active" in str(s.get("name", ""))), None)
     assert sm_series is not None, series
     assert len(sm_series.get("points", [])) == 5000
+
+
+def test_timeline_default_focus_metrics_filters_unrelated_series(tmp_path: Path) -> None:
+    db = tmp_path / "timeline_focus_metrics.sqlite"
+    _init_sqlite(db)
+
+    conn = sqlite3.connect(str(db))
+    cur = conn.cursor()
+    cur.execute("INSERT INTO StringIds(id, value) VALUES (?, ?)", (777, "random_metric_should_be_filtered"))
+    cur.executemany(
+        "INSERT INTO CUPTI_ACTIVITY_KIND_GPU_METRIC(timestamp, metricId, value, sourceId) VALUES (?, ?, ?, ?)",
+        [
+            (2000, 777, 12.0, 1),
+            (3000, 777, 15.0, 1),
+        ],
+    )
+    conn.commit()
+    conn.close()
+
+    out_html = tmp_path / "timeline_focus_metrics.html"
+    rc = main(
+        [
+            "nsys-timeline-html",
+            "--sqlite",
+            str(db),
+            "--output",
+            str(out_html),
+            "--device-id",
+            "0",
+            "--include-metrics",
+        ]
+    )
+    assert rc == 0
+    text = out_html.read_text(encoding="utf-8")
+    m = re.search(r"const TIMELINE_DATA = (\{.*?\});", text, flags=re.S)
+    assert m is not None
+    payload = json.loads(m.group(1))
+    names = {str(s.get("name", "")) for s in (payload.get("metrics") or [])}
+    assert any("sm__active" in n for n in names), names
+    assert any("tensor__active" in n for n in names), names
+    assert all("random_metric_should_be_filtered" not in n for n in names), names
 
 
 def test_gpu_metrics_split_by_device_dimension(tmp_path: Path) -> None:
