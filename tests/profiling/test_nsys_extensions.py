@@ -988,6 +988,48 @@ def test_timeline_metrics_use_gpu_kernel_window_not_nvtx_cpu_window(tmp_path: Pa
     assert int(payload.get("window_end_ns") or 0) >= 101_500
 
 
+def test_timeline_kernel_occupancy_fallback_to_h100_formula_when_sqlite_missing(tmp_path: Path) -> None:
+    db = tmp_path / "timeline_occ_fallback.sqlite"
+    _init_sqlite(db)
+
+    conn = sqlite3.connect(str(db))
+    # Keep launch config columns, but drop sqlite-provided theoretical occupancy values.
+    conn.execute("UPDATE CUPTI_ACTIVITY_KIND_KERNEL SET theoreticalOccupancyPct = NULL")
+    conn.commit()
+    conn.close()
+
+    out_html = tmp_path / "timeline_occ_fallback.html"
+    export_timeline_html(
+        str(db),
+        output_path=str(out_html),
+        device_id=0,
+        include_metrics=False,
+        debug=False,
+    )
+    text = out_html.read_text(encoding="utf-8")
+    assert "occ_theoretical_pct=" in text
+    assert "occ_theoretical_pct=None" not in text
+    assert "Kernel Theoretical Occupancy Sum [%]" in text
+
+    m = re.search(r"const TIMELINE_DATA = (\{.*?\});", text, flags=re.S)
+    assert m is not None
+    payload = json.loads(m.group(1))
+    groups = payload.get("all_stream_groups") or []
+    assert groups, payload
+    occ_values = []
+    for g in groups:
+        for srow in (g.get("streams") or []):
+            for k in (srow.get("kernels") or []):
+                occ = k.get("occupancy_pct_estimate")
+                if occ is None:
+                    continue
+                occ_values.append(float(occ))
+    assert occ_values, payload
+    # Expected from calculate_h100_occupancy for fixture launch configs.
+    assert any(abs(v - 100.0) < 1e-6 for v in occ_values), occ_values
+    assert any(abs(v - 75.0) < 1e-6 for v in occ_values), occ_values
+
+
 def test_timeline_kernel_fallback_keeps_overlap_rows(tmp_path: Path) -> None:
     db = tmp_path / "kernel_overlap.sqlite"
     conn = sqlite3.connect(str(db))

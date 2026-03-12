@@ -11,6 +11,7 @@ from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 from .nsys_flat_export import collect_kernel_rows
 from .nsys_schema_adapter import NsightSchema
+from .nsys_sql_skills import calculate_h100_occupancy
 from .nsys_sqlite_provider import NsysSqliteMetricsProvider
 
 _RANK_RE = re.compile(r"\brank(?:\s*|[:=_-])(\d+)\b", re.IGNORECASE)
@@ -59,6 +60,35 @@ def _to_int(value: object, default: int = 0) -> int:
         return int(value)
     except Exception:
         return int(default)
+
+
+def _resolve_occupancy_pct_estimate(
+    occupancy_pct_estimate: object,
+    *,
+    threads_per_block: object,
+    registers_per_thread: object,
+    total_shared_bytes: object,
+) -> Optional[float]:
+    try:
+        if occupancy_pct_estimate is not None and str(occupancy_pct_estimate).strip() != "":
+            occ = float(occupancy_pct_estimate)
+            if math.isfinite(occ):
+                return float(occ)
+    except Exception:
+        pass
+    occ_h100 = calculate_h100_occupancy(
+        threads_per_block,
+        registers_per_thread,
+        total_shared_bytes,
+    )
+    if occ_h100 is None:
+        return None
+    try:
+        if math.isfinite(float(occ_h100)):
+            return float(occ_h100)
+    except Exception:
+        return None
+    return None
 
 
 def _parse_rank_from_text(text: object) -> Optional[int]:
@@ -273,6 +303,9 @@ def _collect_kernels_in_window(
                 continue
             seen.add(uniq)
             detailed_kept += 1
+            threads_per_block = row.get("threads_per_block")
+            registers_per_thread = row.get("registersPerThread")
+            total_shared_bytes = row.get("total_shared_bytes")
             rows.append(
                 {
                     "stream_id": _to_int(row.get("stream_id"), 0),
@@ -287,7 +320,12 @@ def _collect_kernels_in_window(
                     "static_shared_bytes": row.get("static_shared_bytes"),
                     "dynamic_shared_bytes": row.get("dynamic_shared_bytes"),
                     "total_shared_bytes": row.get("total_shared_bytes"),
-                    "occupancy_pct_estimate": row.get("occupancy_pct_estimate"),
+                    "occupancy_pct_estimate": _resolve_occupancy_pct_estimate(
+                        row.get("occupancy_pct_estimate"),
+                        threads_per_block=threads_per_block,
+                        registers_per_thread=registers_per_thread,
+                        total_shared_bytes=total_shared_bytes,
+                    ),
                     "nvtx_text": str(row.get("nvtx_text") or ""),
                     "nvtx_start_ns": ns,
                     "nvtx_end_ns": ne,
@@ -326,6 +364,9 @@ def _collect_kernels_in_window(
             continue
         seen.add(uniq)
         fallback_kept += 1
+        threads_per_block = row.get("threads_per_block")
+        registers_per_thread = row.get("registersPerThread")
+        total_shared_bytes = row.get("total_shared_bytes")
         rows.append(
             {
                 "stream_id": _to_int(row.get("stream_id"), 0),
@@ -340,7 +381,12 @@ def _collect_kernels_in_window(
                 "static_shared_bytes": None,
                 "dynamic_shared_bytes": None,
                 "total_shared_bytes": None,
-                "occupancy_pct_estimate": None,
+                "occupancy_pct_estimate": _resolve_occupancy_pct_estimate(
+                    row.get("occupancy_pct_estimate"),
+                    threads_per_block=threads_per_block,
+                    registers_per_thread=registers_per_thread,
+                    total_shared_bytes=total_shared_bytes,
+                ),
                 "nvtx_text": None,
                 "nvtx_start_ns": None,
                 "nvtx_end_ns": None,
