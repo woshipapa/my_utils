@@ -15,6 +15,25 @@ from .nsys_sqlite_provider import NsysSqliteMetricsProvider
 
 _RANK_RE = re.compile(r"\brank(?:\s*|[:=_-])(\d+)\b", re.IGNORECASE)
 _GPU_IDX_RE = re.compile(r"(?:gpu|device)\s*[_:#=\- ]?\s*(\d+)", re.IGNORECASE)
+_DEFAULT_FOCUS_METRIC_TOKENS: Tuple[str, ...] = (
+    "compute warps in flight",
+    "warps in flight",
+    "dram read bandwidth",
+    "dram write bandwidth",
+    "dram read",
+    "dram write",
+    "dram__bytes_read",
+    "dram__bytes_write",
+    "unallocated warps in active sms",
+    "unallocated warps",
+    "sm issue",
+    "issue active",
+    "smsp__issue",
+    "sm active",
+    "sm__active",
+    "tensor active",
+    "tensor__active",
+)
 
 
 def _ident(name: str) -> str:
@@ -377,6 +396,20 @@ def _metric_series_name(metric_name: str, tag_kind: str, tag_value: str) -> str:
     return f"{metric_name} [unknown]"
 
 
+def _normalize_metric_text(text: object) -> str:
+    return re.sub(r"\s+", " ", str(text or "").replace("_", " ").strip().lower())
+
+
+def _is_default_focus_metric_name(metric_name: object) -> bool:
+    norm = _normalize_metric_text(metric_name)
+    if not norm:
+        return False
+    for token in _DEFAULT_FOCUS_METRIC_TOKENS:
+        if token in norm:
+            return True
+    return False
+
+
 def _collect_metric_samples(
     sqlite_path: str,
     *,
@@ -387,6 +420,7 @@ def _collect_metric_samples(
     device_id: int = -1,
     limit: int = -1,
     max_points_per_series: int = -1,
+    apply_default_focus_filter: bool = False,
     restrict_to_intervals: Optional[Sequence[Tuple[int, int]]] = None,
     debug_log: Optional[Callable[[str], None]] = None,
     debug_rows: int = 3,
@@ -475,22 +509,45 @@ def _collect_metric_samples(
         source_join = ""
         source_where = ""
         source_name_expr = "NULL"
+        source_key_expr = ""
         source_col = schema.resolve_column(metrics_table, ("sourceId", "source_id"))
-        if source_col and schema.table_exists("GENERIC_EVENT_SOURCES") and (not has_gpu_info_mapping):
+        if source_col:
+            source_key_expr = f"g.{_ident(source_col)}"
+        elif has_gpu_info_mapping:
+            gm_source_col = schema.resolve_column("TARGET_INFO_GPU_METRICS", ("sourceId", "source_id"))
+            if gm_source_col:
+                source_key_expr = f"gm.{_ident(gm_source_col)}"
+
+        if source_key_expr and schema.table_exists("GENERIC_EVENT_SOURCES"):
             ges_tbl = _ident("GENERIC_EVENT_SOURCES")
             ges_id_col = schema.resolve_column(ges_tbl, ("sourceId", "id", "source_id"))
             ges_name_col = schema.resolve_column(ges_tbl, ("name", "source", "sourceName"))
-            if ges_id_col and ges_name_col:
+            ges_name_id_col = schema.resolve_column(ges_tbl, ("nameId", "name_id"))
+            if ges_id_col:
                 source_join = (
-                    f"LEFT JOIN {ges_tbl} gs ON g.{_ident(source_col)} = gs.{_ident(ges_id_col)}"
+                    f"LEFT JOIN {ges_tbl} gs ON {source_key_expr} = gs.{_ident(ges_id_col)}"
                 )
-                source_name_expr = f"gs.{_ident(ges_name_col)}"
-                source_where = (
-                    "AND (? = 1 "
-                    f"OR gs.{_ident(ges_name_col)} IS NULL "
-                    f"OR LOWER(gs.{_ident(ges_name_col)}) LIKE '%gpu%metric%' "
-                    f"OR LOWER(gs.{_ident(ges_name_col)}) = 'gpumetrics') "
-                )
+                if ges_name_col:
+                    source_name_expr = f"gs.{_ident(ges_name_col)}"
+                elif ges_name_id_col and schema.string_table:
+                    source_join += (
+                        f" LEFT JOIN {_ident(schema.string_table)} sgs "
+                        f"ON gs.{_ident(ges_name_id_col)} = sgs.id"
+                    )
+                    source_name_expr = "sgs.value"
+                if source_name_expr != "NULL":
+                    source_where = (
+                        "AND (? = 1 "
+                        f"OR {source_name_expr} IS NULL "
+                        f"OR LOWER({source_name_expr}) LIKE '%gpu%metric%' "
+                        f"OR LOWER({source_name_expr}) = 'gpumetrics') "
+                    )
+        debug(
+            "metrics source mapping key_expr={} source_name_expr={}".format(
+                source_key_expr or "NULL",
+                source_name_expr,
+            )
+        )
 
         device_where = ""
         device_expr = "NULL"
@@ -653,6 +710,17 @@ def _collect_metric_samples(
         except Exception:
             continue
         grouped.setdefault((name, tag_kind, tag_value), []).append((ts_ns, value))
+
+    if bool(apply_default_focus_filter):
+        before_count = len(grouped)
+        grouped = {k: v for k, v in grouped.items() if _is_default_focus_metric_name(k[0])}
+        debug(
+            "metrics default focus filter enabled tokens={} before_series={} after_series={}".format(
+                len(_DEFAULT_FOCUS_METRIC_TOKENS),
+                int(before_count),
+                int(len(grouped)),
+            )
+        )
 
     series: List[Dict[str, object]] = []
     for name, tag_kind, tag_value in sorted(grouped.keys(), key=lambda x: (x[0], x[1], x[2])):
@@ -1275,7 +1343,8 @@ def export_timeline_html(
     metric_name_like: str = "%",
     metrics_limit: int = -1,
     metrics_max_points: int = -1,
-    overlay_metrics_per_track: int = 2,
+    overlay_metrics_per_track: int = 7,
+    default_focus_metrics: bool = True,
     include_all_metric_sources: bool = False,
     debug: bool = False,
     debug_rows: int = -1,
@@ -1287,7 +1356,7 @@ def export_timeline_html(
     except Exception:
         debug_rows_i = -1
     debug_log(
-        "start sqlite={} output={} device_id={} start_ns={} end_ns={} nvtx_text={} nvtx_index={} include_metrics={} metrics_limit={} metrics_max_points={} overlay_metrics_per_track={} debug_rows={}".format(
+        "start sqlite={} output={} device_id={} start_ns={} end_ns={} nvtx_text={} nvtx_index={} include_metrics={} metrics_limit={} metrics_max_points={} overlay_metrics_per_track={} default_focus_metrics={} debug_rows={}".format(
             str(sqlite_path),
             str(output_path),
             int(device_id),
@@ -1299,6 +1368,7 @@ def export_timeline_html(
             int(metrics_limit),
             int(metrics_max_points),
             int(overlay_metrics_per_track),
+            int(bool(default_focus_metrics)),
             int(debug_rows_i),
         )
     )
@@ -1465,6 +1535,13 @@ def export_timeline_html(
                     int(metric_query_end_ns),
                 )
             )
+        apply_focus_filter = bool(default_focus_metrics) and str(metric_name_like or "%").strip() in ("", "%")
+        debug_log(
+            "metrics focus filter active={} metric_name_like={}".format(
+                int(apply_focus_filter),
+                str(metric_name_like or "%"),
+            )
+        )
         metric_series = _collect_metric_samples(
             sqlite_path,
             start_ns=int(metric_query_start_ns),
@@ -1474,6 +1551,7 @@ def export_timeline_html(
             device_id=int(device_id),
             limit=int(metrics_limit),
             max_points_per_series=int(metrics_max_points),
+            apply_default_focus_filter=bool(apply_focus_filter),
             restrict_to_intervals=metric_restrict_intervals,
             debug_log=debug_log,
             debug_rows=debug_rows_i,

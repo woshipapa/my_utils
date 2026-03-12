@@ -612,6 +612,7 @@ def cmd_nsys_timeline_html(args: argparse.Namespace) -> int:
         metrics_limit=args.metrics_limit,
         metrics_max_points=args.metrics_max_points,
         overlay_metrics_per_track=args.overlay_metrics_per_track,
+        default_focus_metrics=bool(args.default_focus_metrics),
         include_all_metric_sources=bool(args.include_all_metric_sources),
         debug=bool(args.debug),
         debug_rows=int(args.debug_rows),
@@ -826,8 +827,21 @@ def build_parser() -> argparse.ArgumentParser:
     nsys_timeline.add_argument(
         "--overlay-metrics-per-track",
         type=int,
-        default=2,
+        default=7,
         help="number of metric series overlaid on each stream track for attribution view (0 to disable)",
+    )
+    nsys_timeline.add_argument(
+        "--default-focus-metrics",
+        dest="default_focus_metrics",
+        action="store_true",
+        default=True,
+        help="when --metric-name-like is default '%' only keep the built-in attribution metric set (default: enabled)",
+    )
+    nsys_timeline.add_argument(
+        "--no-default-focus-metrics",
+        dest="default_focus_metrics",
+        action="store_false",
+        help="disable built-in attribution metric set filtering",
     )
     nsys_timeline.add_argument(
         "--include-all-metric-sources",
