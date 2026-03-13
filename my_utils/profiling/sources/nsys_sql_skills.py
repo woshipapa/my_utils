@@ -532,23 +532,38 @@ def _build_builtin_skills(schema: NsightSchema) -> Dict[str, SqlSkill]:
         description="Aggregate NCCL kernels by name and report count/time distribution.",
         category="communication",
         sql=(
-            f"SELECT {name_expr} AS kernel_name, "
+            "WITH raw AS ( "
+            f"  SELECT {name_expr} AS kernel_name, "
+            "         CAST(("
+            f"           CASE WHEN {{end_ns}} >= 0 AND k.[{_ident(end_col)}] > {{end_ns}} THEN {{end_ns}} ELSE k.[{_ident(end_col)}] END"
+            "         ) - ("
+            f"           CASE WHEN {{start_ns}} >= 0 AND k.{_ident(start_col)} < {{start_ns}} THEN {{start_ns}} ELSE k.{_ident(start_col)} END"
+            "         ) AS REAL) AS dur_ns "
+            f"  FROM {kernel_table} k "
+            f"  {name_join} "
+            "  WHERE 1=1 "
+            f"  {kernel_where_device} "
+            f"  AND LOWER({name_expr}) LIKE '%nccl%' "
+            f"  AND k.[{_ident(end_col)}] > k.{_ident(start_col)} "
+            f"  AND ({{end_ns}} < 0 OR k.{_ident(start_col)} < {{end_ns}}) "
+            f"  AND ({{start_ns}} < 0 OR k.[{_ident(end_col)}] > {{start_ns}}) "
+            ") "
+            "SELECT kernel_name, "
             "COUNT(*) AS count, "
-            f"ROUND(SUM(k.[{_ident(end_col)}] - k.{_ident(start_col)}) / 1e6, 3) AS total_ms, "
-            f"ROUND(AVG(k.[{_ident(end_col)}] - k.{_ident(start_col)}) / 1e6, 3) AS avg_ms, "
-            f"ROUND(MIN(k.[{_ident(end_col)}] - k.{_ident(start_col)}) / 1e6, 3) AS min_ms, "
-            f"ROUND(MAX(k.[{_ident(end_col)}] - k.{_ident(start_col)}) / 1e6, 3) AS max_ms "
-            f"FROM {kernel_table} k "
-            f"{name_join} "
-            "WHERE 1=1 "
-            f"{kernel_where_device} "
-            f"AND LOWER({name_expr}) LIKE '%nccl%' "
-            f"GROUP BY {name_expr} "
+            "ROUND(SUM(dur_ns) / 1e6, 3) AS total_ms, "
+            "ROUND(AVG(dur_ns) / 1e6, 3) AS avg_ms, "
+            "ROUND(MIN(dur_ns) / 1e6, 3) AS min_ms, "
+            "ROUND(MAX(dur_ns) / 1e6, 3) AS max_ms "
+            "FROM raw "
+            "WHERE dur_ns > 0 "
+            "GROUP BY kernel_name "
             "ORDER BY total_ms DESC "
             "LIMIT {limit}"
         ),
         params=[
             SqlSkillParam("device_id", "CUDA deviceId, -1 means all devices", "int", False, -1),
+            SqlSkillParam("start_ns", "window start ns, -1 to disable", "int", False, -1),
+            SqlSkillParam("end_ns", "window end ns, -1 to disable", "int", False, -1),
             SqlSkillParam("limit", "max rows", "int", False, 30),
         ],
         tags=["nccl", "communication", "collective"],
@@ -828,24 +843,47 @@ def _build_builtin_skills(schema: NsightSchema) -> Dict[str, SqlSkill]:
                 description="Aggregate memcpy bandwidth (GB/s) by copyKind direction (H2D/D2H/D2D).",
                 category="memory",
                 sql=(
-                    f"SELECT m.{_ident(bw_ck_col)} AS copy_kind, "
+                    "WITH raw AS ( "
+                    f"  SELECT m.{_ident(bw_ck_col)} AS copy_kind, "
+                    f"         CAST(m.{_ident(bw_bytes_col)} AS REAL) AS bytes_raw, "
+                    f"         CAST(m.[{_ident(bw_end_col)}] - m.{_ident(bw_start_col)} AS REAL) AS raw_dur_ns, "
+                    "         CAST(("
+                    f"           CASE WHEN {{end_ns}} >= 0 AND m.[{_ident(bw_end_col)}] > {{end_ns}} THEN {{end_ns}} ELSE m.[{_ident(bw_end_col)}] END"
+                    "         ) - ("
+                    f"           CASE WHEN {{start_ns}} >= 0 AND m.{_ident(bw_start_col)} < {{start_ns}} THEN {{start_ns}} ELSE m.{_ident(bw_start_col)} END"
+                    "         ) AS REAL) AS dur_ns "
+                    f"  FROM {memcpy_table} m "
+                    "  WHERE 1=1 "
+                    f"  {bw_device_where} "
+                    f"  AND m.[{_ident(bw_end_col)}] > m.{_ident(bw_start_col)} "
+                    f"  AND ({{end_ns}} < 0 OR m.{_ident(bw_start_col)} < {{end_ns}}) "
+                    f"  AND ({{start_ns}} < 0 OR m.[{_ident(bw_end_col)}] > {{start_ns}}) "
+                    "), "
+                    "clipped AS ( "
+                    "  SELECT copy_kind, "
+                    "         CASE "
+                    "           WHEN raw_dur_ns > 0 AND dur_ns > 0 THEN bytes_raw * dur_ns / raw_dur_ns "
+                    "           ELSE 0.0 "
+                    "         END AS bytes_in_window, "
+                    "         dur_ns "
+                    "  FROM raw "
+                    "  WHERE dur_ns > 0 "
+                    ") "
+                    "SELECT copy_kind, "
                     "COUNT(*) AS count, "
-                    f"ROUND(SUM(m.{_ident(bw_bytes_col)}) / 1.0e9, 3) AS total_gb, "
-                    f"ROUND(SUM(m.[{_ident(bw_end_col)}] - m.{_ident(bw_start_col)}) / 1.0e6, 3) AS total_ms, "
-                    f"ROUND(CAST(SUM(m.{_ident(bw_bytes_col)}) AS REAL) / "
-                    f"NULLIF(SUM(m.[{_ident(bw_end_col)}] - m.{_ident(bw_start_col)}), 0), 3) AS avg_gbps, "
-                    f"ROUND(MIN(CAST(m.{_ident(bw_bytes_col)} AS REAL) / "
-                    f"NULLIF(m.[{_ident(bw_end_col)}] - m.{_ident(bw_start_col)}, 0)), 3) AS min_gbps, "
-                    f"ROUND(MAX(CAST(m.{_ident(bw_bytes_col)} AS REAL) / "
-                    f"NULLIF(m.[{_ident(bw_end_col)}] - m.{_ident(bw_start_col)}, 0)), 3) AS max_gbps "
-                    f"FROM {memcpy_table} m "
-                    "WHERE 1=1 "
-                    f"{bw_device_where} "
-                    f"GROUP BY m.{_ident(bw_ck_col)} "
+                    "ROUND(SUM(bytes_in_window) / 1.0e9, 3) AS total_gb, "
+                    "ROUND(SUM(dur_ns) / 1.0e6, 3) AS total_ms, "
+                    "ROUND(CAST(SUM(bytes_in_window) AS REAL) / NULLIF(SUM(dur_ns), 0), 3) AS avg_gbps, "
+                    "ROUND(MIN(CAST(bytes_in_window AS REAL) / NULLIF(dur_ns, 0)), 3) AS min_gbps, "
+                    "ROUND(MAX(CAST(bytes_in_window AS REAL) / NULLIF(dur_ns, 0)), 3) AS max_gbps "
+                    "FROM clipped "
+                    "GROUP BY copy_kind "
                     "ORDER BY total_ms DESC"
                 ),
                 params=[
                     SqlSkillParam("device_id", "CUDA deviceId, -1 means all devices", "int", False, -1),
+                    SqlSkillParam("start_ns", "window start ns, -1 to disable", "int", False, -1),
+                    SqlSkillParam("end_ns", "window end ns, -1 to disable", "int", False, -1),
                 ],
                 tags=["memcpy", "bandwidth", "pcie", "nvlink", "memory"],
             )
@@ -867,20 +905,35 @@ def _build_builtin_skills(schema: NsightSchema) -> Dict[str, SqlSkill]:
                 description="Aggregate CUDA synchronization events by type, reporting count and overhead.",
                 category="pipeline",
                 sql=(
-                    f"SELECT s.{_ident(sync_type_col)} AS sync_type, "
+                    "WITH raw AS ( "
+                    f"  SELECT s.{_ident(sync_type_col)} AS sync_type, "
+                    "         CAST(("
+                    f"           CASE WHEN {{end_ns}} >= 0 AND s.[{_ident(sync_end_col)}] > {{end_ns}} THEN {{end_ns}} ELSE s.[{_ident(sync_end_col)}] END"
+                    "         ) - ("
+                    f"           CASE WHEN {{start_ns}} >= 0 AND s.{_ident(sync_start_col)} < {{start_ns}} THEN {{start_ns}} ELSE s.{_ident(sync_start_col)} END"
+                    "         ) AS REAL) AS dur_ns "
+                    f"  FROM {sync_tbl} s "
+                    "  WHERE 1=1 "
+                    f"  {sync_device_where} "
+                    f"  AND s.[{_ident(sync_end_col)}] > s.{_ident(sync_start_col)} "
+                    f"  AND ({{end_ns}} < 0 OR s.{_ident(sync_start_col)} < {{end_ns}}) "
+                    f"  AND ({{start_ns}} < 0 OR s.[{_ident(sync_end_col)}] > {{start_ns}}) "
+                    ") "
+                    "SELECT sync_type, "
                     "COUNT(*) AS count, "
-                    f"ROUND(SUM(s.[{_ident(sync_end_col)}] - s.{_ident(sync_start_col)}) / 1e6, 3) AS total_ms, "
-                    f"ROUND(AVG(s.[{_ident(sync_end_col)}] - s.{_ident(sync_start_col)}) / 1e6, 3) AS avg_ms, "
-                    f"ROUND(MAX(s.[{_ident(sync_end_col)}] - s.{_ident(sync_start_col)}) / 1e6, 3) AS max_ms "
-                    f"FROM {sync_tbl} s "
-                    "WHERE 1=1 "
-                    f"{sync_device_where} "
-                    f"GROUP BY s.{_ident(sync_type_col)} "
+                    "ROUND(SUM(dur_ns) / 1e6, 3) AS total_ms, "
+                    "ROUND(AVG(dur_ns) / 1e6, 3) AS avg_ms, "
+                    "ROUND(MAX(dur_ns) / 1e6, 3) AS max_ms "
+                    "FROM raw "
+                    "WHERE dur_ns > 0 "
+                    "GROUP BY sync_type "
                     "ORDER BY total_ms DESC "
                     "LIMIT {limit}"
                 ),
                 params=[
                     SqlSkillParam("device_id", "CUDA deviceId, -1 means all devices", "int", False, -1),
+                    SqlSkillParam("start_ns", "window start ns, -1 to disable", "int", False, -1),
+                    SqlSkillParam("end_ns", "window end ns, -1 to disable", "int", False, -1),
                     SqlSkillParam("limit", "max rows", "int", False, 50),
                 ],
                 tags=["sync", "synchronization", "overhead", "pipeline"],
@@ -1472,11 +1525,17 @@ def _build_builtin_skills(schema: NsightSchema) -> Dict[str, SqlSkill]:
             sql=(
                 "WITH raw AS ( "
                 f"  SELECT {name_expr} AS kernel_name, "
-                f"         CAST(k.[{_ident(end_col)}] - k.{_ident(start_col)} AS REAL) AS dur_ns "
+                "         CAST(("
+                f"           CASE WHEN {{end_ns}} >= 0 AND k.[{_ident(end_col)}] > {{end_ns}} THEN {{end_ns}} ELSE k.[{_ident(end_col)}] END"
+                "         ) - ("
+                f"           CASE WHEN {{start_ns}} >= 0 AND k.{_ident(start_col)} < {{start_ns}} THEN {{start_ns}} ELSE k.{_ident(start_col)} END"
+                "         ) AS REAL) AS dur_ns "
                 f"  FROM {kernel_table} k {name_join} "
                 "  WHERE 1=1 "
                 f"  {kernel_where_device} "
                 f"  AND k.[{_ident(end_col)}] > k.{_ident(start_col)} "
+                f"  AND ({{end_ns}} < 0 OR k.{_ident(start_col)} < {{end_ns}}) "
+                f"  AND ({{start_ns}} < 0 OR k.[{_ident(end_col)}] > {{start_ns}}) "
                 ") "
                 "SELECT kernel_name, "
                 "  COUNT(*) AS invocations, "
@@ -1492,6 +1551,7 @@ def _build_builtin_skills(schema: NsightSchema) -> Dict[str, SqlSkill]:
                 "    / NULLIF(AVG(dur_ns), 0) * 100.0, 1"
                 "  ) AS cv_pct "
                 "FROM raw "
+                "WHERE dur_ns > 0 "
                 "GROUP BY kernel_name "
                 "HAVING COUNT(*) >= {min_invocations} "
                 "ORDER BY cv_pct DESC "
@@ -1499,6 +1559,8 @@ def _build_builtin_skills(schema: NsightSchema) -> Dict[str, SqlSkill]:
             ),
             params=[
                 SqlSkillParam("device_id", "CUDA deviceId, -1 means all devices", "int", False, -1),
+                SqlSkillParam("start_ns", "window start ns, -1 to disable", "int", False, -1),
+                SqlSkillParam("end_ns", "window end ns, -1 to disable", "int", False, -1),
                 SqlSkillParam("min_invocations", "minimum invocations to include", "int", False, 3),
                 SqlSkillParam("limit", "max rows", "int", False, 30),
             ],
@@ -1524,11 +1586,20 @@ def _build_builtin_skills(schema: NsightSchema) -> Dict[str, SqlSkill]:
             category="kernels",
             sql=(
                 "WITH raw AS ( "
-                f"  SELECT CAST(k.[{_ident(end_col)}] - k.{_ident(start_col)} AS REAL) AS dur_ns "
+                "  SELECT CAST(("
+                f"           CASE WHEN {{end_ns}} >= 0 AND k.[{_ident(end_col)}] > {{end_ns}} THEN {{end_ns}} ELSE k.[{_ident(end_col)}] END"
+                "         ) - ("
+                f"           CASE WHEN {{start_ns}} >= 0 AND k.{_ident(start_col)} < {{start_ns}} THEN {{start_ns}} ELSE k.{_ident(start_col)} END"
+                "         ) AS REAL) AS dur_ns "
                 f"  FROM {kernel_table} k "
                 "  WHERE 1=1 "
                 f"  {kernel_where_device} "
                 f"  AND k.[{_ident(end_col)}] > k.{_ident(start_col)} "
+                f"  AND ({{end_ns}} < 0 OR k.{_ident(start_col)} < {{end_ns}}) "
+                f"  AND ({{start_ns}} < 0 OR k.[{_ident(end_col)}] > {{start_ns}}) "
+                "), "
+                "filtered AS ( "
+                "  SELECT dur_ns FROM raw WHERE dur_ns > 0 "
                 "), "
                 "buckets AS ( "
                 "  SELECT "
@@ -1540,10 +1611,10 @@ def _build_builtin_skills(schema: NsightSchema) -> Dict[str, SqlSkill]:
                 "      ELSE                         'e_>1ms' "
                 "    END AS bucket, "
                 "    dur_ns "
-                "  FROM raw "
+                "  FROM filtered "
                 "), "
                 "totals AS ( "
-                "  SELECT COUNT(*) AS total_count, SUM(dur_ns) AS total_dur FROM raw "
+                "  SELECT COUNT(*) AS total_count, SUM(dur_ns) AS total_dur FROM filtered "
                 ") "
                 "SELECT "
                 "  bucket AS duration_bracket, "
@@ -1557,6 +1628,8 @@ def _build_builtin_skills(schema: NsightSchema) -> Dict[str, SqlSkill]:
             ),
             params=[
                 SqlSkillParam("device_id", "CUDA deviceId, -1 means all devices", "int", False, -1),
+                SqlSkillParam("start_ns", "window start ns, -1 to disable", "int", False, -1),
+                SqlSkillParam("end_ns", "window end ns, -1 to disable", "int", False, -1),
             ],
             tags=["kernel", "launch_overhead", "micro_kernel", "cuda_graph", "fusion"],
         )
@@ -1678,16 +1751,30 @@ def _build_builtin_skills(schema: NsightSchema) -> Dict[str, SqlSkill]:
             ),
             category="pipeline",
             sql=(
-                "WITH stream_agg AS ( "
+                "WITH clipped AS ( "
                 f"  SELECT k.{_ident(stream_col)} AS stream_id, "
-                f"         MIN(k.{_ident(start_col)}) AS stream_start, "
-                f"         MAX(k.[{_ident(end_col)}]) AS stream_end, "
-                f"         SUM(k.[{_ident(end_col)}] - k.{_ident(start_col)}) AS raw_kernel_ns, "
-                "         COUNT(*) AS kernel_count "
+                "         CAST(("
+                f"           CASE WHEN {{end_ns}} >= 0 AND k.[{_ident(end_col)}] > {{end_ns}} THEN {{end_ns}} ELSE k.[{_ident(end_col)}] END"
+                "         ) - ("
+                f"           CASE WHEN {{start_ns}} >= 0 AND k.{_ident(start_col)} < {{start_ns}} THEN {{start_ns}} ELSE k.{_ident(start_col)} END"
+                "         ) AS REAL) AS dur_ns, "
+                f"         CASE WHEN {{start_ns}} >= 0 AND k.{_ident(start_col)} < {{start_ns}} THEN {{start_ns}} ELSE k.{_ident(start_col)} END AS eff_start, "
+                f"         CASE WHEN {{end_ns}} >= 0 AND k.[{_ident(end_col)}] > {{end_ns}} THEN {{end_ns}} ELSE k.[{_ident(end_col)}] END AS eff_end "
                 f"  FROM {kernel_table} k "
                 "  WHERE 1=1 "
                 f"  {psu_device_where} "
                 f"  AND k.[{_ident(end_col)}] > k.{_ident(start_col)} "
+                f"  AND ({{end_ns}} < 0 OR k.{_ident(start_col)} < {{end_ns}}) "
+                f"  AND ({{start_ns}} < 0 OR k.[{_ident(end_col)}] > {{start_ns}}) "
+                "), "
+                "stream_agg AS ( "
+                "  SELECT stream_id, "
+                "         MIN(eff_start) AS stream_start, "
+                "         MAX(eff_end) AS stream_end, "
+                "         SUM(dur_ns) AS raw_kernel_ns, "
+                "         COUNT(*) AS kernel_count "
+                "  FROM clipped "
+                "  WHERE dur_ns > 0 "
                 "  GROUP BY stream_id "
                 ") "
                 "SELECT "
@@ -1703,6 +1790,8 @@ def _build_builtin_skills(schema: NsightSchema) -> Dict[str, SqlSkill]:
             ),
             params=[
                 SqlSkillParam("device_id", "CUDA deviceId, -1 means all devices", "int", False, -1),
+                SqlSkillParam("start_ns", "window start ns, -1 to disable", "int", False, -1),
+                SqlSkillParam("end_ns", "window end ns, -1 to disable", "int", False, -1),
                 SqlSkillParam("limit", "max rows", "int", False, 50),
             ],
             tags=["stream", "utilization", "load_balance", "pipeline", "copy_engine"],

@@ -226,6 +226,8 @@ def analyze_nsys_sqlite(
         nccl_breakdown = engine.execute(
             "nccl_breakdown",
             device_id=device_id,
+            start_ns=start_ns,
+            end_ns=end_ns,
             limit=max(int(top_k), 1),
         )
         iterations = engine.detect_iterations(
@@ -290,25 +292,29 @@ def analyze_nsys_sqlite(
         memcpy_bandwidth = _safe_skill(
             engine, "memcpy_bandwidth_analysis", warnings,
             device_id=device_id,
+            start_ns=start_ns,
+            end_ns=end_ns,
         )
 
         # --- New deeper analyses ---
         # Kernel jitter: sort by CV descending so worst-jitter kernels appear first
         kernel_duration_stats = _safe_skill(
             engine, "kernel_duration_stats", warnings,
-            device_id=device_id, min_invocations=3, limit=20,
+            device_id=device_id, start_ns=start_ns, end_ns=end_ns, min_invocations=3, limit=20,
         )
 
         # Small-kernel overhead bracketing (scoped to window when nvtx_text is set)
         short_kernels = _safe_skill(
             engine, "short_kernels_overhead", warnings,
             device_id=device_id,
+            start_ns=start_ns,
+            end_ns=end_ns,
         )
 
         # Per-stream utilization (scoped to window)
         per_stream_utilization = _safe_skill(
             engine, "per_stream_utilization", warnings,
-            device_id=device_id, limit=30,
+            device_id=device_id, start_ns=start_ns, end_ns=end_ns, limit=30,
         )
 
         # NVTX wall-clock efficiency — use nvtx_text pattern when available,
@@ -714,4 +720,3 @@ def analyze_to_markdown(result: Dict[str, object]) -> str:
                 lines.append(f"- {item}")
             lines.append("")
     return "\n".join(lines)
-

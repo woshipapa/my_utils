@@ -1178,6 +1178,59 @@ def test_analyze_nsys_sqlite_new_keys(tmp_path: Path) -> None:
             print(" ", line)
 
 
+def test_analyze_nsys_sqlite_window_scoping_for_new_skills(tmp_path: Path) -> None:
+    from my_utils.profiling.sources.nsys_analyze import analyze_nsys_sqlite
+
+    db = tmp_path / "rank0.sqlite"
+    _init_sqlite(db)
+
+    full = analyze_nsys_sqlite(str(db), device_id=0, top_k=10)
+    win = analyze_nsys_sqlite(str(db), device_id=0, start_ns=0, end_ns=7000, top_k=10)
+
+    # 1) nccl_breakdown / sync_breakdown / memcpy_bandwidth should honor the window.
+    assert full["nccl_breakdown"], full["nccl_breakdown"]
+    assert not win["nccl_breakdown"], win["nccl_breakdown"]
+
+    assert full["sync_breakdown"], full["sync_breakdown"]
+    assert not win["sync_breakdown"], win["sync_breakdown"]
+
+    full_copy_kinds = {int(r["copy_kind"]) for r in (full["memcpy_bandwidth"] or [])}
+    win_copy_kinds = {int(r["copy_kind"]) for r in (win["memcpy_bandwidth"] or [])}
+    assert full_copy_kinds == {1, 2, 8}, full["memcpy_bandwidth"]
+    assert win_copy_kinds == {1, 2}, win["memcpy_bandwidth"]
+
+    # 2) short_kernels_overhead / per_stream_utilization should be window-scoped.
+    assert any(r.get("duration_bracket") == "c_10-100us" for r in (full["short_kernels"] or []))
+    assert not any(r.get("duration_bracket") == "c_10-100us" for r in (win["short_kernels"] or []))
+
+    assert any(int(r.get("stream_id", -1)) == 8 for r in (full["per_stream_utilization"] or []))
+    assert not any(int(r.get("stream_id", -1)) == 8 for r in (win["per_stream_utilization"] or []))
+
+    # kernel_duration_stats uses min_invocations=3 in analyze path; validate its windowing directly.
+    provider = NsysSqliteMetricsProvider(str(db))
+    kds_full = provider.run_sql_skill(
+        "kernel_duration_stats",
+        device_id=0,
+        start_ns=-1,
+        end_ns=-1,
+        min_invocations=1,
+        limit=20,
+    )
+    kds_win = provider.run_sql_skill(
+        "kernel_duration_stats",
+        device_id=0,
+        start_ns=0,
+        end_ns=7000,
+        min_invocations=1,
+        limit=20,
+    )
+    by_name_full = {str(r.get("kernel_name")): r for r in kds_full}
+    by_name_win = {str(r.get("kernel_name")): r for r in kds_win}
+    assert "ncclAllReduceRingLLKernel_sum_f16" in by_name_full, kds_full
+    assert "ncclAllReduceRingLLKernel_sum_f16" not in by_name_win, kds_win
+    assert int(by_name_win["void gemm_kernel()"]["invocations"]) == 1, kds_win
+
+
 # ===========================================================================
 # Original tests (preserved, now also benefit from richer fixture)
 # ===========================================================================
