@@ -1887,6 +1887,201 @@ def _build_builtin_skills(schema: NsightSchema) -> Dict[str, SqlSkill]:
             tags=["stream", "utilization", "load_balance", "pipeline", "copy_engine"],
         )
 
+    # ── Skill 25: GPU metrics percentile distribution ─────────────────────────
+    # Requires the GPU metrics table (--gpu-metrics-device flag during capture).
+    # Uses SQLite window functions (available since SQLite 3.25 / 2018) to
+    # compute approximate percentiles via ROW_NUMBER over sorted values.
+    # Reference: NVIDIA Nsight Systems metrics naming conventions.
+    if schema.metrics_table:
+        _pm_metrics_tbl = _ident(schema.metrics_table)
+        _pm_ts_col = schema.metrics_timestamp_col or schema.resolve_column(_pm_metrics_tbl, ("timestamp", "rawTimestamp", "start", "time"))
+        _pm_id_col = schema.metrics_id_col or schema.resolve_column(_pm_metrics_tbl, ("metricId", "nameId", "eventId"))
+        _pm_val_col = schema.metrics_value_col or schema.resolve_column(_pm_metrics_tbl, ("value", "metricValue", "val"))
+        if _pm_ts_col and _pm_id_col and _pm_val_col:
+            # Reuse metric name / join / device expressions already built for gpu_metrics_aggregate
+            skill_map["gpu_metrics_percentiles"] = SqlSkill(
+                name="gpu_metrics_percentiles",
+                title="GPU Metrics Percentile Distribution",
+                description=(
+                    "Compute min / p50 / p75 / p95 / max / stddev of GPU hardware sampling "
+                    "metrics (sm_active, tensor_active, dram_throughput, etc.). "
+                    "High p95 with low avg reveals bursty utilisation; "
+                    "low p95 with low avg confirms sustained underutilisation. "
+                    "Requires --gpu-metrics-device capture."
+                ),
+                category="metrics",
+                sql=(
+                    "WITH numbered AS ( "
+                    f"  SELECT {metrics_name_expr} AS metric_name, "
+                    f"         CAST(g.{_ident(metrics_value_col)} AS REAL) AS val, "
+                    f"         ROW_NUMBER() OVER (PARTITION BY {metrics_name_expr} "
+                    f"           ORDER BY CAST(g.{_ident(metrics_value_col)} AS REAL)) AS rn, "
+                    f"         COUNT(*) OVER (PARTITION BY {metrics_name_expr}) AS cnt "
+                    f"  FROM {metrics_table} g "
+                    f"  {metrics_name_join} "
+                    f"  {metrics_source_join} "
+                    "  WHERE 1=1 "
+                    f"  AND ({{start_ns}} < 0 OR g.{_ident(metrics_ts_col)} >= {{start_ns}}) "
+                    f"  AND ({{end_ns}} < 0 OR g.{_ident(metrics_ts_col)} <= {{end_ns}}) "
+                    f"  {metrics_source_where}"
+                    f"  {metrics_device_where}"
+                    f"  AND ('{{metric_name_like}}' = '%' OR {metrics_name_expr} LIKE '{{metric_name_like}}') "
+                    f"  {metrics_name_not_null}"
+                    f"  AND g.{_ident(metrics_value_col)} IS NOT NULL "
+                    ") "
+                    "SELECT metric_name, "
+                    "  MAX(cnt) AS sample_count, "
+                    "  ROUND(MIN(val), 3) AS min_val, "
+                    "  ROUND(AVG(val), 3) AS avg_val, "
+                    "  ROUND(SQRT(MAX(0.0, AVG(val * val) - AVG(val) * AVG(val))), 3) AS stddev_val, "
+                    "  ROUND(MAX(CASE WHEN rn * 1.0 / cnt <= 0.50 THEN val END), 3) AS p50, "
+                    "  ROUND(MAX(CASE WHEN rn * 1.0 / cnt <= 0.75 THEN val END), 3) AS p75, "
+                    "  ROUND(MAX(CASE WHEN rn * 1.0 / cnt <= 0.95 THEN val END), 3) AS p95, "
+                    "  ROUND(MAX(val), 3) AS max_val "
+                    "FROM numbered "
+                    "GROUP BY metric_name "
+                    "HAVING MAX(cnt) >= {min_samples} "
+                    "ORDER BY sample_count DESC, metric_name ASC "
+                    "LIMIT {limit}"
+                ),
+                params=[
+                    SqlSkillParam("start_ns", "window start ns, -1 to disable", "int", False, -1),
+                    SqlSkillParam("end_ns", "window end ns, -1 to disable", "int", False, -1),
+                    SqlSkillParam("metric_name_like", "metric name SQL LIKE pattern", "str", False, "%"),
+                    SqlSkillParam("device_id", "CUDA deviceId if metrics table provides it, -1 means all", "int", False, -1),
+                    SqlSkillParam(
+                        "include_all_sources",
+                        "1 to include all generic sources, 0 to prefer GPU metrics sources only",
+                        "bool", False, False,
+                    ),
+                    SqlSkillParam("min_samples", "minimum samples per metric to include", "int", False, 5),
+                    SqlSkillParam("limit", "max rows", "int", False, 200),
+                ],
+                tags=["gpu_metrics", "percentiles", "distribution", "p50", "p95", "sm_active", "dram"],
+            )
+
+    # ── Skill 26: Per-transfer memcpy detail ──────────────────────────────────
+    # Individual transfer breakdown: direction, bytes, duration, instantaneous BW.
+    # Useful for detecting many small transfers (high fixed overhead) vs a few
+    # large ones. Complements memcpy_bandwidth_analysis which only aggregates.
+    if schema.memcpy_table and schema.table_exists(schema.memcpy_table):
+        _mt = _ident(schema.memcpy_table)
+        _mt_bytes = schema.resolve_column(_mt, ("bytes", "numBytes", "srcSize"))
+        _mt_ck = schema.resolve_column(_mt, ("copyKind",))
+        _mt_start = schema.resolve_column(_mt, ("start",))
+        _mt_end = schema.resolve_column(_mt, ("end",))
+        _mt_dev = schema.resolve_column(_mt, ("deviceId",))
+        _mt_stream = schema.resolve_column(_mt, ("streamId",))
+        if _mt_bytes and _mt_ck and _mt_start and _mt_end:
+            _mt_dev_where = (
+                f"AND ({{device_id}} < 0 OR m.{_ident(_mt_dev)} = {{device_id}}) "
+                if _mt_dev else ""
+            )
+            _mt_stream_sel = f"m.{_ident(_mt_stream)} AS stream_id, " if _mt_stream else "NULL AS stream_id, "
+            _mt_dev_sel = f"m.{_ident(_mt_dev)} AS device_id, " if _mt_dev else "NULL AS device_id, "
+            skill_map["memcpy_transfers_detail"] = SqlSkill(
+                name="memcpy_transfers_detail",
+                title="Memcpy Transfers Detail",
+                description=(
+                    "List individual memory copy operations with direction, size, duration "
+                    "and instantaneous bandwidth. Reveals small/inefficient transfers that "
+                    "aggregate stats hide. copyKind: 1=HtoD, 2=DtoH, 3=DtoD, 10=Peer2Peer."
+                ),
+                category="memory",
+                sql=(
+                    "SELECT "
+                    f"  CASE m.{_ident(_mt_ck)} "
+                    "    WHEN 1 THEN 'HtoD' WHEN 2 THEN 'DtoH' WHEN 3 THEN 'DtoD' "
+                    "    WHEN 8 THEN 'HtoD_Pinned' WHEN 10 THEN 'Peer2Peer' "
+                    f"    ELSE 'Kind_' || CAST(m.{_ident(_mt_ck)} AS TEXT) END AS direction, "
+                    f"  m.{_ident(_mt_bytes)} AS bytes, "
+                    f"  ROUND(m.{_ident(_mt_bytes)} / 1.0e6, 3) AS mb, "
+                    f"  ROUND((m.[{_ident(_mt_end)}] - m.{_ident(_mt_start)}) / 1.0e6, 3) AS duration_ms, "
+                    "  ROUND(CAST("
+                    f"    m.{_ident(_mt_bytes)} AS REAL) / NULLIF(m.[{_ident(_mt_end)}] - m.{_ident(_mt_start)}, 0)"
+                    "  , 3) AS gbps, "
+                    + _mt_dev_sel
+                    + _mt_stream_sel
+                    + f"  m.{_ident(_mt_start)} AS start_ns "
+                    f"FROM {_mt} m "
+                    "WHERE 1=1 "
+                    f"{_mt_dev_where}"
+                    f"AND m.[{_ident(_mt_end)}] > m.{_ident(_mt_start)} "
+                    f"AND ({{start_ns}} < 0 OR m.[{_ident(_mt_end)}] > {{start_ns}}) "
+                    f"AND ({{end_ns}} < 0 OR m.{_ident(_mt_start)} < {{end_ns}}) "
+                    "ORDER BY bytes DESC "
+                    "LIMIT {limit}"
+                ),
+                params=[
+                    SqlSkillParam("device_id", "CUDA deviceId, -1 means all devices", "int", False, -1),
+                    SqlSkillParam("start_ns", "window start ns, -1 to disable", "int", False, -1),
+                    SqlSkillParam("end_ns", "window end ns, -1 to disable", "int", False, -1),
+                    SqlSkillParam("limit", "max rows", "int", False, 500),
+                ],
+                tags=["memcpy", "transfers", "pcie", "nvlink", "memory", "bandwidth"],
+            )
+
+    # ── Skill 27: CPU→GPU kernel launch latency ───────────────────────────────
+    # Gap between when the CPU-side CUDA runtime API call returns and the GPU
+    # kernel actually starts executing. A large gap indicates scheduler or
+    # context-switching overhead on the CPU side.
+    # Reference: NVIDIA CUDA Best Practices Guide §Asynchronous Transfers
+    if schema.runtime_table and schema.table_exists(schema.runtime_table):
+        _rlt = _ident(schema.runtime_table)
+        _rlt_start = schema.resolve_column(_rlt, ("start",))
+        _rlt_end = schema.resolve_column(_rlt, ("end",))
+        _rlt_corr = schema.resolve_column(_rlt, ("correlationId",))
+        if _rlt_start and _rlt_end and _rlt_corr and corr_col and start_col and end_col:
+            _rlt_dev_where = (
+                f"AND ({{device_id}} < 0 OR k.{_ident(device_col)} = {{device_id}}) "
+                if device_col else ""
+            )
+            skill_map["cpu_launch_gap"] = SqlSkill(
+                name="cpu_launch_gap",
+                title="CPU→GPU Kernel Launch Gap",
+                description=(
+                    "Per-kernel average and total gap between the CPU runtime API return "
+                    "and the GPU kernel start (ns). Large gaps (>10 µs avg) indicate "
+                    "excessive CPU scheduling overhead, context switches, or CPU-side "
+                    "computation blocking the dispatch thread. "
+                    "Ref: CUDA Best Practices Guide §Overlapping Transfers."
+                ),
+                category="pipeline",
+                sql=(
+                    "WITH gaps AS ( "
+                    f"  SELECT {name_expr} AS kernel_name, "
+                    f"         (k.{_ident(start_col)} - r.[{_ident(_rlt_end)}]) AS gap_ns "
+                    f"  FROM {kernel_table} k "
+                    f"  {name_join} "
+                    f"  JOIN {_rlt} r ON k.{_ident(corr_col)} = r.{_ident(_rlt_corr)} "
+                    "  WHERE 1=1 "
+                    f"  {_rlt_dev_where}"
+                    f"  AND k.{_ident(start_col)} >= r.[{_ident(_rlt_end)}] "
+                    f"  AND ({{start_ns}} < 0 OR k.{_ident(start_col)} >= {{start_ns}}) "
+                    f"  AND ({{end_ns}} < 0 OR k.[{_ident(end_col)}] <= {{end_ns}}) "
+                    ") "
+                    "SELECT kernel_name, "
+                    "  COUNT(*) AS invocations, "
+                    "  ROUND(AVG(gap_ns) / 1e3, 1) AS avg_gap_us, "
+                    "  ROUND(MAX(gap_ns) / 1e3, 1) AS max_gap_us, "
+                    "  ROUND(SUM(gap_ns) / 1e6, 3) AS total_gap_ms "
+                    "FROM gaps "
+                    "WHERE gap_ns >= 0 "
+                    "GROUP BY kernel_name "
+                    "HAVING COUNT(*) >= {min_invocations} "
+                    "ORDER BY total_gap_ms DESC "
+                    "LIMIT {limit}"
+                ),
+                params=[
+                    SqlSkillParam("device_id", "CUDA deviceId, -1 means all devices", "int", False, -1),
+                    SqlSkillParam("start_ns", "window start ns, -1 to disable", "int", False, -1),
+                    SqlSkillParam("end_ns", "window end ns, -1 to disable", "int", False, -1),
+                    SqlSkillParam("min_invocations", "minimum kernel invocations to report", "int", False, 3),
+                    SqlSkillParam("limit", "max rows", "int", False, 30),
+                ],
+                tags=["pipeline", "launch_gap", "cpu_overhead", "scheduling", "dispatch"],
+            )
+
     return skill_map
 
 

@@ -5,6 +5,7 @@ import sqlite3
 import statistics
 from typing import Dict, List, Optional, Tuple
 
+from .nsys_auto_analysis import build_comprehensive_analysis, comprehensive_to_markdown
 from .nsys_mfu import compute_mfu_single, infer_peak_tflops
 from .nsys_schema_adapter import NsightSchema
 from .nsys_sql_skills import NsysSqlSkillEngine
@@ -440,6 +441,43 @@ def analyze_nsys_sqlite(
             limit=200,
         )
 
+        # --- Comprehensive auto-analysis skills ---
+        gpu_metrics_aggregate = _safe_skill(
+            engine, "gpu_metrics_aggregate", warnings,
+            device_id=device_id, start_ns=start_ns, end_ns=end_ns,
+        )
+        gpu_metrics_percentiles_rows = _safe_skill(
+            engine, "gpu_metrics_percentiles", warnings,
+            device_id=device_id, start_ns=start_ns, end_ns=end_ns,
+        )
+        memcpy_transfers_detail_rows = _safe_skill(
+            engine, "memcpy_transfers_detail", warnings,
+            device_id=device_id, start_ns=start_ns, end_ns=end_ns,
+        )
+        cpu_launch_gap_rows = _safe_skill(
+            engine, "cpu_launch_gap", warnings,
+            device_id=device_id, start_ns=start_ns, end_ns=end_ns,
+        )
+
+        # Build comprehensive analysis
+        _gpu_name = _first_gpu_name_from_conn(conn)
+        comprehensive_analysis = build_comprehensive_analysis(
+            gpu_name=_gpu_name,
+            summary=summary or {},
+            overlap=overlap or {},
+            nccl_breakdown=list(nccl_breakdown or []),
+            aggregate_kernels=top_kernels,
+            per_stream_utilization=list(per_stream_utilization or []),
+            memcpy_bandwidth=list(memcpy_bandwidth or []),
+            sync_breakdown=list(sync_breakdown or []),
+            gpu_metrics_aggregate=list(gpu_metrics_aggregate or []),
+            gpu_metrics_percentiles=list(gpu_metrics_percentiles_rows or []),
+            memcpy_transfers_detail=list(memcpy_transfers_detail_rows or []),
+            cpu_launch_gap=list(cpu_launch_gap_rows or []),
+            short_kernels=list(short_kernels or []),
+            kernel_duration_stats=list(kernel_duration_stats or []),
+        )
+
         # Rank straggler analysis (only meaningful when NVTX encodes rank tags)
         try:
             rank_straggler = engine.analyze_rank_straggler(
@@ -586,6 +624,11 @@ def analyze_nsys_sqlite(
             "nvtx_wall_efficiency": nvtx_wall_efficiency,
             "rank_straggler": rank_straggler,
             "bottleneck_classification": bottleneck_classification,
+            "gpu_metrics_aggregate": gpu_metrics_aggregate,
+            "gpu_metrics_percentiles": gpu_metrics_percentiles_rows,
+            "memcpy_transfers_detail": memcpy_transfers_detail_rows,
+            "cpu_launch_gap": cpu_launch_gap_rows,
+            "comprehensive_analysis": comprehensive_analysis,
             "mfu": mfu,
             "warnings": warnings,
         }
@@ -845,5 +888,12 @@ def analyze_to_markdown(result: Dict[str, object]) -> str:
             else:
                 lines.append(f"- {item}")
             lines.append("")
+
+    # Comprehensive auto-analysis section
+    comp = result.get("comprehensive_analysis")
+    if comp:
+        lines.append("")
+        lines.append(comprehensive_to_markdown(comp))
+
     return "\n".join(lines)
 
