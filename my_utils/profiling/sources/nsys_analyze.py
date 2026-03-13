@@ -3,7 +3,8 @@ from __future__ import annotations
 import json
 import sqlite3
 import statistics
-from typing import Dict, List, Optional, Tuple
+import time
+from typing import Callable, Dict, List, Optional, Tuple
 
 from .nsys_auto_analysis import build_comprehensive_analysis, comprehensive_to_markdown
 from .nsys_mfu import compute_mfu_single, infer_peak_tflops
@@ -231,6 +232,37 @@ def _resolve_nvtx_kernel_span(
     }
 
 
+class _Phase:
+    """Lightweight context manager that times a named analysis phase.
+
+    On exit it appends ``{name: elapsed_ms}`` to *timings_out* and optionally
+    calls *progress_cb* with a human-readable message.
+    """
+
+    def __init__(
+        self,
+        name: str,
+        timings_out: List[Dict[str, float]],
+        progress_cb: Optional[Callable[[str], None]] = None,
+    ) -> None:
+        self._name = name
+        self._timings = timings_out
+        self._cb = progress_cb
+        self._t0: float = 0.0
+
+    def __enter__(self) -> "_Phase":
+        if self._cb:
+            self._cb(f"  starting: {self._name}")
+        self._t0 = time.perf_counter()
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        elapsed_ms = round((time.perf_counter() - self._t0) * 1000, 1)
+        self._timings.append({"phase": self._name, "elapsed_ms": elapsed_ms})
+        if self._cb:
+            self._cb(f"  done:     {self._name}  [{elapsed_ms} ms]")
+
+
 def analyze_nsys_sqlite(
     sqlite_path: str,
     *,
@@ -244,96 +276,120 @@ def analyze_nsys_sqlite(
     peak_tflops: Optional[float] = None,
     peak_precision: str = "fp16",
     limit: int = 500000,
+    progress_cb: Optional[Callable[[str], None]] = None,
 ) -> Dict[str, object]:
+    """Run the full nsys analysis pipeline and return a result dict.
+
+    Parameters
+    ----------
+    progress_cb:
+        Optional callback called at the start and end of every analysis phase.
+        Receives a human-readable string like
+        ``"  done: summarize_gpu_kernels  [123.4 ms]"``.
+        Pass ``lambda msg: print(msg, file=sys.stderr)`` for CLI progress output.
+    """
+    phase_timings: List[Dict[str, float]] = []
+
+    def _phase(name: str) -> _Phase:
+        return _Phase(name, phase_timings, progress_cb)
+
     conn = sqlite3.connect(sqlite_path)
     conn.row_factory = sqlite3.Row
     try:
-        schema_obj = NsightSchema(conn)
-        engine = NsysSqlSkillEngine(conn)
-        explicit_start_given = int(start_ns) >= 0
-        explicit_end_given = int(end_ns) >= 0
+        with _phase("schema_and_nvtx_scope"):
+            schema_obj = NsightSchema(conn)
+            engine = NsysSqlSkillEngine(conn)
+            explicit_start_given = int(start_ns) >= 0
+            explicit_end_given = int(end_ns) >= 0
 
-        tables = list(schema_obj.tables)
-        schema: Dict[str, object] = {
-            "sqlite_path": sqlite_path,
-            "exists": True,
-            "table_count": len(tables),
-            "tables": tables,
-            "columns": {t: schema_obj.columns(t) for t in tables},
-            "schema_meta": dict(schema_obj.meta),
-            "canonical_tables": dict(schema_obj.summary().get("canonical_tables", {})),
-            "version_info": {
-                "exporter_version": schema_obj.version.exporter_version,
-                "export_schema_version": schema_obj.version.export_schema_version,
-                "adapter_family": schema_obj.version.adapter_family,
-                "known_version": schema_obj.version.known_version,
-            },
-        }
+            tables = list(schema_obj.tables)
+            schema: Dict[str, object] = {
+                "sqlite_path": sqlite_path,
+                "exists": True,
+                "table_count": len(tables),
+                "tables": tables,
+                "columns": {t: schema_obj.columns(t) for t in tables},
+                "schema_meta": dict(schema_obj.meta),
+                "canonical_tables": dict(schema_obj.summary().get("canonical_tables", {})),
+                "version_info": {
+                    "exporter_version": schema_obj.version.exporter_version,
+                    "export_schema_version": schema_obj.version.export_schema_version,
+                    "adapter_family": schema_obj.version.adapter_family,
+                    "known_version": schema_obj.version.known_version,
+                },
+            }
 
-        # --- NVTX scope resolution ---
-        # When nvtx_text is given, resolve matching NVTX ranges and use their
-        # union time window to restrict ALL subsequent analyses.  Explicit
-        # start_ns / end_ns from the caller take priority over the resolved window.
-        nvtx_text_info: Optional[Dict[str, object]] = None
-        nvtx_kernel_span_info: Optional[Dict[str, object]] = None
-        if nvtx_text:
-            nvtx_text_info = _resolve_nvtx_text(
-                conn, schema_obj, nvtx_text, limit=limit
-            )
-            if nvtx_text_info.get("warning"):
-                pass  # warn later via warnings list; don't abort
-            else:
-                # Override time window only when caller did NOT supply explicit bounds
-                if start_ns < 0 and nvtx_text_info["window_start_ns"] >= 0:
-                    start_ns = int(nvtx_text_info["window_start_ns"])
-                if end_ns < 0 and nvtx_text_info["window_end_ns"] >= 0:
-                    end_ns = int(nvtx_text_info["window_end_ns"])
-                # Extend analysis window by attributed GPU kernel execution span
-                # (NVTX -> Runtime -> correlationId -> GPU kernel timestamps).
-                nvtx_kernel_span_info = _resolve_nvtx_kernel_span(
-                    engine,
-                    nvtx_text=str(nvtx_text),
-                    device_id=int(device_id),
-                    limit=int(limit),
+            # --- NVTX scope resolution ---
+            # When nvtx_text is given, resolve matching NVTX ranges and use their
+            # union time window to restrict ALL subsequent analyses.  Explicit
+            # start_ns / end_ns from the caller take priority over the resolved window.
+            nvtx_text_info: Optional[Dict[str, object]] = None
+            nvtx_kernel_span_info: Optional[Dict[str, object]] = None
+            if nvtx_text:
+                nvtx_text_info = _resolve_nvtx_text(
+                    conn, schema_obj, nvtx_text, limit=limit
                 )
-                if not str(nvtx_kernel_span_info.get("warning") or ""):
-                    k_start = int(nvtx_kernel_span_info.get("kernel_start_ns") or -1)
-                    k_end = int(nvtx_kernel_span_info.get("kernel_end_ns") or -1)
-                    if k_start >= 0 and not explicit_start_given:
-                        start_ns = k_start if int(start_ns) < 0 else min(int(start_ns), k_start)
-                    if k_end >= 0 and not explicit_end_given:
-                        end_ns = k_end if int(end_ns) < 0 else max(int(end_ns), k_end)
+                if nvtx_text_info.get("warning"):
+                    pass  # warn later via warnings list; don't abort
+                else:
+                    # Override time window only when caller did NOT supply explicit bounds
+                    if start_ns < 0 and nvtx_text_info["window_start_ns"] >= 0:
+                        start_ns = int(nvtx_text_info["window_start_ns"])
+                    if end_ns < 0 and nvtx_text_info["window_end_ns"] >= 0:
+                        end_ns = int(nvtx_text_info["window_end_ns"])
+                    # Extend analysis window by attributed GPU kernel execution span
+                    # (NVTX -> Runtime -> correlationId -> GPU kernel timestamps).
+                    nvtx_kernel_span_info = _resolve_nvtx_kernel_span(
+                        engine,
+                        nvtx_text=str(nvtx_text),
+                        device_id=int(device_id),
+                        limit=int(limit),
+                    )
+                    if not str(nvtx_kernel_span_info.get("warning") or ""):
+                        k_start = int(nvtx_kernel_span_info.get("kernel_start_ns") or -1)
+                        k_end = int(nvtx_kernel_span_info.get("kernel_end_ns") or -1)
+                        if k_start >= 0 and not explicit_start_given:
+                            start_ns = k_start if int(start_ns) < 0 else min(int(start_ns), k_start)
+                        if k_end >= 0 and not explicit_end_given:
+                            end_ns = k_end if int(end_ns) < 0 else max(int(end_ns), k_end)
 
-        summary = engine.summarize_gpu_kernels(
-            device_id=device_id,
-            start_ns=start_ns,
-            end_ns=end_ns,
-            top_k=top_k,
-            limit=limit,
-        )
-        overlap = engine.analyze_compute_comm_overlap(
-            device_id=device_id,
-            start_ns=start_ns,
-            end_ns=end_ns,
-            limit=limit,
-        )
-        # top_kernels is already computed inside summarize_gpu_kernels(); reuse it.
-        top_kernels = list((summary or {}).get("top_kernels") or [])
-        nccl_breakdown = engine.execute(
-            "nccl_breakdown",
-            device_id=device_id,
-            start_ns=start_ns,
-            end_ns=end_ns,
-            limit=max(int(top_k), 1),
-        )
-        iterations = engine.detect_iterations(
-            marker=iteration_marker,
-            device_id=device_id,
-            start_ns=start_ns,
-            end_ns=end_ns,
-            top_level_only=True,
-            limit=10000,
-        )
+        with _phase("summarize_gpu_kernels"):
+            summary = engine.summarize_gpu_kernels(
+                device_id=device_id,
+                start_ns=start_ns,
+                end_ns=end_ns,
+                top_k=top_k,
+                limit=limit,
+            )
+            # top_kernels is already computed inside summarize_gpu_kernels(); reuse it.
+            top_kernels = list((summary or {}).get("top_kernels") or [])
+
+        with _phase("compute_comm_overlap"):
+            overlap = engine.analyze_compute_comm_overlap(
+                device_id=device_id,
+                start_ns=start_ns,
+                end_ns=end_ns,
+                limit=limit,
+            )
+
+        with _phase("nccl_breakdown"):
+            nccl_breakdown = engine.execute(
+                "nccl_breakdown",
+                device_id=device_id,
+                start_ns=start_ns,
+                end_ns=end_ns,
+                limit=max(int(top_k), 1),
+            )
+
+        with _phase("detect_iterations"):
+            iterations = engine.detect_iterations(
+                marker=iteration_marker,
+                device_id=device_id,
+                start_ns=start_ns,
+                end_ns=end_ns,
+                top_level_only=True,
+                limit=10000,
+            )
 
         warnings: List[str] = []
 
@@ -366,147 +422,157 @@ def analyze_nsys_sqlite(
                     f"gpu_window [{round(k_start/1e6,1)} ms - {round(k_end/1e6,1)} ms]."
                 )
 
-        mfu: Optional[Dict[str, object]] = None
-        if model_flops_per_step is not None:
-            step_time_s: Optional[float] = None
-            if iterations:
-                iter_ms = [_to_float(item.get("duration_ms")) for item in iterations]
-                iter_ms = [x for x in iter_ms if x and x > 0]
-                if iter_ms:
-                    step_time_s = float(statistics.median(iter_ms)) / 1000.0
-            if step_time_s is None:
-                span_ms = _to_float(((summary or {}).get("timing") or {}).get("span_ms"))
-                if span_ms and span_ms > 0:
-                    step_time_s = float(span_ms) / 1000.0
-            if step_time_s is None:
-                warnings.append("MFU skipped: no usable step time from iterations or summary span.")
-            else:
-                resolved_peak = peak_tflops
-                if resolved_peak is None:
-                    gpu_name = _first_gpu_name_from_conn(conn)
-                    resolved_peak = infer_peak_tflops(gpu_name, precision=peak_precision)
+        with _phase("mfu"):
+            mfu: Optional[Dict[str, object]] = None
+            if model_flops_per_step is not None:
+                step_time_s: Optional[float] = None
+                if iterations:
+                    iter_ms = [_to_float(item.get("duration_ms")) for item in iterations]
+                    iter_ms = [x for x in iter_ms if x and x > 0]
+                    if iter_ms:
+                        step_time_s = float(statistics.median(iter_ms)) / 1000.0
+                if step_time_s is None:
+                    span_ms = _to_float(((summary or {}).get("timing") or {}).get("span_ms"))
+                    if span_ms and span_ms > 0:
+                        step_time_s = float(span_ms) / 1000.0
+                if step_time_s is None:
+                    warnings.append("MFU skipped: no usable step time from iterations or summary span.")
+                else:
+                    resolved_peak = peak_tflops
                     if resolved_peak is None:
-                        warnings.append("MFU peak_tflops not provided and GPU name mapping failed.")
-                if resolved_peak is not None:
-                    mfu = compute_mfu_single(
-                        step_time_s=float(step_time_s),
-                        model_flops_per_step=float(model_flops_per_step),
-                        peak_tflops=float(resolved_peak),
-                    )
+                        gpu_name = _first_gpu_name_from_conn(conn)
+                        resolved_peak = infer_peak_tflops(gpu_name, precision=peak_precision)
+                        if resolved_peak is None:
+                            warnings.append("MFU peak_tflops not provided and GPU name mapping failed.")
+                    if resolved_peak is not None:
+                        mfu = compute_mfu_single(
+                            step_time_s=float(step_time_s),
+                            model_flops_per_step=float(model_flops_per_step),
+                            peak_tflops=float(resolved_peak),
+                        )
 
-        sync_breakdown = _safe_skill(
-            engine, "sync_breakdown", warnings,
-            device_id=device_id, limit=50, start_ns=start_ns, end_ns=end_ns,
-        )
-        memcpy_bandwidth = _safe_skill(
-            engine, "memcpy_bandwidth_analysis", warnings,
-            device_id=device_id,
-            start_ns=start_ns,
-            end_ns=end_ns,
-        )
+        with _phase("sync_breakdown"):
+            sync_breakdown = _safe_skill(
+                engine, "sync_breakdown", warnings,
+                device_id=device_id, limit=50, start_ns=start_ns, end_ns=end_ns,
+            )
 
-        # --- New deeper analyses ---
-        # Kernel jitter: sort by CV descending so worst-jitter kernels appear first
-        kernel_duration_stats = _safe_skill(
-            engine, "kernel_duration_stats", warnings,
-            device_id=device_id, start_ns=start_ns, end_ns=end_ns, min_invocations=3, limit=20,
-        )
-
-        # Small-kernel overhead bracketing (scoped to window when nvtx_text is set)
-        short_kernels = _safe_skill(
-            engine, "short_kernels_overhead", warnings,
-            device_id=device_id,
-            start_ns=start_ns,
-            end_ns=end_ns,
-        )
-
-        # Per-stream utilization (scoped to window)
-        per_stream_utilization = _safe_skill(
-            engine, "per_stream_utilization", warnings,
-            device_id=device_id, start_ns=start_ns, end_ns=end_ns, limit=30,
-        )
-
-        # NVTX wall-clock efficiency — use nvtx_text pattern when available,
-        # otherwise fall back to iteration_marker pattern
-        _eff_nvtx_pattern = (
-            f"%{nvtx_text}%" if nvtx_text and "%" not in nvtx_text
-            else (nvtx_text if nvtx_text else f"%{iteration_marker}%")
-        )
-        nvtx_wall_efficiency = _safe_skill(
-            engine, "nvtx_wall_efficiency", warnings,
-            nvtx_text=_eff_nvtx_pattern,
-            device_id=device_id,
-            start_ns=start_ns,
-            end_ns=end_ns,
-            limit=200,
-        )
-
-        # --- Comprehensive auto-analysis skills ---
-        gpu_metrics_aggregate = _safe_skill(
-            engine, "gpu_metrics_aggregate", warnings,
-            device_id=device_id, start_ns=start_ns, end_ns=end_ns,
-        )
-        gpu_metrics_percentiles_rows = _safe_skill(
-            engine, "gpu_metrics_percentiles", warnings,
-            device_id=device_id, start_ns=start_ns, end_ns=end_ns,
-        )
-        memcpy_transfers_detail_rows = _safe_skill(
-            engine, "memcpy_transfers_detail", warnings,
-            device_id=device_id, start_ns=start_ns, end_ns=end_ns,
-        )
-        cpu_launch_gap_rows = _safe_skill(
-            engine, "cpu_launch_gap", warnings,
-            device_id=device_id, start_ns=start_ns, end_ns=end_ns,
-        )
-
-        # Build comprehensive analysis
-        _gpu_name = _first_gpu_name_from_conn(conn)
-        comprehensive_analysis = build_comprehensive_analysis(
-            gpu_name=_gpu_name,
-            summary=summary or {},
-            overlap=overlap or {},
-            nccl_breakdown=list(nccl_breakdown or []),
-            aggregate_kernels=top_kernels,
-            per_stream_utilization=list(per_stream_utilization or []),
-            memcpy_bandwidth=list(memcpy_bandwidth or []),
-            sync_breakdown=list(sync_breakdown or []),
-            gpu_metrics_aggregate=list(gpu_metrics_aggregate or []),
-            gpu_metrics_percentiles=list(gpu_metrics_percentiles_rows or []),
-            memcpy_transfers_detail=list(memcpy_transfers_detail_rows or []),
-            cpu_launch_gap=list(cpu_launch_gap_rows or []),
-            short_kernels=list(short_kernels or []),
-            kernel_duration_stats=list(kernel_duration_stats or []),
-        )
-
-        # Rank straggler analysis (only meaningful when NVTX encodes rank tags)
-        try:
-            rank_straggler = engine.analyze_rank_straggler(
-                marker=iteration_marker,
+        with _phase("memcpy_bandwidth"):
+            memcpy_bandwidth = _safe_skill(
+                engine, "memcpy_bandwidth_analysis", warnings,
                 device_id=device_id,
                 start_ns=start_ns,
                 end_ns=end_ns,
             )
-        except Exception as exc:
-            warnings.append(f"[SKILL_ERROR] analyze_rank_straggler failed: {exc}")
-            rank_straggler = {"global_stats": {}, "per_rank": [], "stragglers": []}
 
-        # GPU bottleneck classification per NVTX range (requires GPU metrics).
-        # Use nvtx_text pattern when available so we classify exactly the
-        # requested phases rather than the iteration-marker phases.
-        _bottleneck_pattern = (
-            f"%{nvtx_text}%" if nvtx_text and "%" not in nvtx_text
-            else (nvtx_text if nvtx_text else f"%{iteration_marker}%")
-        )
-        try:
-            bottleneck_classification = engine.classify_gpu_bottleneck(
-                nvtx_text=_bottleneck_pattern,
+        with _phase("kernel_duration_stats"):
+            kernel_duration_stats = _safe_skill(
+                engine, "kernel_duration_stats", warnings,
+                device_id=device_id, start_ns=start_ns, end_ns=end_ns, min_invocations=3, limit=20,
+            )
+
+        with _phase("short_kernels_overhead"):
+            short_kernels = _safe_skill(
+                engine, "short_kernels_overhead", warnings,
                 device_id=device_id,
                 start_ns=start_ns,
                 end_ns=end_ns,
             )
-        except Exception as exc:
-            warnings.append(f"[SKILL_ERROR] classify_gpu_bottleneck failed: {exc}")
-            bottleneck_classification = []
+
+        with _phase("per_stream_utilization"):
+            per_stream_utilization = _safe_skill(
+                engine, "per_stream_utilization", warnings,
+                device_id=device_id, start_ns=start_ns, end_ns=end_ns, limit=30,
+            )
+
+        with _phase("nvtx_wall_efficiency"):
+            _eff_nvtx_pattern = (
+                f"%{nvtx_text}%" if nvtx_text and "%" not in nvtx_text
+                else (nvtx_text if nvtx_text else f"%{iteration_marker}%")
+            )
+            nvtx_wall_efficiency = _safe_skill(
+                engine, "nvtx_wall_efficiency", warnings,
+                nvtx_text=_eff_nvtx_pattern,
+                device_id=device_id,
+                start_ns=start_ns,
+                end_ns=end_ns,
+                limit=200,
+            )
+
+        with _phase("nvtx_subphase_timing"):
+            nvtx_subphase_timing = _safe_skill(
+                engine, "nvtx_subphase_timing", warnings,
+                start_ns=start_ns, end_ns=end_ns,
+            )
+
+        with _phase("gpu_metrics"):
+            gpu_metrics_aggregate = _safe_skill(
+                engine, "gpu_metrics_aggregate", warnings,
+                device_id=device_id, start_ns=start_ns, end_ns=end_ns,
+            )
+            gpu_metrics_percentiles_rows = _safe_skill(
+                engine, "gpu_metrics_percentiles", warnings,
+                device_id=device_id, start_ns=start_ns, end_ns=end_ns,
+            )
+
+        with _phase("memcpy_transfers_detail"):
+            memcpy_transfers_detail_rows = _safe_skill(
+                engine, "memcpy_transfers_detail", warnings,
+                device_id=device_id, start_ns=start_ns, end_ns=end_ns,
+            )
+
+        with _phase("cpu_launch_gap"):
+            cpu_launch_gap_rows = _safe_skill(
+                engine, "cpu_launch_gap", warnings,
+                device_id=device_id, start_ns=start_ns, end_ns=end_ns,
+            )
+
+        with _phase("comprehensive_analysis"):
+            _gpu_name = _first_gpu_name_from_conn(conn)
+            comprehensive_analysis = build_comprehensive_analysis(
+                gpu_name=_gpu_name,
+                summary=summary or {},
+                overlap=overlap or {},
+                nccl_breakdown=list(nccl_breakdown or []),
+                aggregate_kernels=top_kernels,
+                per_stream_utilization=list(per_stream_utilization or []),
+                memcpy_bandwidth=list(memcpy_bandwidth or []),
+                sync_breakdown=list(sync_breakdown or []),
+                gpu_metrics_aggregate=list(gpu_metrics_aggregate or []),
+                gpu_metrics_percentiles=list(gpu_metrics_percentiles_rows or []),
+                memcpy_transfers_detail=list(memcpy_transfers_detail_rows or []),
+                cpu_launch_gap=list(cpu_launch_gap_rows or []),
+                short_kernels=list(short_kernels or []),
+                kernel_duration_stats=list(kernel_duration_stats or []),
+            )
+
+        with _phase("rank_straggler"):
+            try:
+                rank_straggler = engine.analyze_rank_straggler(
+                    marker=iteration_marker,
+                    device_id=device_id,
+                    start_ns=start_ns,
+                    end_ns=end_ns,
+                )
+            except Exception as exc:
+                warnings.append(f"[SKILL_ERROR] analyze_rank_straggler failed: {exc}")
+                rank_straggler = {"global_stats": {}, "per_rank": [], "stragglers": []}
+
+        with _phase("bottleneck_classification"):
+            _bottleneck_pattern = (
+                f"%{nvtx_text}%" if nvtx_text and "%" not in nvtx_text
+                else (nvtx_text if nvtx_text else f"%{iteration_marker}%")
+            )
+            try:
+                bottleneck_classification = engine.classify_gpu_bottleneck(
+                    nvtx_text=_bottleneck_pattern,
+                    device_id=device_id,
+                    start_ns=start_ns,
+                    end_ns=end_ns,
+                )
+            except Exception as exc:
+                warnings.append(f"[SKILL_ERROR] classify_gpu_bottleneck failed: {exc}")
+                bottleneck_classification = []
 
         # ---- Automatic problem detection warnings ----
         # 1. Low overall GPU utilization
@@ -622,6 +688,7 @@ def analyze_nsys_sqlite(
             "short_kernels": short_kernels,
             "per_stream_utilization": per_stream_utilization,
             "nvtx_wall_efficiency": nvtx_wall_efficiency,
+            "nvtx_subphase_timing": nvtx_subphase_timing,
             "rank_straggler": rank_straggler,
             "bottleneck_classification": bottleneck_classification,
             "gpu_metrics_aggregate": gpu_metrics_aggregate,
@@ -631,6 +698,7 @@ def analyze_nsys_sqlite(
             "comprehensive_analysis": comprehensive_analysis,
             "mfu": mfu,
             "warnings": warnings,
+            "phase_timings": phase_timings,
         }
     finally:
         conn.close()
@@ -784,6 +852,32 @@ def analyze_to_markdown(result: Dict[str, object]) -> str:
             )
         lines.append("")
 
+    spt = result.get("nvtx_subphase_timing") or []
+    if spt:
+        lines.append("## NVTX Sub-Phase Timing")
+        lines.append("")
+        win = result.get("window") or {}
+        w_start = int(win.get("start_ns", -1))
+        w_end = int(win.get("end_ns", -1))
+        if w_start >= 0 and w_end > w_start:
+            lines.append(f"*Window: {round(w_start/1e6,1)} ms – {round(w_end/1e6,1)} ms (span {round((w_end-w_start)/1e6,1)} ms)*")
+            lines.append("")
+        lines.append("| Sub-Phase | Count | total_ms | avg_ms | min_ms | max_ms | pct_of_window |")
+        lines.append("|-----------|-------|----------|--------|--------|--------|---------------|")
+        for r in spt[:50]:
+            pct = r.get("pct_of_window")
+            pct_str = f"{pct}%" if pct is not None else "n/a"
+            lines.append(
+                f"| {r.get('nvtx_name', '')} "
+                f"| {r.get('range_count', '')} "
+                f"| {r.get('total_ms', '')} "
+                f"| {r.get('avg_ms', '')} "
+                f"| {r.get('min_ms', '')} "
+                f"| {r.get('max_ms', '')} "
+                f"| {pct_str} |"
+            )
+        lines.append("")
+
     kds = result.get("kernel_duration_stats") or []
     if kds:
         lines.append("## Kernel Duration Jitter (Top by CV)")
@@ -894,6 +988,21 @@ def analyze_to_markdown(result: Dict[str, object]) -> str:
     if comp:
         lines.append("")
         lines.append(comprehensive_to_markdown(comp))
+
+    # Phase timing summary
+    pt = result.get("phase_timings") or []
+    if pt:
+        lines.append("")
+        lines.append("## Analysis Phase Timings")
+        lines.append("")
+        total_ms = sum(float(p.get("elapsed_ms") or 0) for p in pt)
+        lines.append(f"*Total analysis time: {round(total_ms, 1)} ms*")
+        lines.append("")
+        lines.append("| Phase | elapsed_ms |")
+        lines.append("|-------|------------|")
+        for p in pt:
+            lines.append(f"| {p.get('phase', '')} | {p.get('elapsed_ms', '')} |")
+        lines.append("")
 
     return "\n".join(lines)
 

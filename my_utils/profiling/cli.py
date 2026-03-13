@@ -506,6 +506,9 @@ def cmd_nsys_export(args: argparse.Namespace) -> int:
 
 
 def cmd_nsys_analyze(args: argparse.Namespace) -> int:
+    def _progress(msg: str) -> None:
+        print(f"[nsys-analyze]{msg}", file=sys.stderr)
+
     result = analyze_nsys_sqlite(
         args.sqlite,
         device_id=args.device_id,
@@ -518,6 +521,7 @@ def cmd_nsys_analyze(args: argparse.Namespace) -> int:
         peak_tflops=args.peak_tflops,
         peak_precision=args.peak_precision,
         limit=args.limit,
+        progress_cb=_progress,
     )
     if str(args.format).lower() in ("md", "markdown"):
         text = analyze_to_markdown(result)
@@ -598,6 +602,9 @@ def cmd_nsys_iter_outliers(args: argparse.Namespace) -> int:
 
 
 def cmd_nsys_timeline_html(args: argparse.Namespace) -> int:
+    def _progress(msg: str) -> None:
+        print(f"[nsys-timeline-html]{msg}", file=sys.stderr)
+
     output = export_timeline_html(
         args.sqlite,
         output_path=args.output,
@@ -617,6 +624,7 @@ def cmd_nsys_timeline_html(args: argparse.Namespace) -> int:
         include_all_metric_sources=bool(args.include_all_metric_sources),
         debug=bool(args.debug),
         debug_rows=int(args.debug_rows),
+        progress_cb=_progress,
     )
     print(f"[nsys-timeline-html] wrote: {output}")
     return 0
