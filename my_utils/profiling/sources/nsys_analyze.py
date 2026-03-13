@@ -155,6 +155,22 @@ def _safe_skill(engine: "NsysSqlSkillEngine", skill_name: str, warnings_out: Lis
         return []
 
 
+def _apply_sqlite_read_optimizations(conn: sqlite3.Connection) -> None:
+    """Apply safe read-path SQLite pragmas to speed up large analytics queries."""
+    pragmas = (
+        "PRAGMA temp_store=MEMORY;",
+        "PRAGMA cache_size=-131072;",  # ~128MB page cache
+        "PRAGMA automatic_index=ON;",
+        "PRAGMA mmap_size=268435456;",  # 256MB mapping when supported
+        "PRAGMA optimize;",
+    )
+    for sql in pragmas:
+        try:
+            conn.execute(sql)
+        except Exception:
+            pass
+
+
 def _resolve_nvtx_kernel_span(
     engine: "NsysSqlSkillEngine",
     *,
@@ -289,16 +305,30 @@ def analyze_nsys_sqlite(
         Pass ``lambda msg: print(msg, file=sys.stderr)`` for CLI progress output.
     """
     phase_timings: List[Dict[str, float]] = []
+    subphase_timings: List[Dict[str, float]] = []
 
     def _phase(name: str) -> _Phase:
         return _Phase(name, phase_timings, progress_cb)
 
+    def _run_subphase(name: str, fn):
+        if progress_cb:
+            progress_cb(f"    sub-start: {name}")
+        t0 = time.perf_counter()
+        try:
+            return fn()
+        finally:
+            elapsed_ms = round((time.perf_counter() - t0) * 1000, 1)
+            subphase_timings.append({"subphase": str(name), "elapsed_ms": elapsed_ms})
+            if progress_cb:
+                progress_cb(f"    sub-done:  {name}  [{elapsed_ms} ms]")
+
     conn = sqlite3.connect(sqlite_path)
     conn.row_factory = sqlite3.Row
+    _apply_sqlite_read_optimizations(conn)
     try:
         with _phase("schema_and_nvtx_scope"):
-            schema_obj = NsightSchema(conn)
-            engine = NsysSqlSkillEngine(conn)
+            schema_obj = _run_subphase("schema.load", lambda: NsightSchema(conn))
+            engine = _run_subphase("schema.build_skill_engine", lambda: NsysSqlSkillEngine(conn))
             explicit_start_given = int(start_ns) >= 0
             explicit_end_given = int(end_ns) >= 0
 
@@ -326,8 +356,9 @@ def analyze_nsys_sqlite(
             nvtx_text_info: Optional[Dict[str, object]] = None
             nvtx_kernel_span_info: Optional[Dict[str, object]] = None
             if nvtx_text:
-                nvtx_text_info = _resolve_nvtx_text(
-                    conn, schema_obj, nvtx_text, limit=limit
+                nvtx_text_info = _run_subphase(
+                    "nvtx.resolve_ranges",
+                    lambda: _resolve_nvtx_text(conn, schema_obj, nvtx_text, limit=limit),
                 )
                 if nvtx_text_info.get("warning"):
                     pass  # warn later via warnings list; don't abort
@@ -339,11 +370,14 @@ def analyze_nsys_sqlite(
                         end_ns = int(nvtx_text_info["window_end_ns"])
                     # Extend analysis window by attributed GPU kernel execution span
                     # (NVTX -> Runtime -> correlationId -> GPU kernel timestamps).
-                    nvtx_kernel_span_info = _resolve_nvtx_kernel_span(
-                        engine,
-                        nvtx_text=str(nvtx_text),
-                        device_id=int(device_id),
-                        limit=int(limit),
+                    nvtx_kernel_span_info = _run_subphase(
+                        "nvtx.resolve_kernel_span",
+                        lambda: _resolve_nvtx_kernel_span(
+                            engine,
+                            nvtx_text=str(nvtx_text),
+                            device_id=int(device_id),
+                            limit=int(limit),
+                        ),
                     )
                     if not str(nvtx_kernel_span_info.get("warning") or ""):
                         k_start = int(nvtx_kernel_span_info.get("kernel_start_ns") or -1)
@@ -354,41 +388,53 @@ def analyze_nsys_sqlite(
                             end_ns = k_end if int(end_ns) < 0 else max(int(end_ns), k_end)
 
         with _phase("summarize_gpu_kernels"):
-            summary = engine.summarize_gpu_kernels(
-                device_id=device_id,
-                start_ns=start_ns,
-                end_ns=end_ns,
-                top_k=top_k,
-                limit=limit,
+            summary = _run_subphase(
+                "summarize_gpu_kernels.compute",
+                lambda: engine.summarize_gpu_kernels(
+                    device_id=device_id,
+                    start_ns=start_ns,
+                    end_ns=end_ns,
+                    top_k=top_k,
+                    limit=limit,
+                ),
             )
             # top_kernels is already computed inside summarize_gpu_kernels(); reuse it.
             top_kernels = list((summary or {}).get("top_kernels") or [])
 
         with _phase("compute_comm_overlap"):
-            overlap = engine.analyze_compute_comm_overlap(
-                device_id=device_id,
-                start_ns=start_ns,
-                end_ns=end_ns,
-                limit=limit,
+            overlap = _run_subphase(
+                "compute_comm_overlap.compute",
+                lambda: engine.analyze_compute_comm_overlap(
+                    device_id=device_id,
+                    start_ns=start_ns,
+                    end_ns=end_ns,
+                    limit=limit,
+                ),
             )
 
         with _phase("nccl_breakdown"):
-            nccl_breakdown = engine.execute(
-                "nccl_breakdown",
-                device_id=device_id,
-                start_ns=start_ns,
-                end_ns=end_ns,
-                limit=max(int(top_k), 1),
+            nccl_breakdown = _run_subphase(
+                "nccl_breakdown.skill",
+                lambda: engine.execute(
+                    "nccl_breakdown",
+                    device_id=device_id,
+                    start_ns=start_ns,
+                    end_ns=end_ns,
+                    limit=max(int(top_k), 1),
+                ),
             )
 
         with _phase("detect_iterations"):
-            iterations = engine.detect_iterations(
-                marker=iteration_marker,
-                device_id=device_id,
-                start_ns=start_ns,
-                end_ns=end_ns,
-                top_level_only=True,
-                limit=10000,
+            iterations = _run_subphase(
+                "detect_iterations.compute",
+                lambda: engine.detect_iterations(
+                    marker=iteration_marker,
+                    device_id=device_id,
+                    start_ns=start_ns,
+                    end_ns=end_ns,
+                    top_level_only=True,
+                    limit=10000,
+                ),
             )
 
         warnings: List[str] = []
@@ -452,37 +498,52 @@ def analyze_nsys_sqlite(
                         )
 
         with _phase("sync_breakdown"):
-            sync_breakdown = _safe_skill(
-                engine, "sync_breakdown", warnings,
-                device_id=device_id, limit=50, start_ns=start_ns, end_ns=end_ns,
+            sync_breakdown = _run_subphase(
+                "sync_breakdown.skill",
+                lambda: _safe_skill(
+                    engine, "sync_breakdown", warnings,
+                    device_id=device_id, limit=50, start_ns=start_ns, end_ns=end_ns,
+                ),
             )
 
         with _phase("memcpy_bandwidth"):
-            memcpy_bandwidth = _safe_skill(
-                engine, "memcpy_bandwidth_analysis", warnings,
-                device_id=device_id,
-                start_ns=start_ns,
-                end_ns=end_ns,
+            memcpy_bandwidth = _run_subphase(
+                "memcpy_bandwidth.skill",
+                lambda: _safe_skill(
+                    engine, "memcpy_bandwidth_analysis", warnings,
+                    device_id=device_id,
+                    start_ns=start_ns,
+                    end_ns=end_ns,
+                ),
             )
 
         with _phase("kernel_duration_stats"):
-            kernel_duration_stats = _safe_skill(
-                engine, "kernel_duration_stats", warnings,
-                device_id=device_id, start_ns=start_ns, end_ns=end_ns, min_invocations=3, limit=20,
+            kernel_duration_stats = _run_subphase(
+                "kernel_duration_stats.skill",
+                lambda: _safe_skill(
+                    engine, "kernel_duration_stats", warnings,
+                    device_id=device_id, start_ns=start_ns, end_ns=end_ns, min_invocations=3, limit=20,
+                ),
             )
 
         with _phase("short_kernels_overhead"):
-            short_kernels = _safe_skill(
-                engine, "short_kernels_overhead", warnings,
-                device_id=device_id,
-                start_ns=start_ns,
-                end_ns=end_ns,
+            short_kernels = _run_subphase(
+                "short_kernels_overhead.skill",
+                lambda: _safe_skill(
+                    engine, "short_kernels_overhead", warnings,
+                    device_id=device_id,
+                    start_ns=start_ns,
+                    end_ns=end_ns,
+                ),
             )
 
         with _phase("per_stream_utilization"):
-            per_stream_utilization = _safe_skill(
-                engine, "per_stream_utilization", warnings,
-                device_id=device_id, start_ns=start_ns, end_ns=end_ns, limit=30,
+            per_stream_utilization = _run_subphase(
+                "per_stream_utilization.skill",
+                lambda: _safe_skill(
+                    engine, "per_stream_utilization", warnings,
+                    device_id=device_id, start_ns=start_ns, end_ns=end_ns, limit=30,
+                ),
             )
 
         with _phase("nvtx_wall_efficiency"):
@@ -490,69 +551,96 @@ def analyze_nsys_sqlite(
                 f"%{nvtx_text}%" if nvtx_text and "%" not in nvtx_text
                 else (nvtx_text if nvtx_text else f"%{iteration_marker}%")
             )
-            nvtx_wall_efficiency = _safe_skill(
-                engine, "nvtx_wall_efficiency", warnings,
-                nvtx_text=_eff_nvtx_pattern,
-                device_id=device_id,
-                start_ns=start_ns,
-                end_ns=end_ns,
-                limit=200,
+            nvtx_wall_efficiency = _run_subphase(
+                "nvtx_wall_efficiency.skill",
+                lambda: _safe_skill(
+                    engine, "nvtx_wall_efficiency", warnings,
+                    nvtx_text=_eff_nvtx_pattern,
+                    device_id=device_id,
+                    start_ns=start_ns,
+                    end_ns=end_ns,
+                    limit=200,
+                ),
             )
 
         with _phase("nvtx_subphase_timing"):
-            nvtx_subphase_timing = _safe_skill(
-                engine, "nvtx_subphase_timing", warnings,
-                start_ns=start_ns, end_ns=end_ns,
+            nvtx_subphase_timing = _run_subphase(
+                "nvtx_subphase_timing.skill",
+                lambda: _safe_skill(
+                    engine, "nvtx_subphase_timing", warnings,
+                    start_ns=start_ns, end_ns=end_ns,
+                ),
             )
 
         with _phase("gpu_metrics"):
-            gpu_metrics_aggregate = _safe_skill(
-                engine, "gpu_metrics_aggregate", warnings,
-                device_id=device_id, start_ns=start_ns, end_ns=end_ns,
+            gpu_metrics_aggregate = _run_subphase(
+                "gpu_metrics.aggregate",
+                lambda: _safe_skill(
+                    engine, "gpu_metrics_aggregate", warnings,
+                    device_id=device_id, start_ns=start_ns, end_ns=end_ns,
+                ),
             )
-            gpu_metrics_percentiles_rows = _safe_skill(
-                engine, "gpu_metrics_percentiles", warnings,
-                device_id=device_id, start_ns=start_ns, end_ns=end_ns,
+            gpu_metrics_percentiles_rows = _run_subphase(
+                "gpu_metrics.percentiles",
+                lambda: _safe_skill(
+                    engine, "gpu_metrics_percentiles", warnings,
+                    device_id=device_id, start_ns=start_ns, end_ns=end_ns,
+                ),
             )
 
         with _phase("memcpy_transfers_detail"):
-            memcpy_transfers_detail_rows = _safe_skill(
-                engine, "memcpy_transfers_detail", warnings,
-                device_id=device_id, start_ns=start_ns, end_ns=end_ns,
+            memcpy_transfers_detail_rows = _run_subphase(
+                "memcpy_transfers_detail.skill",
+                lambda: _safe_skill(
+                    engine, "memcpy_transfers_detail", warnings,
+                    device_id=device_id, start_ns=start_ns, end_ns=end_ns,
+                ),
             )
 
         with _phase("cpu_launch_gap"):
-            cpu_launch_gap_rows = _safe_skill(
-                engine, "cpu_launch_gap", warnings,
-                device_id=device_id, start_ns=start_ns, end_ns=end_ns,
+            cpu_launch_gap_rows = _run_subphase(
+                "cpu_launch_gap.skill",
+                lambda: _safe_skill(
+                    engine, "cpu_launch_gap", warnings,
+                    device_id=device_id, start_ns=start_ns, end_ns=end_ns,
+                ),
             )
 
         with _phase("comprehensive_analysis"):
-            _gpu_name = _first_gpu_name_from_conn(conn)
-            comprehensive_analysis = build_comprehensive_analysis(
-                gpu_name=_gpu_name,
-                summary=summary or {},
-                overlap=overlap or {},
-                nccl_breakdown=list(nccl_breakdown or []),
-                aggregate_kernels=top_kernels,
-                per_stream_utilization=list(per_stream_utilization or []),
-                memcpy_bandwidth=list(memcpy_bandwidth or []),
-                sync_breakdown=list(sync_breakdown or []),
-                gpu_metrics_aggregate=list(gpu_metrics_aggregate or []),
-                gpu_metrics_percentiles=list(gpu_metrics_percentiles_rows or []),
-                memcpy_transfers_detail=list(memcpy_transfers_detail_rows or []),
-                cpu_launch_gap=list(cpu_launch_gap_rows or []),
-                short_kernels=list(short_kernels or []),
-                kernel_duration_stats=list(kernel_duration_stats or []),
+            _gpu_name = _run_subphase(
+                "comprehensive_analysis.resolve_gpu_name",
+                lambda: _first_gpu_name_from_conn(conn),
+            )
+            comprehensive_analysis = _run_subphase(
+                "comprehensive_analysis.build",
+                lambda: build_comprehensive_analysis(
+                    gpu_name=_gpu_name,
+                    summary=summary or {},
+                    overlap=overlap or {},
+                    nccl_breakdown=list(nccl_breakdown or []),
+                    aggregate_kernels=top_kernels,
+                    per_stream_utilization=list(per_stream_utilization or []),
+                    memcpy_bandwidth=list(memcpy_bandwidth or []),
+                    sync_breakdown=list(sync_breakdown or []),
+                    gpu_metrics_aggregate=list(gpu_metrics_aggregate or []),
+                    gpu_metrics_percentiles=list(gpu_metrics_percentiles_rows or []),
+                    memcpy_transfers_detail=list(memcpy_transfers_detail_rows or []),
+                    cpu_launch_gap=list(cpu_launch_gap_rows or []),
+                    short_kernels=list(short_kernels or []),
+                    kernel_duration_stats=list(kernel_duration_stats or []),
+                ),
             )
 
         with _phase("rank_straggler"):
             try:
-                rank_straggler = engine.analyze_rank_straggler(
-                    marker=iteration_marker,
-                    device_id=device_id,
-                    start_ns=start_ns,
-                    end_ns=end_ns,
+                rank_straggler = _run_subphase(
+                    "rank_straggler.compute",
+                    lambda: engine.analyze_rank_straggler(
+                        marker=iteration_marker,
+                        device_id=device_id,
+                        start_ns=start_ns,
+                        end_ns=end_ns,
+                    ),
                 )
             except Exception as exc:
                 warnings.append(f"[SKILL_ERROR] analyze_rank_straggler failed: {exc}")
@@ -564,11 +652,14 @@ def analyze_nsys_sqlite(
                 else (nvtx_text if nvtx_text else f"%{iteration_marker}%")
             )
             try:
-                bottleneck_classification = engine.classify_gpu_bottleneck(
-                    nvtx_text=_bottleneck_pattern,
-                    device_id=device_id,
-                    start_ns=start_ns,
-                    end_ns=end_ns,
+                bottleneck_classification = _run_subphase(
+                    "bottleneck_classification.compute",
+                    lambda: engine.classify_gpu_bottleneck(
+                        nvtx_text=_bottleneck_pattern,
+                        device_id=device_id,
+                        start_ns=start_ns,
+                        end_ns=end_ns,
+                    ),
                 )
             except Exception as exc:
                 warnings.append(f"[SKILL_ERROR] classify_gpu_bottleneck failed: {exc}")
@@ -699,6 +790,7 @@ def analyze_nsys_sqlite(
             "mfu": mfu,
             "warnings": warnings,
             "phase_timings": phase_timings,
+            "subphase_timings": subphase_timings,
         }
     finally:
         conn.close()
@@ -1004,5 +1096,15 @@ def analyze_to_markdown(result: Dict[str, object]) -> str:
             lines.append(f"| {p.get('phase', '')} | {p.get('elapsed_ms', '')} |")
         lines.append("")
 
-    return "\n".join(lines)
+    st = result.get("subphase_timings") or []
+    if st:
+        lines.append("")
+        lines.append("## Analysis Subphase Timings")
+        lines.append("")
+        lines.append("| Subphase | elapsed_ms |")
+        lines.append("|----------|------------|")
+        for s in st:
+            lines.append(f"| {s.get('subphase', '')} | {s.get('elapsed_ms', '')} |")
+        lines.append("")
 
+    return "\n".join(lines)

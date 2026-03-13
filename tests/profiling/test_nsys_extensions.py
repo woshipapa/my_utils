@@ -508,6 +508,54 @@ def test_nvtx_gpu_metrics_breakdown_uses_correlation_gpu_windows(tmp_path: Path)
     conn.close()
 
 
+def test_nvtx_gpu_metrics_breakdown_overlapping_kernel_windows_no_double_count(tmp_path: Path) -> None:
+    db = tmp_path / "nvtx_gpu_overlap_dedup.sqlite"
+    _init_sqlite(db)
+
+    conn = sqlite3.connect(str(db))
+    conn.execute(
+        "INSERT INTO NVTX_EVENTS VALUES (?, ?, ?, ?, ?, ?)",
+        (1_000_000, 1_000_300, "overlap_case", None, 59, 12345678),
+    )
+    conn.executemany(
+        "INSERT INTO CUPTI_ACTIVITY_KIND_RUNTIME VALUES (?, ?, ?, ?, ?)",
+        [
+            (1_000_050, 1_000_080, 7001, 3, 12345678),
+            (1_000_090, 1_000_120, 7002, 3, 12345678),
+        ],
+    )
+    conn.executemany(
+        "INSERT INTO CUPTI_ACTIVITY_KIND_KERNEL VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        [
+            (1_001_000, 1_001_600, 7, 7001, 1, 1, 0, 128, 1, 1, 32, 4096, 0, 80.0),
+            (1_001_400, 1_001_900, 8, 7002, 1, 1, 0, 128, 1, 1, 32, 4096, 0, 80.0),
+        ],
+    )
+    # This point falls into both raw kernel windows; result must count it only once.
+    conn.execute(
+        "INSERT INTO CUPTI_ACTIVITY_KIND_GPU_METRIC(timestamp, metricId, value, sourceId) VALUES (?, ?, ?, ?)",
+        (1_001_500, 101, 66.0, 1),
+    )
+    conn.commit()
+    conn.row_factory = sqlite3.Row
+
+    engine = NsysSqlSkillEngine(conn)
+    rows = engine.execute(
+        "nvtx_gpu_metrics_breakdown",
+        nvtx_text="%overlap_case%",
+        metric_name_like="%sm__active%",
+        include_all_sources=1,
+        limit=100,
+    )
+    _show("Skill 18 - overlap windows dedup", rows)
+    assert rows, rows
+    sm = next((r for r in rows if "sm__active" in str(r.get("metric_name", ""))), None)
+    assert sm is not None, rows
+    assert int(sm.get("sample_count") or 0) == 1, sm
+    assert abs(float(sm.get("avg_value") or 0.0) - 66.0) < 1e-6, sm
+    conn.close()
+
+
 def test_gpu_metric_name_mapping_prefers_target_info(tmp_path: Path) -> None:
     db = tmp_path / "rank0_target_info.sqlite"
     _init_sqlite(db)
@@ -1205,10 +1253,13 @@ def test_analyze_nsys_sqlite_new_keys(tmp_path: Path) -> None:
 
     assert "sync_breakdown" in result,    "Missing key: sync_breakdown"
     assert "memcpy_bandwidth" in result,  "Missing key: memcpy_bandwidth"
+    assert "subphase_timings" in result,  "Missing key: subphase_timings"
     assert isinstance(result["sync_breakdown"], list)
     assert isinstance(result["memcpy_bandwidth"], list)
+    assert isinstance(result["subphase_timings"], list)
     assert len(result["sync_breakdown"]) >= 1,   "sync_breakdown should have rows"
     assert len(result["memcpy_bandwidth"]) >= 1, "memcpy_bandwidth should have rows"
+    assert len(result["subphase_timings"]) >= 1, "subphase_timings should have rows"
 
     _show("sync_breakdown", result["sync_breakdown"])
     _show("memcpy_bandwidth", result["memcpy_bandwidth"])
@@ -1217,6 +1268,7 @@ def test_analyze_nsys_sqlite_new_keys(tmp_path: Path) -> None:
     md = analyze_to_markdown(result)
     assert "## Sync Breakdown" in md,    "Markdown missing Sync Breakdown section"
     assert "## Memcpy Bandwidth" in md,  "Markdown missing Memcpy Bandwidth section"
+    assert "## Analysis Subphase Timings" in md, "Markdown missing subphase timings section"
     print("\n[markdown sections found]")
     for line in md.splitlines():
         if line.startswith("##"):
