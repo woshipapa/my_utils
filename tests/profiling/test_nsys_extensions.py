@@ -1276,6 +1276,50 @@ def test_analyze_nsys_sqlite_window_scoping_for_new_skills(tmp_path: Path) -> No
     assert int(by_name_win["void gemm_kernel()"]["invocations"]) == 1, kds_win
 
 
+def test_analyze_nsys_sqlite_nvtx_scope_extends_to_gpu_kernel_span(tmp_path: Path) -> None:
+    from my_utils.profiling.sources.nsys_analyze import analyze_nsys_sqlite
+
+    db = tmp_path / "rank0.sqlite"
+    _init_sqlite(db)
+
+    conn = sqlite3.connect(str(db))
+    conn.execute(
+        "INSERT INTO NVTX_EVENTS VALUES (?, ?, ?, ?, ?, ?)",
+        (100_000, 100_200, "late_launch", None, 59, 12345678),
+    )
+    conn.execute(
+        "INSERT INTO CUPTI_ACTIVITY_KIND_RUNTIME VALUES (?, ?, ?, ?, ?)",
+        (100_100, 100_180, 999, 3, 12345678),
+    )
+    conn.execute(
+        "INSERT INTO CUPTI_ACTIVITY_KIND_KERNEL VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (101_000, 101_500, 7, 999, 1, 1, 0, 128, 1, 1, 32, 4096, 0, 87.5),
+    )
+    conn.commit()
+    conn.close()
+
+    result = analyze_nsys_sqlite(
+        str(db),
+        device_id=0,
+        nvtx_text="late_launch",
+        top_k=10,
+    )
+    win = result.get("window") or {}
+    assert int(win.get("start_ns") or -1) == 100_000, win
+    assert int(win.get("end_ns") or -1) == 101_500, win
+
+    span_info = result.get("nvtx_kernel_span_info") or {}
+    assert not span_info.get("warning"), span_info
+    assert int(span_info.get("kernel_start_ns") or -1) == 101_000, span_info
+    assert int(span_info.get("kernel_end_ns") or -1) == 101_500, span_info
+    assert int(span_info.get("count") or 0) >= 1, span_info
+
+    summary = result.get("summary") or {}
+    assert int(summary.get("kernel_rows") or 0) >= 1, summary
+    warns = list(result.get("warnings") or [])
+    assert any("NVTX_SCOPE_KERNEL_SPAN" in str(w) for w in warns), warns
+
+
 # ===========================================================================
 # Original tests (preserved, now also benefit from richer fixture)
 # ===========================================================================
