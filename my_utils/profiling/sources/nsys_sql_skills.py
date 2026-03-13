@@ -1249,16 +1249,92 @@ def _build_builtin_skills(schema: NsightSchema) -> Dict[str, SqlSkill]:
             else:
                 ngm_metric_device_expr = "'unknown'"
 
-            skill_map["nvtx_gpu_metrics_breakdown"] = SqlSkill(
-                name="nvtx_gpu_metrics_breakdown",
-                title="NVTX GPU Metrics Breakdown",
-                description=(
-                    "For NVTX ranges matching nvtx_text, aggregate GPU hardware sampling points "
-                    "whose timestamps fall inside each range. Useful to inspect sm/tensor/dram "
-                    "metrics per training phase (forward/backward/sample_x)."
-                ),
-                category="metrics",
-                sql=(
+            ngm_can_use_corr_mapping = bool(
+                schema.runtime_table
+                and runtime_corr_col
+                and corr_col
+                and runtime_start_for_nvtx
+                and runtime_end_for_nvtx
+            )
+            ngm_nvtx_tid_select = ""
+            ngm_tid_join = ""
+            if ngm_can_use_corr_mapping and runtime_global_tid_col and nvtx_global_tid_col:
+                ngm_nvtx_tid_select = f", n.{_ident(nvtx_global_tid_col)} AS _nvtx_gtid "
+                ngm_tid_join = f" AND nr._nvtx_gtid = r.{_ident(runtime_global_tid_col)} "
+            ngm_kernel_device_where = (
+                f"AND ({{device_id}} < 0 OR k.{_ident(device_col)} = {{device_id}}) "
+                if device_col
+                else ""
+            )
+
+            if ngm_can_use_corr_mapping:
+                ngm_sql = (
+                    "WITH nvtx_ranges AS ( "
+                    f"  SELECT {ngm_nvtx_text_expr} AS nvtx_text, "
+                    f"         n.{_ident(ngm_nvtx_start)} AS nvtx_start_ns, "
+                    f"         n.[{_ident(ngm_nvtx_end)}] AS nvtx_end_ns"
+                    + ngm_nvtx_tid_select
+                    + f"  FROM {nvtx_table} n "
+                    + f"  {ngm_nvtx_text_join} "
+                    + "  WHERE 1=1 "
+                    + f"  AND ('{{nvtx_text}}' = '%' OR {ngm_nvtx_text_expr} LIKE '{{nvtx_text}}') "
+                    + f"  AND {ngm_nvtx_text_expr} IS NOT NULL "
+                    + f"  AND n.[{_ident(ngm_nvtx_end)}] > n.{_ident(ngm_nvtx_start)} "
+                    + f"  AND ({{start_ns}} < 0 OR n.{_ident(ngm_nvtx_start)} >= {{start_ns}}) "
+                    + f"  AND ({{end_ns}} < 0 OR n.[{_ident(ngm_nvtx_end)}] <= {{end_ns}}) "
+                    + "), "
+                    "gpu_windows AS ( "
+                    "  SELECT nr.nvtx_text, nr.nvtx_start_ns, nr.nvtx_end_ns, "
+                    f"         k.{_ident(start_col)} AS gpu_start_ns, "
+                    f"         k.[{_ident(end_col)}] AS gpu_end_ns "
+                    "  FROM nvtx_ranges nr "
+                    f"  JOIN {runtime_table} r "
+                    f"    ON nr.nvtx_start_ns <= r.{_ident(runtime_start_for_nvtx)} "
+                    f"   AND nr.nvtx_end_ns   >= r.[{_ident(runtime_end_for_nvtx)}] "
+                    + ngm_tid_join
+                    + f"  JOIN {kernel_table} k ON r.{_ident(runtime_corr_col)} = k.{_ident(corr_col)} "
+                    + "  WHERE 1=1 "
+                    + f"  AND k.[{_ident(end_col)}] > k.{_ident(start_col)} "
+                    + ngm_kernel_device_where
+                    + "), "
+                    "metric_points AS ( "
+                    "  SELECT DISTINCT "
+                    "         gw.nvtx_text, gw.nvtx_start_ns, gw.nvtx_end_ns, "
+                    f"         {ngm_metric_name_expr} AS metric_name, "
+                    f"         {ngm_metric_device_expr} AS metric_device, "
+                    f"         g.{_ident(ngm_ts_col)} AS metric_ts_ns, "
+                    f"         CAST(g.{_ident(ngm_val_col)} AS REAL) AS metric_value "
+                    "  FROM gpu_windows gw "
+                    f"  JOIN {ngm_metrics_table} g "
+                    f"    ON g.{_ident(ngm_ts_col)} >= gw.gpu_start_ns "
+                    f"   AND g.{_ident(ngm_ts_col)} <= gw.gpu_end_ns "
+                    f"  {ngm_metric_name_join} "
+                    f"  {ngm_source_join} "
+                    "  WHERE 1=1 "
+                    f"  AND ('{{metric_name_like}}' = '%' OR {ngm_metric_name_expr} LIKE '{{metric_name_like}}') "
+                    f"  {ngm_source_where}"
+                    f"  {ngm_device_where}"
+                    f"  {ngm_metric_name_not_null}"
+                    f"  AND g.{_ident(ngm_val_col)} IS NOT NULL "
+                    ") "
+                    "SELECT nvtx_text, nvtx_start_ns, nvtx_end_ns, metric_name, metric_device, "
+                    "       COUNT(*) AS sample_count, "
+                    "       ROUND(AVG(metric_value), 3) AS avg_value, "
+                    "       ROUND(MIN(metric_value), 3) AS min_value, "
+                    "       ROUND(MAX(metric_value), 3) AS max_value "
+                    "FROM metric_points "
+                    "GROUP BY nvtx_text, nvtx_start_ns, nvtx_end_ns, metric_name, metric_device "
+                    "ORDER BY nvtx_start_ns ASC, sample_count DESC, metric_name ASC, metric_device ASC "
+                    "LIMIT {limit}"
+                )
+                ngm_desc = (
+                    "For NVTX ranges matching nvtx_text, map CPU launches to GPU kernels via "
+                    "Runtime correlationId, then aggregate GPU metric samples whose timestamps "
+                    "intersect the mapped GPU execution windows. This avoids CPU NVTX window "
+                    "drift when kernels execute later on GPU."
+                )
+            else:
+                ngm_sql = (
                     f"SELECT {ngm_nvtx_text_expr} AS nvtx_text, "
                     f"n.{_ident(ngm_nvtx_start)} AS nvtx_start_ns, "
                     f"n.[{_ident(ngm_nvtx_end)}] AS nvtx_end_ns, "
@@ -1289,7 +1365,21 @@ def _build_builtin_skills(schema: NsightSchema) -> Dict[str, SqlSkill]:
                     f"GROUP BY {ngm_nvtx_text_expr}, n.{_ident(ngm_nvtx_start)}, n.[{_ident(ngm_nvtx_end)}], {ngm_metric_name_expr}, {ngm_metric_device_expr} "
                     f"ORDER BY n.{_ident(ngm_nvtx_start)} ASC, sample_count DESC, metric_name ASC, metric_device ASC "
                     "LIMIT {limit}"
-                ),
+                )
+                ngm_desc = (
+                    "For NVTX ranges matching nvtx_text, aggregate GPU hardware sampling points "
+                    "whose timestamps fall inside each range. Useful to inspect sm/tensor/dram "
+                    "metrics per training phase (forward/backward/sample_x). "
+                    "When runtime/kernel correlation columns are unavailable, this fallback "
+                    "uses NVTX wall-clock windows."
+                )
+
+            skill_map["nvtx_gpu_metrics_breakdown"] = SqlSkill(
+                name="nvtx_gpu_metrics_breakdown",
+                title="NVTX GPU Metrics Breakdown",
+                description=ngm_desc,
+                category="metrics",
+                sql=ngm_sql,
                 params=[
                     SqlSkillParam("nvtx_text", "NVTX text LIKE pattern, default %", "str", False, "%"),
                     SqlSkillParam("metric_name_like", "metric name SQL LIKE pattern", "str", False, "%"),

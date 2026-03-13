@@ -463,6 +463,51 @@ def test_new_skill_outputs(tmp_path: Path) -> None:
     conn.close()
 
 
+def test_nvtx_gpu_metrics_breakdown_uses_correlation_gpu_windows(tmp_path: Path) -> None:
+    db = tmp_path / "nvtx_gpu_window.sqlite"
+    _init_sqlite(db)
+
+    conn = sqlite3.connect(str(db))
+    conn.execute(
+        "INSERT INTO NVTX_EVENTS VALUES (?, ?, ?, ?, ?, ?)",
+        (100_000, 100_200, "late_launch", None, 59, 12345678),
+    )
+    conn.execute(
+        "INSERT INTO CUPTI_ACTIVITY_KIND_RUNTIME VALUES (?, ?, ?, ?, ?)",
+        (100_100, 100_180, 999, 3, 12345678),
+    )
+    conn.execute(
+        "INSERT INTO CUPTI_ACTIVITY_KIND_KERNEL VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (101_000, 101_500, 7, 999, 1, 1, 0, 128, 1, 1, 32, 4096, 0, 87.5),
+    )
+    # Outside NVTX CPU wall window, inside GPU kernel execution window.
+    conn.execute(
+        "INSERT INTO CUPTI_ACTIVITY_KIND_GPU_METRIC(timestamp, metricId, value, sourceId) VALUES (?, ?, ?, ?)",
+        (101_100, 101, 77.0, 1),
+    )
+    conn.commit()
+    conn.row_factory = sqlite3.Row
+    engine = NsysSqlSkillEngine(conn)
+
+    rows = engine.execute(
+        "nvtx_gpu_metrics_breakdown",
+        nvtx_text="%late_launch%",
+        metric_name_like="%sm__active%",
+        include_all_sources=1,
+        limit=100,
+    )
+    _show("Skill 18 - correlation mapped gpu window", rows)
+    assert rows, rows
+    sm_rows = [r for r in rows if "sm__active" in str(r.get("metric_name", ""))]
+    assert sm_rows, rows
+    sm = sm_rows[0]
+    assert int(sm.get("sample_count") or 0) == 1, sm
+    assert abs(float(sm.get("avg_value") or 0.0) - 77.0) < 1e-6, sm
+    assert int(sm.get("nvtx_start_ns") or 0) == 100_000, sm
+    assert int(sm.get("nvtx_end_ns") or 0) == 100_200, sm
+    conn.close()
+
+
 def test_gpu_metric_name_mapping_prefers_target_info(tmp_path: Path) -> None:
     db = tmp_path / "rank0_target_info.sqlite"
     _init_sqlite(db)
