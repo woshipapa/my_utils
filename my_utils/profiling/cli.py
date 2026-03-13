@@ -511,7 +511,7 @@ def cmd_nsys_analyze(args: argparse.Namespace) -> int:
         device_id=args.device_id,
         start_ns=args.start_ns,
         end_ns=args.end_ns,
-        nvtx_scope=str(args.nvtx_scope).strip() or None,
+        nvtx_text=str(args.nvtx_text).strip() or None,
         top_k=args.top_k,
         iteration_marker=args.iteration_marker,
         model_flops_per_step=args.model_flops_per_step,
@@ -765,7 +765,7 @@ def build_parser() -> argparse.ArgumentParser:
     nsys_analyze.add_argument("--limit", type=int, default=500000)
     nsys_analyze.add_argument("--iteration-marker", default="sample_0")
     nsys_analyze.add_argument(
-        "--nvtx-scope",
+        "--nvtx-text",
         default="",
         help=(
             "NVTX text LIKE pattern to restrict analysis to the union time window of all "
