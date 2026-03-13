@@ -31,10 +31,10 @@ def _first_gpu_name_from_conn(conn: sqlite3.Connection) -> str:
         return ""
 
 
-def _resolve_nvtx_scope(
+def _resolve_nvtx_text(
     conn: sqlite3.Connection,
     schema: NsightSchema,
-    nvtx_scope: str,
+    nvtx_text: str,
     *,
     limit: int = 10000,
 ) -> Dict[str, object]:
@@ -52,7 +52,7 @@ def _resolve_nvtx_scope(
     nvtx_table = schema.nvtx_table
     if not nvtx_table or not schema.table_exists(nvtx_table):
         return {
-            "pattern": nvtx_scope,
+            "pattern": nvtx_text,
             "matched_ranges": [],
             "count": 0,
             "window_start_ns": -1,
@@ -77,7 +77,7 @@ def _resolve_nvtx_scope(
     end_col = "end" if "end" in nvtx_cols else None
     if not start_col or not end_col:
         return {
-            "pattern": nvtx_scope,
+            "pattern": nvtx_text,
             "matched_ranges": [],
             "count": 0,
             "window_start_ns": -1,
@@ -86,7 +86,7 @@ def _resolve_nvtx_scope(
             "warning": "NVTX table missing start/end columns.",
         }
 
-    like_pattern = str(nvtx_scope).strip()
+    like_pattern = str(nvtx_text).strip()
     if "%" not in like_pattern:
         like_pattern = f"%{like_pattern}%"
 
@@ -106,7 +106,7 @@ def _resolve_nvtx_scope(
         rows = [dict(r) for r in conn.execute(sql, (like_pattern, int(limit))).fetchall()]
     except Exception as exc:
         return {
-            "pattern": nvtx_scope,
+            "pattern": nvtx_text,
             "matched_ranges": [],
             "count": 0,
             "window_start_ns": -1,
@@ -117,7 +117,7 @@ def _resolve_nvtx_scope(
 
     if not rows:
         return {
-            "pattern": nvtx_scope,
+            "pattern": nvtx_text,
             "matched_ranges": [],
             "count": 0,
             "window_start_ns": -1,
@@ -131,7 +131,7 @@ def _resolve_nvtx_scope(
     total_dur    = round(sum(float(r.get("duration_ms") or 0) for r in rows), 3)
 
     return {
-        "pattern": nvtx_scope,
+        "pattern": nvtx_text,
         "matched_ranges": rows,
         "count": len(rows),
         "window_start_ns": window_start,
@@ -147,7 +147,7 @@ def analyze_nsys_sqlite(
     device_id: int = -1,
     start_ns: int = -1,
     end_ns: int = -1,
-    nvtx_scope: Optional[str] = None,
+    nvtx_text: Optional[str] = None,
     top_k: int = 10,
     iteration_marker: str = "sample_0",
     model_flops_per_step: Optional[float] = None,
@@ -179,22 +179,22 @@ def analyze_nsys_sqlite(
         }
 
         # --- NVTX scope resolution ---
-        # When nvtx_scope is given, resolve matching NVTX ranges and use their
+        # When nvtx_text is given, resolve matching NVTX ranges and use their
         # union time window to restrict ALL subsequent analyses.  Explicit
         # start_ns / end_ns from the caller take priority over the resolved window.
-        nvtx_scope_info: Optional[Dict[str, object]] = None
-        if nvtx_scope:
-            nvtx_scope_info = _resolve_nvtx_scope(
-                conn, schema_obj, nvtx_scope, limit=limit
+        nvtx_text_info: Optional[Dict[str, object]] = None
+        if nvtx_text:
+            nvtx_text_info = _resolve_nvtx_text(
+                conn, schema_obj, nvtx_text, limit=limit
             )
-            if nvtx_scope_info.get("warning"):
+            if nvtx_text_info.get("warning"):
                 pass  # warn later via warnings list; don't abort
             else:
                 # Override time window only when caller did NOT supply explicit bounds
-                if start_ns < 0 and nvtx_scope_info["window_start_ns"] >= 0:
-                    start_ns = int(nvtx_scope_info["window_start_ns"])
-                if end_ns < 0 and nvtx_scope_info["window_end_ns"] >= 0:
-                    end_ns = int(nvtx_scope_info["window_end_ns"])
+                if start_ns < 0 and nvtx_text_info["window_start_ns"] >= 0:
+                    start_ns = int(nvtx_text_info["window_start_ns"])
+                if end_ns < 0 and nvtx_text_info["window_end_ns"] >= 0:
+                    end_ns = int(nvtx_text_info["window_end_ns"])
 
         summary = engine.summarize_gpu_kernels(
             device_id=device_id,
@@ -228,16 +228,16 @@ def analyze_nsys_sqlite(
         warnings: List[str] = []
 
         # Surface NVTX scope warnings early
-        if nvtx_scope_info:
-            scope_warn = str(nvtx_scope_info.get("warning") or "")
+        if nvtx_text_info:
+            scope_warn = str(nvtx_text_info.get("warning") or "")
             if scope_warn:
                 warnings.append(f"[NVTX_SCOPE] {scope_warn}")
             else:
-                n_ranges = int(nvtx_scope_info.get("count") or 0)
-                w_start = int(nvtx_scope_info.get("window_start_ns") or 0)
-                w_end   = int(nvtx_scope_info.get("window_end_ns") or 0)
+                n_ranges = int(nvtx_text_info.get("count") or 0)
+                w_start = int(nvtx_text_info.get("window_start_ns") or 0)
+                w_end   = int(nvtx_text_info.get("window_end_ns") or 0)
                 warnings.append(
-                    f"[NVTX_SCOPE] Scoped to pattern '{nvtx_scope}': "
+                    f"[NVTX_SCOPE] Scoped to pattern '{nvtx_text}': "
                     f"{n_ranges} range(s) matched, "
                     f"window [{round(w_start/1e6,1)} ms – {round(w_end/1e6,1)} ms] "
                     f"(span {round((w_end-w_start)/1e6,1)} ms)."
@@ -288,7 +288,7 @@ def analyze_nsys_sqlite(
             if engine.get_skill("kernel_duration_stats") else []
         )
 
-        # Small-kernel overhead bracketing (scoped to window when nvtx_scope is set)
+        # Small-kernel overhead bracketing (scoped to window when nvtx_text is set)
         short_kernels = (
             engine.execute("short_kernels_overhead", device_id=device_id)
             if engine.get_skill("short_kernels_overhead") else []
@@ -300,11 +300,11 @@ def analyze_nsys_sqlite(
             if engine.get_skill("per_stream_utilization") else []
         )
 
-        # NVTX wall-clock efficiency — use nvtx_scope pattern when available,
+        # NVTX wall-clock efficiency — use nvtx_text pattern when available,
         # otherwise fall back to iteration_marker pattern
         _eff_nvtx_pattern = (
-            f"%{nvtx_scope}%" if nvtx_scope and "%" not in nvtx_scope
-            else (nvtx_scope if nvtx_scope else f"%{iteration_marker}%")
+            f"%{nvtx_text}%" if nvtx_text and "%" not in nvtx_text
+            else (nvtx_text if nvtx_text else f"%{iteration_marker}%")
         )
         nvtx_wall_efficiency = (
             engine.execute(
@@ -327,11 +327,11 @@ def analyze_nsys_sqlite(
         )
 
         # GPU bottleneck classification per NVTX range (requires GPU metrics).
-        # Use nvtx_scope pattern when available so we classify exactly the
+        # Use nvtx_text pattern when available so we classify exactly the
         # requested phases rather than the iteration-marker phases.
         _bottleneck_pattern = (
-            f"%{nvtx_scope}%" if nvtx_scope and "%" not in nvtx_scope
-            else (nvtx_scope if nvtx_scope else f"%{iteration_marker}%")
+            f"%{nvtx_text}%" if nvtx_text and "%" not in nvtx_text
+            else (nvtx_text if nvtx_text else f"%{iteration_marker}%")
         )
         bottleneck_classification = engine.classify_gpu_bottleneck(
             nvtx_text=_bottleneck_pattern,
@@ -440,7 +440,7 @@ def analyze_nsys_sqlite(
             "sqlite_path": sqlite_path,
             "device_id": int(device_id),
             "window": {"start_ns": int(start_ns), "end_ns": int(end_ns)},
-            "nvtx_scope_info": nvtx_scope_info,
+            "nvtx_text_info": nvtx_text_info,
             "schema": schema,
             "summary": summary,
             "overlap": overlap,
@@ -477,7 +477,7 @@ def analyze_to_markdown(result: Dict[str, object]) -> str:
     lines.append("")
 
     # NVTX scope banner
-    nsi = result.get("nvtx_scope_info")
+    nsi = result.get("nvtx_text_info")
     if nsi:
         lines.append("## NVTX Scope")
         lines.append("")
