@@ -2053,6 +2053,82 @@ class NsysSqliteMetricsProvider(BaseMetricsProvider):
         finally:
             conn.close()
 
+    def analyze_rank_straggler(
+        self,
+        *,
+        marker: str = "sample_0",
+        device_id: int = -1,
+        start_ns: int = -1,
+        end_ns: int = -1,
+        limit: int = 2000,
+    ) -> Dict[str, object]:
+        """Detect straggler ranks in multi-GPU training.
+
+        Groups iterations by rank tag extracted from NVTX text, computes per-rank
+        duration statistics, and flags ranks whose median step time exceeds the
+        global median by more than 10 %.
+
+        Returns:
+            {
+                "global_stats": {count, mean_ms, median_ms, std_ms},
+                "per_rank":     [{rank, count, mean_ms, median_ms, std_ms,
+                                  delta_vs_global_pct, is_straggler}, ...],
+                "stragglers":   [list of straggler rank IDs]
+            }
+        """
+        if not self.sqlite_path.exists():
+            return {"global_stats": {}, "per_rank": [], "stragglers": []}
+        conn = sqlite3.connect(str(self.sqlite_path))
+        conn.row_factory = sqlite3.Row
+        try:
+            engine = NsysSqlSkillEngine(conn)
+            return engine.analyze_rank_straggler(
+                marker=marker,
+                device_id=device_id,
+                start_ns=start_ns,
+                end_ns=end_ns,
+                limit=limit,
+            )
+        finally:
+            conn.close()
+
+    def classify_gpu_bottleneck(
+        self,
+        *,
+        nvtx_text: str = "%",
+        device_id: int = -1,
+        start_ns: int = -1,
+        end_ns: int = -1,
+        limit: int = 2000,
+    ) -> List[Dict[str, object]]:
+        """Classify GPU bottleneck per NVTX phase using hardware metric sampling.
+
+        Classifies each NVTX range as one of: tensor_bound, compute_bound,
+        memory_bound, or latency_bound based on SM active, tensor active and
+        DRAM throughput averages sampled inside the range.
+
+        Returns:
+            List of dicts with keys:
+                nvtx_text, nvtx_start_ns, nvtx_end_ns,
+                sm_active_avg, tensor_active_avg, dram_throughput_avg,
+                bottleneck, bottleneck_confidence
+        """
+        if not self.sqlite_path.exists():
+            return []
+        conn = sqlite3.connect(str(self.sqlite_path))
+        conn.row_factory = sqlite3.Row
+        try:
+            engine = NsysSqlSkillEngine(conn)
+            return engine.classify_gpu_bottleneck(
+                nvtx_text=nvtx_text,
+                device_id=device_id,
+                start_ns=start_ns,
+                end_ns=end_ns,
+                limit=limit,
+            )
+        finally:
+            conn.close()
+
     def first_gpu_name(self) -> str:
         if not self.sqlite_path.exists():
             return ""

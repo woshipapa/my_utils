@@ -1451,6 +1451,257 @@ def _build_builtin_skills(schema: NsightSchema) -> Dict[str, SqlSkill]:
                 tags=["nvtx", "hierarchy", "parent", "child", "ranges", "raw"],
             )
 
+    # 21) Kernel duration jitter / variance stats
+    # Computes population std-dev in SQL via Var = E[x²] - E[x]²,
+    # then CV (Coefficient of Variation) = stddev / mean * 100.
+    # High CV (>50%) flags kernels with unpredictable execution time — often
+    # caused by wavefront serialisation, dynamic branching, or load imbalance.
+    # Reference: NVIDIA Best Practices Guide §11.1 "Execution Configuration"
+    if start_col and end_col:
+        skill_map["kernel_duration_stats"] = SqlSkill(
+            name="kernel_duration_stats",
+            title="Kernel Duration Jitter / Variance Stats",
+            description=(
+                "Per-kernel execution-time statistics including population std-dev and "
+                "coefficient of variation (CV). High CV (>50%) indicates execution-time "
+                "jitter — a common sign of wavefront imbalance, dynamic branching, or "
+                "irregular memory access patterns. Sorted by CV descending so the most "
+                "jitter-prone kernels appear first."
+            ),
+            category="kernels",
+            sql=(
+                "WITH raw AS ( "
+                f"  SELECT {name_expr} AS kernel_name, "
+                f"         CAST(k.[{_ident(end_col)}] - k.{_ident(start_col)} AS REAL) AS dur_ns "
+                f"  FROM {kernel_table} k {name_join} "
+                "  WHERE 1=1 "
+                f"  {kernel_where_device} "
+                f"  AND k.[{_ident(end_col)}] > k.{_ident(start_col)} "
+                ") "
+                "SELECT kernel_name, "
+                "  COUNT(*) AS invocations, "
+                "  ROUND(AVG(dur_ns) / 1e6, 3) AS avg_ms, "
+                "  ROUND(MIN(dur_ns) / 1e6, 3) AS min_ms, "
+                "  ROUND(MAX(dur_ns) / 1e6, 3) AS max_ms, "
+                "  ROUND(SUM(dur_ns) / 1e6, 3) AS total_ms, "
+                # Population std-dev: sqrt(E[x²] - E[x]²); MAX(0, ...) guards float rounding
+                "  ROUND(SQRT(MAX(0.0, AVG(dur_ns * dur_ns) - AVG(dur_ns) * AVG(dur_ns))) / 1e6, 4) AS stddev_ms, "
+                # CV = stddev / mean * 100 (unitless %)
+                "  ROUND("
+                "    SQRT(MAX(0.0, AVG(dur_ns * dur_ns) - AVG(dur_ns) * AVG(dur_ns))) "
+                "    / NULLIF(AVG(dur_ns), 0) * 100.0, 1"
+                "  ) AS cv_pct "
+                "FROM raw "
+                "GROUP BY kernel_name "
+                "HAVING COUNT(*) >= {min_invocations} "
+                "ORDER BY cv_pct DESC "
+                "LIMIT {limit}"
+            ),
+            params=[
+                SqlSkillParam("device_id", "CUDA deviceId, -1 means all devices", "int", False, -1),
+                SqlSkillParam("min_invocations", "minimum invocations to include", "int", False, 3),
+                SqlSkillParam("limit", "max rows", "int", False, 30),
+            ],
+            tags=["kernel", "jitter", "variance", "stddev", "cv", "imbalance"],
+        )
+
+    # 22) Small-kernel overhead: duration bracket analysis
+    # Groups every kernel execution into latency buckets and reports the fraction
+    # of kernel count + execution time in each band.  A large % count in the
+    # sub-10 µs bands typically means kernel-launch overhead dominates —
+    # the fix is kernel fusion or CUDA Graphs.
+    # Reference: NVIDIA GTC talk "Profiling and Optimizing CUDA Graphs" (2022)
+    if start_col and end_col:
+        skill_map["short_kernels_overhead"] = SqlSkill(
+            name="short_kernels_overhead",
+            title="Small-Kernel Launch Overhead Analysis",
+            description=(
+                "Bucket kernel executions by duration (<1 µs, 1–10 µs, 10–100 µs, "
+                "0.1–1 ms, >1 ms) and report count and time fraction per bucket. "
+                "Large percentages in short buckets indicate kernel-launch overhead; "
+                "consider kernel fusion or CUDA Graphs as remediation."
+            ),
+            category="kernels",
+            sql=(
+                "WITH raw AS ( "
+                f"  SELECT CAST(k.[{_ident(end_col)}] - k.{_ident(start_col)} AS REAL) AS dur_ns "
+                f"  FROM {kernel_table} k "
+                "  WHERE 1=1 "
+                f"  {kernel_where_device} "
+                f"  AND k.[{_ident(end_col)}] > k.{_ident(start_col)} "
+                "), "
+                "buckets AS ( "
+                "  SELECT "
+                "    CASE "
+                "      WHEN dur_ns <      1000 THEN 'a_<1us' "
+                "      WHEN dur_ns <     10000 THEN 'b_1-10us' "
+                "      WHEN dur_ns <    100000 THEN 'c_10-100us' "
+                "      WHEN dur_ns <   1000000 THEN 'd_100us-1ms' "
+                "      ELSE                         'e_>1ms' "
+                "    END AS bucket, "
+                "    dur_ns "
+                "  FROM raw "
+                "), "
+                "totals AS ( "
+                "  SELECT COUNT(*) AS total_count, SUM(dur_ns) AS total_dur FROM raw "
+                ") "
+                "SELECT "
+                "  bucket AS duration_bracket, "
+                "  COUNT(*) AS kernel_count, "
+                "  ROUND(SUM(dur_ns) / 1e6, 3) AS total_ms, "
+                "  ROUND(100.0 * COUNT(*) / NULLIF(totals.total_count, 0), 1) AS pct_count, "
+                "  ROUND(100.0 * SUM(dur_ns) / NULLIF(totals.total_dur, 0), 1) AS pct_time "
+                "FROM buckets, totals "
+                "GROUP BY bucket "
+                "ORDER BY bucket ASC"
+            ),
+            params=[
+                SqlSkillParam("device_id", "CUDA deviceId, -1 means all devices", "int", False, -1),
+            ],
+            tags=["kernel", "launch_overhead", "micro_kernel", "cuda_graph", "fusion"],
+        )
+
+    # 23) NVTX wall-clock efficiency
+    # For every NVTX range: compute (total GPU kernel execution inside) / NVTX wall time.
+    # Low efficiency (<60%) means the CPU or pipeline is idle during the annotated phase —
+    # caused by sync barriers, host-device memcpy, or sequential kernel launches.
+    # Reference: Nsight Systems User Guide §"NVTX Instrumentation"
+    if (
+        schema.table_exists(nvtx_table)
+        and schema.runtime_table
+        and nvtx_start_col
+        and nvtx_end_col
+        and runtime_corr_col
+        and runtime_start_for_nvtx
+        and runtime_end_for_nvtx
+        and corr_col
+    ):
+        nwe_text_expr = "n.text"
+        nwe_nvtx_join = ""
+        if string_table:
+            nwe_text_id = schema.resolve_column(nvtx_table, ("textId", "nameId"))
+            if nwe_text_id:
+                nwe_nvtx_join = f" LEFT JOIN {_ident(string_table)} snwe ON n.{_ident(nwe_text_id)} = snwe.id "
+                nwe_text_expr = "COALESCE(n.text, snwe.value)"
+        nwe_tid_join = ""
+        if runtime_global_tid_col and nvtx_global_tid_col:
+            nwe_tid_join = (
+                f" AND n.{_ident(nvtx_global_tid_col)} = r.{_ident(runtime_global_tid_col)} "
+            )
+        nwe_device_where = (
+            f"AND ({{device_id}} < 0 OR k.{_ident(device_col)} = {{device_id}}) "
+            if device_col else ""
+        )
+        skill_map["nvtx_wall_efficiency"] = SqlSkill(
+            name="nvtx_wall_efficiency",
+            title="NVTX Wall-Clock GPU Efficiency",
+            description=(
+                "For each NVTX range compute (total GPU kernel time inside) / NVTX wall time. "
+                "Low efficiency (<60 %) indicates idle time inside the annotated phase — "
+                "caused by synchronisation barriers, sequential H2D copies, or host-side work. "
+                "Requires nvtx_text LIKE pattern. Reports are sorted by wall_ms descending."
+            ),
+            category="nvtx",
+            sql=(
+                "WITH nvtx_ranges AS ( "
+                f"  SELECT {nwe_text_expr} AS nvtx_text, "
+                f"         n.{_ident(nvtx_start_col)} AS nvtx_start, "
+                f"         n.[{_ident(nvtx_end_col)}] AS nvtx_end, "
+                f"         ROUND((n.[{_ident(nvtx_end_col)}] - n.{_ident(nvtx_start_col)}) / 1e6, 3) AS wall_ms "
+                f"  FROM {nvtx_table} n {nwe_nvtx_join} "
+                f"  WHERE {nwe_text_expr} IS NOT NULL "
+                f"  AND n.[{_ident(nvtx_end_col)}] > n.{_ident(nvtx_start_col)} "
+                f"  AND ('{{nvtx_text}}' = '%' OR {nwe_text_expr} LIKE '{{nvtx_text}}') "
+                f"  AND ({{start_ns}} < 0 OR n.{_ident(nvtx_start_col)} >= {{start_ns}}) "
+                f"  AND ({{end_ns}} < 0 OR n.[{_ident(nvtx_end_col)}] <= {{end_ns}}) "
+                "  LIMIT {limit} "
+                "), "
+                "kernel_busy AS ( "
+                f"  SELECT nr.nvtx_text, nr.nvtx_start, nr.nvtx_end, "
+                f"         SUM(k.[{_ident(end_col)}] - k.{_ident(start_col)}) AS kernel_ns "
+                f"  FROM nvtx_ranges nr "
+                f"  JOIN {_ident(runtime_table)} r "
+                f"    ON nr.nvtx_start <= r.{_ident(runtime_start_for_nvtx)} "
+                f"    AND nr.nvtx_end   >= r.[{_ident(runtime_end_for_nvtx)}] "
+                + nwe_tid_join
+                + f"  JOIN {kernel_table} k ON r.{_ident(runtime_corr_col)} = k.{_ident(corr_col)} "
+                + f"  {name_join} "
+                + "  WHERE 1=1 "
+                + nwe_device_where
+                + "  GROUP BY nr.nvtx_text, nr.nvtx_start, nr.nvtx_end "
+                + ") "
+                "SELECT "
+                "  nr.nvtx_text, "
+                "  nr.wall_ms, "
+                "  ROUND(COALESCE(kb.kernel_ns, 0) / 1e6, 3) AS kernel_busy_ms, "
+                "  ROUND(100.0 * COALESCE(kb.kernel_ns, 0) / NULLIF(nr.wall_ms * 1e6, 0), 1) AS gpu_efficiency_pct "
+                "FROM nvtx_ranges nr "
+                "LEFT JOIN kernel_busy kb "
+                "  ON nr.nvtx_text = kb.nvtx_text "
+                "  AND nr.nvtx_start = kb.nvtx_start "
+                "  AND nr.nvtx_end = kb.nvtx_end "
+                "ORDER BY nr.wall_ms DESC"
+            ),
+            params=[
+                SqlSkillParam("nvtx_text", "NVTX text LIKE pattern, default % for all ranges", "str", False, "%"),
+                SqlSkillParam("device_id", "CUDA deviceId, -1 means all devices", "int", False, -1),
+                SqlSkillParam("start_ns", "window start ns, -1 to disable", "int", False, -1),
+                SqlSkillParam("end_ns", "window end ns, -1 to disable", "int", False, -1),
+                SqlSkillParam("limit", "max NVTX ranges to evaluate", "int", False, 500),
+            ],
+            tags=["nvtx", "efficiency", "idle", "pipeline", "sync", "wall_clock"],
+        )
+
+    # 24) Per-stream GPU utilization
+    # Reports busy_ms / span_ms per stream to reveal underutilised streams.
+    # Asymmetric stream utilisation often indicates load imbalance between
+    # compute and prefetch/copy streams.
+    if stream_col and start_col and end_col:
+        psu_device_where = (
+            f" AND ({{device_id}} < 0 OR k.{_ident(device_col)} = {{device_id}})"
+            if device_col else ""
+        )
+        skill_map["per_stream_utilization"] = SqlSkill(
+            name="per_stream_utilization",
+            title="Per-Stream GPU Utilization",
+            description=(
+                "Reports busy_ms, span_ms and utilization_pct per CUDA stream. "
+                "Streams with low utilization (<50 %) while other streams are busy "
+                "indicate load imbalance. Compare compute vs copy streams to identify "
+                "pipeline bottlenecks."
+            ),
+            category="pipeline",
+            sql=(
+                "WITH stream_agg AS ( "
+                f"  SELECT k.{_ident(stream_col)} AS stream_id, "
+                f"         MIN(k.{_ident(start_col)}) AS stream_start, "
+                f"         MAX(k.[{_ident(end_col)}]) AS stream_end, "
+                f"         SUM(k.[{_ident(end_col)}] - k.{_ident(start_col)}) AS raw_kernel_ns, "
+                "         COUNT(*) AS kernel_count "
+                f"  FROM {kernel_table} k "
+                "  WHERE 1=1 "
+                f"  {psu_device_where} "
+                f"  AND k.[{_ident(end_col)}] > k.{_ident(start_col)} "
+                "  GROUP BY stream_id "
+                ") "
+                "SELECT "
+                "  stream_id, "
+                "  kernel_count, "
+                "  ROUND(raw_kernel_ns / 1e6, 3) AS kernel_busy_ms, "
+                "  ROUND((stream_end - stream_start) / 1e6, 3) AS stream_span_ms, "
+                "  ROUND(100.0 * raw_kernel_ns / NULLIF(stream_end - stream_start, 0), 1) AS utilization_pct "
+                "FROM stream_agg "
+                "WHERE stream_end > stream_start "
+                "ORDER BY kernel_busy_ms DESC "
+                "LIMIT {limit}"
+            ),
+            params=[
+                SqlSkillParam("device_id", "CUDA deviceId, -1 means all devices", "int", False, -1),
+                SqlSkillParam("limit", "max rows", "int", False, 50),
+            ],
+            tags=["stream", "utilization", "load_balance", "pipeline", "copy_engine"],
+        )
+
     return skill_map
 
 
@@ -2044,3 +2295,194 @@ class NsysSqlSkillEngine:
                     "deviation_sigma": round(sigma, 3),
                 })
         return {"stats": stats, "outliers": outliers}
+
+    def analyze_rank_straggler(
+        self,
+        *,
+        marker: str = "sample_0",
+        device_id: int = -1,
+        start_ns: int = -1,
+        end_ns: int = -1,
+        limit: int = 2000,
+    ) -> Dict[str, object]:
+        """Detect which rank causes straggler latency in multi-GPU training.
+
+        When NVTX markers encode rank information (e.g. "step=N rank=M"), this
+        method groups iteration durations by rank, computes per-rank statistics
+        and flags ranks whose median duration exceeds the global median by more
+        than threshold_pct.
+
+        Reference: "Analyzing and Mitigating Data Stalls in DNN Training"
+        (VLDB 2021); NVIDIA Nsight Systems Multi-GPU profiling docs.
+
+        Returns:
+            {
+                "global_stats": {count, mean_ms, median_ms, std_ms},
+                "per_rank": [{rank, count, mean_ms, median_ms, std_ms,
+                              delta_vs_global_pct, is_straggler}, ...],
+                "stragglers": [rank IDs whose median > global_median * straggler_threshold]
+            }
+        """
+        iterations = self.detect_iterations(
+            marker=marker,
+            device_id=device_id,
+            start_ns=start_ns,
+            end_ns=end_ns,
+            top_level_only=True,
+            limit=limit,
+        )
+        # Group by rank extracted from NVTX text
+        rank_durations: Dict[str, List[float]] = {}
+        all_durations: List[float] = []
+        for it in iterations:
+            d = float(it.get("duration_ms") or 0)
+            if d <= 0:
+                continue
+            all_durations.append(d)
+            rank_key = str(it.get("rank", "__no_rank__"))
+            rank_durations.setdefault(rank_key, []).append(d)
+
+        if not all_durations:
+            return {"global_stats": {}, "per_rank": [], "stragglers": []}
+
+        def _stats(values: List[float]) -> Dict[str, object]:
+            n = len(values)
+            mean = sum(values) / n
+            sv = sorted(values)
+            median = (sv[n // 2 - 1] + sv[n // 2]) / 2.0 if n % 2 == 0 else sv[n // 2]
+            variance = sum((x - mean) ** 2 for x in values) / max(1, n - 1)
+            std = variance ** 0.5
+            return {
+                "count": n,
+                "mean_ms": round(mean, 3),
+                "median_ms": round(median, 3),
+                "std_ms": round(std, 3),
+            }
+
+        global_st = _stats(all_durations)
+        global_median = float(global_st["median_ms"])
+        # A rank is a straggler if its median exceeds global median by >10 %
+        straggler_threshold = 1.10
+
+        per_rank: List[Dict[str, object]] = []
+        stragglers: List[str] = []
+        for rank_key, durs in sorted(rank_durations.items()):
+            if rank_key == "__no_rank__" and len(rank_durations) == 1:
+                continue  # no rank info encoded in NVTX — skip
+            rst = _stats(durs)
+            rank_median = float(rst["median_ms"])
+            delta_pct = (
+                round(100.0 * (rank_median - global_median) / global_median, 1)
+                if global_median > 0
+                else 0.0
+            )
+            is_straggler = rank_median > global_median * straggler_threshold
+            entry: Dict[str, object] = {"rank": rank_key, **rst, "delta_vs_global_pct": delta_pct, "is_straggler": is_straggler}
+            per_rank.append(entry)
+            if is_straggler:
+                stragglers.append(rank_key)
+
+        per_rank.sort(key=lambda x: float(x.get("median_ms") or 0), reverse=True)
+        return {
+            "global_stats": global_st,
+            "per_rank": per_rank,
+            "stragglers": stragglers,
+        }
+
+    def classify_gpu_bottleneck(
+        self,
+        *,
+        nvtx_text: str = "%",
+        device_id: int = -1,
+        start_ns: int = -1,
+        end_ns: int = -1,
+        limit: int = 2000,
+    ) -> List[Dict[str, object]]:
+        """Classify GPU bottleneck type per NVTX range using hardware metric sampling.
+
+        Uses the ``nvtx_gpu_metrics_breakdown`` skill to fetch SM active, tensor
+        active and DRAM throughput samples per NVTX phase, then applies a simple
+        rule-based classifier:
+
+        - **compute_bound**:  sm_active_avg ≥ 70 %  (SM schedulers busy)
+        - **tensor_bound**:   tensor_active_avg ≥ 60 %  (Tensor Core dominated)
+        - **memory_bound**:   dram_throughput_avg ≥ 60 %  (memory bandwidth limited)
+        - **latency_bound**:  none of the above (low utilization everywhere — sync/
+                              launch overhead or sparse irregular access)
+
+        Reference: NVIDIA "Roofline Model for GPUs" (SC2019); NVIDIA Nsight Compute
+        metric descriptions for sm__active_warps_avg and dram__throughput.
+
+        Returns a list of dicts, one per NVTX range:
+            {nvtx_text, nvtx_start_ns, nvtx_end_ns, sm_active_avg,
+             tensor_active_avg, dram_throughput_avg,
+             bottleneck, bottleneck_confidence}
+        """
+        skill = self.get_skill("nvtx_gpu_metrics_breakdown")
+        if skill is None:
+            return []
+        rows = skill.execute(
+            self.conn,
+            nvtx_text=nvtx_text,
+            start_ns=start_ns,
+            end_ns=end_ns,
+            device_id=device_id,
+            limit=limit,
+        )
+
+        # Group metric samples by (nvtx_text, nvtx_start_ns, nvtx_end_ns)
+        key_type = Tuple[str, int, int]
+        grouped: Dict[key_type, Dict[str, float]] = {}
+        for row in rows:
+            k: key_type = (
+                str(row.get("nvtx_text") or ""),
+                int(row.get("nvtx_start_ns") or 0),
+                int(row.get("nvtx_end_ns") or 0),
+            )
+            mname = str(row.get("metric_name") or "").lower()
+            avg_val = float(row.get("avg_value") or 0)
+            bucket = grouped.setdefault(k, {})
+
+            # Map metric name fragments to canonical slots
+            if any(kw in mname for kw in ("sm_active", "sm__active", "sms_active")):
+                # Keep the maximum if multiple sources report it
+                bucket["sm_active"] = max(bucket.get("sm_active", 0.0), avg_val)
+            elif any(kw in mname for kw in ("tensor_active", "tensor__active")):
+                bucket["tensor_active"] = max(bucket.get("tensor_active", 0.0), avg_val)
+            elif any(kw in mname for kw in ("dram_throughput", "dram__throughput", "memory.gpu.dram")):
+                bucket["dram_throughput"] = max(bucket.get("dram_throughput", 0.0), avg_val)
+
+        result: List[Dict[str, object]] = []
+        for (ntext, nstart, nend), metrics in sorted(grouped.items(), key=lambda x: x[0][1]):
+            sm_active = metrics.get("sm_active", 0.0)
+            tensor_active = metrics.get("tensor_active", 0.0)
+            dram_throughput = metrics.get("dram_throughput", 0.0)
+
+            # Rule-based classification (ordered by specificity)
+            if tensor_active >= 60.0:
+                bottleneck = "tensor_bound"
+                confidence = "high" if tensor_active >= 75.0 else "medium"
+            elif sm_active >= 70.0 and dram_throughput < 60.0:
+                bottleneck = "compute_bound"
+                confidence = "high" if sm_active >= 85.0 else "medium"
+            elif dram_throughput >= 60.0:
+                bottleneck = "memory_bound"
+                confidence = "high" if dram_throughput >= 80.0 else "medium"
+            elif sm_active == 0.0 and tensor_active == 0.0 and dram_throughput == 0.0:
+                bottleneck = "no_metric_data"
+                confidence = "n/a"
+            else:
+                bottleneck = "latency_bound"
+                confidence = "medium"
+
+            result.append({
+                "nvtx_text": ntext,
+                "nvtx_start_ns": nstart,
+                "nvtx_end_ns": nend,
+                "sm_active_avg": round(sm_active, 1),
+                "tensor_active_avg": round(tensor_active, 1),
+                "dram_throughput_avg": round(dram_throughput, 1),
+                "bottleneck": bottleneck,
+                "bottleneck_confidence": confidence,
+            })
+        return result
