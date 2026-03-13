@@ -1583,10 +1583,15 @@ def _build_builtin_skills(schema: NsightSchema) -> Dict[str, SqlSkill]:
             if nwe_text_id:
                 nwe_nvtx_join = f" LEFT JOIN {_ident(string_table)} snwe ON n.{_ident(nwe_text_id)} = snwe.id "
                 nwe_text_expr = "COALESCE(n.text, snwe.value)"
+        # NOTE: nwe_tid_join is applied inside the kernel_busy CTE where the
+        # NVTX table is referenced via the "nr" CTE alias, not "n".  The
+        # nvtx_ranges CTE must also expose the globalTid column for this to work.
+        nwe_nvtx_tid_select = ""
         nwe_tid_join = ""
         if runtime_global_tid_col and nvtx_global_tid_col:
+            nwe_nvtx_tid_select = f", n.{_ident(nvtx_global_tid_col)} AS _nvtx_gtid "
             nwe_tid_join = (
-                f" AND n.{_ident(nvtx_global_tid_col)} = r.{_ident(runtime_global_tid_col)} "
+                f" AND nr._nvtx_gtid = r.{_ident(runtime_global_tid_col)} "
             )
         nwe_device_where = (
             f"AND ({{device_id}} < 0 OR k.{_ident(device_col)} = {{device_id}}) "
@@ -1607,8 +1612,9 @@ def _build_builtin_skills(schema: NsightSchema) -> Dict[str, SqlSkill]:
                 f"  SELECT {nwe_text_expr} AS nvtx_text, "
                 f"         n.{_ident(nvtx_start_col)} AS nvtx_start, "
                 f"         n.[{_ident(nvtx_end_col)}] AS nvtx_end, "
-                f"         ROUND((n.[{_ident(nvtx_end_col)}] - n.{_ident(nvtx_start_col)}) / 1e6, 3) AS wall_ms "
-                f"  FROM {nvtx_table} n {nwe_nvtx_join} "
+                f"         ROUND((n.[{_ident(nvtx_end_col)}] - n.{_ident(nvtx_start_col)}) / 1e6, 3) AS wall_ms"
+                + nwe_nvtx_tid_select  # conditionally: , n.globalTid AS _nvtx_gtid
+                + f"  FROM {nvtx_table} n {nwe_nvtx_join} "
                 f"  WHERE {nwe_text_expr} IS NOT NULL "
                 f"  AND n.[{_ident(nvtx_end_col)}] > n.{_ident(nvtx_start_col)} "
                 f"  AND ('{{nvtx_text}}' = '%' OR {nwe_text_expr} LIKE '{{nvtx_text}}') "
