@@ -141,6 +141,18 @@ def _resolve_nvtx_text(
     }
 
 
+def _safe_skill(engine: "NsysSqlSkillEngine", skill_name: str, warnings_out: List[str], **kwargs) -> List[Dict[str, object]]:
+    """Execute a skill and return [] on failure, appending a warning instead of crashing."""
+    skill = engine.get_skill(skill_name)
+    if skill is None:
+        return []
+    try:
+        return engine.execute(skill_name, **kwargs)
+    except Exception as exc:
+        warnings_out.append(f"[SKILL_ERROR] {skill_name} failed: {exc}")
+        return []
+
+
 def analyze_nsys_sqlite(
     sqlite_path: str,
     *,
@@ -271,33 +283,32 @@ def analyze_nsys_sqlite(
                         peak_tflops=float(resolved_peak),
                     )
 
-        sync_breakdown = (
-            engine.execute("sync_breakdown", device_id=device_id, limit=50,
-                           start_ns=start_ns, end_ns=end_ns)
-            if engine.get_skill("sync_breakdown") else []
+        sync_breakdown = _safe_skill(
+            engine, "sync_breakdown", warnings,
+            device_id=device_id, limit=50, start_ns=start_ns, end_ns=end_ns,
         )
-        memcpy_bandwidth = (
-            engine.execute("memcpy_bandwidth_analysis", device_id=device_id)
-            if engine.get_skill("memcpy_bandwidth_analysis") else []
+        memcpy_bandwidth = _safe_skill(
+            engine, "memcpy_bandwidth_analysis", warnings,
+            device_id=device_id,
         )
 
         # --- New deeper analyses ---
         # Kernel jitter: sort by CV descending so worst-jitter kernels appear first
-        kernel_duration_stats = (
-            engine.execute("kernel_duration_stats", device_id=device_id, min_invocations=3, limit=20)
-            if engine.get_skill("kernel_duration_stats") else []
+        kernel_duration_stats = _safe_skill(
+            engine, "kernel_duration_stats", warnings,
+            device_id=device_id, min_invocations=3, limit=20,
         )
 
         # Small-kernel overhead bracketing (scoped to window when nvtx_text is set)
-        short_kernels = (
-            engine.execute("short_kernels_overhead", device_id=device_id)
-            if engine.get_skill("short_kernels_overhead") else []
+        short_kernels = _safe_skill(
+            engine, "short_kernels_overhead", warnings,
+            device_id=device_id,
         )
 
         # Per-stream utilization (scoped to window)
-        per_stream_utilization = (
-            engine.execute("per_stream_utilization", device_id=device_id, limit=30)
-            if engine.get_skill("per_stream_utilization") else []
+        per_stream_utilization = _safe_skill(
+            engine, "per_stream_utilization", warnings,
+            device_id=device_id, limit=30,
         )
 
         # NVTX wall-clock efficiency — use nvtx_text pattern when available,
@@ -306,25 +317,26 @@ def analyze_nsys_sqlite(
             f"%{nvtx_text}%" if nvtx_text and "%" not in nvtx_text
             else (nvtx_text if nvtx_text else f"%{iteration_marker}%")
         )
-        nvtx_wall_efficiency = (
-            engine.execute(
-                "nvtx_wall_efficiency",
-                nvtx_text=_eff_nvtx_pattern,
-                device_id=device_id,
-                start_ns=start_ns,
-                end_ns=end_ns,
-                limit=200,
-            )
-            if engine.get_skill("nvtx_wall_efficiency") else []
-        )
-
-        # Rank straggler analysis (only meaningful when NVTX encodes rank tags)
-        rank_straggler = engine.analyze_rank_straggler(
-            marker=iteration_marker,
+        nvtx_wall_efficiency = _safe_skill(
+            engine, "nvtx_wall_efficiency", warnings,
+            nvtx_text=_eff_nvtx_pattern,
             device_id=device_id,
             start_ns=start_ns,
             end_ns=end_ns,
+            limit=200,
         )
+
+        # Rank straggler analysis (only meaningful when NVTX encodes rank tags)
+        try:
+            rank_straggler = engine.analyze_rank_straggler(
+                marker=iteration_marker,
+                device_id=device_id,
+                start_ns=start_ns,
+                end_ns=end_ns,
+            )
+        except Exception as exc:
+            warnings.append(f"[SKILL_ERROR] analyze_rank_straggler failed: {exc}")
+            rank_straggler = {"global_stats": {}, "per_rank": [], "stragglers": []}
 
         # GPU bottleneck classification per NVTX range (requires GPU metrics).
         # Use nvtx_text pattern when available so we classify exactly the
@@ -333,12 +345,16 @@ def analyze_nsys_sqlite(
             f"%{nvtx_text}%" if nvtx_text and "%" not in nvtx_text
             else (nvtx_text if nvtx_text else f"%{iteration_marker}%")
         )
-        bottleneck_classification = engine.classify_gpu_bottleneck(
-            nvtx_text=_bottleneck_pattern,
-            device_id=device_id,
-            start_ns=start_ns,
-            end_ns=end_ns,
-        )
+        try:
+            bottleneck_classification = engine.classify_gpu_bottleneck(
+                nvtx_text=_bottleneck_pattern,
+                device_id=device_id,
+                start_ns=start_ns,
+                end_ns=end_ns,
+            )
+        except Exception as exc:
+            warnings.append(f"[SKILL_ERROR] classify_gpu_bottleneck failed: {exc}")
+            bottleneck_classification = []
 
         # ---- Automatic problem detection warnings ----
         # 1. Low overall GPU utilization
