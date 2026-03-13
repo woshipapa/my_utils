@@ -511,6 +511,7 @@ def cmd_nsys_analyze(args: argparse.Namespace) -> int:
         device_id=args.device_id,
         start_ns=args.start_ns,
         end_ns=args.end_ns,
+        nvtx_scope=str(args.nvtx_scope).strip() or None,
         top_k=args.top_k,
         iteration_marker=args.iteration_marker,
         model_flops_per_step=args.model_flops_per_step,
@@ -763,6 +764,16 @@ def build_parser() -> argparse.ArgumentParser:
     nsys_analyze.add_argument("--top-k", type=int, default=10)
     nsys_analyze.add_argument("--limit", type=int, default=500000)
     nsys_analyze.add_argument("--iteration-marker", default="sample_0")
+    nsys_analyze.add_argument(
+        "--nvtx-scope",
+        default="",
+        help=(
+            "NVTX text LIKE pattern to restrict analysis to the union time window of all "
+            "matching NVTX ranges (e.g. 'forward', '%%step_%%', 'backward'). "
+            "When set, start_ns/end_ns are derived automatically from matching ranges "
+            "unless --start-ns/--end-ns are explicitly provided."
+        ),
+    )
     nsys_analyze.add_argument("--model-flops-per-step", type=float, default=None)
     nsys_analyze.add_argument("--peak-tflops", type=float, default=None)
     nsys_analyze.add_argument("--peak-precision", default="fp16")
