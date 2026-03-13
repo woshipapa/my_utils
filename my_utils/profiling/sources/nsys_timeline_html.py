@@ -1911,7 +1911,7 @@ def export_timeline_html(
                 int(effective_end_ns),
             )
         )
-
+    # 按照nvtx range内的runtime correlationId到具体的kernel，得到kernel window
     kernels = _collect_kernels_in_window(
         provider,
         start_ns=int(effective_start_ns),

@@ -153,6 +153,83 @@ def _safe_skill(engine: "NsysSqlSkillEngine", skill_name: str, warnings_out: Lis
         return []
 
 
+def _resolve_nvtx_kernel_span(
+    engine: "NsysSqlSkillEngine",
+    *,
+    nvtx_text: str,
+    device_id: int,
+    limit: int,
+) -> Dict[str, object]:
+    """Resolve attributed GPU kernel span for NVTX text via correlationId mapping."""
+    like_pattern = str(nvtx_text or "").strip()
+    if not like_pattern:
+        return {
+            "pattern": "",
+            "count": 0,
+            "kernel_start_ns": -1,
+            "kernel_end_ns": -1,
+            "warning": "empty nvtx_text pattern",
+        }
+    if "%" not in like_pattern:
+        like_pattern = f"%{like_pattern}%"
+
+    skill = engine.get_skill("nvtx_kernel_sm_detail")
+    if skill is None:
+        return {
+            "pattern": like_pattern,
+            "count": 0,
+            "kernel_start_ns": -1,
+            "kernel_end_ns": -1,
+            "warning": "skill nvtx_kernel_sm_detail unavailable",
+        }
+
+    try:
+        rows = engine.execute(
+            "nvtx_kernel_sm_detail",
+            nvtx_text=like_pattern,
+            device_id=int(device_id),
+            limit=int(limit),
+        )
+    except Exception as exc:
+        return {
+            "pattern": like_pattern,
+            "count": 0,
+            "kernel_start_ns": -1,
+            "kernel_end_ns": -1,
+            "warning": f"nvtx_kernel_sm_detail failed: {exc}",
+        }
+
+    starts: List[int] = []
+    ends: List[int] = []
+    for row in rows:
+        try:
+            ks = int(row.get("kernel_start_ns", row.get("start_ns")) or -1)
+            ke = int(row.get("kernel_end_ns", row.get("end_ns")) or -1)
+        except Exception:
+            continue
+        if ks < 0 or ke <= ks:
+            continue
+        starts.append(ks)
+        ends.append(ke)
+
+    if not starts:
+        return {
+            "pattern": like_pattern,
+            "count": 0,
+            "kernel_start_ns": -1,
+            "kernel_end_ns": -1,
+            "warning": "no attributed kernels found in nvtx_kernel_sm_detail",
+        }
+
+    return {
+        "pattern": like_pattern,
+        "count": len(starts),
+        "kernel_start_ns": int(min(starts)),
+        "kernel_end_ns": int(max(ends)),
+        "warning": "",
+    }
+
+
 def analyze_nsys_sqlite(
     sqlite_path: str,
     *,
@@ -172,6 +249,8 @@ def analyze_nsys_sqlite(
     try:
         schema_obj = NsightSchema(conn)
         engine = NsysSqlSkillEngine(conn)
+        explicit_start_given = int(start_ns) >= 0
+        explicit_end_given = int(end_ns) >= 0
 
         tables = list(schema_obj.tables)
         schema: Dict[str, object] = {
@@ -195,6 +274,7 @@ def analyze_nsys_sqlite(
         # union time window to restrict ALL subsequent analyses.  Explicit
         # start_ns / end_ns from the caller take priority over the resolved window.
         nvtx_text_info: Optional[Dict[str, object]] = None
+        nvtx_kernel_span_info: Optional[Dict[str, object]] = None
         if nvtx_text:
             nvtx_text_info = _resolve_nvtx_text(
                 conn, schema_obj, nvtx_text, limit=limit
@@ -207,6 +287,21 @@ def analyze_nsys_sqlite(
                     start_ns = int(nvtx_text_info["window_start_ns"])
                 if end_ns < 0 and nvtx_text_info["window_end_ns"] >= 0:
                     end_ns = int(nvtx_text_info["window_end_ns"])
+                # Extend analysis window by attributed GPU kernel execution span
+                # (NVTX -> Runtime -> correlationId -> GPU kernel timestamps).
+                nvtx_kernel_span_info = _resolve_nvtx_kernel_span(
+                    engine,
+                    nvtx_text=str(nvtx_text),
+                    device_id=int(device_id),
+                    limit=int(limit),
+                )
+                if not str(nvtx_kernel_span_info.get("warning") or ""):
+                    k_start = int(nvtx_kernel_span_info.get("kernel_start_ns") or -1)
+                    k_end = int(nvtx_kernel_span_info.get("kernel_end_ns") or -1)
+                    if k_start >= 0 and not explicit_start_given:
+                        start_ns = k_start if int(start_ns) < 0 else min(int(start_ns), k_start)
+                    if k_end >= 0 and not explicit_end_given:
+                        end_ns = k_end if int(end_ns) < 0 else max(int(end_ns), k_end)
 
         summary = engine.summarize_gpu_kernels(
             device_id=device_id,
@@ -255,6 +350,19 @@ def analyze_nsys_sqlite(
                     f"{n_ranges} range(s) matched, "
                     f"window [{round(w_start/1e6,1)} ms – {round(w_end/1e6,1)} ms] "
                     f"(span {round((w_end-w_start)/1e6,1)} ms)."
+                )
+
+        if nvtx_kernel_span_info:
+            span_warn = str(nvtx_kernel_span_info.get("warning") or "")
+            if span_warn:
+                warnings.append(f"[NVTX_SCOPE_KERNEL_SPAN] {span_warn}")
+            else:
+                k_count = int(nvtx_kernel_span_info.get("count") or 0)
+                k_start = int(nvtx_kernel_span_info.get("kernel_start_ns") or 0)
+                k_end = int(nvtx_kernel_span_info.get("kernel_end_ns") or 0)
+                warnings.append(
+                    f"[NVTX_SCOPE_KERNEL_SPAN] Attributed kernels={k_count}, "
+                    f"gpu_window [{round(k_start/1e6,1)} ms - {round(k_end/1e6,1)} ms]."
                 )
 
         mfu: Optional[Dict[str, object]] = None
@@ -463,6 +571,7 @@ def analyze_nsys_sqlite(
             "device_id": int(device_id),
             "window": {"start_ns": int(start_ns), "end_ns": int(end_ns)},
             "nvtx_text_info": nvtx_text_info,
+            "nvtx_kernel_span_info": nvtx_kernel_span_info,
             "schema": schema,
             "summary": summary,
             "overlap": overlap,
@@ -529,6 +638,23 @@ def analyze_to_markdown(result: Dict[str, object]) -> str:
                 )
             if len(matched) > 10:
                 lines.append(f"| … | *(+{len(matched)-10} more)* | | | |")
+        lines.append("")
+
+    nks = result.get("nvtx_kernel_span_info")
+    if nks:
+        lines.append("## NVTX Kernel Span")
+        lines.append("")
+        lines.append(f"- pattern: `{nks.get('pattern', '')}`")
+        lines.append(f"- attributed kernels: `{nks.get('count', 0)}`")
+        if nks.get("warning"):
+            lines.append(f"- **warning**: {nks.get('warning')}")
+        else:
+            k_s = int(nks.get("kernel_start_ns") or 0)
+            k_e = int(nks.get("kernel_end_ns") or 0)
+            lines.append(
+                f"- gpu kernel window: `{round(k_s/1e6,1)} ms` - `{round(k_e/1e6,1)} ms` "
+                f"(span `{round((k_e-k_s)/1e6,1)} ms`)"
+            )
         lines.append("")
 
     summary = result.get("summary") or {}
@@ -720,3 +846,4 @@ def analyze_to_markdown(result: Dict[str, object]) -> str:
                 lines.append(f"- {item}")
             lines.append("")
     return "\n".join(lines)
+
