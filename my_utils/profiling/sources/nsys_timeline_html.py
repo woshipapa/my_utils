@@ -827,7 +827,6 @@ def _render_html(
     window_start_ns: int,
     window_end_ns: int,
     nvtx_windows: Optional[Sequence[Dict[str, object]]],
-    subphase_timing: Optional[List[Dict[str, object]]] = None,
     width_px: int,
     include_metrics: bool,
     overlay_metrics_per_track: int,
@@ -1001,54 +1000,6 @@ def _render_html(
                 f"title='{html.escape(title)}'></div>"
             )
         lines.append("</div></div>")
-        lines.append("</div>")
-
-    # Sub-phase timing panel
-    spt = list(subphase_timing or [])
-    if spt:
-        span_ns_f = float(max(1, int(window_end_ns) - int(window_start_ns)))
-        max_total_ms = max(float(r.get("total_ms") or 0) for r in spt) or 1.0
-        lines.extend(["<div class='card'>", "<h3 class='panel-title'>NVTX Sub-Phase Timing</h3>"])
-        lines.append(
-            "<table style='width:100%;border-collapse:collapse;font-size:12px;color:#dce6f5;'>"
-            "<thead><tr style='color:#8fa5c8;border-bottom:1px solid #2a3243;'>"
-            "<th style='text-align:left;padding:4px 8px;'>Sub-Phase</th>"
-            "<th style='text-align:right;padding:4px 8px;'>Count</th>"
-            "<th style='text-align:right;padding:4px 8px;'>total_ms</th>"
-            "<th style='text-align:right;padding:4px 8px;'>avg_ms</th>"
-            "<th style='text-align:right;padding:4px 8px;'>min_ms</th>"
-            "<th style='text-align:right;padding:4px 8px;'>max_ms</th>"
-            "<th style='text-align:right;padding:4px 8px;'>% of window</th>"
-            "<th style='padding:4px 8px;min-width:120px;'>bar</th>"
-            "</tr></thead><tbody>"
-        )
-        for i, r in enumerate(spt[:60]):
-            name = html.escape(str(r.get("nvtx_name") or ""))
-            count = r.get("range_count", "")
-            total = r.get("total_ms", "")
-            avg = r.get("avg_ms", "")
-            mn = r.get("min_ms", "")
-            mx = r.get("max_ms", "")
-            pct = r.get("pct_of_window")
-            pct_str = f"{pct}%" if pct is not None else "n/a"
-            bar_pct = min(100.0, float(r.get("total_ms") or 0) / max_total_ms * 100.0)
-            bar_w = max(1, int(bar_pct * 1.2))  # scale to 120px max
-            color = _color_for_name(f"phase::{name}")
-            row_bg = "#121826" if i % 2 == 0 else "#0f1520"
-            lines.append(
-                f"<tr style='background:{row_bg};border-bottom:1px solid #1e2636;'>"
-                f"<td style='padding:3px 8px;max-width:320px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;' title='{name}'>{name}</td>"
-                f"<td style='text-align:right;padding:3px 8px;'>{count}</td>"
-                f"<td style='text-align:right;padding:3px 8px;font-family:monospace;'>{total}</td>"
-                f"<td style='text-align:right;padding:3px 8px;font-family:monospace;'>{avg}</td>"
-                f"<td style='text-align:right;padding:3px 8px;font-family:monospace;'>{mn}</td>"
-                f"<td style='text-align:right;padding:3px 8px;font-family:monospace;'>{mx}</td>"
-                f"<td style='text-align:right;padding:3px 8px;'>{pct_str}</td>"
-                f"<td style='padding:3px 8px;'>"
-                f"<div style='width:{bar_w}px;height:10px;background:{color};border-radius:2px;opacity:0.85;'></div>"
-                f"</td></tr>"
-            )
-        lines.append("</tbody></table>")
         lines.append("</div>")
 
     lines.extend(["<div class='card'>", "<h3 class='panel-title'>Kernel Timeline By Stream</h3>"])
@@ -1984,24 +1935,7 @@ def export_timeline_html(
                 int(effective_end_ns),
             )
         )
-    # --- NVTX sub-phase timing within the effective window ---
-    subphase_timing: List[Dict[str, object]] = []
-    _subphase_t0 = time.perf_counter()
-    try:
-        _sp_rows = provider.run_sql_skill(
-            "nvtx_subphase_timing",
-            start_ns=int(effective_start_ns),
-            end_ns=int(effective_end_ns),
-            limit=100,
-        )
-        if _sp_rows:
-            for _r in _sp_rows:
-                subphase_timing.append(dict(_r))
-    except Exception as _sp_exc:
-        debug_log("nvtx_subphase_timing failed: {}".format(_sp_exc))
-    _subphase_ms = round((time.perf_counter() - _subphase_t0) * 1000, 1)
-    debug_log("nvtx_subphase_timing rows={} elapsed_ms={}".format(len(subphase_timing), _subphase_ms))
-    _emit_phase("window_inference_and_subphase", round((time.perf_counter() - _t0) * 1000, 1))
+    _emit_phase("window_inference", round((time.perf_counter() - _t0) * 1000, 1))
 
     _t0 = time.perf_counter()
     # 按照nvtx range内的runtime correlationId到具体的kernel，得到kernel window
@@ -2089,7 +2023,6 @@ def export_timeline_html(
         window_start_ns=int(render_start_ns),
         window_end_ns=int(render_end_ns),
         nvtx_windows=selected_nvtx_windows,
-        subphase_timing=subphase_timing,
         width_px=int(width_px),
         include_metrics=bool(include_metrics),
         overlay_metrics_per_track=int(overlay_metrics_per_track),
