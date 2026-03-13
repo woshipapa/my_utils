@@ -6,6 +6,7 @@ import json
 import math
 import re
 import sqlite3
+import time
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
@@ -826,6 +827,7 @@ def _render_html(
     window_start_ns: int,
     window_end_ns: int,
     nvtx_windows: Optional[Sequence[Dict[str, object]]],
+    subphase_timing: Optional[List[Dict[str, object]]] = None,
     width_px: int,
     include_metrics: bool,
     overlay_metrics_per_track: int,
@@ -999,6 +1001,54 @@ def _render_html(
                 f"title='{html.escape(title)}'></div>"
             )
         lines.append("</div></div>")
+        lines.append("</div>")
+
+    # Sub-phase timing panel
+    spt = list(subphase_timing or [])
+    if spt:
+        span_ns_f = float(max(1, int(window_end_ns) - int(window_start_ns)))
+        max_total_ms = max(float(r.get("total_ms") or 0) for r in spt) or 1.0
+        lines.extend(["<div class='card'>", "<h3 class='panel-title'>NVTX Sub-Phase Timing</h3>"])
+        lines.append(
+            "<table style='width:100%;border-collapse:collapse;font-size:12px;color:#dce6f5;'>"
+            "<thead><tr style='color:#8fa5c8;border-bottom:1px solid #2a3243;'>"
+            "<th style='text-align:left;padding:4px 8px;'>Sub-Phase</th>"
+            "<th style='text-align:right;padding:4px 8px;'>Count</th>"
+            "<th style='text-align:right;padding:4px 8px;'>total_ms</th>"
+            "<th style='text-align:right;padding:4px 8px;'>avg_ms</th>"
+            "<th style='text-align:right;padding:4px 8px;'>min_ms</th>"
+            "<th style='text-align:right;padding:4px 8px;'>max_ms</th>"
+            "<th style='text-align:right;padding:4px 8px;'>% of window</th>"
+            "<th style='padding:4px 8px;min-width:120px;'>bar</th>"
+            "</tr></thead><tbody>"
+        )
+        for i, r in enumerate(spt[:60]):
+            name = html.escape(str(r.get("nvtx_name") or ""))
+            count = r.get("range_count", "")
+            total = r.get("total_ms", "")
+            avg = r.get("avg_ms", "")
+            mn = r.get("min_ms", "")
+            mx = r.get("max_ms", "")
+            pct = r.get("pct_of_window")
+            pct_str = f"{pct}%" if pct is not None else "n/a"
+            bar_pct = min(100.0, float(r.get("total_ms") or 0) / max_total_ms * 100.0)
+            bar_w = max(1, int(bar_pct * 1.2))  # scale to 120px max
+            color = _color_for_name(f"phase::{name}")
+            row_bg = "#121826" if i % 2 == 0 else "#0f1520"
+            lines.append(
+                f"<tr style='background:{row_bg};border-bottom:1px solid #1e2636;'>"
+                f"<td style='padding:3px 8px;max-width:320px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;' title='{name}'>{name}</td>"
+                f"<td style='text-align:right;padding:3px 8px;'>{count}</td>"
+                f"<td style='text-align:right;padding:3px 8px;font-family:monospace;'>{total}</td>"
+                f"<td style='text-align:right;padding:3px 8px;font-family:monospace;'>{avg}</td>"
+                f"<td style='text-align:right;padding:3px 8px;font-family:monospace;'>{mn}</td>"
+                f"<td style='text-align:right;padding:3px 8px;font-family:monospace;'>{mx}</td>"
+                f"<td style='text-align:right;padding:3px 8px;'>{pct_str}</td>"
+                f"<td style='padding:3px 8px;'>"
+                f"<div style='width:{bar_w}px;height:10px;background:{color};border-radius:2px;opacity:0.85;'></div>"
+                f"</td></tr>"
+            )
+        lines.append("</tbody></table>")
         lines.append("</div>")
 
     lines.extend(["<div class='card'>", "<h3 class='panel-title'>Kernel Timeline By Stream</h3>"])
@@ -1788,8 +1838,25 @@ def export_timeline_html(
     debug: bool = False,
     debug_rows: int = -1,
     debug_log_fn: Optional[Callable[[str], None]] = None,
+    progress_cb: Optional[Callable[[str], None]] = None,
 ) -> str:
+    """Export an interactive HTML timeline from an nsys SQLite file.
+
+    Parameters
+    ----------
+    progress_cb:
+        Optional callback for per-phase progress messages printed to the caller.
+        Each call receives a string like ``"  done: collect_kernels  [234 ms]"``.
+        Pass ``lambda msg: print(msg, file=sys.stderr)`` for CLI progress output.
+    """
     debug_log = _build_debug_logger(enabled=bool(debug), log_fn=debug_log_fn)
+
+    _phase_timings: List[Dict[str, float]] = []
+
+    def _emit_phase(name: str, elapsed_ms: float) -> None:
+        _phase_timings.append({"phase": name, "elapsed_ms": elapsed_ms})
+        if progress_cb:
+            progress_cb(f"  done:     {name}  [{elapsed_ms} ms]")
     try:
         debug_rows_i = int(debug_rows)
     except Exception:
@@ -1811,6 +1878,7 @@ def export_timeline_html(
             int(debug_rows_i),
         )
     )
+    _t0 = time.perf_counter()
     try:
         conn = sqlite3.connect(str(sqlite_path))
         conn.row_factory = sqlite3.Row
@@ -1848,9 +1916,11 @@ def export_timeline_html(
             conn.close()
     except Exception as exc:
         debug_log("schema probe failed: {}".format(exc))
+    _emit_phase("schema_probe", round((time.perf_counter() - _t0) * 1000, 1))
 
     provider = NsysSqliteMetricsProvider(sqlite_path)
 
+    _t0 = time.perf_counter()
     selected_nvtx_windows: List[Dict[str, object]] = []
     effective_start_ns = int(start_ns)
     effective_end_ns = int(end_ns)
@@ -1886,6 +1956,9 @@ def export_timeline_html(
                 )
             )
 
+    _emit_phase("nvtx_window_selection", round((time.perf_counter() - _t0) * 1000, 1))
+
+    _t0 = time.perf_counter()
     if effective_start_ns < 0 or effective_end_ns < 0 or effective_end_ns <= effective_start_ns:
         # If no explicit valid window, infer from full kernel rows.
         base_rows = collect_kernel_rows(
@@ -1911,6 +1984,26 @@ def export_timeline_html(
                 int(effective_end_ns),
             )
         )
+    # --- NVTX sub-phase timing within the effective window ---
+    subphase_timing: List[Dict[str, object]] = []
+    _subphase_t0 = time.perf_counter()
+    try:
+        _sp_rows = provider.run_sql_skill(
+            "nvtx_subphase_timing",
+            start_ns=int(effective_start_ns),
+            end_ns=int(effective_end_ns),
+            limit=100,
+        )
+        if _sp_rows:
+            for _r in _sp_rows:
+                subphase_timing.append(dict(_r))
+    except Exception as _sp_exc:
+        debug_log("nvtx_subphase_timing failed: {}".format(_sp_exc))
+    _subphase_ms = round((time.perf_counter() - _subphase_t0) * 1000, 1)
+    debug_log("nvtx_subphase_timing rows={} elapsed_ms={}".format(len(subphase_timing), _subphase_ms))
+    _emit_phase("window_inference_and_subphase", round((time.perf_counter() - _t0) * 1000, 1))
+
+    _t0 = time.perf_counter()
     # 按照nvtx range内的runtime correlationId到具体的kernel，得到kernel window
     kernels = _collect_kernels_in_window(
         provider,
@@ -1986,7 +2079,9 @@ def export_timeline_html(
         )
     else:
         debug_log("metrics disabled (include_metrics=0)")
+    _emit_phase("collect_kernels_and_metrics", round((time.perf_counter() - _t0) * 1000, 1))
 
+    _t0 = time.perf_counter()
     text = _render_html(
         sqlite_path=str(sqlite_path),
         kernels=kernels,
@@ -1994,6 +2089,7 @@ def export_timeline_html(
         window_start_ns=int(render_start_ns),
         window_end_ns=int(render_end_ns),
         nvtx_windows=selected_nvtx_windows,
+        subphase_timing=subphase_timing,
         width_px=int(width_px),
         include_metrics=bool(include_metrics),
         overlay_metrics_per_track=int(overlay_metrics_per_track),
@@ -2001,6 +2097,7 @@ def export_timeline_html(
     out = Path(output_path)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(text, encoding="utf-8")
+    _emit_phase("render_and_write", round((time.perf_counter() - _t0) * 1000, 1))
     debug_log(
         "done output={} kernels={} metric_series={} window=[{}, {}]".format(
             str(out),
@@ -2010,4 +2107,7 @@ def export_timeline_html(
             int(render_end_ns),
         )
     )
+    if progress_cb:
+        total_ms = round(sum(float(p.get("elapsed_ms") or 0) for p in _phase_timings), 1)
+        progress_cb(f"  total:    {total_ms} ms  (phases: {len(_phase_timings)})")
     return str(out)

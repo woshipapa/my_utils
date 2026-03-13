@@ -1594,6 +1594,54 @@ def _build_builtin_skills(schema: NsightSchema) -> Dict[str, SqlSkill]:
                 tags=["nvtx", "hierarchy", "parent", "child", "ranges", "raw"],
             )
 
+            # 20b) NVTX sub-phase timing — aggregate NVTX ranges within an optional
+            # time window by text label.  Reports count, total/avg/min/max duration and
+            # pct_of_window (relative to the supplied window span).  When start_ns / end_ns
+            # are -1 the whole profile is included.
+            # This skill is the primary data source for the "sub-phase timing" panel in
+            # both nsys-analyze markdown and nsys-timeline-html.
+            skill_map["nvtx_subphase_timing"] = SqlSkill(
+                name="nvtx_subphase_timing",
+                title="NVTX Sub-Phase Timing",
+                description=(
+                    "Aggregate all NVTX ranges whose [start, end) overlaps the optional "
+                    "[start_ns, end_ns) window, grouped by text label.  "
+                    "Returns count, total_ms, avg_ms, min_ms, max_ms and pct_of_window "
+                    "(percentage of the supplied window span).  "
+                    "Ordered by total_ms DESC so the heaviest sub-phases appear first."
+                ),
+                category="nvtx",
+                sql=(
+                    "WITH sp AS ( "
+                    f"  SELECT {sk19_text_expr} AS nvtx_name, "
+                    f"         (n.[{_ident(sk19_end_col)}] - n.{_ident(sk19_start_col)}) AS dur_ns "
+                    f"  FROM {nvtx_table} n "
+                    f"  {sk19_nvtx_join} "
+                    f"  WHERE {sk19_text_expr} IS NOT NULL "
+                    f"    AND n.[{_ident(sk19_end_col)}] > n.{_ident(sk19_start_col)} "
+                    f"    AND ({{start_ns}} < 0 OR n.[{_ident(sk19_end_col)}] > {{start_ns}}) "
+                    f"    AND ({{end_ns}}   < 0 OR n.{_ident(sk19_start_col)} < {{end_ns}}) "
+                    ") "
+                    "SELECT nvtx_name, "
+                    "  COUNT(*) AS range_count, "
+                    "  ROUND(SUM(dur_ns) / 1e6, 3) AS total_ms, "
+                    "  ROUND(AVG(dur_ns) / 1e6, 3) AS avg_ms, "
+                    "  ROUND(MIN(dur_ns) / 1e6, 3) AS min_ms, "
+                    "  ROUND(MAX(dur_ns) / 1e6, 3) AS max_ms, "
+                    "  ROUND(SUM(dur_ns) * 100.0 / NULLIF(({end_ns} - {start_ns}), 0), 2) AS pct_of_window "
+                    "FROM sp "
+                    "GROUP BY nvtx_name "
+                    "ORDER BY total_ms DESC "
+                    "LIMIT {limit}"
+                ),
+                params=[
+                    SqlSkillParam("start_ns", "window start ns, -1 means no filter", "int", False, -1),
+                    SqlSkillParam("end_ns", "window end ns, -1 means no filter", "int", False, -1),
+                    SqlSkillParam("limit", "max rows", "int", False, 100),
+                ],
+                tags=["nvtx", "subphase", "timing", "breakdown", "aggregate", "window"],
+            )
+
     # 21) Kernel duration jitter / variance stats
     # Computes population std-dev in SQL via Var = E[x²] - E[x]²,
     # then CV (Coefficient of Variation) = stddev / mean * 100.
