@@ -14,6 +14,8 @@ from my_utils.profiling.sources.nsys_sql_skills import (
 from my_utils.profiling.sources.nsys_timeline_html import (
     _collect_kernels_in_window,
     _collect_metric_samples,
+    _pick_nvtx_windows,
+    _select_nvtx_windows,
     export_timeline_html,
 )
 from my_utils.profiling.sources.nsys_sqlite_provider import NsysSqliteMetricsProvider
@@ -506,6 +508,32 @@ def test_nvtx_gpu_metrics_breakdown_uses_correlation_gpu_windows(tmp_path: Path)
     assert int(sm.get("nvtx_start_ns") or 0) == 100_000, sm
     assert int(sm.get("nvtx_end_ns") or 0) == 100_200, sm
     conn.close()
+
+
+def test_timeline_kernel_collection_keeps_duplicate_nvtx_attribution_rows(tmp_path: Path) -> None:
+    db = tmp_path / "timeline_keep_duplicate_nvtx_rows.sqlite"
+    _init_sqlite(db)
+
+    provider = NsysSqliteMetricsProvider(str(db))
+    skill_rows = provider.run_sql_skill(
+        "nvtx_kernel_sm_detail",
+        nvtx_text="%",
+        device_id=0,
+        limit=1000,
+    )
+    windows = _pick_nvtx_windows(_select_nvtx_windows(provider, nvtx_text="%"), nvtx_index=-1)
+    collected = _collect_kernels_in_window(
+        provider,
+        start_ns=0,
+        end_ns=36_000,
+        nvtx_text="%",
+        nvtx_windows=windows,
+        device_id=0,
+        limit=1000,
+    )
+
+    assert len(skill_rows) > 0, skill_rows
+    assert len(collected) == len(skill_rows), (len(collected), len(skill_rows))
 
 
 def test_nvtx_gpu_metrics_breakdown_overlapping_kernel_windows_no_double_count(tmp_path: Path) -> None:

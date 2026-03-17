@@ -250,7 +250,7 @@ def _collect_kernels_in_window(
     except Exception:
         debug_rows_i = 3
     rows: List[Dict[str, object]] = []
-    seen = set()
+    attributed_kernel_keys = set()
     selected_windows: List[Tuple[int, int]] = []
     selected_pairs = set()
     if nvtx_windows:
@@ -300,9 +300,7 @@ def _collect_kernels_in_window(
                 if not _intervals_overlap(ks, ke, int(start_ns), int(end_ns)):
                     continue
             uniq = (ks, ke, _to_int(row.get("stream_id"), 0), str(row.get("kernel_name") or ""))
-            if uniq in seen:
-                continue
-            seen.add(uniq)
+            attributed_kernel_keys.add(uniq)
             detailed_kept += 1
             threads_per_block = row.get("threads_per_block")
             registers_per_thread = row.get("registersPerThread")
@@ -333,7 +331,7 @@ def _collect_kernels_in_window(
                     "rank": _parse_rank_from_text(row.get("nvtx_text")),
                 }
             )
-        debug("skill nvtx_kernel_sm_detail kept {} rows after filtering/dedup".format(detailed_kept))
+        debug("skill nvtx_kernel_sm_detail kept {} rows after filtering".format(detailed_kept))
     else:
         debug("skill nvtx_kernel_sm_detail unavailable, fallback to kernel_map only")
 
@@ -361,9 +359,8 @@ def _collect_kernels_in_window(
             if not _intervals_overlap(ks, ke, int(start_ns), int(end_ns)):
                 continue
         uniq = (ks, ke, _to_int(row.get("stream_id"), 0), str(row.get("kernel_name") or ""))
-        if uniq in seen:
+        if uniq in attributed_kernel_keys:
             continue
-        seen.add(uniq)
         fallback_kept += 1
         threads_per_block = row.get("threads_per_block")
         registers_per_thread = row.get("registersPerThread")
