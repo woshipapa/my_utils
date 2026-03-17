@@ -1245,6 +1245,7 @@ def test_timeline_compare_html_embeds_multiple_sqlites(tmp_path: Path) -> None:
     assert str(db_a) in text, text
     assert str(db_b) in text, text
     assert "Each embedded timeline keeps its own local matched window" in text
+    assert ".compare-stack" in text
 
 
 def test_nvtx_kernel_sm_detail_cross_thread_runtime_fallback_keeps_kernels(tmp_path: Path) -> None:
