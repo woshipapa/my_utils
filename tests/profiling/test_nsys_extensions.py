@@ -1274,6 +1274,81 @@ def test_timeline_compare_html_embeds_multiple_sqlites(tmp_path: Path) -> None:
     assert text.index("All Streams Overlap + Metrics Alignment") < text.index("Matched NVTX Scopes"), text
 
 
+def test_timeline_compare_html_reports_fusion_candidates(tmp_path: Path) -> None:
+    db_a = tmp_path / "fusion_base.sqlite"
+    db_b = tmp_path / "fusion_target.sqlite"
+    _init_sqlite(db_a)
+    _init_sqlite(db_b)
+
+    def _inject_fusion_case(db: Path, *, fused: bool) -> None:
+        conn = sqlite3.connect(str(db))
+        conn.executemany(
+            "INSERT INTO StringIds(id, value) VALUES (?, ?)",
+            [
+                (8011, "fusion_anchor_start"),
+                (8012, "fusion_mid_1"),
+                (8013, "fusion_mid_2"),
+                (8014, "fusion_anchor_end"),
+                (8015, "fusion_mid_fused"),
+            ],
+        )
+        conn.execute(
+            "INSERT INTO NVTX_EVENTS VALUES (?, ?, ?, ?, ?, ?)",
+            (200_000, 200_200, "fusion_case", None, 59, 12345678),
+        )
+        if not fused:
+            runtimes = [
+                (200_010, 200_020, 8101, 3, 12345678),
+                (200_030, 200_040, 8102, 3, 12345678),
+                (200_050, 200_060, 8103, 3, 12345678),
+                (200_070, 200_080, 8104, 3, 12345678),
+            ]
+            kernels = [
+                (200_300, 200_360, 88, 8101, 8011, 8011, 0, 128, 1, 1, 32, 4096, 0, 87.5),
+                (200_370, 200_430, 88, 8102, 8012, 8012, 0, 128, 1, 1, 32, 4096, 0, 87.5),
+                (200_440, 200_520, 88, 8103, 8013, 8013, 0, 128, 1, 1, 32, 4096, 0, 87.5),
+                (200_530, 200_590, 88, 8104, 8014, 8014, 0, 128, 1, 1, 32, 4096, 0, 87.5),
+            ]
+        else:
+            runtimes = [
+                (200_010, 200_020, 8201, 3, 12345678),
+                (200_030, 200_040, 8202, 3, 12345678),
+                (200_050, 200_060, 8203, 3, 12345678),
+            ]
+            kernels = [
+                (200_300, 200_360, 88, 8201, 8011, 8011, 0, 128, 1, 1, 32, 4096, 0, 87.5),
+                (200_370, 200_520, 88, 8202, 8015, 8015, 0, 128, 1, 1, 32, 4096, 0, 87.5),
+                (200_530, 200_590, 88, 8203, 8014, 8014, 0, 128, 1, 1, 32, 4096, 0, 87.5),
+            ]
+        conn.executemany("INSERT INTO CUPTI_ACTIVITY_KIND_RUNTIME VALUES (?, ?, ?, ?, ?)", runtimes)
+        conn.executemany(
+            "INSERT INTO CUPTI_ACTIVITY_KIND_KERNEL VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            kernels,
+        )
+        conn.commit()
+        conn.close()
+
+    _inject_fusion_case(db_a, fused=False)
+    _inject_fusion_case(db_b, fused=True)
+
+    out = tmp_path / "fusion_compare.html"
+    export_timeline_compare_html(
+        [str(db_a), str(db_b)],
+        output_path=str(out),
+        device_id=0,
+        nvtx_text="%fusion_case%",
+        include_metrics=False,
+    )
+
+    text = out.read_text(encoding="utf-8")
+    assert "Potential Fusion Mapping" in text
+    assert "Possible Fusion In Target" in text
+    assert "fusion_mid_1" in text
+    assert "fusion_mid_2" in text
+    assert "fusion_mid_fused" in text
+    assert "stream 88" in text
+
+
 def test_nvtx_kernel_sm_detail_cross_thread_runtime_fallback_keeps_kernels(tmp_path: Path) -> None:
     db = tmp_path / "cross_thread_nvtx.sqlite"
     _init_sqlite(db)

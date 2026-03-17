@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import difflib
 import hashlib
 import html
 import json
@@ -2092,6 +2093,121 @@ def export_timeline_html(
     return str(out)
 
 
+def _extract_timeline_payload_from_html(html_text: str) -> Optional[Dict[str, object]]:
+    m = re.search(r"const TIMELINE_DATA = (\{.*?\});", str(html_text or ""), flags=re.S)
+    if not m:
+        return None
+    try:
+        payload = json.loads(m.group(1))
+    except Exception:
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _normalize_kernel_name_for_compare(name: object) -> str:
+    return re.sub(r"\s+", " ", str(name or "").strip())
+
+
+def _short_kernel_name(name: object, limit: int = 72) -> str:
+    text = _normalize_kernel_name_for_compare(name)
+    if len(text) <= int(limit):
+        return text
+    return text[: max(8, int(limit) - 3)] + "..."
+
+
+def _segment_duration_ms(segment: Sequence[Dict[str, object]]) -> float:
+    total = 0.0
+    for item in segment:
+        try:
+            total += float(item.get("duration_ms") or 0.0)
+        except Exception:
+            continue
+    return total
+
+
+def _stream_key_sort_key(key: Tuple[Optional[int], int, int]) -> Tuple[int, int, int]:
+    rank, dev, sid = key
+    return (10**9 if rank is None else int(rank), int(dev), int(sid))
+
+
+def _timeline_stream_sequences(payload: Dict[str, object]) -> Dict[Tuple[Optional[int], int, int], List[Dict[str, object]]]:
+    out: Dict[Tuple[Optional[int], int, int], List[Dict[str, object]]] = {}
+    for group in list(payload.get("all_stream_groups") or []):
+        rank_raw = group.get("rank")
+        rank = int(rank_raw) if isinstance(rank_raw, int) else None
+        dev = _to_int(group.get("device_id"), -1)
+        for stream in list(group.get("streams") or []):
+            sid = _to_int(stream.get("stream_id"), 0)
+            kernels = list(stream.get("kernels") or [])
+            out[(rank, dev, sid)] = kernels
+    return out
+
+
+def _build_fusion_findings(
+    base_payload: Dict[str, object],
+    target_payload: Dict[str, object],
+) -> List[Dict[str, object]]:
+    findings: List[Dict[str, object]] = []
+    base_streams = _timeline_stream_sequences(base_payload)
+    target_streams = _timeline_stream_sequences(target_payload)
+    common_keys = sorted(set(base_streams.keys()) & set(target_streams.keys()), key=_stream_key_sort_key)
+    for key in common_keys:
+        rank, dev, sid = key
+        base_segment = list(base_streams.get(key) or [])
+        target_segment = list(target_streams.get(key) or [])
+        if len(base_segment) < 3 or len(target_segment) < 3:
+            continue
+        base_names = [_normalize_kernel_name_for_compare(item.get("kernel_name")) for item in base_segment]
+        target_names = [_normalize_kernel_name_for_compare(item.get("kernel_name")) for item in target_segment]
+        matcher = difflib.SequenceMatcher(a=base_names, b=target_names, autojunk=False)
+        blocks = list(matcher.get_matching_blocks())
+        prev_base_end = 0
+        prev_target_end = 0
+        prev_anchor: Optional[str] = None
+        for block in blocks:
+            seg_base = base_segment[prev_base_end:block.a]
+            seg_target = target_segment[prev_target_end:block.b]
+            next_anchor = base_names[block.a] if block.size > 0 and block.a < len(base_names) else None
+            if prev_anchor and next_anchor and seg_base and seg_target and len(seg_base) != len(seg_target):
+                base_count = len(seg_base)
+                target_count = len(seg_target)
+                kind = ""
+                confidence = ""
+                if base_count >= 2 and target_count == 1:
+                    kind = "target_fused"
+                    confidence = "high"
+                elif target_count >= 2 and base_count == 1:
+                    kind = "target_split"
+                    confidence = "high"
+                elif base_count > target_count:
+                    kind = "target_compacted"
+                    confidence = "medium"
+                elif target_count > base_count:
+                    kind = "target_expanded"
+                    confidence = "medium"
+                if kind:
+                    findings.append(
+                        {
+                            "rank": rank,
+                            "device_id": dev,
+                            "stream_id": sid,
+                            "kind": kind,
+                            "confidence": confidence,
+                            "prev_anchor": prev_anchor,
+                            "next_anchor": next_anchor,
+                            "base_segment": seg_base,
+                            "target_segment": seg_target,
+                            "base_duration_ms": round(_segment_duration_ms(seg_base), 6),
+                            "target_duration_ms": round(_segment_duration_ms(seg_target), 6),
+                        }
+                    )
+            if block.size > 0:
+                prev_anchor = base_names[block.a + block.size - 1]
+            prev_base_end = block.a + block.size
+            prev_target_end = block.b + block.size
+    return findings
+
+
 def export_timeline_compare_html(
     sqlite_paths: Sequence[str],
     *,
@@ -2203,9 +2319,103 @@ def export_timeline_compare_html(
                     "label": label,
                     "sqlite_path": str(sqlite_path),
                     "srcdoc": tmp_out.read_text(encoding="utf-8"),
+                    "payload": _extract_timeline_payload_from_html(tmp_out.read_text(encoding="utf-8")) or {},
                 }
             )
             compare_debug(f"compare child done index={idx} sqlite={sqlite_path}")
+
+    fusion_section: List[str] = []
+    if len(rendered) >= 2:
+        base_item = rendered[0]
+        target_item = rendered[1]
+        base_payload = dict(base_item.get("payload") or {})
+        target_payload = dict(target_item.get("payload") or {})
+        findings = _build_fusion_findings(base_payload, target_payload)
+        compare_debug(
+            "fusion heuristic baseline={} target={} findings={}".format(
+                str(base_item.get("label") or ""),
+                str(target_item.get("label") or ""),
+                len(findings),
+            )
+        )
+        fusion_cards: List[str] = []
+        if findings:
+            for idx, item in enumerate(findings):
+                rank = item.get("rank")
+                dev = _to_int(item.get("device_id"), -1)
+                sid = _to_int(item.get("stream_id"), 0)
+                base_segment = list(item.get("base_segment") or [])
+                target_segment = list(item.get("target_segment") or [])
+                base_names = [
+                    f"<code title='{html.escape(_normalize_kernel_name_for_compare(k.get('kernel_name')))}'>{html.escape(_short_kernel_name(k.get('kernel_name')))}</code>"
+                    for k in base_segment
+                ]
+                target_names = [
+                    f"<code title='{html.escape(_normalize_kernel_name_for_compare(k.get('kernel_name')))}'>{html.escape(_short_kernel_name(k.get('kernel_name')))}</code>"
+                    for k in target_segment
+                ]
+                if str(item.get("kind")) == "target_fused":
+                    verdict = "Possible Fusion In Target"
+                elif str(item.get("kind")) == "target_split":
+                    verdict = "Possible Split In Target"
+                elif str(item.get("kind")) == "target_compacted":
+                    verdict = "Target Sequence Compacted"
+                else:
+                    verdict = "Target Sequence Expanded"
+                rank_text = "Rank Unknown" if rank is None else f"Rank {int(rank)}"
+                fusion_cards.extend(
+                    [
+                        "<div class='fusion-card'>",
+                        (
+                            f"<div class='fusion-head'><span class='fusion-badge'>{html.escape(verdict)}</span> "
+                            f"<span class='fusion-meta'>{html.escape(rank_text)} | Device {dev} | stream {sid} | confidence={html.escape(str(item.get('confidence') or ''))}</span></div>"
+                        ),
+                        (
+                            f"<div class='fusion-anchor'>anchor: "
+                            f"<code title='{html.escape(str(item.get('prev_anchor') or ''))}'>{html.escape(_short_kernel_name(item.get('prev_anchor')))}</code> "
+                            f"&rarr; "
+                            f"<code title='{html.escape(str(item.get('next_anchor') or ''))}'>{html.escape(_short_kernel_name(item.get('next_anchor')))}</code>"
+                            "</div>"
+                        ),
+                        "<div class='fusion-grid'>",
+                        (
+                            f"<div class='fusion-side'><div class='fusion-side-title'>{html.escape(str(base_item.get('label') or 'baseline'))}</div>"
+                            f"<div class='fusion-side-sub'>kernels={len(base_segment)} | total_ms={float(item.get('base_duration_ms') or 0.0):.6f}</div>"
+                            f"<div class='fusion-flow'>{' <span class=\"fusion-arrow\">&rarr;</span> '.join(base_names)}</div></div>"
+                        ),
+                        (
+                            f"<div class='fusion-side'><div class='fusion-side-title'>{html.escape(str(target_item.get('label') or 'target'))}</div>"
+                            f"<div class='fusion-side-sub'>kernels={len(target_segment)} | total_ms={float(item.get('target_duration_ms') or 0.0):.6f}</div>"
+                            f"<div class='fusion-flow'>{' <span class=\"fusion-arrow\">&rarr;</span> '.join(target_names)}</div></div>"
+                        ),
+                        "</div>",
+                        "</div>",
+                    ]
+                )
+        else:
+            fusion_cards.extend(
+                [
+                    "<div class='fusion-empty'>",
+                    "No strong fusion candidates detected between the first two sqlite files. "
+                    "This heuristic only reports segments where the per-stream kernel sequence diverges "
+                    "between the same preceding and following anchor kernels.",
+                    "</div>",
+                ]
+            )
+        fusion_section = [
+            "<section class='compare-section'>",
+            "<h3 class='compare-section-title'>Potential Fusion Mapping</h3>",
+            (
+                "<div class='compare-section-note'>"
+                "Heuristic only: compare the first two sqlite files stream-by-stream, align common kernel-name anchors, "
+                "and report segments where one side becomes shorter or longer between the same anchors."
+                "</div>"
+            ),
+            "<div class='fusion-stack'>",
+            *fusion_cards,
+            "</div>",
+            "</section>",
+        ]
 
     section_titles: List[str] = [
         "All Streams Overlap + Metrics Alignment",
@@ -2273,6 +2483,7 @@ def export_timeline_compare_html(
             ".compare-root{display:flex;flex-direction:column;gap:18px;align-items:center;}",
             ".compare-section{width:min(100%, 1900px);}",
             ".compare-section-title{font-size:15px;color:#dbe6ff;margin:0 0 10px 0;}",
+            ".compare-section-note{font-size:12px;color:#96a6c2;margin:0 0 10px 0;}",
             ".compare-section-stack{display:flex;flex-direction:column;gap:14px;align-items:stretch;}",
             ".compare-card{width:min(100%, 1900px);background:#171c28;border:1px solid #2a3243;border-radius:8px;padding:12px;box-sizing:border-box;}",
             ".compare-head{display:flex;align-items:flex-start;gap:10px;margin-bottom:10px;}",
@@ -2280,6 +2491,20 @@ def export_timeline_compare_html(
             ".compare-title{font-size:14px;color:#e7eefc;font-weight:600;word-break:break-word;}",
             ".compare-path{font-size:11px;color:#8fa1bf;word-break:break-all;margin-top:2px;}",
             ".compare-frame{display:block;width:100%;min-height:140px;border:1px solid #2f3b53;border-radius:6px;background:#0c111c;box-sizing:border-box;}",
+            ".fusion-stack{display:flex;flex-direction:column;gap:10px;}",
+            ".fusion-card{background:#171c28;border:1px solid #2a3243;border-radius:8px;padding:10px;}",
+            ".fusion-head{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:6px;}",
+            ".fusion-badge{font-size:11px;color:#eaf2ff;background:#23314b;border:1px solid #4a6186;border-radius:999px;padding:2px 8px;}",
+            ".fusion-meta{font-size:12px;color:#9fb0ca;}",
+            ".fusion-anchor{font-size:12px;color:#cfd8ea;margin-bottom:8px;}",
+            ".fusion-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(420px,1fr));gap:10px;}",
+            ".fusion-side{background:#111827;border:1px solid #283550;border-radius:6px;padding:8px;}",
+            ".fusion-side-title{font-size:12px;color:#dbe6ff;margin-bottom:4px;}",
+            ".fusion-side-sub{font-size:11px;color:#8ea0bd;margin-bottom:6px;}",
+            ".fusion-flow{font-size:11px;line-height:1.8;color:#d7e2f7;word-break:break-word;}",
+            ".fusion-flow code{background:#1b2740;border:1px solid #324868;border-radius:4px;padding:2px 5px;color:#edf4ff;}",
+            ".fusion-arrow{color:#6f85aa;padding:0 5px;}",
+            ".fusion-empty{background:#171c28;border:1px dashed #33435f;border-radius:8px;padding:12px;color:#9fb0ca;font-size:12px;}",
             "</style></head><body>",
             "<h2>NSYS NVTX Timeline Compare</h2>",
             (
@@ -2287,6 +2512,7 @@ def export_timeline_compare_html(
                 f"device_id={int(device_id)} | note={html.escape(note)}</div>"
             ),
             "<div class='compare-root'>",
+            *fusion_section,
             *section_blocks,
             "</div>",
             "<script>",
