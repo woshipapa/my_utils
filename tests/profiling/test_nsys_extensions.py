@@ -1241,11 +1241,16 @@ def test_timeline_compare_html_embeds_multiple_sqlites(tmp_path: Path) -> None:
     assert out.exists()
     text = out.read_text(encoding="utf-8")
     assert "NSYS NVTX Timeline Compare" in text
-    assert text.count("<iframe") == 2, text
+    assert text.count("<iframe") == 8, text
     assert str(db_a) in text, text
     assert str(db_b) in text, text
-    assert "Each embedded timeline keeps its own local matched window" in text
-    assert ".compare-stack" in text
+    assert "Each compare section groups the same timeline panel across all sqlite files" in text
+    assert ".compare-root" in text
+    assert "All Streams Overlap + Metrics Alignment" in text
+    assert "Matched NVTX Scopes" in text
+    assert "Kernel Timeline By Stream" in text
+    assert "GPU Metrics In Window" in text
+    assert text.index("All Streams Overlap + Metrics Alignment") < text.index("Matched NVTX Scopes"), text
 
 
 def test_nvtx_kernel_sm_detail_cross_thread_runtime_fallback_keeps_kernels(tmp_path: Path) -> None:
@@ -1849,7 +1854,9 @@ def test_cli_nsys_commands(tmp_path: Path) -> None:
     assert timeline_compare_html.exists()
     compare_text = timeline_compare_html.read_text(encoding="utf-8")
     assert "NSYS NVTX Timeline Compare" in compare_text
-    assert compare_text.count("<iframe") == 2, compare_text
+    assert compare_text.count("<iframe") == 8, compare_text
+    assert "All Streams Overlap + Metrics Alignment" in compare_text
+    assert "Matched NVTX Scopes" in compare_text
     assert "sample_0 step=1 rank=1" in timeline_text
     assert "nvtx_scopes=3" in timeline_text
     assert "Rank 0 | Device 0" in timeline_text

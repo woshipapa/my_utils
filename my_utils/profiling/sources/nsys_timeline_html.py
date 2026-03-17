@@ -2122,6 +2122,46 @@ def export_timeline_compare_html(
     rendered: List[Dict[str, str]] = []
     total = len(items)
 
+    def _build_section_srcdoc(full_html: str, *, panel_title: str) -> Optional[str]:
+        if str(panel_title or "").strip() not in str(full_html or ""):
+            return None
+        injected = "\n".join(
+            [
+                "<style>",
+                "body{margin:0;padding:0;background:#0f1116;overflow:hidden;}",
+                "h2,.meta{display:none !important;}",
+                ".card{margin:0 !important;}",
+                "</style>",
+                "<script>",
+                "(function(){",
+                f"  const target = {json.dumps(str(panel_title), ensure_ascii=False)};",
+                "  const cards = Array.from(document.querySelectorAll('.card'));",
+                "  let kept = 0;",
+                "  for (const card of cards) {",
+                "    const titleEl = card.querySelector('.panel-title');",
+                "    const title = titleEl ? String(titleEl.textContent || '').trim() : '';",
+                "    if (title === target) {",
+                "      kept += 1;",
+                "      continue;",
+                "    }",
+                "    card.remove();",
+                "  }",
+                "  const h2 = document.querySelector('h2');",
+                "  if (h2) h2.remove();",
+                "  const meta = document.querySelector('.meta');",
+                "  if (meta) meta.remove();",
+                "  if (!kept && document.body) {",
+                "    document.body.innerHTML = \"<div class='card'><div class='empty'>Section not available.</div></div>\";",
+                "  }",
+                "})();",
+                "</script>",
+            ]
+        )
+        text = str(full_html or "")
+        if "</body>" in text:
+            return text.replace("</body>", injected + "\n</body>", 1)
+        return text + injected
+
     with tempfile.TemporaryDirectory(prefix="nsys_timeline_compare_") as tmpdir:
         for idx, sqlite_path in enumerate(items):
             label = Path(str(sqlite_path)).name or f"sqlite_{idx}"
@@ -2166,31 +2206,59 @@ def export_timeline_compare_html(
             )
             compare_debug(f"compare child done index={idx} sqlite={sqlite_path}")
 
-    cards: List[str] = []
-    for idx, item in enumerate(rendered):
-        srcdoc_attr = html.escape(str(item["srcdoc"]), quote=True)
-        sqlite_display = html.escape(str(item["sqlite_path"]))
-        label_display = html.escape(str(item["label"]))
-        cards.extend(
+    section_titles: List[str] = [
+        "All Streams Overlap + Metrics Alignment",
+        "Matched NVTX Scopes",
+        "Kernel Timeline By Stream",
+    ]
+    if bool(include_metrics):
+        section_titles.append("GPU Metrics In Window")
+
+    section_blocks: List[str] = []
+    for section_title in section_titles:
+        section_cards: List[str] = []
+        for idx, item in enumerate(rendered):
+            section_srcdoc = _build_section_srcdoc(str(item["srcdoc"]), panel_title=str(section_title))
+            if not section_srcdoc:
+                continue
+            srcdoc_attr = html.escape(str(section_srcdoc), quote=True)
+            sqlite_display = html.escape(str(item["sqlite_path"]))
+            label_display = html.escape(str(item["label"]))
+            section_cards.extend(
+                [
+                    "<section class='compare-card'>",
+                    "<div class='compare-head'>",
+                    f"<div class='compare-index'>#{idx + 1}</div>",
+                    "<div class='compare-meta'>",
+                    f"<div class='compare-title'>{label_display}</div>",
+                    f"<div class='compare-path'>{sqlite_display}</div>",
+                    "</div>",
+                    "</div>",
+                    (
+                        "<iframe class='compare-frame' loading='lazy' "
+                        "sandbox='allow-scripts allow-same-origin' "
+                        f"srcdoc=\"{srcdoc_attr}\"></iframe>"
+                    ),
+                    "</section>",
+                ]
+            )
+        if not section_cards:
+            continue
+        section_blocks.extend(
             [
-                "<section class='compare-card'>",
-                "<div class='compare-head'>",
-                f"<div class='compare-index'>#{idx + 1}</div>",
-                "<div class='compare-meta'>",
-                f"<div class='compare-title'>{label_display}</div>",
-                f"<div class='compare-path'>{sqlite_display}</div>",
+                "<section class='compare-section'>",
+                f"<h3 class='compare-section-title'>{html.escape(str(section_title))}</h3>",
+                "<div class='compare-section-stack'>",
+                *section_cards,
                 "</div>",
-                "</div>",
-                (
-                    "<iframe class='compare-frame' loading='lazy' "
-                    "sandbox='allow-scripts allow-same-origin' "
-                    f"srcdoc=\"{srcdoc_attr}\"></iframe>"
-                ),
                 "</section>",
             ]
         )
 
-    note = "Each embedded timeline keeps its own local matched window and its own kernel/metrics X-axis."
+    note = (
+        "Each compare section groups the same timeline panel across all sqlite files. "
+        "Each embedded timeline still keeps its own local matched window and its own kernel/metrics X-axis."
+    )
     if str(nvtx_text or "").strip():
         note += f" Shared NVTX filter: {str(nvtx_text)}."
     page = "\n".join(
@@ -2201,7 +2269,10 @@ def export_timeline_compare_html(
             "<style>",
             "body{font-family:Arial,sans-serif;margin:20px;background:#0f1116;color:#e7e9ee;}",
             ".meta{margin-bottom:14px;color:#a8afbf;font-size:13px;}",
-            ".compare-stack{display:flex;flex-direction:column;gap:14px;align-items:center;}",
+            ".compare-root{display:flex;flex-direction:column;gap:18px;align-items:center;}",
+            ".compare-section{width:min(100%, 1900px);}",
+            ".compare-section-title{font-size:15px;color:#dbe6ff;margin:0 0 10px 0;}",
+            ".compare-section-stack{display:flex;flex-direction:column;gap:14px;align-items:stretch;}",
             ".compare-card{width:min(100%, 1900px);background:#171c28;border:1px solid #2a3243;border-radius:8px;padding:12px;box-sizing:border-box;}",
             ".compare-head{display:flex;align-items:flex-start;gap:10px;margin-bottom:10px;}",
             ".compare-index{font-size:12px;color:#9bb1d6;background:#121826;border:1px solid #34415a;border-radius:999px;padding:2px 8px;line-height:18px;}",
@@ -2214,8 +2285,8 @@ def export_timeline_compare_html(
                 f"<div class='meta'>sqlite_count={len(rendered)} | include_metrics={int(bool(include_metrics))} | "
                 f"device_id={int(device_id)} | note={html.escape(note)}</div>"
             ),
-            "<div class='compare-stack'>",
-            *cards,
+            "<div class='compare-root'>",
+            *section_blocks,
             "</div>",
             "<script>",
             "(function(){",
