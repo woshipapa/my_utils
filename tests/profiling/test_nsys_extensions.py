@@ -16,6 +16,7 @@ from my_utils.profiling.sources.nsys_timeline_html import (
     _collect_metric_samples,
     _pick_nvtx_windows,
     _select_nvtx_windows,
+    export_timeline_compare_html,
     export_timeline_html,
 )
 from my_utils.profiling.sources.nsys_sqlite_provider import NsysSqliteMetricsProvider
@@ -534,6 +535,30 @@ def test_timeline_kernel_collection_keeps_duplicate_nvtx_attribution_rows(tmp_pa
 
     assert len(skill_rows) > 0, skill_rows
     assert len(collected) == len(skill_rows), (len(collected), len(skill_rows))
+
+
+def test_timeline_debug_logs_emit_matched_kernel_counts(tmp_path: Path) -> None:
+    db = tmp_path / "timeline_debug_counts.sqlite"
+    _init_sqlite(db)
+
+    out = tmp_path / "timeline_debug_counts.html"
+    debug_messages: List[str] = []
+    progress_messages: List[str] = []
+
+    export_timeline_html(
+        str(db),
+        output_path=str(out),
+        device_id=0,
+        nvtx_text="%sample_0%",
+        include_metrics=False,
+        debug=True,
+        debug_log_fn=debug_messages.append,
+        progress_cb=progress_messages.append,
+    )
+
+    assert any("matched kernels total=" in msg for msg in debug_messages), debug_messages
+    assert any("collect_kernels matched_kernels=" in msg for msg in debug_messages), debug_messages
+    assert any("matched_kernels=" in msg for msg in progress_messages), progress_messages
 
 
 def test_nvtx_gpu_metrics_breakdown_overlapping_kernel_windows_no_double_count(tmp_path: Path) -> None:
@@ -1195,6 +1220,85 @@ def test_timeline_kernel_fallback_keeps_overlap_rows(tmp_path: Path) -> None:
     assert any((int(r.get("start_ns") or 0), int(r.get("end_ns") or 0)) == (100, 220) for r in rows), rows
 
 
+def test_timeline_compare_html_embeds_multiple_sqlites(tmp_path: Path) -> None:
+    db_a = tmp_path / "compare_a.sqlite"
+    db_b = tmp_path / "compare_b.sqlite"
+    _init_sqlite(db_a, scale=1.0)
+    _init_sqlite(db_b, scale=1.2)
+
+    out = tmp_path / "timeline_compare.html"
+    export_timeline_compare_html(
+        [str(db_a), str(db_b)],
+        output_path=str(out),
+        device_id=0,
+        nvtx_text="%sample_0%",
+        include_metrics=True,
+        metric_name_like="%active%",
+        metrics_limit=-1,
+        metrics_max_points=-1,
+    )
+
+    assert out.exists()
+    text = out.read_text(encoding="utf-8")
+    assert "NSYS NVTX Timeline Compare" in text
+    assert text.count("<iframe") == 2, text
+    assert str(db_a) in text, text
+    assert str(db_b) in text, text
+    assert "Each embedded timeline keeps its own local matched window" in text
+
+
+def test_nvtx_kernel_sm_detail_cross_thread_runtime_fallback_keeps_kernels(tmp_path: Path) -> None:
+    db = tmp_path / "cross_thread_nvtx.sqlite"
+    _init_sqlite(db)
+
+    conn = sqlite3.connect(str(db))
+    conn.execute(
+        "INSERT INTO NVTX_EVENTS VALUES (?, ?, ?, ?, ?, ?)",
+        (100_000, 100_200, "cross_thread_layer", None, 59, 111),
+    )
+    conn.executemany(
+        "INSERT INTO CUPTI_ACTIVITY_KIND_RUNTIME VALUES (?, ?, ?, ?, ?)",
+        [
+            (100_010, 100_020, 7001, 3, 222),
+            (100_040, 100_050, 7002, 3, 222),
+        ],
+    )
+    conn.executemany(
+        "INSERT INTO CUPTI_ACTIVITY_KIND_KERNEL VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        [
+            (100_300, 100_500, 7, 7001, 1, 1, 0, 128, 1, 1, 32, 4096, 0, 87.5),
+            (100_520, 100_780, 8, 7002, 5, 5, 0, 64, 1, 1, 48, 8192, 2048, 50.0),
+        ],
+    )
+    conn.commit()
+    conn.close()
+
+    provider = NsysSqliteMetricsProvider(str(db))
+    rows = provider.run_sql_skill(
+        "nvtx_kernel_sm_detail",
+        nvtx_text="%cross_thread_layer%",
+        device_id=0,
+        limit=100,
+    )
+    names = {str(r.get("kernel_name", "")) for r in rows}
+    assert "void gemm_kernel()" in names, rows
+    assert "void attention_kernel()" in names, rows
+    assert len(rows) == 2, rows
+
+    out = tmp_path / "cross_thread_timeline.html"
+    export_timeline_html(
+        str(db),
+        output_path=str(out),
+        device_id=0,
+        nvtx_text="%cross_thread_layer%",
+        include_metrics=False,
+        debug=False,
+    )
+    text = out.read_text(encoding="utf-8")
+    assert "void gemm_kernel()" in text
+    assert "void attention_kernel()" in text
+
+
 def test_calculate_h100_occupancy() -> None:
     # 128 threads/block -> 4 warps/block.
     # regs=32 => regs_per_warp=1024, regs/block=4096 => reg-limited blocks=16
@@ -1595,6 +1699,7 @@ def test_cli_nsys_commands(tmp_path: Path) -> None:
     diff_json = tmp_path / "diff.json"
     timeline_html = tmp_path / "timeline.html"
     timeline_nvtx_html = tmp_path / "timeline_nvtx_metrics.html"
+    timeline_compare_html = tmp_path / "timeline_compare.html"
 
     assert (
         main(
@@ -1718,6 +1823,32 @@ def test_cli_nsys_commands(tmp_path: Path) -> None:
     assert "occ_theoretical_pct=" in timeline_text
     assert "sample_0 step=1 rank=0" in timeline_text
     assert "sample_0 step=2 rank=0" in timeline_text
+
+    assert (
+        main(
+            [
+                "nsys-timeline-compare-html",
+                "--sqlite",
+                str(db_a),
+                "--sqlite",
+                str(db_b),
+                "--output",
+                str(timeline_compare_html),
+                "--device-id",
+                "0",
+                "--nvtx-text",
+                "%sample_0%",
+                "--include-metrics",
+                "--metric-name-like",
+                "%active%",
+            ]
+        )
+        == 0
+    )
+    assert timeline_compare_html.exists()
+    compare_text = timeline_compare_html.read_text(encoding="utf-8")
+    assert "NSYS NVTX Timeline Compare" in compare_text
+    assert compare_text.count("<iframe") == 2, compare_text
     assert "sample_0 step=1 rank=1" in timeline_text
     assert "nvtx_scopes=3" in timeline_text
     assert "Rank 0 | Device 0" in timeline_text

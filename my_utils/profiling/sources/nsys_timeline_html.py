@@ -6,6 +6,7 @@ import json
 import math
 import re
 import sqlite3
+import tempfile
 import time
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Sequence, Tuple
@@ -393,6 +394,32 @@ def _collect_kernels_in_window(
         )
     rows.sort(key=lambda x: (_to_int(x.get("start_ns"), 0), _to_int(x.get("end_ns"), 0), _to_int(x.get("stream_id"), 0)))
     debug("kernel rows final={} (from detail={} + fallback_added={})".format(len(rows), detailed_kept, fallback_kept))
+    stream_count = len(
+        {
+            (_to_int(item.get("device_id"), -1), _to_int(item.get("stream_id"), 0))
+            for item in rows
+        }
+    )
+    unique_gpu_kernel_count = len(
+        {
+            (
+                _to_int(item.get("start_ns"), -1),
+                _to_int(item.get("end_ns"), -1),
+                _to_int(item.get("device_id"), -1),
+                _to_int(item.get("stream_id"), 0),
+                str(item.get("kernel_name") or ""),
+            )
+            for item in rows
+        }
+    )
+    debug(
+        "matched kernels total={} unique_gpu_kernels={} stream_count={} selected_nvtx_windows={}".format(
+            len(rows),
+            unique_gpu_kernel_count,
+            stream_count,
+            len(selected_windows),
+        )
+    )
     if rows:
         debug(
             "kernel sample={}".format(
@@ -1974,6 +2001,27 @@ def export_timeline_html(
             )
             render_start_ns = int(new_render_start)
             render_end_ns = int(new_render_end)
+    kernel_stream_count = len(
+        {
+            (_to_int(row.get("device_id"), -1), _to_int(row.get("stream_id"), 0))
+            for row in kernels
+        }
+    )
+    debug_log(
+        "collect_kernels matched_kernels={} streams={} merged_gpu_intervals={}".format(
+            len(kernels),
+            kernel_stream_count,
+            len(kernel_intervals),
+        )
+    )
+    if progress_cb:
+        progress_cb(
+            "  info:     matched_kernels={}  streams={}  merged_gpu_intervals={}".format(
+                len(kernels),
+                kernel_stream_count,
+                len(kernel_intervals),
+            )
+        )
 
     metric_series: List[Dict[str, object]] = []
     if bool(include_metrics):
@@ -2040,4 +2088,166 @@ def export_timeline_html(
     if progress_cb:
         total_ms = round(sum(float(p.get("elapsed_ms") or 0) for p in _phase_timings), 1)
         progress_cb(f"  total:    {total_ms} ms  (phases: {len(_phase_timings)})")
+    return str(out)
+
+
+def export_timeline_compare_html(
+    sqlite_paths: Sequence[str],
+    *,
+    output_path: str,
+    device_id: int = -1,
+    start_ns: int = -1,
+    end_ns: int = -1,
+    limit: int = 100000,
+    width_px: int = 1800,
+    nvtx_text: str = "",
+    nvtx_index: int = -1,
+    include_metrics: bool = False,
+    metric_name_like: str = "%",
+    metrics_limit: int = -1,
+    metrics_max_points: int = -1,
+    overlay_metrics_per_track: int = 7,
+    default_focus_metrics: bool = False,
+    include_all_metric_sources: bool = False,
+    debug: bool = False,
+    debug_rows: int = -1,
+    debug_log_fn: Optional[Callable[[str], None]] = None,
+    progress_cb: Optional[Callable[[str], None]] = None,
+) -> str:
+    items = [str(p) for p in sqlite_paths if str(p or "").strip()]
+    if len(items) < 2:
+        raise ValueError("export_timeline_compare_html requires at least two sqlite paths")
+
+    compare_debug = _build_debug_logger(enabled=bool(debug), log_fn=debug_log_fn)
+    rendered: List[Dict[str, str]] = []
+    total = len(items)
+
+    with tempfile.TemporaryDirectory(prefix="nsys_timeline_compare_") as tmpdir:
+        for idx, sqlite_path in enumerate(items):
+            label = Path(str(sqlite_path)).name or f"sqlite_{idx}"
+            compare_debug(f"compare child start index={idx} sqlite={sqlite_path}")
+
+            def _child_progress(msg: str, *, _idx: int = idx, _label: str = label) -> None:
+                if progress_cb:
+                    progress_cb(f"[{_idx + 1}/{total}] {_label} {str(msg or '').strip()}")
+
+            def _child_debug(msg: str, *, _idx: int = idx, _label: str = label) -> None:
+                compare_debug(f"[{_idx + 1}/{total}] {_label} {msg}")
+
+            tmp_out = Path(tmpdir) / f"timeline_{idx:03d}.html"
+            export_timeline_html(
+                str(sqlite_path),
+                output_path=str(tmp_out),
+                device_id=int(device_id),
+                start_ns=int(start_ns),
+                end_ns=int(end_ns),
+                limit=int(limit),
+                width_px=int(width_px),
+                nvtx_text=str(nvtx_text or ""),
+                nvtx_index=int(nvtx_index),
+                include_metrics=bool(include_metrics),
+                metric_name_like=str(metric_name_like or "%"),
+                metrics_limit=int(metrics_limit),
+                metrics_max_points=int(metrics_max_points),
+                overlay_metrics_per_track=int(overlay_metrics_per_track),
+                default_focus_metrics=bool(default_focus_metrics),
+                include_all_metric_sources=bool(include_all_metric_sources),
+                debug=bool(debug),
+                debug_rows=int(debug_rows),
+                debug_log_fn=_child_debug,
+                progress_cb=_child_progress,
+            )
+            rendered.append(
+                {
+                    "label": label,
+                    "sqlite_path": str(sqlite_path),
+                    "srcdoc": tmp_out.read_text(encoding="utf-8"),
+                }
+            )
+            compare_debug(f"compare child done index={idx} sqlite={sqlite_path}")
+
+    cards: List[str] = []
+    for idx, item in enumerate(rendered):
+        srcdoc_attr = html.escape(str(item["srcdoc"]), quote=True)
+        sqlite_display = html.escape(str(item["sqlite_path"]))
+        label_display = html.escape(str(item["label"]))
+        cards.extend(
+            [
+                "<section class='compare-card'>",
+                "<div class='compare-head'>",
+                f"<div class='compare-index'>#{idx + 1}</div>",
+                "<div class='compare-meta'>",
+                f"<div class='compare-title'>{label_display}</div>",
+                f"<div class='compare-path'>{sqlite_display}</div>",
+                "</div>",
+                "</div>",
+                (
+                    "<iframe class='compare-frame' loading='lazy' "
+                    "sandbox='allow-scripts allow-same-origin' "
+                    f"srcdoc=\"{srcdoc_attr}\"></iframe>"
+                ),
+                "</section>",
+            ]
+        )
+
+    note = "Each embedded timeline keeps its own local matched window and its own kernel/metrics X-axis."
+    if str(nvtx_text or "").strip():
+        note += f" Shared NVTX filter: {str(nvtx_text)}."
+    page = "\n".join(
+        [
+            "<!doctype html>",
+            "<html><head><meta charset='utf-8'/>",
+            "<title>NSYS NVTX Timeline Compare</title>",
+            "<style>",
+            "body{font-family:Arial,sans-serif;margin:20px;background:#0f1116;color:#e7e9ee;}",
+            ".meta{margin-bottom:14px;color:#a8afbf;font-size:13px;}",
+            ".compare-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(760px,1fr));gap:14px;align-items:start;}",
+            ".compare-card{background:#171c28;border:1px solid #2a3243;border-radius:8px;padding:12px;}",
+            ".compare-head{display:flex;align-items:flex-start;gap:10px;margin-bottom:10px;}",
+            ".compare-index{font-size:12px;color:#9bb1d6;background:#121826;border:1px solid #34415a;border-radius:999px;padding:2px 8px;line-height:18px;}",
+            ".compare-title{font-size:14px;color:#e7eefc;font-weight:600;word-break:break-word;}",
+            ".compare-path{font-size:11px;color:#8fa1bf;word-break:break-all;margin-top:2px;}",
+            ".compare-frame{width:100%;min-height:980px;border:1px solid #2f3b53;border-radius:6px;background:#0c111c;}",
+            "</style></head><body>",
+            "<h2>NSYS NVTX Timeline Compare</h2>",
+            (
+                f"<div class='meta'>sqlite_count={len(rendered)} | include_metrics={int(bool(include_metrics))} | "
+                f"device_id={int(device_id)} | note={html.escape(note)}</div>"
+            ),
+            "<div class='compare-grid'>",
+            *cards,
+            "</div>",
+            "<script>",
+            "(function(){",
+            "  const frames = Array.from(document.querySelectorAll('.compare-frame'));",
+            "  const resizeFrame = (frame) => {",
+            "    try {",
+            "      const doc = frame.contentDocument;",
+            "      if (!doc || !doc.documentElement) return;",
+            "      const body = doc.body;",
+            "      const h = Math.max(",
+            "        body ? body.scrollHeight : 0,",
+            "        doc.documentElement.scrollHeight || 0,",
+            "        980",
+            "      );",
+            "      frame.style.height = `${Math.min(Math.max(h + 20, 980), 6000)}px`;",
+            "    } catch (_) {}",
+            "  };",
+            "  for (const frame of frames) {",
+            "    frame.addEventListener('load', () => {",
+            "      resizeFrame(frame);",
+            "      setTimeout(() => resizeFrame(frame), 100);",
+            "      setTimeout(() => resizeFrame(frame), 500);",
+            "      setTimeout(() => resizeFrame(frame), 1500);",
+            "    });",
+            "  }",
+            "})();",
+            "</script>",
+            "</body></html>",
+        ]
+    )
+    out = Path(output_path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(page, encoding="utf-8")
+    compare_debug("compare html wrote output={} sqlite_count={}".format(str(out), len(rendered)))
     return str(out)

@@ -1450,11 +1450,6 @@ def _build_builtin_skills(schema: NsightSchema) -> Dict[str, SqlSkill]:
             if sk18_text_id:
                 sk18_nvtx_join = f" LEFT JOIN {_ident(string_table)} sv ON n.{_ident(sk18_text_id)} = sv.id "
                 sk18_text_expr = "COALESCE(n.text, sv.value)"
-        sk18_tid_join = ""
-        if runtime_global_tid_col and nvtx_global_tid_col:
-            sk18_tid_join = (
-                f" AND n.{_ident(nvtx_global_tid_col)} = r.{_ident(runtime_global_tid_col)} "
-            )
 
         # SM columns — resolve fresh (may be None on older nsys exports)
         sk18_bx = schema.resolve_column(kernel_table, ("blockX",))
@@ -1515,19 +1510,89 @@ def _build_builtin_skills(schema: NsightSchema) -> Dict[str, SqlSkill]:
         if sk18_local:
             optional_cols += f"k.{_ident(sk18_local)} AS localMemoryPerThread, "
 
-        skill_map["nvtx_kernel_sm_detail"] = SqlSkill(
-            name="nvtx_kernel_sm_detail",
-            title="NVTX Kernel SM/Memory Detail",
-            description=(
+        if runtime_global_tid_col and nvtx_global_tid_col:
+            sk18_sql = (
+                "WITH nvtx_ranges AS ( "
+                f"  SELECT {sk18_text_expr} AS nvtx_text, "
+                f"         n.{_ident(nvtx_start_col)} AS nvtx_start_ns, "
+                f"         n.[{_ident(nvtx_end_col)}] AS nvtx_end_ns, "
+                f"         n.{_ident(nvtx_global_tid_col)} AS _nvtx_gtid "
+                f"  FROM {nvtx_table} n "
+                f"  {sk18_nvtx_join} "
+                f"  WHERE {sk18_text_expr} LIKE '{{nvtx_text}}' "
+                f"    AND {sk18_text_expr} IS NOT NULL "
+                f"    AND n.[{_ident(nvtx_end_col)}] > n.{_ident(nvtx_start_col)} "
+                "), "
+                "strict_runtime AS ( "
+                "  SELECT nr.nvtx_text, nr.nvtx_start_ns, nr.nvtx_end_ns, "
+                f"         r.{_ident(runtime_corr_col)} AS runtime_corr_id "
+                "  FROM nvtx_ranges nr "
+                f"  JOIN {_ident(runtime_table)} r "
+                f"    ON nr.nvtx_start_ns <= r.{_ident(runtime_start_for_nvtx)} "
+                f"   AND nr.nvtx_end_ns   >= r.[{_ident(runtime_end_for_nvtx)}] "
+                f"   AND nr._nvtx_gtid    = r.{_ident(runtime_global_tid_col)} "
+                "), "
+                "strict_counts AS ( "
+                "  SELECT nvtx_text, nvtx_start_ns, nvtx_end_ns, COUNT(*) AS strict_match_count "
+                "  FROM strict_runtime "
+                "  GROUP BY nvtx_text, nvtx_start_ns, nvtx_end_ns "
+                "), "
+                "relaxed_runtime AS ( "
+                "  SELECT nr.nvtx_text, nr.nvtx_start_ns, nr.nvtx_end_ns, "
+                f"         r.{_ident(runtime_corr_col)} AS runtime_corr_id "
+                "  FROM nvtx_ranges nr "
+                "  LEFT JOIN strict_counts sc "
+                "    ON nr.nvtx_text = sc.nvtx_text "
+                "   AND nr.nvtx_start_ns = sc.nvtx_start_ns "
+                "   AND nr.nvtx_end_ns = sc.nvtx_end_ns "
+                f"  JOIN {_ident(runtime_table)} r "
+                f"    ON nr.nvtx_start_ns <= r.{_ident(runtime_start_for_nvtx)} "
+                f"   AND nr.nvtx_end_ns   >= r.[{_ident(runtime_end_for_nvtx)}] "
+                "  WHERE COALESCE(sc.strict_match_count, 0) = 0 "
+                "), "
+                "matched_runtime AS ( "
+                "  SELECT nvtx_text, nvtx_start_ns, nvtx_end_ns, runtime_corr_id FROM strict_runtime "
+                "  UNION ALL "
+                "  SELECT nvtx_text, nvtx_start_ns, nvtx_end_ns, runtime_corr_id FROM relaxed_runtime "
+                ") "
+                f"SELECT mr.nvtx_text AS nvtx_text, "
+                f"mr.nvtx_start_ns AS nvtx_start_ns, "
+                f"mr.nvtx_end_ns AS nvtx_end_ns, "
+                f"{name_expr} AS kernel_name, "
+                f"CASE WHEN LOWER({name_expr}) LIKE '%nccl%' THEN 'comm' ELSE 'compute' END AS kind, "
+                f"k.{_ident(start_col)} AS kernel_start_ns, "
+                f"k.[{_ident(end_col)}] AS kernel_end_ns, "
+                f"ROUND((k.[{_ident(end_col)}] - k.{_ident(start_col)}) / 1e6, 3) AS duration_ms, "
+                + (f"k.{_ident(stream_col)} AS stream_id, " if stream_col else "NULL AS stream_id, ")
+                + (f"k.{_ident(device_col)} AS device_id, " if device_col else "NULL AS device_id, ")
+                + f"{sk18_tpb} AS threads_per_block, "
+                + optional_cols
+                + f"{sk18_static_expr} AS static_shared_bytes, "
+                + f"{sk18_dyn_expr} AS dynamic_shared_bytes, "
+                + f"{sk18_smem} AS total_shared_bytes, "
+                + f"{sk18_occ} AS occupancy_pct_estimate "
+                + "FROM matched_runtime mr "
+                + f"JOIN {kernel_table} k "
+                + f"  ON mr.runtime_corr_id = k.{_ident(corr_col)} "
+                + f"{name_join} "
+                + "WHERE 1=1 "
+                + sk18_device_where
+                + f"ORDER BY mr.nvtx_start_ns ASC, k.{_ident(start_col)} ASC "
+                + "LIMIT {limit}"
+            )
+            sk18_desc = (
                 "For each NVTX range matching the text pattern, list every kernel whose launch "
                 "runtime API call falls inside the NVTX range, then join to GPU execution by "
-                "correlationId. Includes full SM launch config (threads/block, grid, registers, "
+                "correlationId. Matching first prefers the same CPU thread (globalTid); if a "
+                "scope has no same-thread launch matches, it automatically falls back to a "
+                "same-window cross-thread correlation match so async dispatch threads do not "
+                "drop kernels. Includes full SM launch config (threads/block, grid, registers, "
                 "shared memory, local memory). Kernels are labelled 'compute' or 'comm' (nccl). "
                 "If sqlite includes per-kernel theoretical occupancy it is returned; otherwise "
                 "use Python-side calculate_h100_occupancy(...) for H100."
-            ),
-            category="compute",
-            sql=(
+            )
+        else:
+            sk18_sql = (
                 f"SELECT {sk18_text_expr} AS nvtx_text, "
                 f"n.{_ident(nvtx_start_col)} AS nvtx_start_ns, "
                 f"n.[{_ident(nvtx_end_col)}] AS nvtx_end_ns, "
@@ -1549,7 +1614,6 @@ def _build_builtin_skills(schema: NsightSchema) -> Dict[str, SqlSkill]:
                 + f"JOIN {_ident(runtime_table)} r "
                 + f"  ON n.{_ident(nvtx_start_col)} <= r.{_ident(runtime_start_for_nvtx)} "
                 + f"  AND n.[{_ident(nvtx_end_col)}] >= r.[{_ident(runtime_end_for_nvtx)}] "
-                + sk18_tid_join
                 + f"JOIN {kernel_table} k "
                 + f"  ON r.{_ident(runtime_corr_col)} = k.{_ident(corr_col)} "
                 + f"{name_join} "
@@ -1559,7 +1623,22 @@ def _build_builtin_skills(schema: NsightSchema) -> Dict[str, SqlSkill]:
                 + sk18_device_where
                 + f"ORDER BY n.{_ident(nvtx_start_col)} ASC, k.{_ident(start_col)} ASC "
                 + "LIMIT {limit}"
-            ),
+            )
+            sk18_desc = (
+                "For each NVTX range matching the text pattern, list every kernel whose launch "
+                "runtime API call falls inside the NVTX range, then join to GPU execution by "
+                "correlationId. Includes full SM launch config (threads/block, grid, registers, "
+                "shared memory, local memory). Kernels are labelled 'compute' or 'comm' (nccl). "
+                "If sqlite includes per-kernel theoretical occupancy it is returned; otherwise "
+                "use Python-side calculate_h100_occupancy(...) for H100."
+            )
+
+        skill_map["nvtx_kernel_sm_detail"] = SqlSkill(
+            name="nvtx_kernel_sm_detail",
+            title="NVTX Kernel SM/Memory Detail",
+            description=sk18_desc,
+            category="compute",
+            sql=sk18_sql,
             params=[
                 SqlSkillParam(
                     "nvtx_text",

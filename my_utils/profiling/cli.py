@@ -20,7 +20,7 @@ from .sources.nsys_diff import diff_nsys_sqlite, diff_to_markdown
 from .sources.nsys_flat_export import export_kernels_flat
 from .sources.nsys_sql_skills import NsysSqlSkillEngine
 from .sources.nsys_sqlite_provider import NsysSqliteMetricsProvider
-from .sources.nsys_timeline_html import export_timeline_html
+from .sources.nsys_timeline_html import export_timeline_compare_html, export_timeline_html
 
 
 def _parse_tags(values: Iterable[str]) -> Dict[str, str]:
@@ -630,6 +630,35 @@ def cmd_nsys_timeline_html(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_nsys_timeline_compare_html(args: argparse.Namespace) -> int:
+    def _progress(msg: str) -> None:
+        print(f"[nsys-timeline-compare-html] {msg}", file=sys.stderr)
+
+    output = export_timeline_compare_html(
+        args.sqlite,
+        output_path=args.output,
+        device_id=args.device_id,
+        start_ns=args.start_ns,
+        end_ns=args.end_ns,
+        limit=args.limit,
+        width_px=args.width_px,
+        nvtx_text=args.nvtx_text,
+        nvtx_index=args.nvtx_index,
+        include_metrics=bool(args.include_metrics),
+        metric_name_like=args.metric_name_like,
+        metrics_limit=args.metrics_limit,
+        metrics_max_points=args.metrics_max_points,
+        overlay_metrics_per_track=args.overlay_metrics_per_track,
+        default_focus_metrics=bool(args.default_focus_metrics),
+        include_all_metric_sources=bool(args.include_all_metric_sources),
+        debug=bool(args.debug),
+        debug_rows=int(args.debug_rows),
+        progress_cb=_progress,
+    )
+    print(f"[nsys-timeline-compare-html] wrote: {output}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Unified profiling metrics CLI")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -887,6 +916,100 @@ def build_parser() -> argparse.ArgumentParser:
         help="sample row count for timeline debug logs; <=0 means no limit",
     )
     nsys_timeline.set_defaults(func=cmd_nsys_timeline_html)
+
+    nsys_timeline_compare = sub.add_parser(
+        "nsys-timeline-compare-html",
+        help="export a single html page that compares multiple nsys sqlite timelines",
+    )
+    nsys_timeline_compare.add_argument(
+        "--sqlite",
+        required=True,
+        action="append",
+        help="nsys exported sqlite path; repeat this option to compare multiple profiles",
+    )
+    nsys_timeline_compare.add_argument("--output", required=True, help="output html file path")
+    nsys_timeline_compare.add_argument("--device-id", type=int, default=-1)
+    nsys_timeline_compare.add_argument("--start-ns", type=int, default=-1)
+    nsys_timeline_compare.add_argument("--end-ns", type=int, default=-1)
+    nsys_timeline_compare.add_argument("--limit", type=int, default=100000)
+    nsys_timeline_compare.add_argument("--width-px", type=int, default=1800)
+    nsys_timeline_compare.add_argument(
+        "--nvtx-text",
+        default="",
+        help="optional NVTX text LIKE pattern; each sqlite focuses on its own matched NVTX window(s)",
+    )
+    nsys_timeline_compare.add_argument(
+        "--nvtx-index",
+        type=int,
+        default=-1,
+        help="index of matched NVTX range after time-sort when --nvtx-text is set; -1 means all matches (default: -1)",
+    )
+    nsys_timeline_compare.add_argument(
+        "--include-metrics",
+        action="store_true",
+        help="embed GPU metrics charts in each compared timeline",
+    )
+    nsys_timeline_compare.add_argument(
+        "--metric-name-like",
+        default="%",
+        help="metric name LIKE filter when --include-metrics is set (default: %)",
+    )
+    nsys_timeline_compare.add_argument(
+        "--metrics-limit",
+        type=int,
+        default=-1,
+        help="max metric samples loaded before per-series sampling; <=0 means no global sampling limit (default: -1)",
+    )
+    nsys_timeline_compare.add_argument(
+        "--metrics-max-points",
+        type=int,
+        default=-1,
+        help="max rendered points per metric series; <=0 means keep all points (default: -1)",
+    )
+    nsys_timeline_compare.add_argument(
+        "--overlay-metrics-per-track",
+        type=int,
+        default=7,
+        help="number of metric series overlaid on each stream track for attribution view (0 to disable)",
+    )
+    nsys_timeline_compare.add_argument(
+        "--default-focus-metrics",
+        dest="default_focus_metrics",
+        action="store_true",
+        default=False,
+        help="when --metric-name-like is default '%' only keep the built-in attribution metric set (default: disabled)",
+    )
+    nsys_timeline_compare.add_argument(
+        "--no-default-focus-metrics",
+        dest="default_focus_metrics",
+        action="store_false",
+        help="disable built-in attribution metric set filtering",
+    )
+    nsys_timeline_compare.add_argument(
+        "--include-all-metric-sources",
+        action="store_true",
+        help="include non-GPU generic sources (ETW/FTrace/etc) in metrics panel",
+    )
+    nsys_timeline_compare.add_argument(
+        "--debug",
+        dest="debug",
+        action="store_true",
+        default=True,
+        help="enable timeline debug diagnostics (default: enabled)",
+    )
+    nsys_timeline_compare.add_argument(
+        "--no-debug",
+        dest="debug",
+        action="store_false",
+        help="disable timeline debug diagnostics",
+    )
+    nsys_timeline_compare.add_argument(
+        "--debug-rows",
+        type=int,
+        default=-1,
+        help="sample row count for timeline debug logs; <=0 means no limit",
+    )
+    nsys_timeline_compare.set_defaults(func=cmd_nsys_timeline_compare_html)
 
     nsys_iter_overlap = sub.add_parser(
         "nsys-iter-overlap",
