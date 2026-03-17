@@ -561,6 +561,25 @@ def test_timeline_debug_logs_emit_matched_kernel_counts(tmp_path: Path) -> None:
     assert any("matched_kernels=" in msg for msg in progress_messages), progress_messages
 
 
+def test_timeline_allstream_js_not_blocked_when_metrics_disabled(tmp_path: Path) -> None:
+    db = tmp_path / "timeline_no_metrics_allstream.sqlite"
+    _init_sqlite(db)
+
+    out = tmp_path / "timeline_no_metrics_allstream.html"
+    export_timeline_html(
+        str(db),
+        output_path=str(out),
+        device_id=0,
+        include_metrics=False,
+        debug=False,
+    )
+
+    text = out.read_text(encoding="utf-8")
+    assert "const root = document.getElementById('allstream-root');" in text
+    assert "if (!grid) return;" not in text
+    assert "if (grid) {" in text
+
+
 def test_nvtx_gpu_metrics_breakdown_overlapping_kernel_windows_no_double_count(tmp_path: Path) -> None:
     db = tmp_path / "nvtx_gpu_overlap_dedup.sqlite"
     _init_sqlite(db)
@@ -1246,6 +1265,8 @@ def test_timeline_compare_html_embeds_multiple_sqlites(tmp_path: Path) -> None:
     assert str(db_b) in text, text
     assert "Each compare section groups the same timeline panel across all sqlite files" in text
     assert ".compare-root" in text
+    assert "min-height:140px" in text
+    assert "Math.min(Math.max(h + 12, 140), 6000)" in text
     assert "All Streams Overlap + Metrics Alignment" in text
     assert "Matched NVTX Scopes" in text
     assert "Kernel Timeline By Stream" in text
