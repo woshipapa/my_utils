@@ -1,5 +1,6 @@
 ﻿from __future__ import annotations
 
+import html
 import json
 import re
 import sqlite3
@@ -25,6 +26,20 @@ from my_utils.profiling.sources.nsys_sqlite_provider import NsysSqliteMetricsPro
 # ---------------------------------------------------------------------------
 # Shared fixture builder
 # ---------------------------------------------------------------------------
+
+
+def _extract_compare_payloads(html_text: str) -> List[dict]:
+    payloads: List[dict] = []
+    for srcdoc in re.findall(r'srcdoc="(.*?)"', html_text, flags=re.S):
+        inner = html.unescape(srcdoc)
+        m = re.search(r"const TIMELINE_DATA = (\{.*?\});", inner, flags=re.S)
+        if not m:
+            continue
+        payload = json.loads(m.group(1))
+        if isinstance(payload, dict):
+            payloads.append(payload)
+    return payloads
+
 
 def _init_sqlite(path: Path, *, scale: float = 1.0) -> None:
     """Build a minimal but complete nsys-like SQLite covering all current skills."""
@@ -1264,6 +1279,7 @@ def test_timeline_compare_html_embeds_multiple_sqlites(tmp_path: Path) -> None:
     assert str(db_a) in text, text
     assert str(db_b) in text, text
     assert "Each compare section groups the same timeline panel across all sqlite files" in text
+    assert "equal-duration kernels render with equal widths" in text
     assert ".compare-root" in text
     assert "min-height:140px" in text
     assert "Math.min(Math.max(h + 12, 140), 6000)" in text
@@ -1272,6 +1288,12 @@ def test_timeline_compare_html_embeds_multiple_sqlites(tmp_path: Path) -> None:
     assert "Kernel Timeline By Stream" in text
     assert "GPU Metrics In Window" in text
     assert text.index("All Streams Overlap + Metrics Alignment") < text.index("Matched NVTX Scopes"), text
+    payloads = _extract_compare_payloads(text)
+    assert payloads, text
+    display_spans = {int(p.get("display_span_ns") or p.get("span_ns") or 0) for p in payloads}
+    assert len(display_spans) == 1, display_spans
+    data_spans = {int(p.get("data_span_ns") or p.get("span_ns") or 0) for p in payloads}
+    assert len(data_spans) > 1, data_spans
 
 
 def test_timeline_compare_html_reports_fusion_candidates(tmp_path: Path) -> None:

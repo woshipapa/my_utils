@@ -849,12 +849,17 @@ def _render_html(
     metric_series: List[Dict[str, object]],
     window_start_ns: int,
     window_end_ns: int,
+    display_span_ns: int,
     nvtx_windows: Optional[Sequence[Dict[str, object]]],
     width_px: int,
     include_metrics: bool,
     overlay_metrics_per_track: int,
 ) -> str:
-    span = max(1, int(window_end_ns) - int(window_start_ns))
+    data_span = max(1, int(window_end_ns) - int(window_start_ns))
+    span = int(data_span)
+    if int(display_span_ns) > 0:
+        span = max(int(data_span), int(display_span_ns))
+    display_end_ns = int(window_start_ns) + int(span)
     grouped: Dict[Tuple[Optional[int], int], Dict[int, List[Dict[str, object]]]] = {}
     for row in kernels:
         rv = row.get("rank")
@@ -912,8 +917,11 @@ def _render_html(
 
     payload = {
         "window_start_ns": int(window_start_ns),
-        "window_end_ns": int(window_end_ns),
+        "window_end_ns": int(display_end_ns),
         "span_ns": int(span),
+        "data_window_end_ns": int(window_end_ns),
+        "data_span_ns": int(data_span),
+        "display_span_ns": int(span),
         "metrics": metric_series if include_metrics else [],
         "chart_width": int(width_px),
         "all_stream_groups": all_stream_groups,
@@ -1808,6 +1816,7 @@ def export_timeline_html(
     metrics_limit: int = -1,
     metrics_max_points: int = -1,
     overlay_metrics_per_track: int = 7,
+    display_span_ns: int = -1,
     default_focus_metrics: bool = False,
     include_all_metric_sources: bool = False,
     debug: bool = False,
@@ -2067,6 +2076,7 @@ def export_timeline_html(
         metric_series=metric_series,
         window_start_ns=int(render_start_ns),
         window_end_ns=int(render_end_ns),
+        display_span_ns=int(display_span_ns),
         nvtx_windows=selected_nvtx_windows,
         width_px=int(width_px),
         include_metrics=bool(include_metrics),
@@ -2559,7 +2569,7 @@ def export_timeline_compare_html(
         raise ValueError("export_timeline_compare_html requires at least two sqlite paths")
 
     compare_debug = _build_debug_logger(enabled=bool(debug), log_fn=debug_log_fn)
-    rendered: List[Dict[str, str]] = []
+    rendered: List[Dict[str, object]] = []
     total = len(items)
 
     def _build_section_srcdoc(full_html: str, *, panel_title: str) -> Optional[str]:
@@ -2602,10 +2612,17 @@ def export_timeline_compare_html(
             return text.replace("</body>", injected + "\n</body>", 1)
         return text + injected
 
+    normalized_compare_span_ns = -1
     with tempfile.TemporaryDirectory(prefix="nsys_timeline_compare_") as tmpdir:
-        for idx, sqlite_path in enumerate(items):
+        def _render_compare_child(idx: int, sqlite_path: str, *, display_span_ns_value: int) -> Dict[str, object]:
             label = Path(str(sqlite_path)).name or f"sqlite_{idx}"
-            compare_debug(f"compare child start index={idx} sqlite={sqlite_path}")
+            compare_debug(
+                "compare child start index={} sqlite={} display_span_ns={}".format(
+                    idx,
+                    sqlite_path,
+                    int(display_span_ns_value),
+                )
+            )
 
             def _child_progress(msg: str, *, _idx: int = idx, _label: str = label) -> None:
                 if progress_cb:
@@ -2630,6 +2647,7 @@ def export_timeline_compare_html(
                 metrics_limit=int(metrics_limit),
                 metrics_max_points=int(metrics_max_points),
                 overlay_metrics_per_track=int(overlay_metrics_per_track),
+                display_span_ns=int(display_span_ns_value),
                 default_focus_metrics=bool(default_focus_metrics),
                 include_all_metric_sources=bool(include_all_metric_sources),
                 debug=bool(debug),
@@ -2637,15 +2655,49 @@ def export_timeline_compare_html(
                 debug_log_fn=_child_debug,
                 progress_cb=_child_progress,
             )
-            rendered.append(
-                {
-                    "label": label,
-                    "sqlite_path": str(sqlite_path),
-                    "srcdoc": tmp_out.read_text(encoding="utf-8"),
-                    "payload": _extract_timeline_payload_from_html(tmp_out.read_text(encoding="utf-8")) or {},
-                }
+            html_text = tmp_out.read_text(encoding="utf-8")
+            payload = _extract_timeline_payload_from_html(html_text) or {}
+            compare_debug(
+                "compare child done index={} sqlite={} payload_span_ns={} data_span_ns={}".format(
+                    idx,
+                    sqlite_path,
+                    int(payload.get("span_ns") or 0),
+                    int(payload.get("data_span_ns") or payload.get("span_ns") or 0),
+                )
             )
-            compare_debug(f"compare child done index={idx} sqlite={sqlite_path}")
+            return {
+                "label": label,
+                "sqlite_path": str(sqlite_path),
+                "srcdoc": html_text,
+                "payload": payload,
+            }
+
+        rendered = [_render_compare_child(idx, sqlite_path, display_span_ns_value=-1) for idx, sqlite_path in enumerate(items)]
+        natural_spans = [
+            max(
+                1,
+                int(item.get("payload", {}).get("data_span_ns") or item.get("payload", {}).get("span_ns") or 1),
+            )
+            for item in rendered
+        ]
+        if natural_spans:
+            unique_spans = sorted(set(int(v) for v in natural_spans))
+            if len(unique_spans) > 1:
+                normalized_compare_span_ns = max(unique_spans)
+                compare_debug(
+                    "normalize compare span_ns={} natural_spans={}".format(
+                        int(normalized_compare_span_ns),
+                        ",".join(str(int(v)) for v in unique_spans),
+                    )
+                )
+                rendered = [
+                    _render_compare_child(
+                        idx,
+                        sqlite_path,
+                        display_span_ns_value=int(normalized_compare_span_ns),
+                    )
+                    for idx, sqlite_path in enumerate(items)
+                ]
 
     fusion_section: List[str] = []
     if len(rendered) >= 2:
@@ -2797,8 +2849,15 @@ def export_timeline_compare_html(
 
     note = (
         "Each compare section groups the same timeline panel across all sqlite files. "
-        "Each embedded timeline still keeps its own local matched window and its own kernel/metrics X-axis."
+        "Each embedded timeline still keeps its own local matched window."
     )
+    if int(normalized_compare_span_ns) > 0:
+        note += (
+            " The X-axis scale is normalized across sqlite files using a shared compare span of "
+            f"{int(normalized_compare_span_ns)} ns so equal-duration kernels render with equal widths."
+        )
+    else:
+        note += " The kernel/metrics X-axis scale is already identical across the compared sqlite files."
     if str(nvtx_text or "").strip():
         note += f" Shared NVTX filter: {str(nvtx_text)}."
     page = "\n".join(
