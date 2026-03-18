@@ -1283,6 +1283,10 @@ def test_timeline_compare_html_embeds_multiple_sqlites(tmp_path: Path) -> None:
     assert ".compare-root" in text
     assert "min-height:140px" in text
     assert "Math.min(Math.max(h + 12, 140), 6000)" in text
+    assert "Optimization Summary" in text
+    assert "Pairwise Delta Summary" in text
+    assert "Kernel Hotspots" in text
+    assert "Metric Snapshot" in text
     assert "All Streams Overlap + Metrics Alignment" in text
     assert "Matched NVTX Scopes" in text
     assert "Kernel Timeline By Stream" in text
@@ -2047,6 +2051,8 @@ def test_cli_nsys_commands(tmp_path: Path) -> None:
     compare_text = timeline_compare_html.read_text(encoding="utf-8")
     assert "NSYS NVTX Timeline Compare" in compare_text
     assert compare_text.count("<iframe") == 8, compare_text
+    assert "Optimization Summary" in compare_text
+    assert "Pairwise Delta Summary" in compare_text
     assert "All Streams Overlap + Metrics Alignment" in compare_text
     assert "Matched NVTX Scopes" in compare_text
     assert "sample_0 step=1 rank=1" in timeline_text

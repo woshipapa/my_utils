@@ -5,7 +5,6 @@ import json
 import math
 import re
 import sqlite3
-import tempfile
 import time
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Sequence, Tuple
@@ -1800,39 +1799,27 @@ def _render_html(
     return "\n".join(lines)
 
 
-def export_timeline_html(
+def _collect_timeline_state(
     sqlite_path: str,
     *,
-    output_path: str,
+    output_path: str = "",
     device_id: int = -1,
     start_ns: int = -1,
     end_ns: int = -1,
     limit: int = 100000,
-    width_px: int = 1800,
     nvtx_text: str = "",
     nvtx_index: int = -1,
     include_metrics: bool = False,
     metric_name_like: str = "%",
     metrics_limit: int = -1,
     metrics_max_points: int = -1,
-    overlay_metrics_per_track: int = 7,
-    display_span_ns: int = -1,
     default_focus_metrics: bool = False,
     include_all_metric_sources: bool = False,
     debug: bool = False,
     debug_rows: int = -1,
     debug_log_fn: Optional[Callable[[str], None]] = None,
     progress_cb: Optional[Callable[[str], None]] = None,
-) -> str:
-    """Export an interactive HTML timeline from an nsys SQLite file.
-
-    Parameters
-    ----------
-    progress_cb:
-        Optional callback for per-phase progress messages printed to the caller.
-        Each call receives a string like ``"  done: collect_kernels  [234 ms]"``.
-        Pass ``lambda msg: print(msg, file=sys.stderr)`` for CLI progress output.
-    """
+) -> Dict[str, object]:
     debug_log = _build_debug_logger(enabled=bool(debug), log_fn=debug_log_fn)
 
     _phase_timings: List[Dict[str, float]] = []
@@ -1857,7 +1844,7 @@ def export_timeline_html(
             int(bool(include_metrics)),
             int(metrics_limit),
             int(metrics_max_points),
-            int(overlay_metrics_per_track),
+            0,
             int(bool(default_focus_metrics)),
             int(debug_rows_i),
         )
@@ -1955,11 +1942,24 @@ def export_timeline_html(
         )
         debug_log("infer window from kernel_map rows={}".format(len(base_rows)))
         if not base_rows:
-            out = Path(output_path)
-            out.parent.mkdir(parents=True, exist_ok=True)
-            out.write_text("<html><body><h2>No kernels</h2></body></html>", encoding="utf-8")
-            debug_log("no kernels found; wrote empty html")
-            return str(out)
+            render_start_ns = max(0, int(start_ns))
+            render_end_ns = int(end_ns) if int(end_ns) > int(render_start_ns) else int(render_start_ns) + 1
+            debug_log(
+                "no kernels found; using fallback render window=[{}, {}]".format(
+                    int(render_start_ns),
+                    int(render_end_ns),
+                )
+            )
+            return {
+                "sqlite_path": str(sqlite_path),
+                "kernels": [],
+                "metric_series": [],
+                "window_start_ns": int(render_start_ns),
+                "window_end_ns": int(render_end_ns),
+                "nvtx_windows": selected_nvtx_windows,
+                "phase_timings": list(_phase_timings),
+                "empty_reason": "No kernels",
+            }
         effective_start_ns = min(int(item["start_ns"]) for item in base_rows)
         effective_end_ns = max(int(item["end_ns"]) for item in base_rows)
         debug_log(
@@ -2068,16 +2068,82 @@ def export_timeline_html(
     else:
         debug_log("metrics disabled (include_metrics=0)")
     _emit_phase("collect_kernels_and_metrics", round((time.perf_counter() - _t0) * 1000, 1))
+    if progress_cb:
+        total_ms = round(sum(float(p.get("elapsed_ms") or 0) for p in _phase_timings), 1)
+        progress_cb(f"  total:    {total_ms} ms  (phases: {len(_phase_timings)})")
+    return {
+        "sqlite_path": str(sqlite_path),
+        "kernels": kernels,
+        "metric_series": metric_series,
+        "window_start_ns": int(render_start_ns),
+        "window_end_ns": int(render_end_ns),
+        "nvtx_windows": selected_nvtx_windows,
+        "phase_timings": list(_phase_timings),
+        "empty_reason": "",
+    }
 
-    _t0 = time.perf_counter()
+
+def export_timeline_html(
+    sqlite_path: str,
+    *,
+    output_path: str,
+    device_id: int = -1,
+    start_ns: int = -1,
+    end_ns: int = -1,
+    limit: int = 100000,
+    width_px: int = 1800,
+    nvtx_text: str = "",
+    nvtx_index: int = -1,
+    include_metrics: bool = False,
+    metric_name_like: str = "%",
+    metrics_limit: int = -1,
+    metrics_max_points: int = -1,
+    overlay_metrics_per_track: int = 7,
+    display_span_ns: int = -1,
+    default_focus_metrics: bool = False,
+    include_all_metric_sources: bool = False,
+    debug: bool = False,
+    debug_rows: int = -1,
+    debug_log_fn: Optional[Callable[[str], None]] = None,
+    progress_cb: Optional[Callable[[str], None]] = None,
+) -> str:
+    """Export an interactive HTML timeline from an nsys SQLite file.
+
+    Parameters
+    ----------
+    progress_cb:
+        Optional callback for per-phase progress messages printed to the caller.
+        Each call receives a string like ``"  done: collect_kernels  [234 ms]"``.
+        Pass ``lambda msg: print(msg, file=sys.stderr)`` for CLI progress output.
+    """
+    state = _collect_timeline_state(
+        sqlite_path,
+        output_path=str(output_path),
+        device_id=int(device_id),
+        start_ns=int(start_ns),
+        end_ns=int(end_ns),
+        limit=int(limit),
+        nvtx_text=str(nvtx_text or ""),
+        nvtx_index=int(nvtx_index),
+        include_metrics=bool(include_metrics),
+        metric_name_like=str(metric_name_like or "%"),
+        metrics_limit=int(metrics_limit),
+        metrics_max_points=int(metrics_max_points),
+        default_focus_metrics=bool(default_focus_metrics),
+        include_all_metric_sources=bool(include_all_metric_sources),
+        debug=bool(debug),
+        debug_rows=int(debug_rows),
+        debug_log_fn=debug_log_fn,
+        progress_cb=progress_cb,
+    )
     text = _render_html(
         sqlite_path=str(sqlite_path),
-        kernels=kernels,
-        metric_series=metric_series,
-        window_start_ns=int(render_start_ns),
-        window_end_ns=int(render_end_ns),
+        kernels=list(state.get("kernels") or []),
+        metric_series=list(state.get("metric_series") or []),
+        window_start_ns=int(state.get("window_start_ns") or 0),
+        window_end_ns=int(state.get("window_end_ns") or 1),
         display_span_ns=int(display_span_ns),
-        nvtx_windows=selected_nvtx_windows,
+        nvtx_windows=list(state.get("nvtx_windows") or []),
         width_px=int(width_px),
         include_metrics=bool(include_metrics),
         overlay_metrics_per_track=int(overlay_metrics_per_track),
@@ -2085,19 +2151,6 @@ def export_timeline_html(
     out = Path(output_path)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(text, encoding="utf-8")
-    _emit_phase("render_and_write", round((time.perf_counter() - _t0) * 1000, 1))
-    debug_log(
-        "done output={} kernels={} metric_series={} window=[{}, {}]".format(
-            str(out),
-            len(kernels),
-            len(metric_series),
-            int(render_start_ns),
-            int(render_end_ns),
-        )
-    )
-    if progress_cb:
-        total_ms = round(sum(float(p.get("elapsed_ms") or 0) for p in _phase_timings), 1)
-        progress_cb(f"  total:    {total_ms} ms  (phases: {len(_phase_timings)})")
     return str(out)
 
 
@@ -2541,6 +2594,214 @@ def _build_fusion_findings(
     return findings
 
 
+def _safe_float(value: object, default: float = 0.0) -> float:
+    try:
+        val = float(value)
+    except Exception:
+        return float(default)
+    if not math.isfinite(val):
+        return float(default)
+    return float(val)
+
+
+def _metric_focus_rank(metric_name: object) -> Tuple[int, str]:
+    text = str(metric_name or "").strip().lower()
+    for idx, token in enumerate(_DEFAULT_FOCUS_METRIC_TOKENS):
+        if token in text:
+            return idx, text
+    return len(_DEFAULT_FOCUS_METRIC_TOKENS) + 1, text
+
+
+def _aggregate_kernel_hotspots(kernels: Sequence[Dict[str, object]]) -> List[Dict[str, object]]:
+    by_name: Dict[str, Dict[str, object]] = {}
+    for row in kernels:
+        name = str(row.get("kernel_name") or "").strip()
+        if not name:
+            continue
+        entry = by_name.setdefault(
+            name,
+            {
+                "name": name,
+                "kind": str(row.get("kind") or ""),
+                "count": 0,
+                "total_ms": 0.0,
+                "max_ms": 0.0,
+                "fused_hint": _kernel_name_has_fusion_hint(name),
+            },
+        )
+        dur_ms = _safe_float(row.get("duration_ms"))
+        entry["count"] = int(entry.get("count") or 0) + 1
+        entry["total_ms"] = _safe_float(entry.get("total_ms")) + dur_ms
+        entry["max_ms"] = max(_safe_float(entry.get("max_ms")), dur_ms)
+    return sorted(
+        by_name.values(),
+        key=lambda x: (-_safe_float(x.get("total_ms")), -int(x.get("count") or 0), str(x.get("name") or "")),
+    )
+
+
+def _summarize_metric_series(metric_series: Sequence[Dict[str, object]]) -> List[Dict[str, object]]:
+    rows: List[Dict[str, object]] = []
+    for item in metric_series:
+        name = str(item.get("name") or "").strip()
+        points = list(item.get("points") or [])
+        values = [_safe_float(p[1], float("nan")) for p in points if isinstance(p, (list, tuple)) and len(p) >= 2]
+        values = [v for v in values if math.isfinite(v)]
+        if not name or not values:
+            continue
+        rows.append(
+            {
+                "name": name,
+                "samples": len(values),
+                "avg": sum(values) / float(max(1, len(values))),
+                "min": min(values),
+                "max": max(values),
+                "last": values[-1],
+                "focus_rank": _metric_focus_rank(name)[0],
+            }
+        )
+    rows.sort(
+        key=lambda x: (
+            int(x.get("focus_rank") or 0),
+            -abs(_safe_float(x.get("avg"))),
+            str(x.get("name") or ""),
+        )
+    )
+    return rows
+
+
+def _summarize_timeline_state(state: Dict[str, object]) -> Dict[str, object]:
+    kernels = list(state.get("kernels") or [])
+    metric_series = list(state.get("metric_series") or [])
+    window_start_ns = _to_int(state.get("window_start_ns"), 0)
+    window_end_ns = _to_int(state.get("window_end_ns"), window_start_ns + 1)
+    window_ms = max(0.0, float(window_end_ns - window_start_ns) / 1e6)
+    merged = _merge_intervals(
+        [(_to_int(row.get("start_ns"), -1), _to_int(row.get("end_ns"), -1)) for row in kernels]
+    )
+    active_ms = sum(float(e - s) for s, e in merged) / 1e6
+    stream_ids = {
+        (_to_int(row.get("device_id"), -1), _to_int(row.get("stream_id"), 0))
+        for row in kernels
+    }
+    unique_names = {str(row.get("kernel_name") or "").strip() for row in kernels if str(row.get("kernel_name") or "").strip()}
+    hotspots = _aggregate_kernel_hotspots(kernels)
+    compute_rows = [row for row in kernels if str(row.get("kind") or "") != "comm"]
+    comm_rows = [row for row in kernels if str(row.get("kind") or "") == "comm"]
+    occ_weight_num = 0.0
+    occ_weight_den = 0.0
+    for row in kernels:
+        occ = row.get("occupancy_pct_estimate")
+        if occ is None:
+            continue
+        dur = _safe_float(row.get("duration_ms"))
+        occ_weight_num += dur * _safe_float(occ)
+        occ_weight_den += dur
+    metric_rows = _summarize_metric_series(metric_series)
+    fused_hotspots = [row for row in hotspots if bool(row.get("fused_hint"))]
+    return {
+        "kernel_total": len(kernels),
+        "window_ms": window_ms,
+        "active_ms": active_ms,
+        "stream_count": len(stream_ids),
+        "unique_kernel_names": len(unique_names),
+        "compute_count": len(compute_rows),
+        "compute_total_ms": sum(_safe_float(row.get("duration_ms")) for row in compute_rows),
+        "comm_count": len(comm_rows),
+        "comm_total_ms": sum(_safe_float(row.get("duration_ms")) for row in comm_rows),
+        "weighted_occupancy_pct": (occ_weight_num / occ_weight_den) if occ_weight_den > 0 else None,
+        "top_kernels": hotspots[:8],
+        "top_metrics": metric_rows[:8],
+        "metric_map": {str(row.get("name") or ""): row for row in metric_rows},
+        "kernel_map": {str(row.get("name") or ""): row for row in hotspots},
+        "fused_kernel_groups": len(fused_hotspots),
+        "fused_kernel_total_ms": sum(_safe_float(row.get("total_ms")) for row in fused_hotspots),
+    }
+
+
+def _build_metric_deltas(base_summary: Dict[str, object], target_summary: Dict[str, object]) -> List[Dict[str, object]]:
+    base_map = dict(base_summary.get("metric_map") or {})
+    target_map = dict(target_summary.get("metric_map") or {})
+    out: List[Dict[str, object]] = []
+    for name in sorted(set(base_map.keys()) & set(target_map.keys()), key=lambda x: _metric_focus_rank(x)):
+        base_row = dict(base_map.get(name) or {})
+        target_row = dict(target_map.get(name) or {})
+        delta_avg = _safe_float(target_row.get("avg")) - _safe_float(base_row.get("avg"))
+        delta_max = _safe_float(target_row.get("max")) - _safe_float(base_row.get("max"))
+        out.append(
+            {
+                "name": name,
+                "focus_rank": _metric_focus_rank(name)[0],
+                "base_avg": _safe_float(base_row.get("avg")),
+                "target_avg": _safe_float(target_row.get("avg")),
+                "delta_avg": delta_avg,
+                "base_max": _safe_float(base_row.get("max")),
+                "target_max": _safe_float(target_row.get("max")),
+                "delta_max": delta_max,
+                "base_last": _safe_float(base_row.get("last")),
+                "target_last": _safe_float(target_row.get("last")),
+                "delta_last": _safe_float(target_row.get("last")) - _safe_float(base_row.get("last")),
+            }
+        )
+    out.sort(
+        key=lambda x: (
+            int(x.get("focus_rank") or 0),
+            -abs(_safe_float(x.get("delta_avg"))),
+            -abs(_safe_float(x.get("delta_max"))),
+            str(x.get("name") or ""),
+        )
+    )
+    return out[:10]
+
+
+def _build_kernel_deltas(base_summary: Dict[str, object], target_summary: Dict[str, object]) -> List[Dict[str, object]]:
+    base_map = dict(base_summary.get("kernel_map") or {})
+    target_map = dict(target_summary.get("kernel_map") or {})
+    out: List[Dict[str, object]] = []
+    for name in set(base_map.keys()) | set(target_map.keys()):
+        base_row = dict(base_map.get(name) or {})
+        target_row = dict(target_map.get(name) or {})
+        delta_total_ms = _safe_float(target_row.get("total_ms")) - _safe_float(base_row.get("total_ms"))
+        delta_count = int(target_row.get("count") or 0) - int(base_row.get("count") or 0)
+        if abs(delta_total_ms) < 1e-12 and delta_count == 0:
+            continue
+        out.append(
+            {
+                "name": name,
+                "kind": str(target_row.get("kind") or base_row.get("kind") or ""),
+                "base_total_ms": _safe_float(base_row.get("total_ms")),
+                "target_total_ms": _safe_float(target_row.get("total_ms")),
+                "delta_total_ms": delta_total_ms,
+                "base_count": int(base_row.get("count") or 0),
+                "target_count": int(target_row.get("count") or 0),
+                "delta_count": delta_count,
+                "fused_hint": bool(target_row.get("fused_hint") or base_row.get("fused_hint")),
+            }
+        )
+    out.sort(
+        key=lambda x: (
+            -abs(_safe_float(x.get("delta_total_ms"))),
+            -abs(int(x.get("delta_count") or 0)),
+            str(x.get("name") or ""),
+        )
+    )
+    return out[:10]
+
+
+def _fmt_float(value: object, digits: int = 3, suffix: str = "") -> str:
+    return f"{_safe_float(value):.{int(digits)}f}{suffix}"
+
+
+def _fmt_optional_float(value: object, digits: int = 3, suffix: str = "") -> str:
+    if value is None:
+        return "n/a"
+    return f"{_safe_float(value):.{int(digits)}f}{suffix}"
+
+
+def _fmt_signed_float(value: object, digits: int = 3, suffix: str = "") -> str:
+    val = _safe_float(value)
+    return f"{val:+.{int(digits)}f}{suffix}"
+
+
 def export_timeline_compare_html(
     sqlite_paths: Sequence[str],
     *,
@@ -2613,91 +2874,262 @@ def export_timeline_compare_html(
         return text + injected
 
     normalized_compare_span_ns = -1
-    with tempfile.TemporaryDirectory(prefix="nsys_timeline_compare_") as tmpdir:
-        def _render_compare_child(idx: int, sqlite_path: str, *, display_span_ns_value: int) -> Dict[str, object]:
-            label = Path(str(sqlite_path)).name or f"sqlite_{idx}"
-            compare_debug(
-                "compare child start index={} sqlite={} display_span_ns={}".format(
-                    idx,
-                    sqlite_path,
-                    int(display_span_ns_value),
-                )
-            )
+    collected: List[Dict[str, object]] = []
+    for idx, sqlite_path in enumerate(items):
+        label = Path(str(sqlite_path)).name or f"sqlite_{idx}"
+        compare_debug(f"compare child collect start index={idx} sqlite={sqlite_path}")
 
-            def _child_progress(msg: str, *, _idx: int = idx, _label: str = label) -> None:
-                if progress_cb:
-                    progress_cb(f"[{_idx + 1}/{total}] {_label} {str(msg or '').strip()}")
+        def _child_progress(msg: str, *, _idx: int = idx, _label: str = label) -> None:
+            if progress_cb:
+                progress_cb(f"[{_idx + 1}/{total}] {_label} {str(msg or '').strip()}")
 
-            def _child_debug(msg: str, *, _idx: int = idx, _label: str = label) -> None:
-                compare_debug(f"[{_idx + 1}/{total}] {_label} {msg}")
+        def _child_debug(msg: str, *, _idx: int = idx, _label: str = label) -> None:
+            compare_debug(f"[{_idx + 1}/{total}] {_label} {msg}")
 
-            tmp_out = Path(tmpdir) / f"timeline_{idx:03d}.html"
-            export_timeline_html(
-                str(sqlite_path),
-                output_path=str(tmp_out),
-                device_id=int(device_id),
-                start_ns=int(start_ns),
-                end_ns=int(end_ns),
-                limit=int(limit),
-                width_px=int(width_px),
-                nvtx_text=str(nvtx_text or ""),
-                nvtx_index=int(nvtx_index),
-                include_metrics=bool(include_metrics),
-                metric_name_like=str(metric_name_like or "%"),
-                metrics_limit=int(metrics_limit),
-                metrics_max_points=int(metrics_max_points),
-                overlay_metrics_per_track=int(overlay_metrics_per_track),
-                display_span_ns=int(display_span_ns_value),
-                default_focus_metrics=bool(default_focus_metrics),
-                include_all_metric_sources=bool(include_all_metric_sources),
-                debug=bool(debug),
-                debug_rows=int(debug_rows),
-                debug_log_fn=_child_debug,
-                progress_cb=_child_progress,
-            )
-            html_text = tmp_out.read_text(encoding="utf-8")
-            payload = _extract_timeline_payload_from_html(html_text) or {}
-            compare_debug(
-                "compare child done index={} sqlite={} payload_span_ns={} data_span_ns={}".format(
-                    idx,
-                    sqlite_path,
-                    int(payload.get("span_ns") or 0),
-                    int(payload.get("data_span_ns") or payload.get("span_ns") or 0),
-                )
-            )
-            return {
+        state = _collect_timeline_state(
+            str(sqlite_path),
+            output_path="",
+            device_id=int(device_id),
+            start_ns=int(start_ns),
+            end_ns=int(end_ns),
+            limit=int(limit),
+            nvtx_text=str(nvtx_text or ""),
+            nvtx_index=int(nvtx_index),
+            include_metrics=bool(include_metrics),
+            metric_name_like=str(metric_name_like or "%"),
+            metrics_limit=int(metrics_limit),
+            metrics_max_points=int(metrics_max_points),
+            default_focus_metrics=bool(default_focus_metrics),
+            include_all_metric_sources=bool(include_all_metric_sources),
+            debug=bool(debug),
+            debug_rows=int(debug_rows),
+            debug_log_fn=_child_debug,
+            progress_cb=_child_progress,
+        )
+        collected.append(
+            {
                 "label": label,
                 "sqlite_path": str(sqlite_path),
+                "state": state,
+                "summary": _summarize_timeline_state(state),
+            }
+        )
+        compare_debug(
+            "compare child collect done index={} sqlite={} kernels={} metrics={} span_ns={}".format(
+                idx,
+                sqlite_path,
+                len(list(state.get("kernels") or [])),
+                len(list(state.get("metric_series") or [])),
+                int(_to_int(state.get("window_end_ns"), 1) - _to_int(state.get("window_start_ns"), 0)),
+            )
+        )
+
+    natural_spans = [
+        max(1, int(_to_int(item.get("state", {}).get("window_end_ns"), 1) - _to_int(item.get("state", {}).get("window_start_ns"), 0)))
+        for item in collected
+    ]
+    if natural_spans:
+        unique_spans = sorted(set(int(v) for v in natural_spans))
+        if len(unique_spans) > 1:
+            normalized_compare_span_ns = max(unique_spans)
+            compare_debug(
+                "normalize compare span_ns={} natural_spans={}".format(
+                    int(normalized_compare_span_ns),
+                    ",".join(str(int(v)) for v in unique_spans),
+                )
+            )
+
+    rendered = []
+    for idx, item in enumerate(collected):
+        state = dict(item.get("state") or {})
+        html_text = _render_html(
+            sqlite_path=str(item.get("sqlite_path") or ""),
+            kernels=list(state.get("kernels") or []),
+            metric_series=list(state.get("metric_series") or []),
+            window_start_ns=int(state.get("window_start_ns") or 0),
+            window_end_ns=int(state.get("window_end_ns") or 1),
+            display_span_ns=int(normalized_compare_span_ns),
+            nvtx_windows=list(state.get("nvtx_windows") or []),
+            width_px=int(width_px),
+            include_metrics=bool(include_metrics),
+            overlay_metrics_per_track=int(overlay_metrics_per_track),
+        )
+        payload = _extract_timeline_payload_from_html(html_text) or {}
+        rendered.append(
+            {
+                **item,
                 "srcdoc": html_text,
                 "payload": payload,
             }
-
-        rendered = [_render_compare_child(idx, sqlite_path, display_span_ns_value=-1) for idx, sqlite_path in enumerate(items)]
-        natural_spans = [
-            max(
-                1,
-                int(item.get("payload", {}).get("data_span_ns") or item.get("payload", {}).get("span_ns") or 1),
+        )
+        compare_debug(
+            "compare child render done index={} sqlite={} payload_span_ns={} data_span_ns={}".format(
+                idx,
+                str(item.get("sqlite_path") or ""),
+                int(payload.get("span_ns") or 0),
+                int(payload.get("data_span_ns") or payload.get("span_ns") or 0),
             )
-            for item in rendered
-        ]
-        if natural_spans:
-            unique_spans = sorted(set(int(v) for v in natural_spans))
-            if len(unique_spans) > 1:
-                normalized_compare_span_ns = max(unique_spans)
-                compare_debug(
-                    "normalize compare span_ns={} natural_spans={}".format(
-                        int(normalized_compare_span_ns),
-                        ",".join(str(int(v)) for v in unique_spans),
-                    )
+        )
+
+    optimization_cards: List[str] = []
+    for idx, item in enumerate(rendered):
+        summary = dict(item.get("summary") or {})
+        hotspot_rows = list(summary.get("top_kernels") or [])
+        metric_rows = list(summary.get("top_metrics") or [])
+        hotspot_html = "".join(
+            [
+                (
+                    "<tr>"
+                    f"<td><code title='{html.escape(str(row.get('name') or ''))}'>{html.escape(_short_kernel_name(row.get('name')))}</code></td>"
+                    f"<td>{html.escape(str(row.get('kind') or ''))}</td>"
+                    f"<td>{int(row.get('count') or 0)}</td>"
+                    f"<td>{_fmt_float(row.get('total_ms'), 3, ' ms')}</td>"
+                    "</tr>"
                 )
-                rendered = [
-                    _render_compare_child(
-                        idx,
-                        sqlite_path,
-                        display_span_ns_value=int(normalized_compare_span_ns),
-                    )
-                    for idx, sqlite_path in enumerate(items)
-                ]
+                for row in hotspot_rows[:6]
+            ]
+        )
+        metric_html = "".join(
+            [
+                (
+                    "<tr>"
+                    f"<td><code title='{html.escape(str(row.get('name') or ''))}'>{html.escape(_short_kernel_name(row.get('name')))}</code></td>"
+                    f"<td>{_fmt_float(row.get('avg'), 3)}</td>"
+                    f"<td>{_fmt_float(row.get('max'), 3)}</td>"
+                    f"<td>{_fmt_float(row.get('last'), 3)}</td>"
+                    "</tr>"
+                )
+                for row in metric_rows[:6]
+            ]
+        )
+        optimization_cards.extend(
+            [
+                "<section class='compare-card summary-card'>",
+                "<div class='compare-head'>",
+                f"<div class='compare-index'>#{idx + 1}</div>",
+                "<div class='compare-meta'>",
+                f"<div class='compare-title'>{html.escape(str(item.get('label') or ''))}</div>",
+                f"<div class='compare-path'>{html.escape(str(item.get('sqlite_path') or ''))}</div>",
+                "</div>",
+                "</div>",
+                "<div class='summary-grid'>",
+                f"<div class='summary-pill'><span>window</span><strong>{_fmt_float(summary.get('window_ms'), 3, ' ms')}</strong></div>",
+                f"<div class='summary-pill'><span>gpu active</span><strong>{_fmt_float(summary.get('active_ms'), 3, ' ms')}</strong></div>",
+                f"<div class='summary-pill'><span>kernels</span><strong>{int(summary.get('kernel_total') or 0)}</strong></div>",
+                f"<div class='summary-pill'><span>streams</span><strong>{int(summary.get('stream_count') or 0)}</strong></div>",
+                f"<div class='summary-pill'><span>unique kernels</span><strong>{int(summary.get('unique_kernel_names') or 0)}</strong></div>",
+                f"<div class='summary-pill'><span>compute total</span><strong>{_fmt_float(summary.get('compute_total_ms'), 3, ' ms')}</strong></div>",
+                f"<div class='summary-pill'><span>comm total</span><strong>{_fmt_float(summary.get('comm_total_ms'), 3, ' ms')}</strong></div>",
+                f"<div class='summary-pill'><span>weighted occ</span><strong>{_fmt_optional_float(summary.get('weighted_occupancy_pct'), 2, '%')}</strong></div>",
+                f"<div class='summary-pill'><span>fused groups</span><strong>{int(summary.get('fused_kernel_groups') or 0)}</strong></div>",
+                f"<div class='summary-pill'><span>fused total</span><strong>{_fmt_float(summary.get('fused_kernel_total_ms'), 3, ' ms')}</strong></div>",
+                "</div>",
+                "<div class='summary-dual'>",
+                "<div class='summary-box'>",
+                "<div class='summary-box-title'>Kernel Hotspots</div>",
+                (
+                    "<table class='summary-table'><thead><tr><th>kernel</th><th>kind</th><th>count</th><th>total</th></tr></thead>"
+                    f"<tbody>{hotspot_html or '<tr><td colspan=\"4\">No kernels</td></tr>'}</tbody></table>"
+                ),
+                "</div>",
+                "<div class='summary-box'>",
+                "<div class='summary-box-title'>Metric Snapshot</div>",
+                (
+                    "<table class='summary-table'><thead><tr><th>metric</th><th>avg</th><th>max</th><th>last</th></tr></thead>"
+                    f"<tbody>{metric_html or '<tr><td colspan=\"4\">Metrics not enabled</td></tr>'}</tbody></table>"
+                ),
+                "</div>",
+                "</div>",
+                "</section>",
+            ]
+        )
+
+    optimization_section: List[str] = []
+    if optimization_cards:
+        optimization_section = [
+            "<section class='compare-section'>",
+            "<h3 class='compare-section-title'>Optimization Summary</h3>",
+            (
+                "<div class='compare-section-note'>"
+                "For each sqlite, summarize the matched NVTX window by GPU-active span, kernel mix, fused-kernel hints, and focused metric snapshots."
+                "</div>"
+            ),
+            "<div class='compare-section-stack'>",
+            *optimization_cards,
+            "</div>",
+            "</section>",
+        ]
+
+    delta_section: List[str] = []
+    if len(rendered) >= 2:
+        base_item = rendered[0]
+        target_item = rendered[1]
+        base_summary = dict(base_item.get("summary") or {})
+        target_summary = dict(target_item.get("summary") or {})
+        metric_deltas = _build_metric_deltas(base_summary, target_summary)
+        kernel_deltas = _build_kernel_deltas(base_summary, target_summary)
+        metric_delta_rows = "".join(
+            [
+                (
+                    "<tr>"
+                    f"<td><code title='{html.escape(str(row.get('name') or ''))}'>{html.escape(_short_kernel_name(row.get('name')))}</code></td>"
+                    f"<td>{_fmt_float(row.get('base_avg'), 3)}</td>"
+                    f"<td>{_fmt_float(row.get('target_avg'), 3)}</td>"
+                    f"<td>{_fmt_signed_float(row.get('delta_avg'), 3)}</td>"
+                    f"<td>{_fmt_signed_float(row.get('delta_max'), 3)}</td>"
+                    "</tr>"
+                )
+                for row in metric_deltas
+            ]
+        )
+        kernel_delta_rows = "".join(
+            [
+                (
+                    "<tr>"
+                    f"<td><code title='{html.escape(str(row.get('name') or ''))}'>{html.escape(_short_kernel_name(row.get('name')))}</code></td>"
+                    f"<td>{html.escape(str(row.get('kind') or ''))}</td>"
+                    f"<td>{int(row.get('base_count') or 0)} -> {int(row.get('target_count') or 0)}</td>"
+                    f"<td>{_fmt_float(row.get('base_total_ms'), 3, ' ms')} -> {_fmt_float(row.get('target_total_ms'), 3, ' ms')}</td>"
+                    f"<td>{_fmt_signed_float(row.get('delta_total_ms'), 3, ' ms')}</td>"
+                    "</tr>"
+                )
+                for row in kernel_deltas
+            ]
+        )
+        delta_section = [
+            "<section class='compare-section'>",
+            "<h3 class='compare-section-title'>Pairwise Delta Summary</h3>",
+            (
+                "<div class='compare-section-note'>"
+                "The first sqlite is treated as baseline and the second as target. Deltas are computed on the same matched NVTX window semantics."
+                "</div>"
+            ),
+            "<div class='summary-grid'>",
+            f"<div class='summary-pill'><span>active delta</span><strong>{_fmt_signed_float(_safe_float(target_summary.get('active_ms')) - _safe_float(base_summary.get('active_ms')), 3, ' ms')}</strong></div>",
+            f"<div class='summary-pill'><span>kernel delta</span><strong>{int(target_summary.get('kernel_total') or 0) - int(base_summary.get('kernel_total') or 0):+d}</strong></div>",
+            f"<div class='summary-pill'><span>unique delta</span><strong>{int(target_summary.get('unique_kernel_names') or 0) - int(base_summary.get('unique_kernel_names') or 0):+d}</strong></div>",
+            f"<div class='summary-pill'><span>compute delta</span><strong>{_fmt_signed_float(_safe_float(target_summary.get('compute_total_ms')) - _safe_float(base_summary.get('compute_total_ms')), 3, ' ms')}</strong></div>",
+            f"<div class='summary-pill'><span>comm delta</span><strong>{_fmt_signed_float(_safe_float(target_summary.get('comm_total_ms')) - _safe_float(base_summary.get('comm_total_ms')), 3, ' ms')}</strong></div>",
+            f"<div class='summary-pill'><span>occ delta</span><strong>{_fmt_signed_float((_safe_float(target_summary.get('weighted_occupancy_pct')) if target_summary.get('weighted_occupancy_pct') is not None else 0.0) - (_safe_float(base_summary.get('weighted_occupancy_pct')) if base_summary.get('weighted_occupancy_pct') is not None else 0.0), 2, '%')}</strong></div>",
+            "</div>",
+            "<div class='summary-dual'>",
+            "<div class='summary-box'>",
+            f"<div class='summary-box-title'>Metric Delta ({html.escape(str(base_item.get('label') or 'baseline'))} -> {html.escape(str(target_item.get('label') or 'target'))})</div>",
+            (
+                "<table class='summary-table'><thead><tr><th>metric</th><th>base avg</th><th>target avg</th><th>delta avg</th><th>delta max</th></tr></thead>"
+                f"<tbody>{metric_delta_rows or '<tr><td colspan=\"5\">Metrics not enabled or no overlapping metric names</td></tr>'}</tbody></table>"
+            ),
+            "</div>",
+            "<div class='summary-box'>",
+            "<div class='summary-box-title'>Kernel Delta</div>",
+            (
+                "<table class='summary-table'><thead><tr><th>kernel</th><th>kind</th><th>count</th><th>total</th><th>delta</th></tr></thead>"
+                f"<tbody>{kernel_delta_rows or '<tr><td colspan=\"5\">No changed kernels</td></tr>'}</tbody></table>"
+            ),
+            "</div>",
+            "</div>",
+            "</section>",
+        ]
 
     fusion_section: List[str] = []
     if len(rendered) >= 2:
@@ -2879,6 +3311,18 @@ def export_timeline_compare_html(
             ".compare-title{font-size:14px;color:#e7eefc;font-weight:600;word-break:break-word;}",
             ".compare-path{font-size:11px;color:#8fa1bf;word-break:break-all;margin-top:2px;}",
             ".compare-frame{display:block;width:100%;min-height:140px;border:1px solid #2f3b53;border-radius:6px;background:#0c111c;box-sizing:border-box;}",
+            ".summary-card{padding-bottom:14px;}",
+            ".summary-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;margin-bottom:12px;}",
+            ".summary-pill{background:#111827;border:1px solid #2b3b57;border-radius:6px;padding:8px 10px;}",
+            ".summary-pill span{display:block;font-size:11px;color:#8fa1bf;margin-bottom:4px;}",
+            ".summary-pill strong{font-size:14px;color:#edf4ff;}",
+            ".summary-dual{display:grid;grid-template-columns:repeat(auto-fit,minmax(420px,1fr));gap:10px;}",
+            ".summary-box{background:#111827;border:1px solid #283550;border-radius:6px;padding:8px;min-width:0;}",
+            ".summary-box-title{font-size:12px;color:#dbe6ff;margin-bottom:6px;}",
+            ".summary-table{width:100%;border-collapse:collapse;font-size:11px;color:#d7e2f7;table-layout:fixed;}",
+            ".summary-table th,.summary-table td{border-top:1px solid #26334a;padding:5px 6px;text-align:left;vertical-align:top;word-break:break-word;}",
+            ".summary-table thead th{border-top:none;color:#8fa1bf;font-weight:600;}",
+            ".summary-table code{background:#1b2740;border:1px solid #324868;border-radius:4px;padding:1px 4px;color:#edf4ff;}",
             ".fusion-stack{display:flex;flex-direction:column;gap:10px;}",
             ".fusion-card{background:#171c28;border:1px solid #2a3243;border-radius:8px;padding:10px;}",
             ".fusion-head{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:6px;}",
@@ -2900,6 +3344,8 @@ def export_timeline_compare_html(
                 f"device_id={int(device_id)} | note={html.escape(note)}</div>"
             ),
             "<div class='compare-root'>",
+            *optimization_section,
+            *delta_section,
             *fusion_section,
             *section_blocks,
             "</div>",
