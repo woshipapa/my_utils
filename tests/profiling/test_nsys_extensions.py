@@ -1343,10 +1343,84 @@ def test_timeline_compare_html_reports_fusion_candidates(tmp_path: Path) -> None
     text = out.read_text(encoding="utf-8")
     assert "Potential Fusion Mapping" in text
     assert "Possible Fusion In Target" in text
+    assert "score=" in text
+    assert "strong-anchors" in text
     assert "fusion_mid_1" in text
     assert "fusion_mid_2" in text
     assert "fusion_mid_fused" in text
     assert "stream 88" in text
+
+
+def test_timeline_compare_html_avoids_false_positive_when_kernel_is_only_removed(tmp_path: Path) -> None:
+    db_a = tmp_path / "delete_base.sqlite"
+    db_b = tmp_path / "delete_target.sqlite"
+    _init_sqlite(db_a)
+    _init_sqlite(db_b)
+
+    def _inject_case(db: Path, *, target_only_removes_one_kernel: bool) -> None:
+        conn = sqlite3.connect(str(db))
+        conn.executemany(
+            "INSERT INTO StringIds(id, value) VALUES (?, ?)",
+            [
+                (8111, "delete_anchor_start"),
+                (8112, "delete_mid_keep"),
+                (8113, "delete_mid_drop"),
+                (8114, "delete_anchor_end"),
+            ],
+        )
+        conn.execute(
+            "INSERT INTO NVTX_EVENTS VALUES (?, ?, ?, ?, ?, ?)",
+            (210_000, 210_200, "delete_case", None, 59, 998877),
+        )
+        if not target_only_removes_one_kernel:
+            runtimes = [
+                (210_010, 210_020, 9101, 3, 998877),
+                (210_030, 210_040, 9102, 3, 998877),
+                (210_050, 210_060, 9103, 3, 998877),
+                (210_070, 210_080, 9104, 3, 998877),
+            ]
+            kernels = [
+                (210_300, 210_360, 41, 9101, 8111, 8111, 0, 128, 1, 1, 32, 4096, 0, 87.5),
+                (210_370, 210_430, 41, 9102, 8112, 8112, 0, 128, 1, 1, 32, 4096, 0, 87.5),
+                (210_440, 210_500, 41, 9103, 8113, 8113, 0, 128, 1, 1, 32, 4096, 0, 87.5),
+                (210_510, 210_570, 41, 9104, 8114, 8114, 0, 128, 1, 1, 32, 4096, 0, 87.5),
+            ]
+        else:
+            runtimes = [
+                (210_010, 210_020, 9201, 3, 998877),
+                (210_030, 210_040, 9202, 3, 998877),
+                (210_050, 210_060, 9203, 3, 998877),
+            ]
+            kernels = [
+                (210_300, 210_360, 41, 9201, 8111, 8111, 0, 128, 1, 1, 32, 4096, 0, 87.5),
+                (210_370, 210_430, 41, 9202, 8112, 8112, 0, 128, 1, 1, 32, 4096, 0, 87.5),
+                (210_510, 210_570, 41, 9203, 8114, 8114, 0, 128, 1, 1, 32, 4096, 0, 87.5),
+            ]
+        conn.executemany("INSERT INTO CUPTI_ACTIVITY_KIND_RUNTIME VALUES (?, ?, ?, ?, ?)", runtimes)
+        conn.executemany(
+            "INSERT INTO CUPTI_ACTIVITY_KIND_KERNEL VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            kernels,
+        )
+        conn.commit()
+        conn.close()
+
+    _inject_case(db_a, target_only_removes_one_kernel=False)
+    _inject_case(db_b, target_only_removes_one_kernel=True)
+
+    out = tmp_path / "delete_compare.html"
+    export_timeline_compare_html(
+        [str(db_a), str(db_b)],
+        output_path=str(out),
+        device_id=0,
+        nvtx_text="%delete_case%",
+        include_metrics=False,
+    )
+
+    text = out.read_text(encoding="utf-8")
+    assert "Potential Fusion Mapping" in text
+    assert "Possible Fusion In Target" not in text
+    assert "Possible Split In Target" not in text
+    assert "No strong fusion candidates detected" in text
 
 
 def test_nvtx_kernel_sm_detail_cross_thread_runtime_fallback_keeps_kernels(tmp_path: Path) -> None:

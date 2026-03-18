@@ -1,6 +1,4 @@
 from __future__ import annotations
-
-import difflib
 import hashlib
 import html
 import json
@@ -2130,6 +2128,356 @@ def _stream_key_sort_key(key: Tuple[Optional[int], int, int]) -> Tuple[int, int,
     return (10**9 if rank is None else int(rank), int(dev), int(sid))
 
 
+def _kernel_anchor_key(name: object) -> str:
+    return _normalize_kernel_name_for_compare(name).lower()
+
+
+def _kernel_token_set(name: object) -> set[str]:
+    out: set[str] = set()
+    for raw in re.findall(r"[a-z0-9]+", _kernel_anchor_key(name)):
+        if raw.isdigit():
+            continue
+        token = re.sub(r"\d+", "#", raw)
+        if len(token.replace("#", "")) < 2:
+            continue
+        out.add(token)
+    return out
+
+
+def _kernel_duration_ms_value(item: Dict[str, object]) -> float:
+    try:
+        value = float(item.get("duration_ms") or 0.0)
+    except Exception:
+        return 0.0
+    if not math.isfinite(value) or value < 0.0:
+        return 0.0
+    return float(value)
+
+
+def _sequence_time_bounds(segment: Sequence[Dict[str, object]]) -> Tuple[int, int]:
+    starts: List[int] = []
+    ends: List[int] = []
+    for item in segment:
+        s = _to_int(item.get("start_ns"), -1)
+        e = _to_int(item.get("end_ns"), -1)
+        if s >= 0 and e > s:
+            starts.append(s)
+            ends.append(e)
+    if starts and ends:
+        return min(starts), max(ends)
+    return 0, max(1, len(segment))
+
+
+def _kernel_center_norm(
+    item: Dict[str, object],
+    *,
+    seq_start_ns: int,
+    seq_end_ns: int,
+    ordinal_idx: int,
+    ordinal_count: int,
+) -> float:
+    s = _to_int(item.get("start_ns"), -1)
+    e = _to_int(item.get("end_ns"), -1)
+    span = max(1, int(seq_end_ns) - int(seq_start_ns))
+    if s >= 0 and e > s:
+        center = 0.5 * (float(s) + float(e))
+        return max(0.0, min(1.0, (center - float(seq_start_ns)) / float(span)))
+    denom = max(1, int(ordinal_count) - 1)
+    return float(int(ordinal_idx) / float(denom))
+
+
+def _ratio_similarity(lhs: float, rhs: float, *, max_ratio: float) -> float:
+    lv = float(lhs)
+    rv = float(rhs)
+    if lv <= 0.0 or rv <= 0.0:
+        return 0.5
+    limit = math.log(max(1.000001, float(max_ratio)))
+    diff = abs(math.log(lv / rv))
+    return max(0.0, 1.0 - min(1.0, diff / limit))
+
+
+def _kernel_token_overlap(lhs: object, rhs: object) -> float:
+    left = _kernel_token_set(lhs)
+    right = _kernel_token_set(rhs)
+    if not left or not right:
+        return 0.0
+    return float(len(left & right)) / float(len(left | right))
+
+
+def _anchor_match_score(
+    base_item: Dict[str, object],
+    target_item: Dict[str, object],
+    *,
+    base_idx: int,
+    target_idx: int,
+    base_count: int,
+    target_count: int,
+    base_start_ns: int,
+    base_end_ns: int,
+    target_start_ns: int,
+    target_end_ns: int,
+) -> float:
+    if _kernel_anchor_key(base_item.get("kernel_name")) != _kernel_anchor_key(target_item.get("kernel_name")):
+        return 0.0
+    base_time = _kernel_center_norm(
+        base_item,
+        seq_start_ns=base_start_ns,
+        seq_end_ns=base_end_ns,
+        ordinal_idx=base_idx,
+        ordinal_count=base_count,
+    )
+    target_time = _kernel_center_norm(
+        target_item,
+        seq_start_ns=target_start_ns,
+        seq_end_ns=target_end_ns,
+        ordinal_idx=target_idx,
+        ordinal_count=target_count,
+    )
+    base_ord = float(int(base_idx) / float(max(1, int(base_count) - 1)))
+    target_ord = float(int(target_idx) / float(max(1, int(target_count) - 1)))
+    time_closeness = max(0.0, 1.0 - (abs(base_time - target_time) / 0.18))
+    order_closeness = max(0.0, 1.0 - (abs(base_ord - target_ord) / 0.22))
+    position_score = (0.6 * time_closeness) + (0.4 * order_closeness)
+    if position_score < 0.20:
+        return 0.0
+    duration_score = _ratio_similarity(
+        _kernel_duration_ms_value(base_item),
+        _kernel_duration_ms_value(target_item),
+        max_ratio=4.0,
+    )
+    return 0.72 + (0.20 * position_score) + (0.08 * duration_score)
+
+
+def _align_stream_kernel_pairs(
+    base_segment: Sequence[Dict[str, object]],
+    target_segment: Sequence[Dict[str, object]],
+) -> List[Dict[str, object]]:
+    base_items = list(base_segment)
+    target_items = list(target_segment)
+    n = len(base_items)
+    m = len(target_items)
+    if n <= 0 or m <= 0:
+        return []
+    base_start_ns, base_end_ns = _sequence_time_bounds(base_items)
+    target_start_ns, target_end_ns = _sequence_time_bounds(target_items)
+    scores: List[List[float]] = []
+    for i, base_item in enumerate(base_items):
+        row: List[float] = []
+        for j, target_item in enumerate(target_items):
+            row.append(
+                _anchor_match_score(
+                    base_item,
+                    target_item,
+                    base_idx=i,
+                    target_idx=j,
+                    base_count=n,
+                    target_count=m,
+                    base_start_ns=base_start_ns,
+                    base_end_ns=base_end_ns,
+                    target_start_ns=target_start_ns,
+                    target_end_ns=target_end_ns,
+                )
+            )
+        scores.append(row)
+
+    threshold = 0.82
+    dp: List[List[float]] = [[0.0] * (m + 1) for _ in range(n + 1)]
+    action: List[List[str]] = [[""] * (m + 1) for _ in range(n + 1)]
+    for i in range(n - 1, -1, -1):
+        for j in range(m - 1, -1, -1):
+            best = dp[i + 1][j]
+            best_action = "skip_base"
+            if dp[i][j + 1] > best + 1e-9:
+                best = dp[i][j + 1]
+                best_action = "skip_target"
+            score = scores[i][j]
+            if score >= threshold:
+                candidate = score + dp[i + 1][j + 1]
+                if candidate > best + 1e-9 or (
+                    abs(candidate - best) <= 1e-9 and best_action != "match"
+                ):
+                    best = candidate
+                    best_action = "match"
+            dp[i][j] = best
+            action[i][j] = best_action
+
+    matches: List[Dict[str, object]] = []
+    i = 0
+    j = 0
+    while i < n and j < m:
+        step = action[i][j]
+        if step == "match":
+            matches.append(
+                {
+                    "base_idx": i,
+                    "target_idx": j,
+                    "base_kernel": base_items[i],
+                    "target_kernel": target_items[j],
+                    "score": round(scores[i][j], 4),
+                }
+            )
+            i += 1
+            j += 1
+        elif step == "skip_target":
+            j += 1
+        else:
+            i += 1
+    return matches
+
+
+def _segment_midpoint_norm(
+    segment: Sequence[Dict[str, object]],
+    *,
+    full_segment: Sequence[Dict[str, object]],
+) -> float:
+    if not segment:
+        return 0.5
+    seg_start_ns, seg_end_ns = _sequence_time_bounds(segment)
+    full_start_ns, full_end_ns = _sequence_time_bounds(full_segment)
+    span = max(1, int(full_end_ns) - int(full_start_ns))
+    center = 0.5 * (float(seg_start_ns) + float(seg_end_ns))
+    return max(0.0, min(1.0, (center - float(full_start_ns)) / float(span)))
+
+
+def _kernel_name_has_fusion_hint(name: object) -> bool:
+    text = _kernel_anchor_key(name)
+    return "fused" in text or "fusion" in text
+
+
+def _single_vs_multi_name_evidence(
+    *,
+    single_kernel: Dict[str, object],
+    multi_segment: Sequence[Dict[str, object]],
+) -> Tuple[float, List[str]]:
+    if not multi_segment:
+        return 0.0, []
+    single_name = single_kernel.get("kernel_name")
+    single_key = _kernel_anchor_key(single_name)
+    multi_keys = {_kernel_anchor_key(item.get("kernel_name")) for item in multi_segment}
+    fusion_hint = _kernel_name_has_fusion_hint(single_name)
+    overlap_scores = [_kernel_token_overlap(single_name, item.get("kernel_name")) for item in multi_segment]
+    covered = float(sum(1 for score in overlap_scores if score >= 0.35)) / float(max(1, len(overlap_scores)))
+    union_tokens: set[str] = set()
+    for item in multi_segment:
+        union_tokens.update(_kernel_token_set(item.get("kernel_name")))
+    single_tokens = _kernel_token_set(single_name)
+    union_overlap = 0.0
+    if union_tokens and single_tokens:
+        union_overlap = float(len(union_tokens & single_tokens)) / float(len(union_tokens | single_tokens))
+    score = max(0.0, (0.65 * covered) + (0.35 * union_overlap))
+    reasons: List[str] = []
+    if covered >= 0.66:
+        reasons.append("multi-name-overlap")
+    if union_overlap >= 0.25:
+        reasons.append("token-overlap")
+    if fusion_hint:
+        score = max(score, 1.0)
+        reasons.append("fused-name")
+    if single_key in multi_keys and not fusion_hint:
+        score *= 0.35
+        reasons.append("single-name-reused")
+    return min(1.0, score), reasons
+
+
+def _classify_fusion_gap(
+    *,
+    rank: Optional[int],
+    dev: int,
+    sid: int,
+    prev_match: Dict[str, object],
+    next_match: Dict[str, object],
+    base_segment: Sequence[Dict[str, object]],
+    target_segment: Sequence[Dict[str, object]],
+    base_full_segment: Sequence[Dict[str, object]],
+    target_full_segment: Sequence[Dict[str, object]],
+) -> Optional[Dict[str, object]]:
+    seg_base = list(base_segment)
+    seg_target = list(target_segment)
+    base_count = len(seg_base)
+    target_count = len(seg_target)
+    if base_count <= 0 or target_count <= 0:
+        return None
+    if base_count == target_count:
+        return None
+    if base_count >= 2 and target_count == 1:
+        kind = "target_fused"
+        name_score, name_reasons = _single_vs_multi_name_evidence(
+            single_kernel=seg_target[0],
+            multi_segment=seg_base,
+        )
+    elif target_count >= 2 and base_count == 1:
+        kind = "target_split"
+        name_score, name_reasons = _single_vs_multi_name_evidence(
+            single_kernel=seg_base[0],
+            multi_segment=seg_target,
+        )
+    else:
+        return None
+
+    anchor_score = 0.5 * (
+        float(prev_match.get("score") or 0.0) + float(next_match.get("score") or 0.0)
+    )
+    duration_score = _ratio_similarity(
+        _segment_duration_ms(seg_base),
+        _segment_duration_ms(seg_target),
+        max_ratio=6.0,
+    )
+    position_score = max(
+        0.0,
+        1.0
+        - (
+            abs(
+                _segment_midpoint_norm(seg_base, full_segment=base_full_segment)
+                - _segment_midpoint_norm(seg_target, full_segment=target_full_segment)
+            )
+            / 0.16
+        ),
+    )
+    if anchor_score < 0.88 or position_score < 0.55 or name_score < 0.22:
+        return None
+
+    score = (
+        (0.34 * anchor_score)
+        + (0.24 * duration_score)
+        + (0.22 * position_score)
+        + (0.20 * name_score)
+    )
+    if score < 0.78:
+        return None
+
+    evidence: List[str] = []
+    if anchor_score >= 0.92:
+        evidence.append("strong-anchors")
+    if duration_score >= 0.55:
+        evidence.append("duration-close")
+    if position_score >= 0.75:
+        evidence.append("position-aligned")
+    for reason in name_reasons:
+        if reason not in evidence:
+            evidence.append(reason)
+
+    confidence = "high" if score >= 0.88 and name_score >= 0.40 else "medium"
+    return {
+        "rank": rank,
+        "device_id": dev,
+        "stream_id": sid,
+        "kind": kind,
+        "confidence": confidence,
+        "score": round(score, 4),
+        "anchor_score": round(anchor_score, 4),
+        "duration_score": round(duration_score, 4),
+        "position_score": round(position_score, 4),
+        "name_score": round(name_score, 4),
+        "evidence": evidence,
+        "prev_anchor": prev_match.get("base_kernel", {}).get("kernel_name"),
+        "next_anchor": next_match.get("base_kernel", {}).get("kernel_name"),
+        "base_segment": seg_base,
+        "target_segment": seg_target,
+        "base_duration_ms": round(_segment_duration_ms(seg_base), 6),
+        "target_duration_ms": round(_segment_duration_ms(seg_target), 6),
+    }
+
+
 def _timeline_stream_sequences(payload: Dict[str, object]) -> Dict[Tuple[Optional[int], int, int], List[Dict[str, object]]]:
     out: Dict[Tuple[Optional[int], int, int], List[Dict[str, object]]] = {}
     for group in list(payload.get("all_stream_groups") or []):
@@ -2157,54 +2505,29 @@ def _build_fusion_findings(
         target_segment = list(target_streams.get(key) or [])
         if len(base_segment) < 3 or len(target_segment) < 3:
             continue
-        base_names = [_normalize_kernel_name_for_compare(item.get("kernel_name")) for item in base_segment]
-        target_names = [_normalize_kernel_name_for_compare(item.get("kernel_name")) for item in target_segment]
-        matcher = difflib.SequenceMatcher(a=base_names, b=target_names, autojunk=False)
-        blocks = list(matcher.get_matching_blocks())
-        prev_base_end = 0
-        prev_target_end = 0
-        prev_anchor: Optional[str] = None
-        for block in blocks:
-            seg_base = base_segment[prev_base_end:block.a]
-            seg_target = target_segment[prev_target_end:block.b]
-            next_anchor = base_names[block.a] if block.size > 0 and block.a < len(base_names) else None
-            if prev_anchor and next_anchor and seg_base and seg_target and len(seg_base) != len(seg_target):
-                base_count = len(seg_base)
-                target_count = len(seg_target)
-                kind = ""
-                confidence = ""
-                if base_count >= 2 and target_count == 1:
-                    kind = "target_fused"
-                    confidence = "high"
-                elif target_count >= 2 and base_count == 1:
-                    kind = "target_split"
-                    confidence = "high"
-                elif base_count > target_count:
-                    kind = "target_compacted"
-                    confidence = "medium"
-                elif target_count > base_count:
-                    kind = "target_expanded"
-                    confidence = "medium"
-                if kind:
-                    findings.append(
-                        {
-                            "rank": rank,
-                            "device_id": dev,
-                            "stream_id": sid,
-                            "kind": kind,
-                            "confidence": confidence,
-                            "prev_anchor": prev_anchor,
-                            "next_anchor": next_anchor,
-                            "base_segment": seg_base,
-                            "target_segment": seg_target,
-                            "base_duration_ms": round(_segment_duration_ms(seg_base), 6),
-                            "target_duration_ms": round(_segment_duration_ms(seg_target), 6),
-                        }
-                    )
-            if block.size > 0:
-                prev_anchor = base_names[block.a + block.size - 1]
-            prev_base_end = block.a + block.size
-            prev_target_end = block.b + block.size
+        matches = _align_stream_kernel_pairs(base_segment, target_segment)
+        if len(matches) < 2:
+            continue
+        for prev_match, next_match in zip(matches, matches[1:]):
+            base_start_idx = int(prev_match.get("base_idx", -1)) + 1
+            base_end_idx = int(next_match.get("base_idx", -1))
+            target_start_idx = int(prev_match.get("target_idx", -1)) + 1
+            target_end_idx = int(next_match.get("target_idx", -1))
+            if base_start_idx >= base_end_idx or target_start_idx >= target_end_idx:
+                continue
+            finding = _classify_fusion_gap(
+                rank=rank,
+                dev=dev,
+                sid=sid,
+                prev_match=prev_match,
+                next_match=next_match,
+                base_segment=base_segment[base_start_idx:base_end_idx],
+                target_segment=target_segment[target_start_idx:target_end_idx],
+                base_full_segment=base_segment,
+                target_full_segment=target_segment,
+            )
+            if finding:
+                findings.append(finding)
     return findings
 
 
@@ -2358,17 +2681,16 @@ def export_timeline_compare_html(
                     verdict = "Possible Fusion In Target"
                 elif str(item.get("kind")) == "target_split":
                     verdict = "Possible Split In Target"
-                elif str(item.get("kind")) == "target_compacted":
-                    verdict = "Target Sequence Compacted"
                 else:
-                    verdict = "Target Sequence Expanded"
+                    verdict = "Target Sequence Changed"
                 rank_text = "Rank Unknown" if rank is None else f"Rank {int(rank)}"
+                evidence = ", ".join(str(x) for x in list(item.get("evidence") or []) if str(x or "").strip())
                 fusion_cards.extend(
                     [
                         "<div class='fusion-card'>",
                         (
                             f"<div class='fusion-head'><span class='fusion-badge'>{html.escape(verdict)}</span> "
-                            f"<span class='fusion-meta'>{html.escape(rank_text)} | Device {dev} | stream {sid} | confidence={html.escape(str(item.get('confidence') or ''))}</span></div>"
+                            f"<span class='fusion-meta'>{html.escape(rank_text)} | Device {dev} | stream {sid} | confidence={html.escape(str(item.get('confidence') or ''))} | score={float(item.get('score') or 0.0):.3f}</span></div>"
                         ),
                         (
                             f"<div class='fusion-anchor'>anchor: "
@@ -2376,6 +2698,13 @@ def export_timeline_compare_html(
                             f"&rarr; "
                             f"<code title='{html.escape(str(item.get('next_anchor') or ''))}'>{html.escape(_short_kernel_name(item.get('next_anchor')))}</code>"
                             "</div>"
+                        ),
+                        (
+                            f"<div class='fusion-anchor'>evidence: {html.escape(evidence or 'none')} | "
+                            f"anchor={float(item.get('anchor_score') or 0.0):.3f} | "
+                            f"position={float(item.get('position_score') or 0.0):.3f} | "
+                            f"duration={float(item.get('duration_score') or 0.0):.3f} | "
+                            f"name={float(item.get('name_score') or 0.0):.3f}</div>"
                         ),
                         "<div class='fusion-grid'>",
                         (
@@ -2407,8 +2736,8 @@ def export_timeline_compare_html(
             "<h3 class='compare-section-title'>Potential Fusion Mapping</h3>",
             (
                 "<div class='compare-section-note'>"
-                "Heuristic only: compare the first two sqlite files stream-by-stream, align common kernel-name anchors, "
-                "and report segments where one side becomes shorter or longer between the same anchors."
+                "Heuristic only: compare the first two sqlite files stream-by-stream, build a monotonic alignment from exact kernel-name anchors, "
+                "and keep only gaps whose anchors, relative positions, durations, and fused-name/token evidence remain consistent."
                 "</div>"
             ),
             "<div class='fusion-stack'>",
