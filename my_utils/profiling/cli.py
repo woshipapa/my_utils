@@ -624,6 +624,8 @@ def cmd_nsys_timeline_html(args: argparse.Namespace) -> int:
         kernel_category_engine=args.kernel_category_engine,
         kernel_category_model=args.kernel_category_model,
         enable_kernel_category_breakdown=bool(args.enable_kernel_category_breakdown),
+        kernel_category_table_output=args.kernel_category_table_output,
+        nvtx_category_stats_output=args.nvtx_category_stats_output,
         default_focus_metrics=bool(args.default_focus_metrics),
         include_all_metric_sources=bool(args.include_all_metric_sources),
         debug=bool(args.debug),
@@ -657,6 +659,8 @@ def cmd_nsys_timeline_compare_html(args: argparse.Namespace) -> int:
         kernel_category_engine=args.kernel_category_engine,
         kernel_category_model=args.kernel_category_model,
         enable_kernel_category_breakdown=bool(args.enable_kernel_category_breakdown),
+        kernel_category_table_output=args.kernel_category_table_output,
+        nvtx_category_stats_output=args.nvtx_category_stats_output,
         default_focus_metrics=bool(args.default_focus_metrics),
         include_all_metric_sources=bool(args.include_all_metric_sources),
         debug=bool(args.debug),
@@ -839,108 +843,195 @@ def build_parser() -> argparse.ArgumentParser:
     nsys_diff.add_argument("--pretty", action="store_true")
     nsys_diff.set_defaults(func=cmd_nsys_diff)
 
-    nsys_timeline = sub.add_parser("nsys-timeline-html", help="export static html timeline from nsys sqlite")
-    nsys_timeline.add_argument("--sqlite", required=True, help="nsys exported sqlite path")
-    nsys_timeline.add_argument("--output", required=True, help="output html file path")
-    nsys_timeline.add_argument("--device-id", type=int, default=-1)
-    nsys_timeline.add_argument("--start-ns", type=int, default=-1)
-    nsys_timeline.add_argument("--end-ns", type=int, default=-1)
-    nsys_timeline.add_argument("--limit", type=int, default=100000)
-    nsys_timeline.add_argument("--width-px", type=int, default=1800)
+    nsys_timeline = sub.add_parser(
+        "nsys-timeline-html",
+        help="export static html timeline from nsys sqlite",
+        description=(
+            "Export one interactive HTML timeline from a single nsys SQLite.\n"
+            "Window selection order:\n"
+            "1) If --nvtx-text is set, match NVTX ranges first (and optionally pick one by --nvtx-index).\n"
+            "2) Otherwise use explicit --start-ns/--end-ns if valid.\n"
+            "3) Otherwise infer from collected kernel GPU execution timestamps.\n"
+            "Kernel/category ratios are computed from GPU kernel execution time (start/end), not CPU NVTX duration."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    nsys_timeline.add_argument(
+        "--sqlite",
+        required=True,
+        help="path to one nsys-exported SQLite file",
+    )
+    nsys_timeline.add_argument(
+        "--output",
+        required=True,
+        help="output HTML file path",
+    )
+    nsys_timeline.add_argument(
+        "--device-id",
+        type=int,
+        default=-1,
+        help="GPU device filter for kernels/metrics; -1 means all devices (default: -1)",
+    )
+    nsys_timeline.add_argument(
+        "--start-ns",
+        type=int,
+        default=-1,
+        help="timeline start timestamp (ns); <0 means unset (default: -1)",
+    )
+    nsys_timeline.add_argument(
+        "--end-ns",
+        type=int,
+        default=-1,
+        help="timeline end timestamp (ns); <0 means unset (default: -1)",
+    )
+    nsys_timeline.add_argument(
+        "--limit",
+        type=int,
+        default=100000,
+        help="max kernel rows to collect per query path (default: 100000)",
+    )
+    nsys_timeline.add_argument(
+        "--width-px",
+        type=int,
+        default=1800,
+        help="base plot width in pixels for stream/all-stream panels (default: 1800)",
+    )
     nsys_timeline.add_argument(
         "--nvtx-text",
         default="",
-        help="optional NVTX text LIKE pattern; when set, timeline focuses on the selected NVTX range",
+        help=(
+            "SQL LIKE pattern for NVTX text matching (example: 'qwen_layer_%%'). "
+            "When set, timeline focuses on matched NVTX scopes."
+        ),
     )
     nsys_timeline.add_argument(
         "--nvtx-index",
         type=int,
         default=-1,
-        help="index of matched NVTX range after time-sort when --nvtx-text is set; -1 means all matches (default: -1)",
+        help=(
+            "index of matched NVTX scope after start-time sort when --nvtx-text is set. "
+            "-1 means use all matched scopes (default: -1)"
+        ),
     )
     nsys_timeline.add_argument(
         "--include-metrics",
         action="store_true",
-        help="overlay GPU metrics line chart in the same time window",
+        help="enable GPU metrics collection/rendering in the selected timeline window",
     )
     nsys_timeline.add_argument(
         "--metric-name-like",
         default="%",
-        help="metric name LIKE filter when --include-metrics is set (default: %)",
+        help=(
+            "SQL LIKE filter on metric names when --include-metrics is enabled "
+            "(default: '%%', i.e. no name filter)"
+        ),
     )
     nsys_timeline.add_argument(
         "--metrics-limit",
         type=int,
         default=-1,
-        help="max metric samples loaded before per-series sampling; <=0 means no global sampling limit (default: -1)",
+        help=(
+            "global metric row cap before series-level sampling. "
+            "<=0 disables this cap and keeps all fetched rows (default: -1)"
+        ),
     )
     nsys_timeline.add_argument(
         "--metrics-max-points",
         type=int,
         default=-1,
-        help="max rendered points per metric series; <=0 means keep all points (default: -1)",
+        help=(
+            "max rendered points per metric series. "
+            "<=0 keeps all points in each series (default: -1)"
+        ),
     )
     nsys_timeline.add_argument(
         "--overlay-metrics-per-track",
         type=int,
         default=7,
-        help="number of metric series overlaid on each stream track for attribution view (0 to disable)",
+        help=(
+            "number of metric series overlaid onto each stream lane for attribution view. "
+            "0 disables per-track metric overlays (default: 7)"
+        ),
     )
     nsys_timeline.add_argument(
         "--default-focus-metrics",
         dest="default_focus_metrics",
         action="store_true",
         default=False,
-        help="when --metric-name-like is default '%' only keep the built-in attribution metric set (default: disabled)",
+        help=(
+            "when --metric-name-like is '%%' (or empty), keep only built-in focus metrics "
+            "for attribution (default: disabled)"
+        ),
     )
     nsys_timeline.add_argument(
         "--no-default-focus-metrics",
         dest="default_focus_metrics",
         action="store_false",
-        help="disable built-in attribution metric set filtering",
+        help="explicitly disable built-in focus-metric filtering",
     )
     nsys_timeline.add_argument(
         "--include-all-metric-sources",
         action="store_true",
-        help="include non-GPU generic sources (ETW/FTrace/etc) in metrics panel",
+        help=(
+            "include non-GPU generic metric sources (for example ETW/FTrace) "
+            "in addition to GPU metric sources"
+        ),
     )
     nsys_timeline.add_argument(
         "--kernel-category-map-json",
         default="",
         help=(
-            "optional JSON path for kernel category rules. "
-            "Supports {pattern: category} flat mapping or nested {engine:{model:{pattern:category}}} mapping."
+            "optional JSON file for kernel-category rules. "
+            "Supported formats: {pattern: category} or nested "
+            "{engine:{model:{pattern:category}}}."
         ),
     )
     nsys_timeline.add_argument(
         "--kernel-category-engine",
         default="sglang",
-        help="kernel category engine key for nested mapping (default: sglang)",
+        help="engine key when using nested kernel-category mapping (default: sglang)",
     )
     nsys_timeline.add_argument(
         "--kernel-category-model",
         default="llama",
-        help="kernel category model key for nested mapping (default: llama)",
+        help="model key when using nested kernel-category mapping (default: llama)",
     )
     nsys_timeline.add_argument(
         "--disable-kernel-category-breakdown",
         dest="enable_kernel_category_breakdown",
         action="store_false",
         default=True,
-        help="disable overlap-aware kernel category breakdown panel",
+        help="disable the overlap-aware kernel-category breakdown panel in HTML output",
     )
     nsys_timeline.add_argument(
         "--enable-kernel-category-breakdown",
         dest="enable_kernel_category_breakdown",
         action="store_true",
-        help="enable overlap-aware kernel category breakdown panel (default: enabled)",
+        help="enable overlap-aware kernel-category breakdown panel (default: enabled)",
+    )
+    nsys_timeline.add_argument(
+        "--kernel-category-table-output",
+        default="",
+        help=(
+            "optional output path for kernel-category membership table "
+            "(which kernels belong to which category). "
+            "Use .csv for CSV, otherwise JSON."
+        ),
+    )
+    nsys_timeline.add_argument(
+        "--nvtx-category-stats-output",
+        default="",
+        help=(
+            "optional JSON output path for per-matched-NVTX category stability stats: "
+            "per-window category ratio, aggregate avg/std/min/max, and outlier scopes."
+        ),
     )
     nsys_timeline.add_argument(
         "--debug",
         dest="debug",
         action="store_true",
         default=True,
-        help="enable timeline debug diagnostics (default: enabled)",
+        help="enable debug diagnostics for timeline collection/rendering (default: enabled)",
     )
     nsys_timeline.add_argument(
         "--no-debug",
@@ -952,132 +1043,211 @@ def build_parser() -> argparse.ArgumentParser:
         "--debug-rows",
         type=int,
         default=-1,
-        help="sample row count for timeline debug logs; <=0 means no limit",
+        help=(
+            "row preview limit in debug logs. "
+            "<=0 means no row-preview limit (default: -1)"
+        ),
     )
     nsys_timeline.set_defaults(func=cmd_nsys_timeline_html)
 
     nsys_timeline_compare = sub.add_parser(
         "nsys-timeline-compare-html",
         help="export a single html page that compares multiple nsys sqlite timelines",
+        description=(
+            "Export one compare HTML page for multiple nsys SQLite files.\n"
+            "Each sqlite is collected independently, then rendered in aligned sections "
+            "(all-stream overlap, matched NVTX scopes, stream timeline, summaries).\n"
+            "Category ratios are still computed from GPU kernel execution time, not CPU NVTX duration."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     nsys_timeline_compare.add_argument(
         "--sqlite",
         required=True,
         action="append",
-        help="nsys exported sqlite path; repeat this option to compare multiple profiles",
+        help=(
+            "path to one nsys SQLite; repeat this option to include multiple profiles "
+            "(at least two required)"
+        ),
     )
-    nsys_timeline_compare.add_argument("--output", required=True, help="output html file path")
-    nsys_timeline_compare.add_argument("--device-id", type=int, default=-1)
-    nsys_timeline_compare.add_argument("--start-ns", type=int, default=-1)
-    nsys_timeline_compare.add_argument("--end-ns", type=int, default=-1)
-    nsys_timeline_compare.add_argument("--limit", type=int, default=100000)
-    nsys_timeline_compare.add_argument("--width-px", type=int, default=1800)
+    nsys_timeline_compare.add_argument("--output", required=True, help="output compare HTML file path")
+    nsys_timeline_compare.add_argument(
+        "--device-id",
+        type=int,
+        default=-1,
+        help="GPU device filter for kernels/metrics; -1 means all devices (default: -1)",
+    )
+    nsys_timeline_compare.add_argument(
+        "--start-ns",
+        type=int,
+        default=-1,
+        help="timeline start timestamp (ns) per sqlite when no NVTX override is used (default: -1)",
+    )
+    nsys_timeline_compare.add_argument(
+        "--end-ns",
+        type=int,
+        default=-1,
+        help="timeline end timestamp (ns) per sqlite when no NVTX override is used (default: -1)",
+    )
+    nsys_timeline_compare.add_argument(
+        "--limit",
+        type=int,
+        default=100000,
+        help="max kernel rows to collect per sqlite/query path (default: 100000)",
+    )
+    nsys_timeline_compare.add_argument(
+        "--width-px",
+        type=int,
+        default=1800,
+        help="base plot width in pixels for each compared panel (default: 1800)",
+    )
     nsys_timeline_compare.add_argument(
         "--nvtx-text",
         default="",
-        help="optional NVTX text LIKE pattern; each sqlite focuses on its own matched NVTX window(s)",
+        help=(
+            "SQL LIKE pattern for NVTX text matching. "
+            "Each sqlite uses its own matched NVTX scope(s)."
+        ),
     )
     nsys_timeline_compare.add_argument(
         "--nvtx-index",
         type=int,
         default=-1,
-        help="index of matched NVTX range after time-sort when --nvtx-text is set; -1 means all matches (default: -1)",
+        help=(
+            "index of matched NVTX scope after start-time sort per sqlite. "
+            "-1 means use all matched scopes (default: -1)"
+        ),
     )
     nsys_timeline_compare.add_argument(
         "--include-metrics",
         action="store_true",
-        help="embed GPU metrics charts in each compared timeline",
+        help="enable GPU metrics collection/rendering for each compared sqlite",
     )
     nsys_timeline_compare.add_argument(
         "--metric-name-like",
         default="%",
-        help="metric name LIKE filter when --include-metrics is set (default: %)",
+        help=(
+            "SQL LIKE filter on metric names when --include-metrics is enabled "
+            "(default: '%%', i.e. no name filter)"
+        ),
     )
     nsys_timeline_compare.add_argument(
         "--metrics-limit",
         type=int,
         default=-1,
-        help="max metric samples loaded before per-series sampling; <=0 means no global sampling limit (default: -1)",
+        help=(
+            "global metric row cap before series-level sampling. "
+            "<=0 disables this cap (default: -1)"
+        ),
     )
     nsys_timeline_compare.add_argument(
         "--metrics-max-points",
         type=int,
         default=-1,
-        help="max rendered points per metric series; <=0 means keep all points (default: -1)",
+        help=(
+            "max rendered points per metric series. "
+            "<=0 keeps all points in each series (default: -1)"
+        ),
     )
     nsys_timeline_compare.add_argument(
         "--overlay-metrics-per-track",
         type=int,
         default=7,
-        help="number of metric series overlaid on each stream track for attribution view (0 to disable)",
+        help=(
+            "number of metric series overlaid onto each stream lane per sqlite. "
+            "0 disables per-track overlays (default: 7)"
+        ),
     )
     nsys_timeline_compare.add_argument(
         "--default-focus-metrics",
         dest="default_focus_metrics",
         action="store_true",
         default=False,
-        help="when --metric-name-like is default '%' only keep the built-in attribution metric set (default: disabled)",
+        help=(
+            "when --metric-name-like is '%%' (or empty), keep only built-in focus metrics "
+            "for attribution (default: disabled)"
+        ),
     )
     nsys_timeline_compare.add_argument(
         "--no-default-focus-metrics",
         dest="default_focus_metrics",
         action="store_false",
-        help="disable built-in attribution metric set filtering",
+        help="explicitly disable built-in focus-metric filtering",
     )
     nsys_timeline_compare.add_argument(
         "--include-all-metric-sources",
         action="store_true",
-        help="include non-GPU generic sources (ETW/FTrace/etc) in metrics panel",
+        help="include non-GPU generic metric sources (ETW/FTrace/etc)",
     )
     nsys_timeline_compare.add_argument(
         "--kernel-category-map-json",
         default="",
         help=(
-            "optional JSON path for kernel category rules. "
-            "Supports {pattern: category} flat mapping or nested {engine:{model:{pattern:category}}} mapping."
+            "optional JSON file for kernel-category rules. "
+            "Supported formats: {pattern: category} or nested "
+            "{engine:{model:{pattern:category}}}."
         ),
     )
     nsys_timeline_compare.add_argument(
         "--kernel-category-engine",
         default="sglang",
-        help="kernel category engine key for nested mapping (default: sglang)",
+        help="engine key when using nested kernel-category mapping (default: sglang)",
     )
     nsys_timeline_compare.add_argument(
         "--kernel-category-model",
         default="llama",
-        help="kernel category model key for nested mapping (default: llama)",
+        help="model key when using nested kernel-category mapping (default: llama)",
     )
     nsys_timeline_compare.add_argument(
         "--disable-kernel-category-breakdown",
         dest="enable_kernel_category_breakdown",
         action="store_false",
         default=True,
-        help="disable overlap-aware kernel category breakdown panel",
+        help="disable overlap-aware kernel-category breakdown panels in compare HTML",
     )
     nsys_timeline_compare.add_argument(
         "--enable-kernel-category-breakdown",
         dest="enable_kernel_category_breakdown",
         action="store_true",
-        help="enable overlap-aware kernel category breakdown panel (default: enabled)",
+        help="enable overlap-aware kernel-category breakdown panels (default: enabled)",
+    )
+    nsys_timeline_compare.add_argument(
+        "--kernel-category-table-output",
+        default="",
+        help=(
+            "optional output path for merged kernel-category membership table across sqlites. "
+            "Use .csv for CSV, otherwise JSON."
+        ),
+    )
+    nsys_timeline_compare.add_argument(
+        "--nvtx-category-stats-output",
+        default="",
+        help=(
+            "optional JSON output path for per-sqlite NVTX category stability stats "
+            "(per-window ratios, aggregate stats, and outlier windows)."
+        ),
     )
     nsys_timeline_compare.add_argument(
         "--debug",
         dest="debug",
         action="store_true",
         default=True,
-        help="enable timeline debug diagnostics (default: enabled)",
+        help="enable debug diagnostics for compare collection/rendering (default: enabled)",
     )
     nsys_timeline_compare.add_argument(
         "--no-debug",
         dest="debug",
         action="store_false",
-        help="disable timeline debug diagnostics",
+        help="disable compare debug diagnostics",
     )
     nsys_timeline_compare.add_argument(
         "--debug-rows",
         type=int,
         default=-1,
-        help="sample row count for timeline debug logs; <=0 means no limit",
+        help=(
+            "row preview limit in debug logs. "
+            "<=0 means no row-preview limit (default: -1)"
+        ),
     )
     nsys_timeline_compare.set_defaults(func=cmd_nsys_timeline_compare_html)
 

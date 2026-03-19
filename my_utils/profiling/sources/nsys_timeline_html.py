@@ -1,4 +1,5 @@
 from __future__ import annotations
+import csv
 import hashlib
 import html
 import json
@@ -320,10 +321,33 @@ def _resolve_kernel_category_rules(
     return compiled, profile_name
 
 
+def _classify_kernel_name(
+    kernel_name: object,
+    *,
+    rules: Sequence[Tuple[Pattern[str], str]],
+    cache: Optional[Dict[str, str]] = None,
+) -> str:
+    name = str(kernel_name or "")
+    if cache is not None:
+        cached = cache.get(name)
+        if cached is not None:
+            return cached
+    category = "misc"
+    for pattern, value in rules:
+        if pattern.search(name):
+            category = str(value or "misc")
+            break
+    if cache is not None:
+        cache[name] = category
+    return category
+
+
 def _build_kernel_category_breakdown(
     kernels: Sequence[Dict[str, object]],
     *,
     rules: Sequence[Tuple[Pattern[str], str]],
+    wall_start_ns: int = -1,
+    wall_end_ns: int = -1,
 ) -> Dict[str, object]:
     events: List[Tuple[int, int, str]] = []
     intervals_by_cat: Dict[str, List[Tuple[int, int]]] = {}
@@ -333,21 +357,20 @@ def _build_kernel_category_breakdown(
     kinds_by_cat: Dict[str, Dict[str, int]] = {}
     cat_cache: Dict[str, str] = {}
     raw_total_ns = 0
+    min_kernel_start_ns: Optional[int] = None
+    max_kernel_end_ns: Optional[int] = None
 
     for row in kernels:
         s = _to_int(row.get("start_ns"), -1)
         e = _to_int(row.get("end_ns"), -1)
         if s < 0 or e <= s:
             continue
+        if min_kernel_start_ns is None or s < min_kernel_start_ns:
+            min_kernel_start_ns = int(s)
+        if max_kernel_end_ns is None or e > max_kernel_end_ns:
+            max_kernel_end_ns = int(e)
         name = str(row.get("kernel_name") or "")
-        category = cat_cache.get(name)
-        if category is None:
-            category = "misc"
-            for pattern, value in rules:
-                if pattern.search(name):
-                    category = str(value or "misc")
-                    break
-            cat_cache[name] = category
+        category = _classify_kernel_name(name, rules=rules, cache=cat_cache)
         kind = str(row.get("kind") or "compute")
 
         events.append((s, 1, category))
@@ -364,16 +387,31 @@ def _build_kernel_category_breakdown(
 
     if not events:
         return {
+            "wall_ms": 0.0,
             "raw_total_ms": 0.0,
             "non_overlap_ms": 0.0,
+            "busy_union_ms": 0.0,
+            "idle_ms": 0.0,
+            "busy_pct_of_wall": 0.0,
+            "cross_category_overlap_ms": 0.0,
             "overlap_saved_ms": 0.0,
             "rows": [],
         }
 
+    ws = _to_int(wall_start_ns, -1)
+    we = _to_int(wall_end_ns, -1)
+    if ws < 0 or we <= ws:
+        ws = int(min_kernel_start_ns if min_kernel_start_ns is not None else 0)
+        we = int(max_kernel_end_ns if max_kernel_end_ns is not None else (ws + 1))
+    wall_ns = max(1.0, float(we - ws))
+
     events.sort(key=lambda x: (int(x[0]), 0 if int(x[1]) < 0 else 1))
     active_by_cat: Dict[str, int] = {}
     weighted_ns_by_cat: Dict[str, float] = {}
+    exclusive_ns_by_cat: Dict[str, float] = {}
+    overlap_ns_by_cat: Dict[str, float] = {}
     non_overlap_ns = 0.0
+    cross_category_overlap_ns = 0.0
     prev_t: Optional[int] = None
     for t, delta_kind, category in events:
         tt = int(t)
@@ -382,6 +420,13 @@ def _build_kernel_category_breakdown(
             non_overlap_ns += span
             active_cats = [cat for cat, count in active_by_cat.items() if int(count) > 0]
             if active_cats:
+                if len(active_cats) == 1:
+                    only_cat = str(active_cats[0])
+                    exclusive_ns_by_cat[only_cat] = float(exclusive_ns_by_cat.get(only_cat, 0.0)) + span
+                else:
+                    cross_category_overlap_ns += span
+                    for cat in active_cats:
+                        overlap_ns_by_cat[cat] = float(overlap_ns_by_cat.get(cat, 0.0)) + span
                 share = span / float(len(active_cats))
                 for cat in active_cats:
                     weighted_ns_by_cat[cat] = float(weighted_ns_by_cat.get(cat, 0.0)) + share
@@ -400,18 +445,42 @@ def _build_kernel_category_breakdown(
         merged = _merge_intervals(intervals_by_cat.get(category, []))
         union_ns = sum(int(e - s) for s, e in merged)
         weighted_ns = float(weighted_ns_by_cat.get(category, 0.0))
+        exclusive_ns = float(exclusive_ns_by_cat.get(category, 0.0))
+        overlap_ns = float(overlap_ns_by_cat.get(category, 0.0))
         non_overlap = max(1e-9, float(non_overlap_ns))
+        union_ns = float(union_ns)
+        if overlap_ns > union_ns:
+            overlap_ns = union_ns
+        if exclusive_ns > union_ns:
+            exclusive_ns = union_ns
+        if abs((exclusive_ns + overlap_ns) - union_ns) > 1e-6:
+            if union_ns > 0:
+                overlap_ns = max(0.0, union_ns - exclusive_ns)
+            else:
+                exclusive_ns = 0.0
+                overlap_ns = 0.0
         kind_counter = kinds_by_cat.get(category, {})
+        raw_ns = float(raw_ns_by_cat.get(category, 0))
         rows.append(
             {
                 "category": category,
                 "instances": int(instances_by_cat.get(category, 0)),
                 "stream_count": len(streams_by_cat.get(category, set())),
-                "raw_total_ms": float(raw_ns_by_cat.get(category, 0)) / 1e6,
-                "union_elapsed_ms": float(union_ns) / 1e6,
+                "raw_total_ms": raw_ns / 1e6,
+                "raw_pct_of_wall": (raw_ns / wall_ns) * 100.0,
+                "union_elapsed_ms": union_ns / 1e6,
                 "weighted_elapsed_ms": weighted_ns / 1e6,
+                "exclusive_elapsed_ms": exclusive_ns / 1e6,
+                "overlap_elapsed_ms": overlap_ns / 1e6,
+                "shared_elapsed_ms": overlap_ns / 1e6,
+                "weighted_pct_of_wall": (weighted_ns / wall_ns) * 100.0,
                 "weighted_pct_of_nonoverlap": (weighted_ns / non_overlap) * 100.0,
-                "union_pct_of_nonoverlap": (float(union_ns) / non_overlap) * 100.0,
+                "weighted_pct_of_busy": (weighted_ns / non_overlap) * 100.0,
+                "union_pct_of_nonoverlap": (union_ns / non_overlap) * 100.0,
+                "union_pct_of_wall": (union_ns / wall_ns) * 100.0,
+                "exclusive_pct_of_wall": (exclusive_ns / wall_ns) * 100.0,
+                "overlap_pct_of_wall": (overlap_ns / wall_ns) * 100.0,
+                "shared_pct_of_wall": (overlap_ns / wall_ns) * 100.0,
                 "compute_instances": int(kind_counter.get("compute", 0)),
                 "comm_instances": int(kind_counter.get("comm", 0)),
             }
@@ -425,11 +494,320 @@ def _build_kernel_category_breakdown(
     )
     raw_total_ms = float(raw_total_ns) / 1e6
     non_overlap_ms = float(non_overlap_ns) / 1e6
+    wall_ms = float(wall_ns) / 1e6
+    idle_ms = max(0.0, wall_ms - non_overlap_ms)
     return {
+        "wall_ms": wall_ms,
         "raw_total_ms": raw_total_ms,
         "non_overlap_ms": non_overlap_ms,
+        "busy_union_ms": non_overlap_ms,
+        "busy_pct_of_wall": (float(non_overlap_ns) / wall_ns) * 100.0,
+        "idle_ms": idle_ms,
+        "idle_pct_of_wall": (idle_ms / wall_ms) * 100.0 if wall_ms > 0 else 0.0,
+        "cross_category_overlap_ms": float(cross_category_overlap_ns) / 1e6,
+        "cross_category_overlap_pct_of_wall": (float(cross_category_overlap_ns) / wall_ns) * 100.0,
         "overlap_saved_ms": max(0.0, raw_total_ms - non_overlap_ms),
         "rows": rows,
+    }
+
+
+def _build_kernel_category_kernel_table(
+    kernels: Sequence[Dict[str, object]],
+    *,
+    rules: Sequence[Tuple[Pattern[str], str]],
+) -> List[Dict[str, object]]:
+    grouped: Dict[Tuple[str, str], Dict[str, object]] = {}
+    cache: Dict[str, str] = {}
+    for row in kernels:
+        s = _to_int(row.get("start_ns"), -1)
+        e = _to_int(row.get("end_ns"), -1)
+        if s < 0 or e <= s:
+            continue
+        kernel_name = str(row.get("kernel_name") or "")
+        category = _classify_kernel_name(kernel_name, rules=rules, cache=cache)
+        dur_ms = _safe_float(row.get("duration_ms"))
+        if dur_ms <= 0:
+            dur_ms = float(e - s) / 1e6
+        key = (category, kernel_name)
+        entry = grouped.get(key)
+        if entry is None:
+            entry = {
+                "category": category,
+                "kernel_name": kernel_name,
+                "instances": 0,
+                "total_ms": 0.0,
+                "max_ms": 0.0,
+                "stream_keys": set(),
+                "compute_instances": 0,
+                "comm_instances": 0,
+            }
+            grouped[key] = entry
+        entry["instances"] = int(entry.get("instances") or 0) + 1
+        entry["total_ms"] = _safe_float(entry.get("total_ms")) + float(dur_ms)
+        entry["max_ms"] = max(_safe_float(entry.get("max_ms")), float(dur_ms))
+        entry["stream_keys"].add((_to_int(row.get("device_id"), -1), _to_int(row.get("stream_id"), 0)))
+        if str(row.get("kind") or "compute").lower() == "comm":
+            entry["comm_instances"] = int(entry.get("comm_instances") or 0) + 1
+        else:
+            entry["compute_instances"] = int(entry.get("compute_instances") or 0) + 1
+
+    rows: List[Dict[str, object]] = []
+    for entry in grouped.values():
+        instances = int(entry.get("instances") or 0)
+        total_ms = _safe_float(entry.get("total_ms"))
+        rows.append(
+            {
+                "category": str(entry.get("category") or "misc"),
+                "kernel_name": str(entry.get("kernel_name") or ""),
+                "instances": instances,
+                "total_ms": total_ms,
+                "avg_ms": (total_ms / float(max(1, instances))),
+                "max_ms": _safe_float(entry.get("max_ms")),
+                "stream_count": len(entry.get("stream_keys") or set()),
+                "compute_instances": int(entry.get("compute_instances") or 0),
+                "comm_instances": int(entry.get("comm_instances") or 0),
+            }
+        )
+    rows.sort(
+        key=lambda x: (
+            str(x.get("category") or ""),
+            -_safe_float(x.get("total_ms")),
+            -int(x.get("instances") or 0),
+            str(x.get("kernel_name") or ""),
+        )
+    )
+    return rows
+
+
+def _write_rows_table(path: str, rows: Sequence[Dict[str, object]]) -> str:
+    out = Path(str(path))
+    out.parent.mkdir(parents=True, exist_ok=True)
+    rows_list = [dict(r) for r in rows]
+    if out.suffix.lower() == ".csv":
+        preferred = [
+            "sqlite_index",
+            "sqlite_label",
+            "sqlite_path",
+            "category",
+            "kernel_name",
+            "instances",
+            "total_ms",
+            "avg_ms",
+            "max_ms",
+            "stream_count",
+            "compute_instances",
+            "comm_instances",
+        ]
+        keys = set()
+        for row in rows_list:
+            keys.update(str(k) for k in row.keys())
+        fieldnames: List[str] = []
+        for k in preferred:
+            if k in keys:
+                fieldnames.append(k)
+                keys.discard(k)
+        fieldnames.extend(sorted(keys))
+        with out.open("w", encoding="utf-8", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer.writeheader()
+            for row in rows_list:
+                writer.writerow({k: row.get(k) for k in fieldnames})
+    else:
+        out.write_text(json.dumps(rows_list, ensure_ascii=False, indent=2), encoding="utf-8")
+    return str(out)
+
+
+def _build_nvtx_window_category_stats(
+    *,
+    nvtx_windows: Sequence[Dict[str, object]],
+    kernels: Sequence[Dict[str, object]],
+    rules: Sequence[Tuple[Pattern[str], str]],
+) -> Dict[str, object]:
+    windows = []
+    for idx, scope in enumerate(nvtx_windows):
+        s = _to_int(scope.get("start_ns"), -1)
+        e = _to_int(scope.get("end_ns"), -1)
+        if s < 0 or e <= s:
+            continue
+        windows.append(
+            {
+                "index": int(idx),
+                "nvtx_text": str(scope.get("nvtx_text") or ""),
+                "start_ns": int(s),
+                "end_ns": int(e),
+                "duration_ms": float(e - s) / 1e6,
+            }
+        )
+    if not windows:
+        return {
+            "window_count": 0,
+            "windows": [],
+            "category_summary_rows": [],
+            "outlier_windows": [],
+        }
+
+    pair_to_indices: Dict[Tuple[int, int], List[int]] = {}
+    for i, w in enumerate(windows):
+        pair_to_indices.setdefault((int(w["start_ns"]), int(w["end_ns"])), []).append(i)
+
+    per_window_kernels: List[List[Dict[str, object]]] = [[] for _ in windows]
+    for row in kernels:
+        ks = _to_int(row.get("start_ns"), -1)
+        ke = _to_int(row.get("end_ns"), -1)
+        if ks < 0 or ke <= ks:
+            continue
+
+        assigned: set[int] = set()
+        ns = _to_int(row.get("nvtx_start_ns"), -1)
+        ne = _to_int(row.get("nvtx_end_ns"), -1)
+        if ns >= 0 and ne > ns:
+            for wi in pair_to_indices.get((ns, ne), []):
+                assigned.add(int(wi))
+
+        if not assigned:
+            for wi, w in enumerate(windows):
+                if _intervals_overlap(ks, ke, int(w["start_ns"]), int(w["end_ns"])):
+                    assigned.add(int(wi))
+
+        for wi in assigned:
+            per_window_kernels[wi].append(dict(row))
+
+    per_window_rows: List[Dict[str, object]] = []
+    category_union: set[str] = set()
+    for wi, w in enumerate(windows):
+        wk = per_window_kernels[wi]
+        if wk:
+            gpu_start_ns = min(_to_int(item.get("start_ns"), 0) for item in wk)
+            gpu_end_ns = max(_to_int(item.get("end_ns"), 0) for item in wk)
+            breakdown = _build_kernel_category_breakdown(
+                wk,
+                rules=list(rules or []),
+                wall_start_ns=int(gpu_start_ns),
+                wall_end_ns=int(gpu_end_ns),
+            )
+            cat_rows = list(breakdown.get("rows") or [])
+            cat_pct_map = {
+                str(item.get("category") or "misc"): _safe_float(item.get("weighted_pct_of_nonoverlap"))
+                for item in cat_rows
+            }
+            for cat_name in cat_pct_map.keys():
+                category_union.add(str(cat_name))
+            top_cat = ""
+            top_cat_pct = 0.0
+            if cat_pct_map:
+                top_cat, top_cat_pct = max(cat_pct_map.items(), key=lambda kv: float(kv[1]))
+        else:
+            gpu_start_ns = -1
+            gpu_end_ns = -1
+            breakdown = {
+                "rows": [],
+                "wall_ms": 0.0,
+                "non_overlap_ms": 0.0,
+                "raw_total_ms": 0.0,
+                "busy_union_ms": 0.0,
+                "idle_ms": 0.0,
+                "overlap_saved_ms": 0.0,
+            }
+            cat_pct_map = {}
+            top_cat = ""
+            top_cat_pct = 0.0
+        per_window_rows.append(
+            {
+                "window_index": int(w["index"]),
+                "nvtx_text": str(w["nvtx_text"]),
+                "cpu_start_ns": int(w["start_ns"]),
+                "cpu_end_ns": int(w["end_ns"]),
+                "cpu_duration_ms": _safe_float(w.get("duration_ms")),
+                "gpu_start_ns": int(gpu_start_ns) if gpu_start_ns >= 0 else None,
+                "gpu_end_ns": int(gpu_end_ns) if gpu_end_ns > gpu_start_ns >= 0 else None,
+                "gpu_duration_ms": (float(gpu_end_ns - gpu_start_ns) / 1e6) if gpu_end_ns > gpu_start_ns >= 0 else 0.0,
+                "kernel_count": len(wk),
+                "non_overlap_ms": _safe_float(breakdown.get("non_overlap_ms")),
+                "raw_total_ms": _safe_float(breakdown.get("raw_total_ms")),
+                "top_category": str(top_cat or ""),
+                "top_category_pct": float(top_cat_pct),
+                "category_weighted_pct": cat_pct_map,
+            }
+        )
+
+    category_summary_rows: List[Dict[str, object]] = []
+    for cat in sorted(category_union):
+        values = [
+            _safe_float(row.get("category_weighted_pct", {}).get(cat))
+            for row in per_window_rows
+        ]
+        if not values:
+            continue
+        mean_v = sum(values) / float(len(values))
+        variance = sum((v - mean_v) * (v - mean_v) for v in values) / float(len(values))
+        std_v = math.sqrt(max(0.0, variance))
+        category_summary_rows.append(
+            {
+                "category": str(cat),
+                "avg_pct": float(mean_v),
+                "std_pct": float(std_v),
+                "min_pct": float(min(values)),
+                "max_pct": float(max(values)),
+                "nonzero_windows": int(sum(1 for v in values if v > 1e-9)),
+                "window_count": len(values),
+            }
+        )
+    category_summary_rows.sort(
+        key=lambda x: (
+            -_safe_float(x.get("avg_pct")),
+            str(x.get("category") or ""),
+        )
+    )
+    cat_stats = {str(item["category"]): item for item in category_summary_rows}
+
+    outlier_rows: List[Dict[str, object]] = []
+    warmup_head = max(2, min(10, int(math.ceil(len(per_window_rows) * 0.1))))
+    for row in per_window_rows:
+        cat_map = dict(row.get("category_weighted_pct") or {})
+        top_cat = ""
+        top_z = 0.0
+        for cat in category_union:
+            stat = cat_stats.get(str(cat))
+            if not stat:
+                continue
+            std_v = _safe_float(stat.get("std_pct"))
+            if std_v <= 1e-12:
+                continue
+            v = _safe_float(cat_map.get(cat))
+            z = (v - _safe_float(stat.get("avg_pct"))) / std_v
+            if abs(z) > abs(top_z):
+                top_z = z
+                top_cat = str(cat)
+        row["max_abs_z"] = abs(float(top_z))
+        row["outlier_category"] = top_cat
+        row["outlier_z"] = float(top_z)
+        if abs(float(top_z)) >= 2.0:
+            outlier_rows.append(
+                {
+                    "window_index": int(row.get("window_index") or 0),
+                    "nvtx_text": str(row.get("nvtx_text") or ""),
+                    "kernel_count": int(row.get("kernel_count") or 0),
+                    "gpu_duration_ms": _safe_float(row.get("gpu_duration_ms")),
+                    "outlier_category": str(top_cat),
+                    "outlier_z": float(top_z),
+                    "max_abs_z": abs(float(top_z)),
+                    "warmup_head_window": bool(int(row.get("window_index") or 0) < int(warmup_head)),
+                }
+            )
+    outlier_rows.sort(
+        key=lambda x: (
+            -_safe_float(x.get("max_abs_z")),
+            int(x.get("window_index") or 0),
+        )
+    )
+
+    return {
+        "window_count": len(per_window_rows),
+        "category_count": len(category_union),
+        "warmup_head_window_count": int(warmup_head),
+        "windows": per_window_rows,
+        "category_summary_rows": category_summary_rows,
+        "outlier_windows": outlier_rows,
     }
 
 
@@ -1097,6 +1475,7 @@ def _render_html(
     metric_series: List[Dict[str, object]],
     kernel_category_summary: Optional[Dict[str, object]],
     kernel_category_profile: str,
+    nvtx_window_category_stats: Optional[Dict[str, object]],
     window_start_ns: int,
     window_end_ns: int,
     display_span_ns: int,
@@ -1201,6 +1580,9 @@ def _render_html(
         ".category-sub{font-size:11px;color:#95a4bf;margin:4px 0 0 0;}",
         ".category-bar{height:8px;background:#0f1522;border:1px solid #33435f;border-radius:999px;overflow:hidden;margin-top:6px;}",
         ".category-fill{height:100%;background:linear-gradient(90deg,#5f8bff,#60d3a5);}",
+        ".simple-table{width:100%;border-collapse:collapse;font-size:11px;color:#dce5f8;margin-top:8px;}",
+        ".simple-table th,.simple-table td{border-bottom:1px solid #2a3243;padding:4px 6px;text-align:left;vertical-align:top;}",
+        ".simple-table th{color:#9cb0d0;font-weight:600;}",
         ".row{display:flex;align-items:center;margin:8px 0;}",
         ".label{width:140px;color:#a8afbf;font-size:12px;}",
         f".track{{position:relative;height:24px;width:{int(width_px)}px;background:#1a1f2b;border-radius:4px;overflow:hidden;}}",
@@ -1251,7 +1633,12 @@ def _render_html(
 
     category_rows = list((kernel_category_summary or {}).get("rows") or [])
     if category_rows:
+        wall_ms = _safe_float((kernel_category_summary or {}).get("wall_ms"))
         non_overlap_ms = _safe_float((kernel_category_summary or {}).get("non_overlap_ms"))
+        busy_union_ms = _safe_float((kernel_category_summary or {}).get("busy_union_ms", non_overlap_ms))
+        idle_ms = _safe_float((kernel_category_summary or {}).get("idle_ms"))
+        busy_pct_wall = _safe_float((kernel_category_summary or {}).get("busy_pct_of_wall"))
+        cross_overlap_ms = _safe_float((kernel_category_summary or {}).get("cross_category_overlap_ms"))
         raw_total_ms = _safe_float((kernel_category_summary or {}).get("raw_total_ms"))
         overlap_saved_ms = _safe_float((kernel_category_summary or {}).get("overlap_saved_ms"))
         profile_text = str(kernel_category_profile or "custom")
@@ -1264,10 +1651,12 @@ def _render_html(
                 ),
                 (
                     "<div class='axis-note'>"
-                    f"profile={html.escape(profile_text)} | non_overlap_ms={non_overlap_ms:.3f} | "
-                    f"raw_total_ms={raw_total_ms:.3f} | overlap_saved_ms={overlap_saved_ms:.3f}. "
-                    "weighted_elapsed_ms splits each active timeslice equally across active categories, "
-                    "so weighted percentages sum to ~100% under overlap."
+                    f"profile={html.escape(profile_text)} | wall_ms={wall_ms:.3f} | "
+                    f"busy_union_ms={busy_union_ms:.3f} ({busy_pct_wall:.2f}% wall) | idle_ms={idle_ms:.3f} | "
+                    f"cross_category_overlap_ms={cross_overlap_ms:.3f} | raw_total_ms={raw_total_ms:.3f} | "
+                    f"overlap_saved_ms={overlap_saved_ms:.3f}. "
+                    "Three ratio views are provided per category: "
+                    "raw(sum, can exceed 100%), weighted(equal-slice share), and exclusive/overlap split."
                     "</div>"
                 ),
                 "<div class='category-grid'>",
@@ -1282,8 +1671,13 @@ def _render_html(
                     f"<div class='category-title'>{html.escape(cat_name)}</div>",
                     (
                         "<div class='category-sub'>"
+                        f"raw_sum={_safe_float(row.get('raw_total_ms')):.3f} ms "
+                        f"({_safe_float(row.get('raw_pct_of_wall')):.2f}% wall) | "
                         f"weighted={_safe_float(row.get('weighted_elapsed_ms')):.3f} ms "
-                        f"({weighted_pct:.2f}%) | union={_safe_float(row.get('union_elapsed_ms')):.3f} ms | "
+                        f"({weighted_pct:.2f}% busy, {_safe_float(row.get('weighted_pct_of_wall')):.2f}% wall) | "
+                        f"union={_safe_float(row.get('union_elapsed_ms')):.3f} ms ({_safe_float(row.get('union_pct_of_wall')):.2f}% wall) | "
+                        f"exclusive={_safe_float(row.get('exclusive_elapsed_ms')):.3f} ms ({_safe_float(row.get('exclusive_pct_of_wall')):.2f}% wall) | "
+                        f"overlap={_safe_float(row.get('overlap_elapsed_ms')):.3f} ms ({_safe_float(row.get('overlap_pct_of_wall')):.2f}% wall) | "
                         f"instances={int(row.get('instances') or 0)} | streams={int(row.get('stream_count') or 0)}"
                         "</div>"
                     ),
@@ -1294,6 +1688,62 @@ def _render_html(
                 ]
             )
         lines.extend(["</div>", "</div>"])
+
+    nvtx_stats = dict(nvtx_window_category_stats or {})
+    nvtx_stats_rows = list(nvtx_stats.get("category_summary_rows") or [])
+    if nvtx_stats_rows:
+        outlier_rows = list(nvtx_stats.get("outlier_windows") or [])
+        lines.extend(
+            [
+                "<div class='card'>",
+                "<h3 class='panel-title'>Per-Matched-NVTX Category Stability</h3>",
+                (
+                    "<div class='axis-note'>"
+                    f"windows={int(nvtx_stats.get('window_count') or 0)} | categories={int(nvtx_stats.get('category_count') or 0)}. "
+                    "Each matched NVTX scope is analyzed independently, and each scope's category ratio is computed from "
+                    "GPU kernel execution intervals (non-overlap weighted), not CPU-side NVTX duration."
+                    "</div>"
+                ),
+                "<table class='simple-table'>",
+                "<thead><tr><th>category</th><th>avg%</th><th>std%</th><th>min%</th><th>max%</th><th>nonzero/windows</th></tr></thead>",
+                "<tbody>",
+            ]
+        )
+        for row in nvtx_stats_rows[:14]:
+            lines.append(
+                "<tr>"
+                f"<td><code>{html.escape(str(row.get('category') or 'misc'))}</code></td>"
+                f"<td>{_safe_float(row.get('avg_pct')):.2f}</td>"
+                f"<td>{_safe_float(row.get('std_pct')):.2f}</td>"
+                f"<td>{_safe_float(row.get('min_pct')):.2f}</td>"
+                f"<td>{_safe_float(row.get('max_pct')):.2f}</td>"
+                f"<td>{int(row.get('nonzero_windows') or 0)}/{int(row.get('window_count') or 0)}</td>"
+                "</tr>"
+            )
+        lines.extend(["</tbody>", "</table>"])
+        if outlier_rows:
+            lines.extend(
+                [
+                    "<div class='axis-note'>Potential anomalous scopes (|z|>=2, based on per-category ratio z-score):</div>",
+                    "<table class='simple-table'>",
+                    "<thead><tr><th>scope_idx</th><th>nvtx_text</th><th>outlier_category</th><th>z</th><th>gpu_dur_ms</th><th>kernels</th><th>warmup_head</th></tr></thead>",
+                    "<tbody>",
+                ]
+            )
+            for row in outlier_rows[:16]:
+                lines.append(
+                    "<tr>"
+                    f"<td>{int(row.get('window_index') or 0)}</td>"
+                    f"<td>{html.escape(str(row.get('nvtx_text') or ''))}</td>"
+                    f"<td><code>{html.escape(str(row.get('outlier_category') or ''))}</code></td>"
+                    f"<td>{_safe_float(row.get('outlier_z')):+.2f}</td>"
+                    f"<td>{_safe_float(row.get('gpu_duration_ms')):.3f}</td>"
+                    f"<td>{int(row.get('kernel_count') or 0)}</td>"
+                    f"<td>{'yes' if bool(row.get('warmup_head_window')) else 'no'}</td>"
+                    "</tr>"
+                )
+            lines.extend(["</tbody>", "</table>"])
+        lines.append("</div>")
 
     lines.extend(
         [
@@ -2260,8 +2710,20 @@ def _collect_timeline_state(
                 "sqlite_path": str(sqlite_path),
                 "kernels": [],
                 "metric_series": [],
-                "kernel_category_summary": {"rows": [], "non_overlap_ms": 0.0, "raw_total_ms": 0.0, "overlap_saved_ms": 0.0},
+                "kernel_category_summary": {
+                    "rows": [],
+                    "wall_ms": 0.0,
+                    "raw_total_ms": 0.0,
+                    "non_overlap_ms": 0.0,
+                    "busy_union_ms": 0.0,
+                    "idle_ms": 0.0,
+                    "busy_pct_of_wall": 0.0,
+                    "cross_category_overlap_ms": 0.0,
+                    "overlap_saved_ms": 0.0,
+                },
+                "kernel_category_kernel_rows": [],
                 "kernel_category_profile": str(kernel_category_profile or ""),
+                "nvtx_window_category_stats": {"window_count": 0, "windows": [], "category_summary_rows": [], "outlier_windows": []},
                 "window_start_ns": int(render_start_ns),
                 "window_end_ns": int(render_end_ns),
                 "nvtx_windows": selected_nvtx_windows,
@@ -2342,20 +2804,53 @@ def _collect_timeline_state(
 
     kernel_category_summary: Dict[str, object] = {
         "rows": [],
+        "wall_ms": 0.0,
         "non_overlap_ms": 0.0,
+        "busy_union_ms": 0.0,
+        "idle_ms": 0.0,
+        "busy_pct_of_wall": 0.0,
+        "cross_category_overlap_ms": 0.0,
         "raw_total_ms": 0.0,
         "overlap_saved_ms": 0.0,
     }
+    kernel_category_kernel_rows: List[Dict[str, object]] = []
+    if kernel_category_rules:
+        kernel_category_kernel_rows = _build_kernel_category_kernel_table(
+            kernels,
+            rules=list(kernel_category_rules or []),
+        )
+        debug_log("kernel-category kernel table rows={}".format(len(kernel_category_kernel_rows)))
     if bool(enable_kernel_category_breakdown):
         kernel_category_summary = _build_kernel_category_breakdown(
             kernels,
             rules=list(kernel_category_rules or []),
+            wall_start_ns=int(render_start_ns),
+            wall_end_ns=int(render_end_ns),
         )
         debug_log(
             "kernel-category profile={} rows={} non_overlap_ms={:.3f}".format(
                 str(kernel_category_profile or ""),
                 len(list(kernel_category_summary.get("rows") or [])),
                 _safe_float(kernel_category_summary.get("non_overlap_ms")),
+            )
+        )
+    nvtx_window_category_stats: Dict[str, object] = {
+        "window_count": 0,
+        "windows": [],
+        "category_summary_rows": [],
+        "outlier_windows": [],
+    }
+    if selected_nvtx_windows and kernel_category_rules:
+        nvtx_window_category_stats = _build_nvtx_window_category_stats(
+            nvtx_windows=list(selected_nvtx_windows or []),
+            kernels=list(kernels or []),
+            rules=list(kernel_category_rules or []),
+        )
+        debug_log(
+            "nvtx-category stats windows={} categories={} outliers={}".format(
+                int(nvtx_window_category_stats.get("window_count") or 0),
+                int(nvtx_window_category_stats.get("category_count") or 0),
+                len(list(nvtx_window_category_stats.get("outlier_windows") or [])),
             )
         )
 
@@ -2403,7 +2898,9 @@ def _collect_timeline_state(
         "kernels": kernels,
         "metric_series": metric_series,
         "kernel_category_summary": kernel_category_summary,
+        "kernel_category_kernel_rows": kernel_category_kernel_rows,
         "kernel_category_profile": str(kernel_category_profile or ""),
+        "nvtx_window_category_stats": nvtx_window_category_stats,
         "window_start_ns": int(render_start_ns),
         "window_end_ns": int(render_end_ns),
         "nvtx_windows": selected_nvtx_windows,
@@ -2433,6 +2930,8 @@ def export_timeline_html(
     kernel_category_engine: str = "sglang",
     kernel_category_model: str = "llama",
     enable_kernel_category_breakdown: bool = True,
+    kernel_category_table_output: str = "",
+    nvtx_category_stats_output: str = "",
     default_focus_metrics: bool = False,
     include_all_metric_sources: bool = False,
     debug: bool = False,
@@ -2485,6 +2984,7 @@ def export_timeline_html(
         metric_series=list(state.get("metric_series") or []),
         kernel_category_summary=dict(state.get("kernel_category_summary") or {}),
         kernel_category_profile=str(state.get("kernel_category_profile") or ""),
+        nvtx_window_category_stats=dict(state.get("nvtx_window_category_stats") or {}),
         window_start_ns=int(state.get("window_start_ns") or 0),
         window_end_ns=int(state.get("window_end_ns") or 1),
         display_span_ns=int(display_span_ns),
@@ -2496,6 +2996,22 @@ def export_timeline_html(
     out = Path(output_path)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(text, encoding="utf-8")
+    category_table_output = str(kernel_category_table_output or "").strip()
+    if category_table_output:
+        category_rows = list(state.get("kernel_category_kernel_rows") or [])
+        table_path = _write_rows_table(category_table_output, category_rows)
+        debug_log("kernel-category table wrote path={} rows={}".format(table_path, len(category_rows)))
+        if progress_cb:
+            progress_cb("  wrote:    kernel-category-table={} rows={}".format(table_path, len(category_rows)))
+    stats_output = str(nvtx_category_stats_output or "").strip()
+    if stats_output:
+        stats_path = Path(stats_output)
+        stats_path.parent.mkdir(parents=True, exist_ok=True)
+        stats_payload = dict(state.get("nvtx_window_category_stats") or {})
+        stats_path.write_text(json.dumps(stats_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        debug_log("nvtx-category stats wrote path={} windows={}".format(str(stats_path), int(stats_payload.get("window_count") or 0)))
+        if progress_cb:
+            progress_cb("  wrote:    nvtx-category-stats={} windows={}".format(str(stats_path), int(stats_payload.get("window_count") or 0)))
     return str(out)
 
 
@@ -3204,6 +3720,8 @@ def export_timeline_compare_html(
     kernel_category_engine: str = "sglang",
     kernel_category_model: str = "llama",
     enable_kernel_category_breakdown: bool = True,
+    kernel_category_table_output: str = "",
+    nvtx_category_stats_output: str = "",
     default_focus_metrics: bool = False,
     include_all_metric_sources: bool = False,
     debug: bool = False,
@@ -3343,6 +3861,7 @@ def export_timeline_compare_html(
             metric_series=list(state.get("metric_series") or []),
             kernel_category_summary=dict(state.get("kernel_category_summary") or {}),
             kernel_category_profile=str(state.get("kernel_category_profile") or ""),
+            nvtx_window_category_stats=dict(state.get("nvtx_window_category_stats") or {}),
             window_start_ns=int(state.get("window_start_ns") or 0),
             window_end_ns=int(state.get("window_end_ns") or 1),
             display_span_ns=int(normalized_compare_span_ns),
@@ -3824,5 +4343,44 @@ def export_timeline_compare_html(
     out = Path(output_path)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(page, encoding="utf-8")
+    category_table_output = str(kernel_category_table_output or "").strip()
+    if category_table_output:
+        merged_rows: List[Dict[str, object]] = []
+        for idx, item in enumerate(collected):
+            label = str(item.get("label") or "")
+            sqlite_path = str(item.get("sqlite_path") or "")
+            state = dict(item.get("state") or {})
+            for row in list(state.get("kernel_category_kernel_rows") or []):
+                merged_rows.append(
+                    {
+                        "sqlite_index": int(idx),
+                        "sqlite_label": label,
+                        "sqlite_path": sqlite_path,
+                        **dict(row),
+                    }
+                )
+        table_path = _write_rows_table(category_table_output, merged_rows)
+        compare_debug("kernel-category table wrote path={} rows={}".format(table_path, len(merged_rows)))
+        if progress_cb:
+            progress_cb("kernel-category-table wrote: {} rows={}".format(table_path, len(merged_rows)))
+    stats_output = str(nvtx_category_stats_output or "").strip()
+    if stats_output:
+        payload_rows: List[Dict[str, object]] = []
+        for idx, item in enumerate(collected):
+            state = dict(item.get("state") or {})
+            payload_rows.append(
+                {
+                    "sqlite_index": int(idx),
+                    "sqlite_label": str(item.get("label") or ""),
+                    "sqlite_path": str(item.get("sqlite_path") or ""),
+                    "stats": dict(state.get("nvtx_window_category_stats") or {}),
+                }
+            )
+        stats_path = Path(stats_output)
+        stats_path.parent.mkdir(parents=True, exist_ok=True)
+        stats_path.write_text(json.dumps(payload_rows, ensure_ascii=False, indent=2), encoding="utf-8")
+        compare_debug("nvtx-category stats wrote path={} sqlite_count={}".format(str(stats_path), len(payload_rows)))
+        if progress_cb:
+            progress_cb("nvtx-category-stats wrote: {} sqlite_count={}".format(str(stats_path), len(payload_rows)))
     compare_debug("compare html wrote output={} sqlite_count={}".format(str(out), len(rendered)))
     return str(out)
