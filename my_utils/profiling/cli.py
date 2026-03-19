@@ -620,6 +620,10 @@ def cmd_nsys_timeline_html(args: argparse.Namespace) -> int:
         metrics_limit=args.metrics_limit,
         metrics_max_points=args.metrics_max_points,
         overlay_metrics_per_track=args.overlay_metrics_per_track,
+        kernel_category_map_json=args.kernel_category_map_json,
+        kernel_category_engine=args.kernel_category_engine,
+        kernel_category_model=args.kernel_category_model,
+        enable_kernel_category_breakdown=bool(args.enable_kernel_category_breakdown),
         default_focus_metrics=bool(args.default_focus_metrics),
         include_all_metric_sources=bool(args.include_all_metric_sources),
         debug=bool(args.debug),
@@ -649,6 +653,10 @@ def cmd_nsys_timeline_compare_html(args: argparse.Namespace) -> int:
         metrics_limit=args.metrics_limit,
         metrics_max_points=args.metrics_max_points,
         overlay_metrics_per_track=args.overlay_metrics_per_track,
+        kernel_category_map_json=args.kernel_category_map_json,
+        kernel_category_engine=args.kernel_category_engine,
+        kernel_category_model=args.kernel_category_model,
+        enable_kernel_category_breakdown=bool(args.enable_kernel_category_breakdown),
         default_focus_metrics=bool(args.default_focus_metrics),
         include_all_metric_sources=bool(args.include_all_metric_sources),
         debug=bool(args.debug),
@@ -897,6 +905,37 @@ def build_parser() -> argparse.ArgumentParser:
         help="include non-GPU generic sources (ETW/FTrace/etc) in metrics panel",
     )
     nsys_timeline.add_argument(
+        "--kernel-category-map-json",
+        default="",
+        help=(
+            "optional JSON path for kernel category rules. "
+            "Supports {pattern: category} flat mapping or nested {engine:{model:{pattern:category}}} mapping."
+        ),
+    )
+    nsys_timeline.add_argument(
+        "--kernel-category-engine",
+        default="sglang",
+        help="kernel category engine key for nested mapping (default: sglang)",
+    )
+    nsys_timeline.add_argument(
+        "--kernel-category-model",
+        default="llama",
+        help="kernel category model key for nested mapping (default: llama)",
+    )
+    nsys_timeline.add_argument(
+        "--disable-kernel-category-breakdown",
+        dest="enable_kernel_category_breakdown",
+        action="store_false",
+        default=True,
+        help="disable overlap-aware kernel category breakdown panel",
+    )
+    nsys_timeline.add_argument(
+        "--enable-kernel-category-breakdown",
+        dest="enable_kernel_category_breakdown",
+        action="store_true",
+        help="enable overlap-aware kernel category breakdown panel (default: enabled)",
+    )
+    nsys_timeline.add_argument(
         "--debug",
         dest="debug",
         action="store_true",
@@ -989,6 +1028,37 @@ def build_parser() -> argparse.ArgumentParser:
         "--include-all-metric-sources",
         action="store_true",
         help="include non-GPU generic sources (ETW/FTrace/etc) in metrics panel",
+    )
+    nsys_timeline_compare.add_argument(
+        "--kernel-category-map-json",
+        default="",
+        help=(
+            "optional JSON path for kernel category rules. "
+            "Supports {pattern: category} flat mapping or nested {engine:{model:{pattern:category}}} mapping."
+        ),
+    )
+    nsys_timeline_compare.add_argument(
+        "--kernel-category-engine",
+        default="sglang",
+        help="kernel category engine key for nested mapping (default: sglang)",
+    )
+    nsys_timeline_compare.add_argument(
+        "--kernel-category-model",
+        default="llama",
+        help="kernel category model key for nested mapping (default: llama)",
+    )
+    nsys_timeline_compare.add_argument(
+        "--disable-kernel-category-breakdown",
+        dest="enable_kernel_category_breakdown",
+        action="store_false",
+        default=True,
+        help="disable overlap-aware kernel category breakdown panel",
+    )
+    nsys_timeline_compare.add_argument(
+        "--enable-kernel-category-breakdown",
+        dest="enable_kernel_category_breakdown",
+        action="store_true",
+        help="enable overlap-aware kernel category breakdown panel (default: enabled)",
     )
     nsys_timeline_compare.add_argument(
         "--debug",

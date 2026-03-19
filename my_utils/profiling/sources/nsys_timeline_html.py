@@ -7,7 +7,7 @@ import re
 import sqlite3
 import time
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Sequence, Tuple
+from typing import Callable, Dict, List, Optional, Pattern, Sequence, Tuple
 
 from .nsys_flat_export import collect_kernel_rows
 from .nsys_schema_adapter import NsightSchema
@@ -35,6 +35,67 @@ _DEFAULT_FOCUS_METRIC_TOKENS: Tuple[str, ...] = (
     "tensor active",
     "tensor__active",
 )
+_DEFAULT_KERNEL_CATEGORY_MAPS: Dict[str, Dict[str, Dict[str, str]]] = {
+    "sglang": {
+        "llama": {
+            "gemm|nvjet": "gemm",
+            "fused_moe_kernel|GroupProblemShape|group_gemm_starts|bmm_|GemmUniversal": "moe_gemm",
+            "moe|sigmoid": "moe",
+            "CatArrayBatched|prepare_inputs": "prepare_next",
+            "ncclDevKernel|cross_device_reduce": "nccl_and_custom_ar",
+            "_norm_|Norm": "norm",
+            "topk": "topk",
+            "act_and_mul_": "activation",
+            "Rotary": "rope",
+            "SoftMax": "softmax",
+            "flash|fmha": "attn",
+            "elementwise": "elementwise",
+            "fp8_quant|cvt_|quantize": "quantize",
+            "reduce_kernel": "reduce",
+            "triton": "triton_kernel",
+            "CUDA mem": "non-gpu-H_D_memops",
+            ".*": "misc",
+        },
+        "ds": {
+            "block_fp8_matmul": "block_fp8_gemm",
+            "gemm|matmul|nvjet": "gemm",
+            "fused_moe_kernel": "moe_gemm",
+            "moe|expert|sigmoid": "moe",
+            "CatArrayBatched|write_req_to": "prepare_next",
+            "ncclDevKernel|cross_device_reduce|all_gather": "nccl_and_custom_ar",
+            "Norm": "norm",
+            "topk": "topk",
+            "activation|act_and_mul": "activation",
+            "compute_position_kernel": "rope",
+            "elementwise": "elementwise",
+            "fp8_quant|quant_fp8|quantize": "quantize",
+            "SoftMax": "softmax",
+            "reduce": "reduce",
+            "_fwd_|create_flash|::mla::|KVCache": "attn",
+            "CUDA mem": "non-gpu-H_D_memops",
+            ".*": "misc",
+        },
+        "gpt-oss": {
+            "gemm|nvjet": "gemm",
+            "fused_moe_kernel|_group_gemm|GroupProblemShape|GemmUniversal|bmm_|matmul_ogs_|_topk_forward|_combined_routing|_sum_bitmatrix_rows|_compute_writeback_idx": "moe_gemm",
+            "moe|sigmoid": "moe",
+            "CatArrayBatched|prepare_inputs": "prepare_next",
+            "_norm_|Norm": "norm",
+            "ncclDevKernel|cross_device_reduce|allreduce": "nccl_and_custom_ar",
+            "topk|TopK": "topk",
+            "act_and_mul_": "activation",
+            "Rotary": "rope",
+            "SoftMax": "softmax",
+            "flash|fmha": "attn",
+            "elementwise": "elementwise",
+            "fp8_quant|cvt_|quantize": "quantize",
+            "reduce_kernel": "reduce",
+            "triton": "triton_kernel",
+            "CUDA mem": "non-gpu-H_D_memops",
+            ".*": "misc",
+        },
+    }
+}
 
 
 def _ident(name: str) -> str:
@@ -182,6 +243,194 @@ def _safe_table_count(conn: sqlite3.Connection, table_name: str) -> Optional[int
         return int(row[0] or 0)
     except Exception:
         return None
+
+
+def _resolve_kernel_category_rules(
+    *,
+    map_json_path: str,
+    engine: str,
+    model: str,
+    debug_log: Optional[Callable[[str], None]] = None,
+) -> Tuple[List[Tuple[Pattern[str], str]], str]:
+    debug = debug_log or _noop_debug
+    raw_map_obj: object = _DEFAULT_KERNEL_CATEGORY_MAPS
+    map_path = str(map_json_path or "").strip()
+    if map_path:
+        try:
+            raw_map_obj = json.loads(Path(map_path).read_text(encoding="utf-8"))
+            debug(f"kernel-category map loaded from {map_path}")
+        except Exception as exc:
+            debug(f"kernel-category map load failed path={map_path} err={exc}; fallback to built-in defaults")
+            raw_map_obj = _DEFAULT_KERNEL_CATEGORY_MAPS
+
+    mapping: Dict[str, str] = {}
+    profile_name = ""
+    engine_v = str(engine or "").strip()
+    model_v = str(model or "").strip()
+    try:
+        if isinstance(raw_map_obj, dict) and all(
+            isinstance(k, str) and isinstance(v, str) for k, v in raw_map_obj.items()
+        ):
+            mapping = dict(raw_map_obj)
+            profile_name = "custom:flat"
+        elif isinstance(raw_map_obj, dict):
+            selected_engine = None
+            if engine_v and engine_v in raw_map_obj:
+                selected_engine = engine_v
+            elif "sglang" in raw_map_obj:
+                selected_engine = "sglang"
+            else:
+                selected_engine = next(iter(raw_map_obj.keys()), None)
+            selected_models = raw_map_obj.get(selected_engine) if selected_engine else None
+            if isinstance(selected_models, dict):
+                selected_model = None
+                if model_v and model_v in selected_models:
+                    selected_model = model_v
+                elif "llama" in selected_models:
+                    selected_model = "llama"
+                else:
+                    selected_model = next(iter(selected_models.keys()), None)
+                if selected_model and isinstance(selected_models.get(selected_model), dict):
+                    mapping = dict(selected_models[selected_model])
+                    profile_name = f"{selected_engine}:{selected_model}"
+    except Exception as exc:
+        debug(f"kernel-category map resolve failed err={exc}; fallback to misc")
+        mapping = {}
+        profile_name = ""
+
+    if ".*" not in mapping:
+        mapping[".*"] = "misc"
+    compiled: List[Tuple[Pattern[str], str]] = []
+    for pattern, category in mapping.items():
+        try:
+            compiled.append((re.compile(str(pattern), re.IGNORECASE), str(category)))
+        except Exception as exc:
+            debug(f"kernel-category regex compile failed pattern={pattern} err={exc}")
+    if not compiled:
+        compiled = [(re.compile(".*", re.IGNORECASE), "misc")]
+        profile_name = profile_name or "fallback:misc"
+    if not profile_name:
+        profile_name = "fallback:misc"
+    debug(
+        "kernel-category rules profile={} count={}".format(
+            profile_name,
+            len(compiled),
+        )
+    )
+    return compiled, profile_name
+
+
+def _build_kernel_category_breakdown(
+    kernels: Sequence[Dict[str, object]],
+    *,
+    rules: Sequence[Tuple[Pattern[str], str]],
+) -> Dict[str, object]:
+    events: List[Tuple[int, int, str]] = []
+    intervals_by_cat: Dict[str, List[Tuple[int, int]]] = {}
+    raw_ns_by_cat: Dict[str, int] = {}
+    instances_by_cat: Dict[str, int] = {}
+    streams_by_cat: Dict[str, set] = {}
+    kinds_by_cat: Dict[str, Dict[str, int]] = {}
+    cat_cache: Dict[str, str] = {}
+    raw_total_ns = 0
+
+    for row in kernels:
+        s = _to_int(row.get("start_ns"), -1)
+        e = _to_int(row.get("end_ns"), -1)
+        if s < 0 or e <= s:
+            continue
+        name = str(row.get("kernel_name") or "")
+        category = cat_cache.get(name)
+        if category is None:
+            category = "misc"
+            for pattern, value in rules:
+                if pattern.search(name):
+                    category = str(value or "misc")
+                    break
+            cat_cache[name] = category
+        kind = str(row.get("kind") or "compute")
+
+        events.append((s, 1, category))
+        events.append((e, -1, category))
+        intervals_by_cat.setdefault(category, []).append((s, e))
+        raw_ns_by_cat[category] = int(raw_ns_by_cat.get(category, 0)) + int(e - s)
+        instances_by_cat[category] = int(instances_by_cat.get(category, 0)) + 1
+        streams_by_cat.setdefault(category, set()).add(
+            (_to_int(row.get("device_id"), -1), _to_int(row.get("stream_id"), 0))
+        )
+        kind_counter = kinds_by_cat.setdefault(category, {})
+        kind_counter[kind] = int(kind_counter.get(kind, 0)) + 1
+        raw_total_ns += int(e - s)
+
+    if not events:
+        return {
+            "raw_total_ms": 0.0,
+            "non_overlap_ms": 0.0,
+            "overlap_saved_ms": 0.0,
+            "rows": [],
+        }
+
+    events.sort(key=lambda x: (int(x[0]), 0 if int(x[1]) < 0 else 1))
+    active_by_cat: Dict[str, int] = {}
+    weighted_ns_by_cat: Dict[str, float] = {}
+    non_overlap_ns = 0.0
+    prev_t: Optional[int] = None
+    for t, delta_kind, category in events:
+        tt = int(t)
+        if prev_t is not None and tt > prev_t and active_by_cat:
+            span = float(tt - prev_t)
+            non_overlap_ns += span
+            active_cats = [cat for cat, count in active_by_cat.items() if int(count) > 0]
+            if active_cats:
+                share = span / float(len(active_cats))
+                for cat in active_cats:
+                    weighted_ns_by_cat[cat] = float(weighted_ns_by_cat.get(cat, 0.0)) + share
+        prev_t = tt
+        if int(delta_kind) > 0:
+            active_by_cat[category] = int(active_by_cat.get(category, 0)) + 1
+        else:
+            new_v = int(active_by_cat.get(category, 0)) - 1
+            if new_v <= 0:
+                active_by_cat.pop(category, None)
+            else:
+                active_by_cat[category] = new_v
+
+    rows: List[Dict[str, object]] = []
+    for category in intervals_by_cat.keys():
+        merged = _merge_intervals(intervals_by_cat.get(category, []))
+        union_ns = sum(int(e - s) for s, e in merged)
+        weighted_ns = float(weighted_ns_by_cat.get(category, 0.0))
+        non_overlap = max(1e-9, float(non_overlap_ns))
+        kind_counter = kinds_by_cat.get(category, {})
+        rows.append(
+            {
+                "category": category,
+                "instances": int(instances_by_cat.get(category, 0)),
+                "stream_count": len(streams_by_cat.get(category, set())),
+                "raw_total_ms": float(raw_ns_by_cat.get(category, 0)) / 1e6,
+                "union_elapsed_ms": float(union_ns) / 1e6,
+                "weighted_elapsed_ms": weighted_ns / 1e6,
+                "weighted_pct_of_nonoverlap": (weighted_ns / non_overlap) * 100.0,
+                "union_pct_of_nonoverlap": (float(union_ns) / non_overlap) * 100.0,
+                "compute_instances": int(kind_counter.get("compute", 0)),
+                "comm_instances": int(kind_counter.get("comm", 0)),
+            }
+        )
+    rows.sort(
+        key=lambda x: (
+            -_safe_float(x.get("weighted_elapsed_ms")),
+            -_safe_float(x.get("union_elapsed_ms")),
+            str(x.get("category") or ""),
+        )
+    )
+    raw_total_ms = float(raw_total_ns) / 1e6
+    non_overlap_ms = float(non_overlap_ns) / 1e6
+    return {
+        "raw_total_ms": raw_total_ms,
+        "non_overlap_ms": non_overlap_ms,
+        "overlap_saved_ms": max(0.0, raw_total_ms - non_overlap_ms),
+        "rows": rows,
+    }
 
 
 def _select_nvtx_windows(
@@ -846,6 +1095,8 @@ def _render_html(
     sqlite_path: str,
     kernels: List[Dict[str, object]],
     metric_series: List[Dict[str, object]],
+    kernel_category_summary: Optional[Dict[str, object]],
+    kernel_category_profile: str,
     window_start_ns: int,
     window_end_ns: int,
     display_span_ns: int,
@@ -944,6 +1195,12 @@ def _render_html(
         ".metric-panel{background:#121826;border:1px solid #2a3243;border-radius:6px;padding:8px;}",
         ".metric-title{font-size:12px;color:#d6deef;margin-bottom:4px;word-break:break-word;}",
         ".metric-sub{font-size:11px;color:#95a4bf;margin:4px 0 0 0;}",
+        ".category-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:10px;}",
+        ".category-card{background:#121826;border:1px solid #2a3243;border-radius:6px;padding:8px;}",
+        ".category-title{font-size:12px;color:#d6deef;margin-bottom:4px;word-break:break-word;}",
+        ".category-sub{font-size:11px;color:#95a4bf;margin:4px 0 0 0;}",
+        ".category-bar{height:8px;background:#0f1522;border:1px solid #33435f;border-radius:999px;overflow:hidden;margin-top:6px;}",
+        ".category-fill{height:100%;background:linear-gradient(90deg,#5f8bff,#60d3a5);}",
         ".row{display:flex;align-items:center;margin:8px 0;}",
         ".label{width:140px;color:#a8afbf;font-size:12px;}",
         f".track{{position:relative;height:24px;width:{int(width_px)}px;background:#1a1f2b;border-radius:4px;overflow:hidden;}}",
@@ -991,6 +1248,52 @@ def _render_html(
                 "</div>",
             ]
         )
+
+    category_rows = list((kernel_category_summary or {}).get("rows") or [])
+    if category_rows:
+        non_overlap_ms = _safe_float((kernel_category_summary or {}).get("non_overlap_ms"))
+        raw_total_ms = _safe_float((kernel_category_summary or {}).get("raw_total_ms"))
+        overlap_saved_ms = _safe_float((kernel_category_summary or {}).get("overlap_saved_ms"))
+        profile_text = str(kernel_category_profile or "custom")
+        lines.extend(
+            [
+                "<div class='card'>",
+                (
+                    "<h3 class='panel-title'>Kernel Category Breakdown "
+                    "(Overlap-Aware Across All Streams)</h3>"
+                ),
+                (
+                    "<div class='axis-note'>"
+                    f"profile={html.escape(profile_text)} | non_overlap_ms={non_overlap_ms:.3f} | "
+                    f"raw_total_ms={raw_total_ms:.3f} | overlap_saved_ms={overlap_saved_ms:.3f}. "
+                    "weighted_elapsed_ms splits each active timeslice equally across active categories, "
+                    "so weighted percentages sum to ~100% under overlap."
+                    "</div>"
+                ),
+                "<div class='category-grid'>",
+            ]
+        )
+        for row in category_rows:
+            cat_name = str(row.get("category") or "misc")
+            weighted_pct = max(0.0, min(100.0, _safe_float(row.get("weighted_pct_of_nonoverlap"))))
+            lines.extend(
+                [
+                    "<div class='category-card'>",
+                    f"<div class='category-title'>{html.escape(cat_name)}</div>",
+                    (
+                        "<div class='category-sub'>"
+                        f"weighted={_safe_float(row.get('weighted_elapsed_ms')):.3f} ms "
+                        f"({weighted_pct:.2f}%) | union={_safe_float(row.get('union_elapsed_ms')):.3f} ms | "
+                        f"instances={int(row.get('instances') or 0)} | streams={int(row.get('stream_count') or 0)}"
+                        "</div>"
+                    ),
+                    "<div class='category-bar'>",
+                    f"<div class='category-fill' style='width:{weighted_pct:.2f}%;'></div>",
+                    "</div>",
+                    "</div>",
+                ]
+            )
+        lines.extend(["</div>", "</div>"])
 
     lines.extend(
         [
@@ -1813,6 +2116,9 @@ def _collect_timeline_state(
     metric_name_like: str = "%",
     metrics_limit: int = -1,
     metrics_max_points: int = -1,
+    kernel_category_rules: Optional[Sequence[Tuple[Pattern[str], str]]] = None,
+    kernel_category_profile: str = "",
+    enable_kernel_category_breakdown: bool = True,
     default_focus_metrics: bool = False,
     include_all_metric_sources: bool = False,
     debug: bool = False,
@@ -1954,6 +2260,8 @@ def _collect_timeline_state(
                 "sqlite_path": str(sqlite_path),
                 "kernels": [],
                 "metric_series": [],
+                "kernel_category_summary": {"rows": [], "non_overlap_ms": 0.0, "raw_total_ms": 0.0, "overlap_saved_ms": 0.0},
+                "kernel_category_profile": str(kernel_category_profile or ""),
                 "window_start_ns": int(render_start_ns),
                 "window_end_ns": int(render_end_ns),
                 "nvtx_windows": selected_nvtx_windows,
@@ -2032,6 +2340,25 @@ def _collect_timeline_state(
             )
         )
 
+    kernel_category_summary: Dict[str, object] = {
+        "rows": [],
+        "non_overlap_ms": 0.0,
+        "raw_total_ms": 0.0,
+        "overlap_saved_ms": 0.0,
+    }
+    if bool(enable_kernel_category_breakdown):
+        kernel_category_summary = _build_kernel_category_breakdown(
+            kernels,
+            rules=list(kernel_category_rules or []),
+        )
+        debug_log(
+            "kernel-category profile={} rows={} non_overlap_ms={:.3f}".format(
+                str(kernel_category_profile or ""),
+                len(list(kernel_category_summary.get("rows") or [])),
+                _safe_float(kernel_category_summary.get("non_overlap_ms")),
+            )
+        )
+
     metric_series: List[Dict[str, object]] = []
     if bool(include_metrics):
         metric_query_start_ns = int(render_start_ns)
@@ -2075,6 +2402,8 @@ def _collect_timeline_state(
         "sqlite_path": str(sqlite_path),
         "kernels": kernels,
         "metric_series": metric_series,
+        "kernel_category_summary": kernel_category_summary,
+        "kernel_category_profile": str(kernel_category_profile or ""),
         "window_start_ns": int(render_start_ns),
         "window_end_ns": int(render_end_ns),
         "nvtx_windows": selected_nvtx_windows,
@@ -2100,6 +2429,10 @@ def export_timeline_html(
     metrics_max_points: int = -1,
     overlay_metrics_per_track: int = 7,
     display_span_ns: int = -1,
+    kernel_category_map_json: str = "",
+    kernel_category_engine: str = "sglang",
+    kernel_category_model: str = "llama",
+    enable_kernel_category_breakdown: bool = True,
     default_focus_metrics: bool = False,
     include_all_metric_sources: bool = False,
     debug: bool = False,
@@ -2116,6 +2449,13 @@ def export_timeline_html(
         Each call receives a string like ``"  done: collect_kernels  [234 ms]"``.
         Pass ``lambda msg: print(msg, file=sys.stderr)`` for CLI progress output.
     """
+    debug_log = _build_debug_logger(enabled=bool(debug), log_fn=debug_log_fn)
+    kernel_rules, kernel_profile = _resolve_kernel_category_rules(
+        map_json_path=str(kernel_category_map_json or ""),
+        engine=str(kernel_category_engine or ""),
+        model=str(kernel_category_model or ""),
+        debug_log=debug_log,
+    )
     state = _collect_timeline_state(
         sqlite_path,
         output_path=str(output_path),
@@ -2129,6 +2469,9 @@ def export_timeline_html(
         metric_name_like=str(metric_name_like or "%"),
         metrics_limit=int(metrics_limit),
         metrics_max_points=int(metrics_max_points),
+        kernel_category_rules=kernel_rules,
+        kernel_category_profile=str(kernel_profile),
+        enable_kernel_category_breakdown=bool(enable_kernel_category_breakdown),
         default_focus_metrics=bool(default_focus_metrics),
         include_all_metric_sources=bool(include_all_metric_sources),
         debug=bool(debug),
@@ -2140,6 +2483,8 @@ def export_timeline_html(
         sqlite_path=str(sqlite_path),
         kernels=list(state.get("kernels") or []),
         metric_series=list(state.get("metric_series") or []),
+        kernel_category_summary=dict(state.get("kernel_category_summary") or {}),
+        kernel_category_profile=str(state.get("kernel_category_profile") or ""),
         window_start_ns=int(state.get("window_start_ns") or 0),
         window_end_ns=int(state.get("window_end_ns") or 1),
         display_span_ns=int(display_span_ns),
@@ -2697,6 +3042,8 @@ def _summarize_timeline_state(state: Dict[str, object]) -> Dict[str, object]:
         occ_weight_num += dur * _safe_float(occ)
         occ_weight_den += dur
     metric_rows = _summarize_metric_series(metric_series)
+    category_summary = dict(state.get("kernel_category_summary") or {})
+    category_rows = list(category_summary.get("rows") or [])
     fused_hotspots = [row for row in hotspots if bool(row.get("fused_hint"))]
     return {
         "kernel_total": len(kernels),
@@ -2711,8 +3058,11 @@ def _summarize_timeline_state(state: Dict[str, object]) -> Dict[str, object]:
         "weighted_occupancy_pct": (occ_weight_num / occ_weight_den) if occ_weight_den > 0 else None,
         "top_kernels": hotspots[:8],
         "top_metrics": metric_rows[:8],
+        "top_categories": category_rows[:8],
         "metric_map": {str(row.get("name") or ""): row for row in metric_rows},
         "kernel_map": {str(row.get("name") or ""): row for row in hotspots},
+        "category_map": {str(row.get("category") or ""): row for row in category_rows},
+        "category_non_overlap_ms": _safe_float(category_summary.get("non_overlap_ms")),
         "fused_kernel_groups": len(fused_hotspots),
         "fused_kernel_total_ms": sum(_safe_float(row.get("total_ms")) for row in fused_hotspots),
     }
@@ -2787,6 +3137,38 @@ def _build_kernel_deltas(base_summary: Dict[str, object], target_summary: Dict[s
     return out[:10]
 
 
+def _build_category_deltas(base_summary: Dict[str, object], target_summary: Dict[str, object]) -> List[Dict[str, object]]:
+    base_map = dict(base_summary.get("category_map") or {})
+    target_map = dict(target_summary.get("category_map") or {})
+    out: List[Dict[str, object]] = []
+    for category in set(base_map.keys()) | set(target_map.keys()):
+        base_row = dict(base_map.get(category) or {})
+        target_row = dict(target_map.get(category) or {})
+        delta_weighted_ms = _safe_float(target_row.get("weighted_elapsed_ms")) - _safe_float(base_row.get("weighted_elapsed_ms"))
+        delta_weighted_pct = _safe_float(target_row.get("weighted_pct_of_nonoverlap")) - _safe_float(base_row.get("weighted_pct_of_nonoverlap"))
+        if abs(delta_weighted_ms) < 1e-9 and abs(delta_weighted_pct) < 1e-9:
+            continue
+        out.append(
+            {
+                "category": category,
+                "base_weighted_ms": _safe_float(base_row.get("weighted_elapsed_ms")),
+                "target_weighted_ms": _safe_float(target_row.get("weighted_elapsed_ms")),
+                "delta_weighted_ms": delta_weighted_ms,
+                "base_weighted_pct": _safe_float(base_row.get("weighted_pct_of_nonoverlap")),
+                "target_weighted_pct": _safe_float(target_row.get("weighted_pct_of_nonoverlap")),
+                "delta_weighted_pct": delta_weighted_pct,
+            }
+        )
+    out.sort(
+        key=lambda x: (
+            -abs(_safe_float(x.get("delta_weighted_ms"))),
+            -abs(_safe_float(x.get("delta_weighted_pct"))),
+            str(x.get("category") or ""),
+        )
+    )
+    return out[:10]
+
+
 def _fmt_float(value: object, digits: int = 3, suffix: str = "") -> str:
     return f"{_safe_float(value):.{int(digits)}f}{suffix}"
 
@@ -2818,6 +3200,10 @@ def export_timeline_compare_html(
     metrics_limit: int = -1,
     metrics_max_points: int = -1,
     overlay_metrics_per_track: int = 7,
+    kernel_category_map_json: str = "",
+    kernel_category_engine: str = "sglang",
+    kernel_category_model: str = "llama",
+    enable_kernel_category_breakdown: bool = True,
     default_focus_metrics: bool = False,
     include_all_metric_sources: bool = False,
     debug: bool = False,
@@ -2830,6 +3216,12 @@ def export_timeline_compare_html(
         raise ValueError("export_timeline_compare_html requires at least two sqlite paths")
 
     compare_debug = _build_debug_logger(enabled=bool(debug), log_fn=debug_log_fn)
+    kernel_rules, kernel_profile = _resolve_kernel_category_rules(
+        map_json_path=str(kernel_category_map_json or ""),
+        engine=str(kernel_category_engine or ""),
+        model=str(kernel_category_model or ""),
+        debug_log=compare_debug,
+    )
     rendered: List[Dict[str, object]] = []
     total = len(items)
 
@@ -2899,6 +3291,9 @@ def export_timeline_compare_html(
             metric_name_like=str(metric_name_like or "%"),
             metrics_limit=int(metrics_limit),
             metrics_max_points=int(metrics_max_points),
+            kernel_category_rules=kernel_rules,
+            kernel_category_profile=str(kernel_profile),
+            enable_kernel_category_breakdown=bool(enable_kernel_category_breakdown),
             default_focus_metrics=bool(default_focus_metrics),
             include_all_metric_sources=bool(include_all_metric_sources),
             debug=bool(debug),
@@ -2946,6 +3341,8 @@ def export_timeline_compare_html(
             sqlite_path=str(item.get("sqlite_path") or ""),
             kernels=list(state.get("kernels") or []),
             metric_series=list(state.get("metric_series") or []),
+            kernel_category_summary=dict(state.get("kernel_category_summary") or {}),
+            kernel_category_profile=str(state.get("kernel_category_profile") or ""),
             window_start_ns=int(state.get("window_start_ns") or 0),
             window_end_ns=int(state.get("window_end_ns") or 1),
             display_span_ns=int(normalized_compare_span_ns),
@@ -2976,6 +3373,7 @@ def export_timeline_compare_html(
         summary = dict(item.get("summary") or {})
         hotspot_rows = list(summary.get("top_kernels") or [])
         metric_rows = list(summary.get("top_metrics") or [])
+        category_rows = list(summary.get("top_categories") or [])
         hotspot_html = "".join(
             [
                 (
@@ -3002,6 +3400,19 @@ def export_timeline_compare_html(
                 for row in metric_rows[:6]
             ]
         )
+        category_html = "".join(
+            [
+                (
+                    "<tr>"
+                    f"<td><code>{html.escape(str(row.get('category') or 'misc'))}</code></td>"
+                    f"<td>{_fmt_float(row.get('weighted_elapsed_ms'), 3, ' ms')}</td>"
+                    f"<td>{_fmt_float(row.get('weighted_pct_of_nonoverlap'), 2, '%')}</td>"
+                    f"<td>{int(row.get('instances') or 0)}</td>"
+                    "</tr>"
+                )
+                for row in category_rows[:6]
+            ]
+        )
         optimization_cards.extend(
             [
                 "<section class='compare-card summary-card'>",
@@ -3023,8 +3434,9 @@ def export_timeline_compare_html(
                 f"<div class='summary-pill'><span>weighted occ</span><strong>{_fmt_optional_float(summary.get('weighted_occupancy_pct'), 2, '%')}</strong></div>",
                 f"<div class='summary-pill'><span>fused groups</span><strong>{int(summary.get('fused_kernel_groups') or 0)}</strong></div>",
                 f"<div class='summary-pill'><span>fused total</span><strong>{_fmt_float(summary.get('fused_kernel_total_ms'), 3, ' ms')}</strong></div>",
+                f"<div class='summary-pill'><span>category non-overlap</span><strong>{_fmt_float(summary.get('category_non_overlap_ms'), 3, ' ms')}</strong></div>",
                 "</div>",
-                "<div class='summary-dual'>",
+                "<div class='summary-triple'>",
                 "<div class='summary-box'>",
                 "<div class='summary-box-title'>Kernel Hotspots</div>",
                 (
@@ -3037,6 +3449,13 @@ def export_timeline_compare_html(
                 (
                     "<table class='summary-table'><thead><tr><th>metric</th><th>avg</th><th>max</th><th>last</th></tr></thead>"
                     f"<tbody>{metric_html or '<tr><td colspan=\"4\">Metrics not enabled</td></tr>'}</tbody></table>"
+                ),
+                "</div>",
+                "<div class='summary-box'>",
+                "<div class='summary-box-title'>Category Breakdown (weighted, overlap-aware)</div>",
+                (
+                    "<table class='summary-table'><thead><tr><th>category</th><th>weighted</th><th>share</th><th>instances</th></tr></thead>"
+                    f"<tbody>{category_html or '<tr><td colspan=\"4\">No category rows</td></tr>'}</tbody></table>"
                 ),
                 "</div>",
                 "</div>",
@@ -3068,6 +3487,7 @@ def export_timeline_compare_html(
         target_summary = dict(target_item.get("summary") or {})
         metric_deltas = _build_metric_deltas(base_summary, target_summary)
         kernel_deltas = _build_kernel_deltas(base_summary, target_summary)
+        category_deltas = _build_category_deltas(base_summary, target_summary)
         metric_delta_rows = "".join(
             [
                 (
@@ -3096,6 +3516,20 @@ def export_timeline_compare_html(
                 for row in kernel_deltas
             ]
         )
+        category_delta_rows = "".join(
+            [
+                (
+                    "<tr>"
+                    f"<td><code>{html.escape(str(row.get('category') or 'misc'))}</code></td>"
+                    f"<td>{_fmt_float(row.get('base_weighted_ms'), 3, ' ms')}</td>"
+                    f"<td>{_fmt_float(row.get('target_weighted_ms'), 3, ' ms')}</td>"
+                    f"<td>{_fmt_signed_float(row.get('delta_weighted_ms'), 3, ' ms')}</td>"
+                    f"<td>{_fmt_signed_float(row.get('delta_weighted_pct'), 2, '%')}</td>"
+                    "</tr>"
+                )
+                for row in category_deltas
+            ]
+        )
         delta_section = [
             "<section class='compare-section'>",
             "<h3 class='compare-section-title'>Pairwise Delta Summary</h3>",
@@ -3111,8 +3545,9 @@ def export_timeline_compare_html(
             f"<div class='summary-pill'><span>compute delta</span><strong>{_fmt_signed_float(_safe_float(target_summary.get('compute_total_ms')) - _safe_float(base_summary.get('compute_total_ms')), 3, ' ms')}</strong></div>",
             f"<div class='summary-pill'><span>comm delta</span><strong>{_fmt_signed_float(_safe_float(target_summary.get('comm_total_ms')) - _safe_float(base_summary.get('comm_total_ms')), 3, ' ms')}</strong></div>",
             f"<div class='summary-pill'><span>occ delta</span><strong>{_fmt_signed_float((_safe_float(target_summary.get('weighted_occupancy_pct')) if target_summary.get('weighted_occupancy_pct') is not None else 0.0) - (_safe_float(base_summary.get('weighted_occupancy_pct')) if base_summary.get('weighted_occupancy_pct') is not None else 0.0), 2, '%')}</strong></div>",
+            f"<div class='summary-pill'><span>category non-overlap delta</span><strong>{_fmt_signed_float(_safe_float(target_summary.get('category_non_overlap_ms')) - _safe_float(base_summary.get('category_non_overlap_ms')), 3, ' ms')}</strong></div>",
             "</div>",
-            "<div class='summary-dual'>",
+            "<div class='summary-triple'>",
             "<div class='summary-box'>",
             f"<div class='summary-box-title'>Metric Delta ({html.escape(str(base_item.get('label') or 'baseline'))} -> {html.escape(str(target_item.get('label') or 'target'))})</div>",
             (
@@ -3125,6 +3560,13 @@ def export_timeline_compare_html(
             (
                 "<table class='summary-table'><thead><tr><th>kernel</th><th>kind</th><th>count</th><th>total</th><th>delta</th></tr></thead>"
                 f"<tbody>{kernel_delta_rows or '<tr><td colspan=\"5\">No changed kernels</td></tr>'}</tbody></table>"
+            ),
+            "</div>",
+            "<div class='summary-box'>",
+            "<div class='summary-box-title'>Category Delta (weighted, overlap-aware)</div>",
+            (
+                "<table class='summary-table'><thead><tr><th>category</th><th>base</th><th>target</th><th>delta</th><th>share delta</th></tr></thead>"
+                f"<tbody>{category_delta_rows or '<tr><td colspan=\"5\">No changed categories</td></tr>'}</tbody></table>"
             ),
             "</div>",
             "</div>",
@@ -3317,6 +3759,7 @@ def export_timeline_compare_html(
             ".summary-pill span{display:block;font-size:11px;color:#8fa1bf;margin-bottom:4px;}",
             ".summary-pill strong{font-size:14px;color:#edf4ff;}",
             ".summary-dual{display:grid;grid-template-columns:repeat(auto-fit,minmax(420px,1fr));gap:10px;}",
+            ".summary-triple{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:10px;}",
             ".summary-box{background:#111827;border:1px solid #283550;border-radius:6px;padding:8px;min-width:0;}",
             ".summary-box-title{font-size:12px;color:#dbe6ff;margin-bottom:6px;}",
             ".summary-table{width:100%;border-collapse:collapse;font-size:11px;color:#d7e2f7;table-layout:fixed;}",
