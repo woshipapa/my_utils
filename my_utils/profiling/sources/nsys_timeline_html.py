@@ -164,6 +164,25 @@ def _parse_rank_from_text(text: object) -> Optional[int]:
         return None
 
 
+def _normalize_nvtx_like_pattern(text: object) -> str:
+    """
+    Normalize user NVTX query into a SQL LIKE pattern.
+
+    Behavior:
+    - empty -> "%"
+    - shell-style wildcard "*" is converted to "%"
+    - if resulting text contains "%", keep as-is
+    - otherwise default to substring match: "%text%"
+    """
+    raw = str(text or "").strip()
+    if not raw:
+        return "%"
+    normalized = raw.replace("*", "%")
+    if "%" in normalized:
+        return normalized
+    return f"%{normalized}%"
+
+
 def _intervals_overlap(start_a: int, end_a: int, start_b: int, end_b: int) -> bool:
     return int(end_a) > int(start_b) and int(start_a) < int(end_b)
 
@@ -2651,10 +2670,17 @@ def _collect_timeline_state(
     selected_nvtx_windows: List[Dict[str, object]] = []
     effective_start_ns = int(start_ns)
     effective_end_ns = int(end_ns)
+    nvtx_pattern = _normalize_nvtx_like_pattern(nvtx_text)
     if str(nvtx_text or "").strip():
+        debug_log(
+            "nvtx text filter raw={} normalized_like={}".format(
+                str(nvtx_text or ""),
+                str(nvtx_pattern),
+            )
+        )
         matched_nvtx = _select_nvtx_windows(
             provider,
-            nvtx_text=str(nvtx_text),
+            nvtx_text=str(nvtx_pattern),
         )
         selected_nvtx_windows = _pick_nvtx_windows(matched_nvtx, nvtx_index=int(nvtx_index))
         debug_log(
@@ -2746,7 +2772,7 @@ def _collect_timeline_state(
         provider,
         start_ns=int(effective_start_ns),
         end_ns=int(effective_end_ns),
-        nvtx_text=str(nvtx_text or "%"),
+        nvtx_text=str(nvtx_pattern),
         nvtx_windows=selected_nvtx_windows or None,
         device_id=int(device_id),
         limit=int(limit),
