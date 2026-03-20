@@ -243,6 +243,49 @@ def _iqr_clip(values: Sequence[float], k: float = 1.5) -> Tuple[List[float], flo
     return kept, low, high
 
 
+def _series_stats_with_iqr(values: Sequence[float], k: float = 1.5) -> Dict[str, float]:
+    vals = [float(v) for v in values]
+    if not vals:
+        return {
+            "avg": 0.0,
+            "std": 0.0,
+            "min": 0.0,
+            "max": 0.0,
+            "avg_raw": 0.0,
+            "std_raw": 0.0,
+            "min_raw": 0.0,
+            "max_raw": 0.0,
+            "clip_low": float("-inf"),
+            "clip_high": float("inf"),
+            "kept_count": 0.0,
+            "removed_count": 0.0,
+            "count": 0.0,
+        }
+    mean_raw = sum(vals) / float(len(vals))
+    variance_raw = sum((v - mean_raw) * (v - mean_raw) for v in vals) / float(len(vals))
+    std_raw = math.sqrt(max(0.0, variance_raw))
+    kept_vals, clip_low, clip_high = _iqr_clip(vals, k=k)
+    mean_clipped = sum(kept_vals) / float(len(kept_vals))
+    variance_clipped = sum((v - mean_clipped) * (v - mean_clipped) for v in kept_vals) / float(len(kept_vals))
+    std_clipped = math.sqrt(max(0.0, variance_clipped))
+    removed_count = max(0, int(len(vals) - len(kept_vals)))
+    return {
+        "avg": float(mean_clipped),
+        "std": float(std_clipped),
+        "min": float(min(kept_vals)),
+        "max": float(max(kept_vals)),
+        "avg_raw": float(mean_raw),
+        "std_raw": float(std_raw),
+        "min_raw": float(min(vals)),
+        "max_raw": float(max(vals)),
+        "clip_low": float(clip_low),
+        "clip_high": float(clip_high),
+        "kept_count": float(len(kept_vals)),
+        "removed_count": float(removed_count),
+        "count": float(len(vals)),
+    }
+
+
 def _noop_debug(_: str) -> None:
     return
 
@@ -696,6 +739,7 @@ def _build_nvtx_window_category_stats(
             "windows": [],
             "category_summary_rows": [],
             "outlier_windows": [],
+            "window_duration_stats": {},
         }
 
     pair_to_indices: Dict[Tuple[int, int], List[int]] = {}
@@ -742,6 +786,14 @@ def _build_nvtx_window_category_stats(
                 str(item.get("category") or "misc"): _safe_float(item.get("weighted_pct_of_nonoverlap"))
                 for item in cat_rows
             }
+            cat_weighted_ms_map = {
+                str(item.get("category") or "misc"): _safe_float(item.get("weighted_elapsed_ms"))
+                for item in cat_rows
+            }
+            cat_raw_total_ms_map = {
+                str(item.get("category") or "misc"): _safe_float(item.get("raw_total_ms"))
+                for item in cat_rows
+            }
             for cat_name in cat_pct_map.keys():
                 category_union.add(str(cat_name))
             top_cat = ""
@@ -761,6 +813,8 @@ def _build_nvtx_window_category_stats(
                 "overlap_saved_ms": 0.0,
             }
             cat_pct_map = {}
+            cat_weighted_ms_map = {}
+            cat_raw_total_ms_map = {}
             top_cat = ""
             top_cat_pct = 0.0
         per_window_rows.append(
@@ -779,45 +833,64 @@ def _build_nvtx_window_category_stats(
                 "top_category": str(top_cat or ""),
                 "top_category_pct": float(top_cat_pct),
                 "category_weighted_pct": cat_pct_map,
+                "category_weighted_ms": cat_weighted_ms_map,
+                "category_raw_total_ms": cat_raw_total_ms_map,
             }
         )
 
     category_summary_rows: List[Dict[str, object]] = []
     for cat in sorted(category_union):
-        values = [
+        pct_values = [
             _safe_float(row.get("category_weighted_pct", {}).get(cat))
             for row in per_window_rows
         ]
-        if not values:
+        weighted_ms_values = [
+            _safe_float(row.get("category_weighted_ms", {}).get(cat))
+            for row in per_window_rows
+        ]
+        raw_total_ms_values = [
+            _safe_float(row.get("category_raw_total_ms", {}).get(cat))
+            for row in per_window_rows
+        ]
+        if not pct_values:
             continue
-        mean_v_raw = sum(values) / float(len(values))
-        variance_raw = sum((v - mean_v_raw) * (v - mean_v_raw) for v in values) / float(len(values))
-        std_v_raw = math.sqrt(max(0.0, variance_raw))
-        kept_values, clip_low, clip_high = _iqr_clip(values, k=1.5)
-        mean_v = sum(kept_values) / float(len(kept_values))
-        variance = sum((v - mean_v) * (v - mean_v) for v in kept_values) / float(len(kept_values))
-        std_v = math.sqrt(max(0.0, variance))
-        removed = max(0, int(len(values) - len(kept_values)))
+        pct_stats = _series_stats_with_iqr(pct_values, k=1.5)
+        weighted_ms_stats = _series_stats_with_iqr(weighted_ms_values, k=1.5)
+        raw_total_ms_stats = _series_stats_with_iqr(raw_total_ms_values, k=1.5)
         category_summary_rows.append(
             {
                 "category": str(cat),
-                "avg_pct": float(mean_v),
-                "std_pct": float(std_v),
-                "min_pct": float(min(kept_values)),
-                "max_pct": float(max(kept_values)),
-                "avg_pct_raw": float(mean_v_raw),
-                "std_pct_raw": float(std_v_raw),
-                "min_pct_raw": float(min(values)),
-                "max_pct_raw": float(max(values)),
-                "avg_pct_excl_outliers": float(mean_v),
-                "std_pct_excl_outliers": float(std_v),
-                "kept_windows": int(len(kept_values)),
-                "removed_windows": int(removed),
-                "clip_low_pct": float(clip_low),
-                "clip_high_pct": float(clip_high),
+                "avg_pct": _safe_float(pct_stats.get("avg")),
+                "std_pct": _safe_float(pct_stats.get("std")),
+                "min_pct": _safe_float(pct_stats.get("min")),
+                "max_pct": _safe_float(pct_stats.get("max")),
+                "avg_pct_raw": _safe_float(pct_stats.get("avg_raw")),
+                "std_pct_raw": _safe_float(pct_stats.get("std_raw")),
+                "min_pct_raw": _safe_float(pct_stats.get("min_raw")),
+                "max_pct_raw": _safe_float(pct_stats.get("max_raw")),
+                "avg_pct_excl_outliers": _safe_float(pct_stats.get("avg")),
+                "std_pct_excl_outliers": _safe_float(pct_stats.get("std")),
+                "avg_weighted_ms": _safe_float(weighted_ms_stats.get("avg")),
+                "std_weighted_ms": _safe_float(weighted_ms_stats.get("std")),
+                "min_weighted_ms": _safe_float(weighted_ms_stats.get("min")),
+                "max_weighted_ms": _safe_float(weighted_ms_stats.get("max")),
+                "avg_weighted_ms_raw": _safe_float(weighted_ms_stats.get("avg_raw")),
+                "std_weighted_ms_raw": _safe_float(weighted_ms_stats.get("std_raw")),
+                "avg_raw_total_ms": _safe_float(raw_total_ms_stats.get("avg")),
+                "std_raw_total_ms": _safe_float(raw_total_ms_stats.get("std")),
+                "min_raw_total_ms": _safe_float(raw_total_ms_stats.get("min")),
+                "max_raw_total_ms": _safe_float(raw_total_ms_stats.get("max")),
+                "avg_raw_total_ms_raw": _safe_float(raw_total_ms_stats.get("avg_raw")),
+                "std_raw_total_ms_raw": _safe_float(raw_total_ms_stats.get("std_raw")),
+                "kept_windows": int(_safe_float(pct_stats.get("kept_count"))),
+                "removed_windows": int(_safe_float(pct_stats.get("removed_count"))),
+                "clip_low_pct": _safe_float(pct_stats.get("clip_low")),
+                "clip_high_pct": _safe_float(pct_stats.get("clip_high")),
                 "clip_method": "iqr_1.5x",
-                "nonzero_windows": int(sum(1 for v in values if v > 1e-9)),
-                "window_count": len(values),
+                "removed_windows_weighted_ms": int(_safe_float(weighted_ms_stats.get("removed_count"))),
+                "removed_windows_raw_total_ms": int(_safe_float(raw_total_ms_stats.get("removed_count"))),
+                "nonzero_windows": int(sum(1 for v in pct_values if v > 1e-9)),
+                "window_count": len(pct_values),
             }
         )
     category_summary_rows.sort(
@@ -869,6 +942,15 @@ def _build_nvtx_window_category_stats(
         )
     )
 
+    cpu_durations_ms = [_safe_float(row.get("cpu_duration_ms")) for row in per_window_rows]
+    gpu_durations_ms = [_safe_float(row.get("gpu_duration_ms")) for row in per_window_rows]
+    non_overlap_ms = [_safe_float(row.get("non_overlap_ms")) for row in per_window_rows]
+    raw_total_ms = [_safe_float(row.get("raw_total_ms")) for row in per_window_rows]
+    cpu_stats = _series_stats_with_iqr(cpu_durations_ms, k=1.5)
+    gpu_stats = _series_stats_with_iqr(gpu_durations_ms, k=1.5)
+    non_overlap_stats = _series_stats_with_iqr(non_overlap_ms, k=1.5)
+    raw_total_stats = _series_stats_with_iqr(raw_total_ms, k=1.5)
+
     return {
         "window_count": len(per_window_rows),
         "category_count": len(category_union),
@@ -877,6 +959,40 @@ def _build_nvtx_window_category_stats(
             "method": "iqr_1.5x",
             "description": "category avg/std exclude outliers outside [Q1-1.5*IQR, Q3+1.5*IQR]",
             "min_points_for_clip": 4,
+        },
+        "window_duration_stats": {
+            "cpu_duration_ms": {
+                "avg_clipped": _safe_float(cpu_stats.get("avg")),
+                "avg_raw": _safe_float(cpu_stats.get("avg_raw")),
+                "std_clipped": _safe_float(cpu_stats.get("std")),
+                "std_raw": _safe_float(cpu_stats.get("std_raw")),
+                "removed_windows": int(_safe_float(cpu_stats.get("removed_count"))),
+                "window_count": int(_safe_float(cpu_stats.get("count"))),
+            },
+            "gpu_duration_ms": {
+                "avg_clipped": _safe_float(gpu_stats.get("avg")),
+                "avg_raw": _safe_float(gpu_stats.get("avg_raw")),
+                "std_clipped": _safe_float(gpu_stats.get("std")),
+                "std_raw": _safe_float(gpu_stats.get("std_raw")),
+                "removed_windows": int(_safe_float(gpu_stats.get("removed_count"))),
+                "window_count": int(_safe_float(gpu_stats.get("count"))),
+            },
+            "non_overlap_ms": {
+                "avg_clipped": _safe_float(non_overlap_stats.get("avg")),
+                "avg_raw": _safe_float(non_overlap_stats.get("avg_raw")),
+                "std_clipped": _safe_float(non_overlap_stats.get("std")),
+                "std_raw": _safe_float(non_overlap_stats.get("std_raw")),
+                "removed_windows": int(_safe_float(non_overlap_stats.get("removed_count"))),
+                "window_count": int(_safe_float(non_overlap_stats.get("count"))),
+            },
+            "raw_total_ms": {
+                "avg_clipped": _safe_float(raw_total_stats.get("avg")),
+                "avg_raw": _safe_float(raw_total_stats.get("avg_raw")),
+                "std_clipped": _safe_float(raw_total_stats.get("std")),
+                "std_raw": _safe_float(raw_total_stats.get("std_raw")),
+                "removed_windows": int(_safe_float(raw_total_stats.get("removed_count"))),
+                "window_count": int(_safe_float(raw_total_stats.get("count"))),
+            },
         },
         "windows": per_window_rows,
         "category_summary_rows": category_summary_rows,
@@ -1764,7 +1880,13 @@ def _render_html(
 
     nvtx_stats = dict(nvtx_window_category_stats or {})
     nvtx_stats_rows = list(nvtx_stats.get("category_summary_rows") or [])
-    if nvtx_stats_rows:
+    nvtx_window_count = int(nvtx_stats.get("window_count") or 0)
+    nvtx_dur_stats = dict(nvtx_stats.get("window_duration_stats") or {})
+    if nvtx_window_count > 0:
+        cpu_dur = dict(nvtx_dur_stats.get("cpu_duration_ms") or {})
+        gpu_dur = dict(nvtx_dur_stats.get("gpu_duration_ms") or {})
+        non_overlap_dur = dict(nvtx_dur_stats.get("non_overlap_ms") or {})
+        raw_total_dur = dict(nvtx_dur_stats.get("raw_total_ms") or {})
         outlier_rows = list(nvtx_stats.get("outlier_windows") or [])
         lines.extend(
             [
@@ -1773,29 +1895,43 @@ def _render_html(
                 (
                     "<div class='axis-note'>"
                     f"windows={int(nvtx_stats.get('window_count') or 0)} | categories={int(nvtx_stats.get('category_count') or 0)}. "
+                    f"avg_cpu_nvtx_ms(clipped)={_safe_float(cpu_dur.get('avg_clipped')):.3f} | "
+                    f"avg_gpu_envelope_ms(clipped)={_safe_float(gpu_dur.get('avg_clipped')):.3f} | "
+                    f"avg_busy_nonoverlap_ms(clipped)={_safe_float(non_overlap_dur.get('avg_clipped')):.3f} | "
+                    f"avg_raw_sum_ms(clipped)={_safe_float(raw_total_dur.get('avg_clipped')):.3f}. "
                     "Each matched NVTX scope is analyzed independently, and each scope's category ratio is computed from "
                     "GPU kernel execution intervals (non-overlap weighted), not CPU-side NVTX duration. "
-                    "avg/std uses IQR clipping (Q1-1.5IQR, Q3+1.5IQR) to reduce anomalous-window impact."
+                    "avg/std uses IQR clipping (Q1-1.5IQR, Q3+1.5IQR) to reduce anomalous-window impact. "
+                    "avg_ms(weighted,clipped) is overlap-aware category time mean per matched NVTX window."
                     "</div>"
                 ),
-                "<table class='simple-table'>",
-                "<thead><tr><th>category</th><th>avg%(clipped)</th><th>avg%(raw)</th><th>std%(clipped)</th><th>std%(raw)</th><th>removed/windows</th><th>nonzero/windows</th></tr></thead>",
-                "<tbody>",
             ]
         )
-        for row in nvtx_stats_rows[:14]:
-            lines.append(
-                "<tr>"
-                f"<td><code>{html.escape(str(row.get('category') or 'misc'))}</code></td>"
-                f"<td>{_safe_float(row.get('avg_pct')):.2f}</td>"
-                f"<td>{_safe_float(row.get('avg_pct_raw')):.2f}</td>"
-                f"<td>{_safe_float(row.get('std_pct')):.2f}</td>"
-                f"<td>{_safe_float(row.get('std_pct_raw')):.2f}</td>"
-                f"<td>{int(row.get('removed_windows') or 0)}/{int(row.get('window_count') or 0)}</td>"
-                f"<td>{int(row.get('nonzero_windows') or 0)}/{int(row.get('window_count') or 0)}</td>"
-                "</tr>"
+        if nvtx_stats_rows:
+            lines.extend(
+                [
+                    "<table class='simple-table'>",
+                    "<thead><tr><th>category</th><th>avg%(clipped)</th><th>avg_ms(weighted,clipped)</th><th>avg_ms(raw_sum,clipped)</th><th>avg%(raw)</th><th>std%(clipped)</th><th>std%(raw)</th><th>removed/windows</th><th>nonzero/windows</th></tr></thead>",
+                    "<tbody>",
+                ]
             )
-        lines.extend(["</tbody>", "</table>"])
+            for row in nvtx_stats_rows[:14]:
+                lines.append(
+                    "<tr>"
+                    f"<td><code>{html.escape(str(row.get('category') or 'misc'))}</code></td>"
+                    f"<td>{_safe_float(row.get('avg_pct')):.2f}</td>"
+                    f"<td>{_safe_float(row.get('avg_weighted_ms')):.3f}</td>"
+                    f"<td>{_safe_float(row.get('avg_raw_total_ms')):.3f}</td>"
+                    f"<td>{_safe_float(row.get('avg_pct_raw')):.2f}</td>"
+                    f"<td>{_safe_float(row.get('std_pct')):.2f}</td>"
+                    f"<td>{_safe_float(row.get('std_pct_raw')):.2f}</td>"
+                    f"<td>{int(row.get('removed_windows') or 0)}/{int(row.get('window_count') or 0)}</td>"
+                    f"<td>{int(row.get('nonzero_windows') or 0)}/{int(row.get('window_count') or 0)}</td>"
+                    "</tr>"
+                )
+            lines.extend(["</tbody>", "</table>"])
+        else:
+            lines.append("<div class='empty'>No category kernels matched in selected NVTX windows.</div>")
         if outlier_rows:
             lines.extend(
                 [
