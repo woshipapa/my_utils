@@ -210,6 +210,39 @@ def _merge_intervals(intervals: Sequence[Tuple[int, int]]) -> List[Tuple[int, in
     return merged
 
 
+def _percentile_linear(values: Sequence[float], q: float) -> float:
+    arr = sorted(float(v) for v in values)
+    if not arr:
+        return 0.0
+    if len(arr) == 1:
+        return float(arr[0])
+    qq = min(1.0, max(0.0, float(q)))
+    pos = qq * float(len(arr) - 1)
+    lo = int(math.floor(pos))
+    hi = int(math.ceil(pos))
+    if lo == hi:
+        return float(arr[lo])
+    frac = float(pos - lo)
+    return float(arr[lo]) * (1.0 - frac) + float(arr[hi]) * frac
+
+
+def _iqr_clip(values: Sequence[float], k: float = 1.5) -> Tuple[List[float], float, float]:
+    vals = [float(v) for v in values]
+    if len(vals) < 4:
+        return list(vals), float("-inf"), float("inf")
+    q1 = _percentile_linear(vals, 0.25)
+    q3 = _percentile_linear(vals, 0.75)
+    iqr = max(0.0, float(q3 - q1))
+    if iqr <= 1e-12:
+        return list(vals), float(q1), float(q3)
+    low = float(q1 - float(k) * iqr)
+    high = float(q3 + float(k) * iqr)
+    kept = [v for v in vals if v >= low and v <= high]
+    if not kept:
+        kept = list(vals)
+    return kept, low, high
+
+
 def _noop_debug(_: str) -> None:
     return
 
@@ -757,16 +790,32 @@ def _build_nvtx_window_category_stats(
         ]
         if not values:
             continue
-        mean_v = sum(values) / float(len(values))
-        variance = sum((v - mean_v) * (v - mean_v) for v in values) / float(len(values))
+        mean_v_raw = sum(values) / float(len(values))
+        variance_raw = sum((v - mean_v_raw) * (v - mean_v_raw) for v in values) / float(len(values))
+        std_v_raw = math.sqrt(max(0.0, variance_raw))
+        kept_values, clip_low, clip_high = _iqr_clip(values, k=1.5)
+        mean_v = sum(kept_values) / float(len(kept_values))
+        variance = sum((v - mean_v) * (v - mean_v) for v in kept_values) / float(len(kept_values))
         std_v = math.sqrt(max(0.0, variance))
+        removed = max(0, int(len(values) - len(kept_values)))
         category_summary_rows.append(
             {
                 "category": str(cat),
                 "avg_pct": float(mean_v),
                 "std_pct": float(std_v),
-                "min_pct": float(min(values)),
-                "max_pct": float(max(values)),
+                "min_pct": float(min(kept_values)),
+                "max_pct": float(max(kept_values)),
+                "avg_pct_raw": float(mean_v_raw),
+                "std_pct_raw": float(std_v_raw),
+                "min_pct_raw": float(min(values)),
+                "max_pct_raw": float(max(values)),
+                "avg_pct_excl_outliers": float(mean_v),
+                "std_pct_excl_outliers": float(std_v),
+                "kept_windows": int(len(kept_values)),
+                "removed_windows": int(removed),
+                "clip_low_pct": float(clip_low),
+                "clip_high_pct": float(clip_high),
+                "clip_method": "iqr_1.5x",
                 "nonzero_windows": int(sum(1 for v in values if v > 1e-9)),
                 "window_count": len(values),
             }
@@ -824,6 +873,11 @@ def _build_nvtx_window_category_stats(
         "window_count": len(per_window_rows),
         "category_count": len(category_union),
         "warmup_head_window_count": int(warmup_head),
+        "avg_filter": {
+            "method": "iqr_1.5x",
+            "description": "category avg/std exclude outliers outside [Q1-1.5*IQR, Q3+1.5*IQR]",
+            "min_points_for_clip": 4,
+        },
         "windows": per_window_rows,
         "category_summary_rows": category_summary_rows,
         "outlier_windows": outlier_rows,
@@ -1720,11 +1774,12 @@ def _render_html(
                     "<div class='axis-note'>"
                     f"windows={int(nvtx_stats.get('window_count') or 0)} | categories={int(nvtx_stats.get('category_count') or 0)}. "
                     "Each matched NVTX scope is analyzed independently, and each scope's category ratio is computed from "
-                    "GPU kernel execution intervals (non-overlap weighted), not CPU-side NVTX duration."
+                    "GPU kernel execution intervals (non-overlap weighted), not CPU-side NVTX duration. "
+                    "avg/std uses IQR clipping (Q1-1.5IQR, Q3+1.5IQR) to reduce anomalous-window impact."
                     "</div>"
                 ),
                 "<table class='simple-table'>",
-                "<thead><tr><th>category</th><th>avg%</th><th>std%</th><th>min%</th><th>max%</th><th>nonzero/windows</th></tr></thead>",
+                "<thead><tr><th>category</th><th>avg%(clipped)</th><th>avg%(raw)</th><th>std%(clipped)</th><th>std%(raw)</th><th>removed/windows</th><th>nonzero/windows</th></tr></thead>",
                 "<tbody>",
             ]
         )
@@ -1733,9 +1788,10 @@ def _render_html(
                 "<tr>"
                 f"<td><code>{html.escape(str(row.get('category') or 'misc'))}</code></td>"
                 f"<td>{_safe_float(row.get('avg_pct')):.2f}</td>"
+                f"<td>{_safe_float(row.get('avg_pct_raw')):.2f}</td>"
                 f"<td>{_safe_float(row.get('std_pct')):.2f}</td>"
-                f"<td>{_safe_float(row.get('min_pct')):.2f}</td>"
-                f"<td>{_safe_float(row.get('max_pct')):.2f}</td>"
+                f"<td>{_safe_float(row.get('std_pct_raw')):.2f}</td>"
+                f"<td>{int(row.get('removed_windows') or 0)}/{int(row.get('window_count') or 0)}</td>"
                 f"<td>{int(row.get('nonzero_windows') or 0)}/{int(row.get('window_count') or 0)}</td>"
                 "</tr>"
             )
