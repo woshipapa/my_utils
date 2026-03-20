@@ -829,6 +829,7 @@ def _build_nvtx_window_category_stats(
                 "gpu_duration_ms": (float(gpu_end_ns - gpu_start_ns) / 1e6) if gpu_end_ns > gpu_start_ns >= 0 else 0.0,
                 "kernel_count": len(wk),
                 "non_overlap_ms": _safe_float(breakdown.get("non_overlap_ms")),
+                "gpu_idle_ms": _safe_float(breakdown.get("idle_ms")),
                 "raw_total_ms": _safe_float(breakdown.get("raw_total_ms")),
                 "top_category": str(top_cat or ""),
                 "top_category_pct": float(top_cat_pct),
@@ -945,10 +946,12 @@ def _build_nvtx_window_category_stats(
     cpu_durations_ms = [_safe_float(row.get("cpu_duration_ms")) for row in per_window_rows]
     gpu_durations_ms = [_safe_float(row.get("gpu_duration_ms")) for row in per_window_rows]
     non_overlap_ms = [_safe_float(row.get("non_overlap_ms")) for row in per_window_rows]
+    gpu_idle_ms = [_safe_float(row.get("gpu_idle_ms")) for row in per_window_rows]
     raw_total_ms = [_safe_float(row.get("raw_total_ms")) for row in per_window_rows]
     cpu_stats = _series_stats_with_iqr(cpu_durations_ms, k=1.5)
     gpu_stats = _series_stats_with_iqr(gpu_durations_ms, k=1.5)
     non_overlap_stats = _series_stats_with_iqr(non_overlap_ms, k=1.5)
+    gpu_idle_stats = _series_stats_with_iqr(gpu_idle_ms, k=1.5)
     raw_total_stats = _series_stats_with_iqr(raw_total_ms, k=1.5)
 
     return {
@@ -984,6 +987,14 @@ def _build_nvtx_window_category_stats(
                 "std_raw": _safe_float(non_overlap_stats.get("std_raw")),
                 "removed_windows": int(_safe_float(non_overlap_stats.get("removed_count"))),
                 "window_count": int(_safe_float(non_overlap_stats.get("count"))),
+            },
+            "gpu_idle_ms": {
+                "avg_clipped": _safe_float(gpu_idle_stats.get("avg")),
+                "avg_raw": _safe_float(gpu_idle_stats.get("avg_raw")),
+                "std_clipped": _safe_float(gpu_idle_stats.get("std")),
+                "std_raw": _safe_float(gpu_idle_stats.get("std_raw")),
+                "removed_windows": int(_safe_float(gpu_idle_stats.get("removed_count"))),
+                "window_count": int(_safe_float(gpu_idle_stats.get("count"))),
             },
             "raw_total_ms": {
                 "avg_clipped": _safe_float(raw_total_stats.get("avg")),
@@ -1886,6 +1897,7 @@ def _render_html(
         cpu_dur = dict(nvtx_dur_stats.get("cpu_duration_ms") or {})
         gpu_dur = dict(nvtx_dur_stats.get("gpu_duration_ms") or {})
         non_overlap_dur = dict(nvtx_dur_stats.get("non_overlap_ms") or {})
+        gpu_idle_dur = dict(nvtx_dur_stats.get("gpu_idle_ms") or {})
         raw_total_dur = dict(nvtx_dur_stats.get("raw_total_ms") or {})
         outlier_rows = list(nvtx_stats.get("outlier_windows") or [])
         lines.extend(
@@ -1898,6 +1910,7 @@ def _render_html(
                     f"avg_cpu_nvtx_ms(clipped)={_safe_float(cpu_dur.get('avg_clipped')):.3f} | "
                     f"avg_gpu_envelope_ms(clipped)={_safe_float(gpu_dur.get('avg_clipped')):.3f} | "
                     f"avg_busy_nonoverlap_ms(clipped)={_safe_float(non_overlap_dur.get('avg_clipped')):.3f} | "
+                    f"avg_gpu_idle_ms(clipped)={_safe_float(gpu_idle_dur.get('avg_clipped')):.3f} | "
                     f"avg_raw_sum_ms(clipped)={_safe_float(raw_total_dur.get('avg_clipped')):.3f}. "
                     "Each matched NVTX scope is analyzed independently, and each scope's category ratio is computed from "
                     "GPU kernel execution intervals (non-overlap weighted), not CPU-side NVTX duration. "
