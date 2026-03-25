@@ -19,6 +19,10 @@ profiling/
   examples/
   cli.py
   __init__.py
+  torch_compile_reference.yaml
+  torch_compile_catalog.snapshot.yaml
+  torch_compile_catalog_versions.yaml
+  generate_torch_compile_catalog.py
 ```
 
 ## Flow

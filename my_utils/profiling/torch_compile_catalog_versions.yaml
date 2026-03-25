@@ -1,0 +1,13 @@
+catalogs:
+  -
+    catalog_kind: runtime_generated
+    torch_version: 2.5.0+cpu
+    primary_file: torch_compile_catalog.snapshot.yaml
+    versioned_file: torch_compile_catalog.torch-2.5.0+cpu.snapshot.yaml
+    generated_at_utc: "2026-03-25T07:12:00.671869+00:00"
+  -
+    catalog_kind: upstream_source_generated
+    torch_version: 2.11.0
+    primary_file: torch_compile_catalog.latest-upstream.snapshot.yaml
+    versioned_file: torch_compile_catalog.upstream-2.11.0.snapshot.yaml
+    generated_at_utc: "2026-03-25T07:11:59.561899+00:00"

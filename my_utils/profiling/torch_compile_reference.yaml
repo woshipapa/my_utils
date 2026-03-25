@@ -1,0 +1,200 @@
+# ===================================================================
+#
+#        torch.compile 配置参考 (torch_compile_reference.yaml)
+#
+# ===================================================================
+# 目标：
+#   1) 给训练/推理侧提供一份“稳定可读”的 torch.compile 参数说明。
+#   2) 把公开 API、常用 mode、常见 options、调试环境变量、源码派生开关分开管理。
+#   3) 与 nsys_profile.yaml 类似，优先服务查阅和配置对齐；完整枚举由
+#      generate_torch_compile_catalog.py 生成的 snapshot 补充。
+#
+# 设计原则：
+#   - public_api: 仅放官方公开且推荐直接暴露给业务配置的参数。
+#   - notable_backend_options: 放官方文档点名的常用 options。
+#   - env_vars: 放官方 troubleshooting 文档和源码里最常用、最稳定的一批。
+#   - exhaustive_catalog: 所有运行时扫描出的 backend options / env vars / dynamo flags，
+#     见同目录 torch_compile_catalog.snapshot.yaml。
+
+torch_compile:
+  metadata:
+    owner: "my_utils.profiling"
+    primary_runtime: "torch.compile / torch._dynamo / torch._inductor"
+    official_references:
+      - "https://docs.pytorch.org/docs/stable/generated/torch.compile.html"
+      - "https://docs.pytorch.org/docs/stable/user_guide/torch_compiler/torch.compiler_dynamic_shapes.html"
+      - "https://docs.pytorch.org/docs/stable/torch.compiler_troubleshooting.html"
+
+  public_api:
+    signature: "torch.compile(model=None, *, fullgraph=False, dynamic=None, backend='inductor', mode=None, options=None, disable=False)"
+    args:
+      model:
+        type: "Callable | nn.Module | None"
+        default: null
+        description: "被编译的函数或模块。若为 None，则返回 decorator。"
+      fullgraph:
+        type: "bool"
+        default: false
+        description: "要求整个区域被单图捕获；否则遇到 graph break 会报错。"
+        recommended_default: false
+      dynamic:
+        type: "bool | None"
+        default: null
+        description: "动态 shape 策略。None=自动动态，False=强静态，True=尽量预先动态。"
+        recommended_default: null
+        choices:
+          - "null: 自动动态。第一次偏静态，shape guard 失败后把变化维度泛化。"
+          - "false: 永远 specialize，不生成动态 kernel。"
+          - "true: 一开始尽量把 size/int 符号化；官方不推荐默认使用。"
+      backend:
+        type: "str | Callable"
+        default: "inductor"
+        description: "编译后端。"
+        common_choices:
+          - "inductor"
+          - "cudagraphs"
+          - "onnxrt"
+          - "openxla"
+          - "tvm"
+      mode:
+        type: "str | None"
+        default: null
+        description: "后端预设。None 表示后端默认。Inductor 常用 4 种。"
+      options:
+        type: "dict[str, str | int | bool | Callable] | None"
+        default: null
+        description: "透传 backend 的额外选项。Inductor 可通过 torch._inductor.list_options() 查看完整列表。"
+      disable:
+        type: "bool"
+        default: false
+        description: "让 torch.compile 变成 no-op，便于 A/B 或快速回退。"
+
+  inductor_modes:
+    default:
+      description: "默认平衡模式。"
+      source_equivalent: {}
+    reduce-overhead:
+      description: "更偏向减少 Python 开销，通常借助 CUDA Graphs；适合小 batch。"
+      source_equivalent:
+        triton.cudagraphs: true
+    max-autotune:
+      description: "打开 autotune，并默认启用 cudagraphs。"
+      source_equivalent:
+        max_autotune: true
+        triton.cudagraphs: true
+    max-autotune-no-cudagraphs:
+      description: "打开 autotune，但不启用 cudagraphs。训练里更常用。"
+      source_equivalent:
+        max_autotune: true
+
+  notable_backend_options:
+    max_autotune:
+      type: "bool"
+      default: null
+      description: "对 GEMM/模板 kernel 做 profile 选型。"
+    triton.cudagraphs:
+      type: "bool"
+      default: null
+      description: "利用 CUDA Graphs 减少 Python 开销。"
+    shape_padding:
+      type: "bool"
+      default: null
+      description: "对某些 shape 做 padding，提升 Tensor Core/访存对齐。"
+    epilogue_fusion:
+      type: "bool"
+      default: null
+      description: "把 pointwise epilogue 融入模板 kernel。通常与 max_autotune 联动。"
+    fallback_random:
+      type: "bool"
+      default: null
+      description: "排查随机相关精度/一致性问题时有用。"
+    trace.enabled:
+      type: "bool"
+      default: null
+      description: "打开 trace 调试导出。"
+    trace.graph_diagram:
+      type: "bool"
+      default: null
+      description: "输出 fusion 后的 graph 图示。"
+    guard_filter_fn:
+      type: "Callable"
+      default: null
+      description: "控制保存哪些 dynamo guards。属于 unsafe/版本敏感接口。"
+
+  recommended_usage:
+    training_defaults:
+      backend: "inductor"
+      mode: "max-autotune-no-cudagraphs"
+      dynamic: null
+      fullgraph: false
+      disable: false
+    sequence_length_changes:
+      recommendation: "优先 dynamic=null；若 recompiles 很多，再尝试 dynamic=true 或 mark_dynamic。"
+    small_batch_cuda_only:
+      recommendation: "可评估 mode=reduce-overhead，但注意额外显存和 cudagraph 约束。"
+    debug_first_line:
+      recommendation: "先开 TORCH_LOGS=graph_breaks,recompiles,dynamic,guards。"
+
+  documented_env_vars:
+    TORCH_LOGS:
+      scope: "official troubleshooting docs"
+      description: "按 artifact 打开日志，如 graph_breaks / recompiles / dynamic / guards / perf_hints。"
+    TORCH_TRACE:
+      scope: "official troubleshooting docs"
+      description: "为 tlparse 收集结构化 trace。"
+    TORCH_COMPILE_DEBUG:
+      scope: "official docs + inductor source"
+      description: "打开更丰富的 compiler debug dump。"
+    TORCHDYNAMO_VERBOSE:
+      scope: "dynamo source"
+      description: "打印更详细的 dynamo warning/error 信息。"
+    TORCHDYNAMO_SUPPRESS_ERRORS:
+      scope: "dynamo source"
+      description: "compile 失败时回退 eager，而不是直接抛错。"
+    TORCH_COMPILE_DISABLE:
+      scope: "dynamo source"
+      description: "全局禁用 compiler。"
+    TORCHDYNAMO_CAPTURE_SCALAR_OUTPUTS:
+      scope: "dynamo source"
+      description: "允许把 item()/标量输出捕获进图。"
+    TORCHDYNAMO_CAPTURE_DYNAMIC_OUTPUT_SHAPE_OPS:
+      scope: "dynamo source"
+      description: "允许捕获 dynamic-output-shape op，例如 nonzero/unique。"
+    TORCH_DYNAMO_DO_NOT_EMIT_RUNTIME_ASSERTS:
+      scope: "dynamo source"
+      description: "保留 symbolic shape hint，但不把 runtime asserts 发射进图。"
+    TORCHINDUCTOR_MAX_AUTOTUNE:
+      scope: "inductor source"
+      description: "环境变量方式开启 autotune。"
+    TORCHINDUCTOR_SHAPE_PADDING:
+      scope: "inductor source"
+      description: "环境变量方式开启 shape padding。"
+    TORCHINDUCTOR_CUDAGRAPHS:
+      scope: "inductor source"
+      description: "环境变量方式开启 cudagraphs。"
+    TORCHINDUCTOR_FORCE_DISABLE_CACHES:
+      scope: "inductor source"
+      description: "关闭 inductor cache，便于排查缓存相关问题。"
+    TORCHINDUCTOR_PROFILE:
+      scope: "inductor source"
+      description: "打开 inductor profiling/debug 输出。"
+
+  source_derived_notes:
+    dynamo:
+      important_internal_flags:
+        - "assume_static_by_default"
+        - "automatic_dynamic_shapes"
+        - "capture_scalar_outputs"
+        - "capture_dynamic_output_shape_ops"
+        - "error_on_recompile"
+        - "suppress_errors"
+      note: "这些属于源码级配置，不建议直接暴露给业务实验配置，除非明确知道影响。"
+    inductor:
+      note: "完整 option 名单和源码发现的环境变量，见 torch_compile_catalog.snapshot.yaml。"
+
+  exhaustive_catalog:
+    generated_snapshot: "./torch_compile_catalog.snapshot.yaml"
+    generator: "./generate_torch_compile_catalog.py"
+    maintenance:
+      - "升级 PyTorch 后重新运行脚本。"
+      - "将生成快照与本参考 YAML 配合使用：本文件讲语义，snapshot 讲完整枚举。"

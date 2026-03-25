@@ -15,5 +15,6 @@ This directory contains design and governance docs for the unified profiling sys
 - [NSYS_SQLITE_PARSING.md](./NSYS_SQLITE_PARSING.md)
 - [NSYS_AI_ALIGNMENT_MATRIX.md](./NSYS_AI_ALIGNMENT_MATRIX.md)
 - [nsys_2024_7_1_cli_quick_reference.md](./nsys_2024_7_1_cli_quick_reference.md)
+- [TORCH_COMPILE_REFERENCE.md](./TORCH_COMPILE_REFERENCE.md)
 - [MIGRATION_CHECKLIST.md](./MIGRATION_CHECKLIST.md)
 - [RELEASE_GOVERNANCE.md](./RELEASE_GOVERNANCE.md)
