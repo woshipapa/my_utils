@@ -19,20 +19,8 @@ _RANK_RE = re.compile(r"\brank(?:\s*|[:=_-])(\d+)\b", re.IGNORECASE)
 _GPU_IDX_RE = re.compile(r"(?:gpu|device)\s*[_:#=\- ]?\s*(\d+)", re.IGNORECASE)
 _DEFAULT_FOCUS_METRIC_TOKENS: Tuple[str, ...] = (
     "compute warps in flight",
-    "warps in flight",
-    "dram read bandwidth",
-    "dram write bandwidth",
-    "dram read",
-    "dram write",
-    "dram__bytes_read",
-    "dram__bytes_write",
     "unallocated warps in active sms",
-    "unallocated warps",
-    "sm issue",
-    "issue active",
-    "smsp__issue",
-    "sm active",
-    "sm__active",
+    "unallocated warps in active sm s",
     "tensor active",
     "tensor__active",
 )
@@ -1293,7 +1281,9 @@ def _metric_series_name(metric_name: str, tag_kind: str, tag_value: str) -> str:
 
 
 def _normalize_metric_text(text: object) -> str:
-    return re.sub(r"\s+", " ", str(text or "").replace("_", " ").strip().lower())
+    norm = re.sub(r"\s+", " ", str(text or "").replace("_", " ").strip().lower())
+    # Some exports split "SMs" into "SM s". Normalize both forms.
+    return norm.replace("sm s", "sms")
 
 
 def _is_percent_throughput_metric_name(metric_name: object) -> bool:
@@ -1314,11 +1304,18 @@ def _is_default_focus_metric_name(metric_name: object) -> bool:
     norm = _normalize_metric_text(metric_name)
     if not norm:
         return False
-    # Keep warps focus on throughput/% variants only, excluding avg/cycle-style variants.
-    if ("warps in flight" in norm or "unallocated warps" in norm) and not _is_percent_throughput_metric_name(
-        metric_name
-    ):
+    if "compute warps in flight" in norm or "unallocated warps in active sms" in norm:
+        # For the two warps families, keep all mainstream variants:
+        # Avg / Throughput / Avg Warps Per Cycle.
+        if "avg warps per cycle" in norm:
+            return True
+        if "throughput" in norm or "pct" in norm or "%" in str(metric_name or ""):
+            return True
+        if "avg" in norm:
+            return True
         return False
+    if "tensor active" in norm or "tensor__active" in str(metric_name or "").lower():
+        return True
     for token in _DEFAULT_FOCUS_METRIC_TOKENS:
         if token in norm:
             return True
@@ -2793,7 +2790,7 @@ def _collect_timeline_state(
     kernel_category_rules: Optional[Sequence[Tuple[Pattern[str], str]]] = None,
     kernel_category_profile: str = "",
     enable_kernel_category_breakdown: bool = True,
-    default_focus_metrics: bool = False,
+    default_focus_metrics: bool = True,
     include_all_metric_sources: bool = False,
     debug: bool = False,
     debug_rows: int = -1,
@@ -3163,7 +3160,7 @@ def export_timeline_html(
     enable_kernel_category_breakdown: bool = True,
     kernel_category_table_output: str = "",
     nvtx_category_stats_output: str = "",
-    default_focus_metrics: bool = False,
+    default_focus_metrics: bool = True,
     include_all_metric_sources: bool = False,
     debug: bool = False,
     debug_rows: int = -1,
@@ -3953,7 +3950,7 @@ def export_timeline_compare_html(
     enable_kernel_category_breakdown: bool = True,
     kernel_category_table_output: str = "",
     nvtx_category_stats_output: str = "",
-    default_focus_metrics: bool = False,
+    default_focus_metrics: bool = True,
     include_all_metric_sources: bool = False,
     debug: bool = False,
     debug_rows: int = -1,

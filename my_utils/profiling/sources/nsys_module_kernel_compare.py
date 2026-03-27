@@ -133,6 +133,58 @@ def _safe_ratio(numer: float, denom: float) -> Optional[float]:
     return float(_to_float(numer, 0.0) / d)
 
 
+_KERNEL_RESOURCE_KEYS: Tuple[str, ...] = (
+    "threads_per_block",
+    "total_blocks",
+    "grid_x",
+    "grid_y",
+    "grid_z",
+    "registers_per_thread",
+    "static_shared_bytes",
+    "dynamic_shared_bytes",
+    "total_shared_bytes",
+    "occupancy_pct",
+)
+
+_GEOMETRY_KEYS: Tuple[str, ...] = (
+    "total_blocks",
+    "grid_x",
+    "grid_y",
+    "grid_z",
+)
+
+
+def _canon_value(value: object) -> object:
+    if value is None:
+        return None
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            return None
+        return round(float(value), 6)
+    if isinstance(value, int):
+        return int(value)
+    if isinstance(value, bool):
+        return bool(value)
+    try:
+        i = int(value)
+        if str(i) == str(value):
+            return int(i)
+    except Exception:
+        pass
+    try:
+        f = float(value)
+        if math.isfinite(f):
+            return round(float(f), 6)
+    except Exception:
+        pass
+    return str(value)
+
+
+def _sorted_values(values: Iterable[object]) -> List[object]:
+    normed = {_canon_value(v) for v in values if _canon_value(v) is not None}
+    return sorted(normed, key=lambda x: (str(type(x)), str(x)))
+
+
 @dataclass
 class _KernelEvent:
     nvtx_text: str
@@ -145,7 +197,12 @@ class _KernelEvent:
     duration_ms: float
     threads_per_block: Optional[int]
     total_blocks: Optional[int]
+    grid_x: Optional[int]
+    grid_y: Optional[int]
+    grid_z: Optional[int]
     registers_per_thread: Optional[int]
+    static_shared_bytes: Optional[int]
+    dynamic_shared_bytes: Optional[int]
     total_shared_bytes: Optional[int]
     occupancy_pct: Optional[float]
 
@@ -161,12 +218,15 @@ def _normalize_event(row: Dict[str, object]) -> Optional[_KernelEvent]:
     duration_ms = _to_float(row.get("duration_ms"), (end_ns - start_ns) / 1e6)
     tpb = _pick_first(row, ["threads_per_block", "threadsPerBlock", "blockX"])
     total_blocks = _pick_first(row, ["total_blocks", "blocks", "gridX"])
+    grid_x = _pick_first(row, ["gridX", "grid_x"])
+    grid_y = _pick_first(row, ["gridY", "grid_y"])
+    grid_z = _pick_first(row, ["gridZ", "grid_z"])
     regs = _pick_first(row, ["registersPerThread", "registers_per_thread"])
+    static_shared = _pick_first(row, ["static_shared_bytes", "staticSharedMemory"])
+    dynamic_shared = _pick_first(row, ["dynamic_shared_bytes", "dynamicSharedMemory"])
     total_shared = _pick_first(row, ["total_shared_bytes"])
     if total_shared is None:
-        static_shared = _to_int(_pick_first(row, ["static_shared_bytes", "staticSharedMemory"]), 0)
-        dynamic_shared = _to_int(_pick_first(row, ["dynamic_shared_bytes", "dynamicSharedMemory"]), 0)
-        total_shared = static_shared + dynamic_shared
+        total_shared = _to_int(static_shared, 0) + _to_int(dynamic_shared, 0)
     occ = _maybe_float(_pick_first(row, ["occupancy_pct_h100_estimate", "occupancy_pct_estimate"]))
     return _KernelEvent(
         nvtx_text=str(row.get("nvtx_text") or row.get("nvtx_name") or ""),
@@ -179,7 +239,12 @@ def _normalize_event(row: Dict[str, object]) -> Optional[_KernelEvent]:
         duration_ms=duration_ms,
         threads_per_block=_to_int(tpb, -1) if tpb is not None else None,
         total_blocks=_to_int(total_blocks, -1) if total_blocks is not None else None,
+        grid_x=_to_int(grid_x, -1) if grid_x is not None else None,
+        grid_y=_to_int(grid_y, -1) if grid_y is not None else None,
+        grid_z=_to_int(grid_z, -1) if grid_z is not None else None,
         registers_per_thread=_to_int(regs, -1) if regs is not None else None,
+        static_shared_bytes=_to_int(static_shared, -1) if static_shared is not None else None,
+        dynamic_shared_bytes=_to_int(dynamic_shared, -1) if dynamic_shared is not None else None,
         total_shared_bytes=_to_int(total_shared, -1) if total_shared is not None else None,
         occupancy_pct=occ,
     )
@@ -245,6 +310,7 @@ def _build_profile(
                 "weighted_occupancy_pct": None,
             },
             "top_kernels": [],
+            "kernel_stats_all": [],
             "kernel_set": [],
             "streams": [],
         }
@@ -273,12 +339,23 @@ def _build_profile(
                 "streams": set(),
                 "weighted_occ_num": 0.0,
                 "weighted_occ_den": 0.0,
+                "resource_sets": {key: set() for key in _KERNEL_RESOURCE_KEYS},
             },
         )
         k["invocations"] = int(k["invocations"]) + 1
         k["total_ms"] = float(k["total_ms"]) + float(ev.duration_ms)
         k["kind_counts"][ev.kind] += 1
         k["streams"].add(ev.stream_id)
+        k["resource_sets"]["threads_per_block"].add(ev.threads_per_block)
+        k["resource_sets"]["total_blocks"].add(ev.total_blocks)
+        k["resource_sets"]["grid_x"].add(ev.grid_x)
+        k["resource_sets"]["grid_y"].add(ev.grid_y)
+        k["resource_sets"]["grid_z"].add(ev.grid_z)
+        k["resource_sets"]["registers_per_thread"].add(ev.registers_per_thread)
+        k["resource_sets"]["static_shared_bytes"].add(ev.static_shared_bytes)
+        k["resource_sets"]["dynamic_shared_bytes"].add(ev.dynamic_shared_bytes)
+        k["resource_sets"]["total_shared_bytes"].add(ev.total_shared_bytes)
+        k["resource_sets"]["occupancy_pct"].add(ev.occupancy_pct)
         if ev.occupancy_pct is not None and ev.duration_ms > 0:
             k["weighted_occ_num"] = float(k["weighted_occ_num"]) + float(ev.occupancy_pct) * float(ev.duration_ms)
             k["weighted_occ_den"] = float(k["weighted_occ_den"]) + float(ev.duration_ms)
@@ -303,13 +380,15 @@ def _build_profile(
             s["weighted_occ_num"] = float(s["weighted_occ_num"]) + float(ev.occupancy_pct) * float(ev.duration_ms)
             s["weighted_occ_den"] = float(s["weighted_occ_den"]) + float(ev.duration_ms)
 
-    top_kernel_rows: List[Dict[str, object]] = []
+    kernel_rows_all: List[Dict[str, object]] = []
     for name, stats in kernel_stats.items():
         inv = int(stats.get("invocations", 0))
         total_ms = float(stats.get("total_ms", 0.0))
         occ_den = float(stats.get("weighted_occ_den", 0.0))
         occ_num = float(stats.get("weighted_occ_num", 0.0))
-        top_kernel_rows.append(
+        resource_sets = dict(stats.get("resource_sets") or {})
+        resource_signatures = {key: _sorted_values(resource_sets.get(key, set())) for key in _KERNEL_RESOURCE_KEYS}
+        kernel_rows_all.append(
             {
                 "kernel_name": name,
                 "kind_counts": dict(stats.get("kind_counts", {})),
@@ -318,9 +397,10 @@ def _build_profile(
                 "avg_ms": round(total_ms / max(1, inv), 6),
                 "stream_count": len(stats.get("streams", set())),
                 "weighted_occupancy_pct": round(occ_num / occ_den, 6) if occ_den > 0 else None,
+                "resource_signatures": resource_signatures,
             }
         )
-    top_kernel_rows.sort(key=lambda x: (-_to_float(x.get("total_ms"), 0.0), str(x.get("kernel_name") or "")))
+    kernel_rows_all.sort(key=lambda x: (-_to_float(x.get("total_ms"), 0.0), str(x.get("kernel_name") or "")))
 
     stream_rows: List[Dict[str, object]] = []
     for stream_id, stats in stream_stats.items():
@@ -350,7 +430,12 @@ def _build_profile(
                     "duration_ms": round(ev.duration_ms, 6),
                     "threads_per_block": ev.threads_per_block,
                     "total_blocks": ev.total_blocks,
+                    "grid_x": ev.grid_x,
+                    "grid_y": ev.grid_y,
+                    "grid_z": ev.grid_z,
                     "registers_per_thread": ev.registers_per_thread,
+                    "static_shared_bytes": ev.static_shared_bytes,
+                    "dynamic_shared_bytes": ev.dynamic_shared_bytes,
                     "total_shared_bytes": ev.total_shared_bytes,
                     "occupancy_pct": round(ev.occupancy_pct, 6) if ev.occupancy_pct is not None else None,
                 }
@@ -395,7 +480,8 @@ def _build_profile(
             "busy_union_ms": round(busy_union_ms, 6),
             "weighted_occupancy_pct": round(weighted_occ, 6) if weighted_occ is not None else None,
         },
-        "top_kernels": top_kernel_rows[: max(1, int(top_k))],
+        "top_kernels": kernel_rows_all[: max(1, int(top_k))],
+        "kernel_stats_all": kernel_rows_all,
         "kernel_set": kernel_set,
         "streams": stream_rows,
     }
@@ -407,17 +493,17 @@ def _diff_kernel_totals(
     *,
     top_k: int,
 ) -> List[Dict[str, object]]:
-    def _index_top(profile: Dict[str, object]) -> Dict[str, Dict[str, object]]:
+    def _index_all(profile: Dict[str, object]) -> Dict[str, Dict[str, object]]:
         out: Dict[str, Dict[str, object]] = {}
-        for row in profile.get("top_kernels", []):
+        for row in profile.get("kernel_stats_all", []):
             name = str((row or {}).get("kernel_name") or "")
             if not name:
                 continue
             out[name] = dict(row or {})
         return out
 
-    base_index = _index_top(base_profile)
-    target_index = _index_top(target_profile)
+    base_index = _index_all(base_profile)
+    target_index = _index_all(target_profile)
     names = sorted(set(base_index.keys()) | set(target_index.keys()))
     rows: List[Dict[str, object]] = []
     for name in names:
@@ -502,6 +588,81 @@ def _diff_streams(
     return rows
 
 
+def _diff_kernel_resources(
+    base_profile: Dict[str, object],
+    target_profile: Dict[str, object],
+) -> Dict[str, object]:
+    def _index_all(profile: Dict[str, object]) -> Dict[str, Dict[str, object]]:
+        out: Dict[str, Dict[str, object]] = {}
+        for row in profile.get("kernel_stats_all", []) or []:
+            name = str((row or {}).get("kernel_name") or "")
+            if not name:
+                continue
+            out[name] = dict(row or {})
+        return out
+
+    base_index = _index_all(base_profile)
+    target_index = _index_all(target_profile)
+    common = sorted(set(base_index.keys()) & set(target_index.keys()))
+    changed_rows: List[Dict[str, object]] = []
+    unchanged_names: List[str] = []
+    geometry_only = 0
+    resource_changed = 0
+
+    for name in common:
+        b = base_index.get(name, {})
+        t = target_index.get(name, {})
+        b_sig = dict(b.get("resource_signatures") or {})
+        t_sig = dict(t.get("resource_signatures") or {})
+        diff_map: Dict[str, Dict[str, object]] = {}
+        changed_keys: List[str] = []
+        for key in _KERNEL_RESOURCE_KEYS:
+            bv = list(b_sig.get(key) or [])
+            tv = list(t_sig.get(key) or [])
+            if bv != tv:
+                changed_keys.append(key)
+                diff_map[key] = {"base": bv, "target": tv}
+        if not changed_keys:
+            unchanged_names.append(name)
+            continue
+        only_geometry = all(key in _GEOMETRY_KEYS for key in changed_keys)
+        if only_geometry:
+            geometry_only += 1
+        else:
+            resource_changed += 1
+        changed_rows.append(
+            {
+                "kernel_name": name,
+                "change_type": "geometry_only" if only_geometry else "resource_or_impl_change",
+                "changed_keys": changed_keys,
+                "resource_diffs": diff_map,
+                "base_invocations": _to_int(b.get("invocations"), 0),
+                "target_invocations": _to_int(t.get("invocations"), 0),
+                "base_total_ms": _to_float(b.get("total_ms"), 0.0),
+                "target_total_ms": _to_float(t.get("total_ms"), 0.0),
+                "base_stream_count": _to_int(b.get("stream_count"), 0),
+                "target_stream_count": _to_int(t.get("stream_count"), 0),
+            }
+        )
+
+    changed_rows.sort(
+        key=lambda x: (
+            0 if str(x.get("change_type")) == "resource_or_impl_change" else 1,
+            -abs(_to_float(x.get("target_total_ms"), 0.0) - _to_float(x.get("base_total_ms"), 0.0)),
+            str(x.get("kernel_name") or ""),
+        )
+    )
+    return {
+        "common_kernel_count": len(common),
+        "changed_kernel_count": len(changed_rows),
+        "unchanged_kernel_count": len(unchanged_names),
+        "geometry_only_changed_count": int(geometry_only),
+        "resource_or_impl_changed_count": int(resource_changed),
+        "changed_kernels": changed_rows,
+        "unchanged_kernels": unchanged_names,
+    }
+
+
 def compare_module_kernel_json(
     *,
     base_json: str,
@@ -546,6 +707,7 @@ def compare_module_kernel_json(
     target_kernel_names.discard("")
     kernel_added = sorted(target_kernel_names - base_kernel_names)
     kernel_removed = sorted(base_kernel_names - target_kernel_names)
+    kernel_resource_diff = _diff_kernel_resources(base_profile, target_profile)
 
     compare_payload = {
         "module_delta": {
@@ -578,6 +740,7 @@ def compare_module_kernel_json(
             "added": kernel_added,
             "removed": kernel_removed,
         },
+        "kernel_resource_diff": kernel_resource_diff,
         "top_kernel_duration_deltas": _diff_kernel_totals(base_profile, target_profile, top_k=top_k),
         "stream_deltas": _diff_streams(base_profile, target_profile),
     }
@@ -595,6 +758,7 @@ def module_kernel_compare_to_markdown(payload: Dict[str, object]) -> str:
     compare = dict(payload.get("compare") or {})
     module_delta = dict(compare.get("module_delta") or {})
     kernel_set = dict(compare.get("kernel_set_diff") or {})
+    kernel_resource_diff = dict(compare.get("kernel_resource_diff") or {})
 
     lines: List[str] = []
     lines.append("# NSYS Module Kernel Compare")
@@ -617,6 +781,31 @@ def module_kernel_compare_to_markdown(payload: Dict[str, object]) -> str:
     lines.append(f"- removed_count: `{kernel_set.get('removed_count', 0)}`")
     lines.append(f"- common_count: `{kernel_set.get('common_count', 0)}`")
     lines.append("")
+    lines.append("## Same-Kernel Resource Diff")
+    lines.append("")
+    lines.append(f"- common_kernel_count: `{kernel_resource_diff.get('common_kernel_count', 0)}`")
+    lines.append(f"- changed_kernel_count: `{kernel_resource_diff.get('changed_kernel_count', 0)}`")
+    lines.append(f"- unchanged_kernel_count: `{kernel_resource_diff.get('unchanged_kernel_count', 0)}`")
+    lines.append(f"- geometry_only_changed_count: `{kernel_resource_diff.get('geometry_only_changed_count', 0)}`")
+    lines.append(
+        f"- resource_or_impl_changed_count: `{kernel_resource_diff.get('resource_or_impl_changed_count', 0)}`"
+    )
+    lines.append("")
+    changed_kernels = list(kernel_resource_diff.get("changed_kernels") or [])
+    if changed_kernels:
+        lines.append("| kernel | change_type | changed_keys | base_inv | target_inv |")
+        lines.append("|---|---|---|---:|---:|")
+        for row in changed_kernels:
+            lines.append(
+                "| {name} | {typ} | {keys} | {b} | {t} |".format(
+                    name=_short_kernel_name(str((row or {}).get("kernel_name") or ""), width=72),
+                    typ=row.get("change_type", ""),
+                    keys=",".join(str(x) for x in ((row or {}).get("changed_keys") or [])),
+                    b=_to_int((row or {}).get("base_invocations"), 0),
+                    t=_to_int((row or {}).get("target_invocations"), 0),
+                )
+            )
+        lines.append("")
     lines.append("## Top Kernel Duration Deltas")
     lines.append("")
     lines.append("| kernel | base_ms | target_ms | delta_ms | ratio |")

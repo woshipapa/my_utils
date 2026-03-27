@@ -1247,10 +1247,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--default-focus-metrics",
         dest="default_focus_metrics",
         action="store_true",
-        default=False,
+        default=True,
         help=(
             "when --metric-name-like is '%%' (or empty), keep only built-in focus metrics "
-            "for attribution (default: disabled)"
+            "for attribution (default: enabled)"
         ),
     )
     nsys_timeline.add_argument(
@@ -1452,10 +1452,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--default-focus-metrics",
         dest="default_focus_metrics",
         action="store_true",
-        default=False,
+        default=True,
         help=(
             "when --metric-name-like is '%%' (or empty), keep only built-in focus metrics "
-            "for attribution (default: disabled)"
+            "for attribution (default: enabled)"
         ),
     )
     nsys_timeline_compare.add_argument(

@@ -935,12 +935,51 @@ def test_timeline_default_focus_metrics_filters_unrelated_series(tmp_path: Path)
     assert m is not None
     payload = json.loads(m.group(1))
     names = {str(s.get("name", "")) for s in (payload.get("metrics") or [])}
-    assert any("sm__active" in n for n in names), names
     assert any("tensor__active" in n for n in names), names
     assert all("random_metric_should_be_filtered" not in n for n in names), names
 
 
-def test_timeline_default_focus_warps_metrics_keep_throughput_only(tmp_path: Path) -> None:
+def test_timeline_focus_metrics_enabled_by_default(tmp_path: Path) -> None:
+    db = tmp_path / "timeline_focus_metrics_default_on.sqlite"
+    _init_sqlite(db)
+
+    conn = sqlite3.connect(str(db))
+    cur = conn.cursor()
+    cur.execute("INSERT INTO StringIds(id, value) VALUES (?, ?)", (7788, "random_metric_should_be_filtered"))
+    cur.executemany(
+        "INSERT INTO CUPTI_ACTIVITY_KIND_GPU_METRIC(timestamp, metricId, value, sourceId) VALUES (?, ?, ?, ?)",
+        [
+            (2000, 7788, 12.0, 1),
+            (3000, 7788, 15.0, 1),
+        ],
+    )
+    conn.commit()
+    conn.close()
+
+    out_html = tmp_path / "timeline_focus_metrics_default_on.html"
+    rc = main(
+        [
+            "nsys-timeline-html",
+            "--sqlite",
+            str(db),
+            "--output",
+            str(out_html),
+            "--device-id",
+            "0",
+            "--include-metrics",
+        ]
+    )
+    assert rc == 0
+    text = out_html.read_text(encoding="utf-8")
+    m = re.search(r"const TIMELINE_DATA = (\{.*?\});", text, flags=re.S)
+    assert m is not None
+    payload = json.loads(m.group(1))
+    names = {str(s.get("name", "")) for s in (payload.get("metrics") or [])}
+    assert any("tensor__active" in n for n in names), names
+    assert all("random_metric_should_be_filtered" not in n for n in names), names
+
+
+def test_timeline_default_focus_warps_metrics_keep_avg_throughput_and_cycle(tmp_path: Path) -> None:
     db = tmp_path / "timeline_focus_warps_throughput_only.sqlite"
     _init_sqlite(db)
 
@@ -986,7 +1025,7 @@ def test_timeline_default_focus_warps_metrics_keep_throughput_only(tmp_path: Pat
     payload = json.loads(m.group(1))
     names = {str(s.get("name", "")).lower() for s in (payload.get("metrics") or [])}
     assert any("compute warps in flight" in n and "throughput" in n for n in names), names
-    assert all("avg warps per cycle" not in n for n in names), names
+    assert any("compute warps in flight" in n and "avg warps per cycle" in n for n in names), names
 
 
 def test_gpu_metrics_split_by_device_dimension(tmp_path: Path) -> None:
@@ -2147,7 +2186,7 @@ def test_cli_nsys_module_kernel_compare_json_and_markdown(tmp_path: Path) -> Non
             "device_id": 3,
             "threads_per_block": 128,
             "total_blocks": 150,
-            "registersPerThread": 32,
+            "registersPerThread": 40,
             "total_shared_bytes": 0,
             "occupancy_pct_h100_estimate": 100.0,
         },
@@ -2222,6 +2261,12 @@ def test_cli_nsys_module_kernel_compare_json_and_markdown(tmp_path: Path) -> Non
     compare = payload.get("compare") or {}
     kernel_set = compare.get("kernel_set_diff") or {}
     assert "gelu_fused" in set(kernel_set.get("added") or [])
+    kernel_resource_diff = compare.get("kernel_resource_diff") or {}
+    assert int(kernel_resource_diff.get("changed_kernel_count", 0)) >= 1
+    changed_rows = kernel_resource_diff.get("changed_kernels") or []
+    gemm_change = next((x for x in changed_rows if str((x or {}).get("kernel_name")) == "gemm_A"), None)
+    assert gemm_change is not None
+    assert "registers_per_thread" in set(gemm_change.get("changed_keys") or [])
     assert "top_kernel_duration_deltas" in compare
     stream_deltas = compare.get("stream_deltas") or []
     assert stream_deltas
@@ -2251,5 +2296,6 @@ def test_cli_nsys_module_kernel_compare_json_and_markdown(tmp_path: Path) -> Non
     assert rc_md == 0
     md_text = out_md.read_text(encoding="utf-8")
     assert "NSYS Module Kernel Compare" in md_text
+    assert "Same-Kernel Resource Diff" in md_text
     assert "Top Kernel Duration Deltas" in md_text
     assert "Stream 83" in md_text
