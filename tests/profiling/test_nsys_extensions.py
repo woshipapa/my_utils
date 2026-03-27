@@ -2070,3 +2070,186 @@ def test_cli_nsys_commands(tmp_path: Path) -> None:
     kernels = stream_rows[0].get("kernels") or []
     assert kernels, stream_rows[0]
     assert "occupancy_pct_estimate" in kernels[0], kernels[0]
+
+
+def test_cli_nsys_module_kernel_compare_json_and_markdown(tmp_path: Path) -> None:
+    base_json = tmp_path / "base_module_kernels.json"
+    target_json = tmp_path / "target_module_kernels.json"
+    out_json = tmp_path / "module_compare.json"
+    out_md = tmp_path / "module_compare.md"
+
+    base_rows = [
+        {
+            "nvtx_text": "dual_stream_wan_layer_22",
+            "kernel_name": "gemm_A",
+            "kind": "compute",
+            "kernel_start_ns": 1000,
+            "kernel_end_ns": 1600,
+            "duration_ms": 0.6,
+            "stream_id": 83,
+            "device_id": 3,
+            "threads_per_block": 128,
+            "total_blocks": 120,
+            "registersPerThread": 32,
+            "total_shared_bytes": 0,
+            "occupancy_pct_h100_estimate": 100.0,
+        },
+        {
+            "nvtx_text": "dual_stream_wan_layer_22",
+            "kernel_name": "flash_attn_fwd",
+            "kind": "compute",
+            "kernel_start_ns": 1800,
+            "kernel_end_ns": 4200,
+            "duration_ms": 2.4,
+            "stream_id": 83,
+            "device_id": 3,
+            "threads_per_block": 384,
+            "total_blocks": 132,
+            "registersPerThread": 168,
+            "total_shared_bytes": 216064,
+            "occupancy_pct_h100_estimate": 18.8,
+        },
+        {
+            "nvtx_text": "dual_stream_wan_layer_22",
+            "kernel_name": "nccl_allgather",
+            "kind": "comm",
+            "kernel_start_ns": 1400,
+            "kernel_end_ns": 3900,
+            "duration_ms": 2.5,
+            "stream_id": 40,
+            "device_id": 3,
+            "threads_per_block": 640,
+            "total_blocks": 24,
+            "registersPerThread": 96,
+            "total_shared_bytes": 103808,
+            "occupancy_pct_h100_estimate": 26.6,
+        },
+        {
+            "nvtx_text": "other_nvtx_scope",
+            "kernel_name": "should_be_filtered",
+            "kind": "compute",
+            "kernel_start_ns": 100,
+            "kernel_end_ns": 200,
+            "duration_ms": 0.1,
+            "stream_id": 11,
+            "device_id": 3,
+        },
+    ]
+    target_rows = [
+        {
+            "nvtx_text": "dual_stream_wan_layer_22",
+            "kernel_name": "gemm_A",
+            "kind": "compute",
+            "kernel_start_ns": 1000,
+            "kernel_end_ns": 1750,
+            "duration_ms": 0.75,
+            "stream_id": 83,
+            "device_id": 3,
+            "threads_per_block": 128,
+            "total_blocks": 150,
+            "registersPerThread": 32,
+            "total_shared_bytes": 0,
+            "occupancy_pct_h100_estimate": 100.0,
+        },
+        {
+            "nvtx_text": "dual_stream_wan_layer_22",
+            "kernel_name": "flash_attn_fwd",
+            "kind": "compute",
+            "kernel_start_ns": 1820,
+            "kernel_end_ns": 3520,
+            "duration_ms": 1.7,
+            "stream_id": 83,
+            "device_id": 3,
+            "threads_per_block": 384,
+            "total_blocks": 132,
+            "registersPerThread": 168,
+            "total_shared_bytes": 216064,
+            "occupancy_pct_h100_estimate": 18.8,
+        },
+        {
+            "nvtx_text": "dual_stream_wan_layer_22",
+            "kernel_name": "gelu_fused",
+            "kind": "compute",
+            "kernel_start_ns": 3550,
+            "kernel_end_ns": 3950,
+            "duration_ms": 0.4,
+            "stream_id": 83,
+            "device_id": 3,
+            "threads_per_block": 128,
+            "total_blocks": 90,
+            "registersPerThread": 32,
+            "total_shared_bytes": 0,
+            "occupancy_pct_h100_estimate": 100.0,
+        },
+        {
+            "nvtx_text": "dual_stream_wan_layer_22",
+            "kernel_name": "nccl_allgather",
+            "kind": "comm",
+            "kernel_start_ns": 1450,
+            "kernel_end_ns": 3150,
+            "duration_ms": 1.7,
+            "stream_id": 40,
+            "device_id": 3,
+            "threads_per_block": 640,
+            "total_blocks": 24,
+            "registersPerThread": 96,
+            "total_shared_bytes": 103808,
+            "occupancy_pct_h100_estimate": 26.6,
+        },
+    ]
+    base_json.write_text(json.dumps(base_rows, ensure_ascii=False, indent=2), encoding="utf-8")
+    target_json.write_text(json.dumps(target_rows, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    rc_json = main(
+        [
+            "nsys-module-kernel-compare",
+            "--base-json",
+            str(base_json),
+            "--target-json",
+            str(target_json),
+            "--nvtx-text",
+            "dual_stream_wan_layer_22",
+            "--device-id",
+            "3",
+            "--output",
+            str(out_json),
+            "--pretty",
+        ]
+    )
+    assert rc_json == 0
+    assert out_json.exists()
+    payload = json.loads(out_json.read_text(encoding="utf-8"))
+    compare = payload.get("compare") or {}
+    kernel_set = compare.get("kernel_set_diff") or {}
+    assert "gelu_fused" in set(kernel_set.get("added") or [])
+    assert "top_kernel_duration_deltas" in compare
+    stream_deltas = compare.get("stream_deltas") or []
+    assert stream_deltas
+    stream83 = next((x for x in stream_deltas if int((x or {}).get("stream_id", -1)) == 83), None)
+    assert stream83 is not None
+    assert float(stream83.get("sequence_similarity", 0.0)) < 1.0
+    assert isinstance(stream83.get("base_timeline_sample"), list)
+    assert isinstance(stream83.get("target_timeline_sample"), list)
+
+    rc_md = main(
+        [
+            "nsys-module-kernel-compare",
+            "--base-json",
+            str(base_json),
+            "--target-json",
+            str(target_json),
+            "--nvtx-text",
+            "dual_stream_wan_layer_22",
+            "--device-id",
+            "3",
+            "--format",
+            "markdown",
+            "--output",
+            str(out_md),
+        ]
+    )
+    assert rc_md == 0
+    md_text = out_md.read_text(encoding="utf-8")
+    assert "NSYS Module Kernel Compare" in md_text
+    assert "Top Kernel Duration Deltas" in md_text
+    assert "Stream 83" in md_text

@@ -116,3 +116,49 @@ def test_cli_alias_entry_forwards_subcommand(monkeypatch) -> None:
     assert captured["argv"][0] == "nsys-sql-skill"
     assert "--sqlite" in captured["argv"]
     assert "x.sqlite" in captured["argv"]
+
+
+def test_nsys_panel_generate_command_without_execute(monkeypatch, capsys) -> None:
+    answers = iter(
+        [
+            "nsys-sql-skill",   # choose command by name
+            "demo.sqlite",      # required --sqlite
+            "n",                # skip optional args
+            "n",                # do not execute
+        ]
+    )
+    monkeypatch.setattr("builtins.input", lambda _: next(answers))
+    rc = main(["nsys-panel"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "NSYS Interactive Panel" in out
+    assert "myutils-profile nsys-sql-skill --sqlite demo.sqlite" in out
+
+
+def test_nsys_panel_execute_selected_command(monkeypatch) -> None:
+    called = {}
+
+    def _fake_main(argv=None):
+        called["argv"] = list(argv or [])
+        return 0
+
+    answers = iter(
+        [
+            "nsys-export",      # choose command
+            "trace.sqlite",     # required --sqlite
+            "out.json",         # required --output
+            "n",                # skip optional args
+            "y",                # execute now
+        ]
+    )
+    monkeypatch.setattr("builtins.input", lambda _: next(answers))
+    monkeypatch.setattr(profiling_cli, "main", _fake_main)
+    rc = profiling_cli.cmd_nsys_panel(args=None)
+    assert rc == 0
+    assert called["argv"] == [
+        "nsys-export",
+        "--sqlite",
+        "trace.sqlite",
+        "--output",
+        "out.json",
+    ]

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import shlex
 import sqlite3
 import sys
 from pathlib import Path
@@ -18,6 +19,10 @@ from .metrics.provider_registry import DEFAULT_PROVIDER_REGISTRY
 from .sources.nsys_analyze import analyze_nsys_sqlite, analyze_to_markdown
 from .sources.nsys_diff import diff_nsys_sqlite, diff_to_markdown
 from .sources.nsys_flat_export import export_kernels_flat
+from .sources.nsys_module_kernel_compare import (
+    compare_module_kernel_json,
+    module_kernel_compare_to_markdown,
+)
 from .sources.nsys_sql_skills import NsysSqlSkillEngine
 from .sources.nsys_sqlite_provider import NsysSqliteMetricsProvider
 from .sources.nsys_timeline_html import export_timeline_compare_html, export_timeline_html
@@ -81,6 +86,108 @@ def _parse_kv_params(values: Iterable[str]) -> Dict[str, Any]:
             continue
         out[key] = _auto_parse_value(value)
     return out
+
+
+def _choose_opt_name(action: argparse.Action) -> str:
+    for opt in action.option_strings:
+        if str(opt).startswith("--"):
+            return str(opt)
+    if action.option_strings:
+        return str(action.option_strings[0])
+    return str(action.dest)
+
+
+def _action_help_text(action: argparse.Action) -> str:
+    text = str(action.help or "").strip()
+    return text if text else "(no description)"
+
+
+def _action_meta_text(action: argparse.Action) -> str:
+    parts: List[str] = []
+    if action.required:
+        parts.append("required")
+    if action.choices:
+        parts.append("choices=" + ",".join(str(x) for x in action.choices))
+    if action.default not in (None, argparse.SUPPRESS):
+        parts.append(f"default={action.default}")
+    return "; ".join(parts)
+
+
+def _is_bool_action(action: argparse.Action) -> bool:
+    return isinstance(action, (argparse._StoreTrueAction, argparse._StoreFalseAction))
+
+
+def _is_append_action(action: argparse.Action) -> bool:
+    return isinstance(action, argparse._AppendAction)
+
+
+def _split_user_values(text: str) -> List[str]:
+    raw = [x.strip() for x in str(text or "").split(",")]
+    return [x for x in raw if x]
+
+
+def _collect_subparsers(parser: argparse.ArgumentParser) -> Dict[str, argparse.ArgumentParser]:
+    for action in parser._actions:
+        if isinstance(action, argparse._SubParsersAction):
+            return {str(name): sub for name, sub in dict(action.choices).items()}
+    return {}
+
+
+def _collect_subparser_help(parser: argparse.ArgumentParser) -> Dict[str, str]:
+    for action in parser._actions:
+        if not isinstance(action, argparse._SubParsersAction):
+            continue
+        out: Dict[str, str] = {}
+        for choice_action in action._choices_actions:
+            out[str(choice_action.dest)] = str(choice_action.help or "").strip()
+        return out
+    return {}
+
+
+def _iter_user_actions(parser: argparse.ArgumentParser) -> List[argparse.Action]:
+    out: List[argparse.Action] = []
+    for action in parser._actions:
+        if not action.option_strings:
+            continue
+        if action.dest in {"help", "func", "command"}:
+            continue
+        out.append(action)
+    return out
+
+
+def _build_args_from_action(action: argparse.Action, raw_value: str) -> List[str]:
+    name = _choose_opt_name(action)
+    value = str(raw_value).strip()
+    if not value:
+        return []
+    if _is_bool_action(action):
+        low = value.lower()
+        enabled = low in {"1", "y", "yes", "true", "on"}
+        if isinstance(action, argparse._StoreTrueAction):
+            return [name] if enabled else []
+        # store_false: pass flag when user wants false/disable
+        return [name] if enabled else []
+    if _is_append_action(action):
+        parts = _split_user_values(value)
+        out: List[str] = []
+        for item in parts:
+            out.extend([name, item])
+        return out
+    nargs = action.nargs
+    if nargs in ("+", "*"):
+        parts = _split_user_values(value)
+        if not parts:
+            return []
+        return [name] + parts
+    return [name, value]
+
+
+def _prompt_bool(question: str, *, default: bool = False) -> bool:
+    suffix = "Y/n" if default else "y/N"
+    raw = input(f"{question} [{suffix}]: ").strip().lower()
+    if not raw:
+        return bool(default)
+    return raw in {"y", "yes", "1", "true", "on"}
 
 
 def _sqlite_table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
@@ -385,6 +492,100 @@ def cmd_trace(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_nsys_panel(args: argparse.Namespace) -> int:
+    parser = build_parser()
+    subparsers = _collect_subparsers(parser)
+    help_map = _collect_subparser_help(parser)
+    nsys_cmds = sorted(
+        [name for name in subparsers.keys() if name.startswith("nsys-") and name != "nsys-panel"]
+    )
+    if not nsys_cmds:
+        print("[nsys-panel] no nsys subcommands found")
+        return 2
+
+    print("=== NSYS Interactive Panel ===")
+    print("Select one command by index or name:")
+    for idx, name in enumerate(nsys_cmds, start=1):
+        desc = help_map.get(name) or str(getattr(subparsers[name], "description", "") or "").strip()
+        print(f"  {idx}. {name} - {desc}")
+
+    selected_name = ""
+    while not selected_name:
+        raw = input("command > ").strip()
+        if not raw:
+            continue
+        if raw in subparsers and raw in nsys_cmds:
+            selected_name = raw
+            break
+        try:
+            idx = int(raw)
+        except Exception:
+            idx = -1
+        if 1 <= idx <= len(nsys_cmds):
+            selected_name = nsys_cmds[idx - 1]
+            break
+        print("Invalid selection, try again.")
+
+    selected = subparsers[selected_name]
+    desc = str(getattr(selected, "description", "") or "").strip()
+    if desc:
+        print(f"\n[{selected_name}] {desc}\n")
+    else:
+        print(f"\n[{selected_name}]\n")
+
+    user_actions = _iter_user_actions(selected)
+    required_actions = [a for a in user_actions if bool(a.required)]
+    optional_actions = [a for a in user_actions if not bool(a.required)]
+
+    cmd_tokens: List[str] = [selected_name]
+
+    if required_actions:
+        print("Required arguments:")
+        for action in required_actions:
+            opt = _choose_opt_name(action)
+            info = _action_help_text(action)
+            meta = _action_meta_text(action)
+            prompt = f"  {opt} ({info}"
+            if meta:
+                prompt += f"; {meta}"
+            prompt += ") > "
+            while True:
+                value = input(prompt).strip()
+                if not value:
+                    print("    this argument is required")
+                    continue
+                cmd_tokens.extend(_build_args_from_action(action, value))
+                break
+
+    if optional_actions and _prompt_bool("Configure optional arguments?", default=False):
+        print("\nOptional arguments (press Enter to skip):")
+        for action in optional_actions:
+            opt = _choose_opt_name(action)
+            info = _action_help_text(action)
+            meta = _action_meta_text(action)
+            if _is_bool_action(action):
+                enabled = _prompt_bool(f"  {opt} ({info}) enable?", default=False)
+                if enabled:
+                    cmd_tokens.append(opt)
+                continue
+            prompt = f"  {opt} ({info}"
+            if meta:
+                prompt += f"; {meta}"
+            prompt += ") > "
+            value = input(prompt).strip()
+            if not value:
+                continue
+            cmd_tokens.extend(_build_args_from_action(action, value))
+
+    cmd_display = "myutils-profile " + " ".join(shlex.quote(x) for x in cmd_tokens)
+    print("\nGenerated command:")
+    print(cmd_display)
+
+    if _prompt_bool("Execute now?", default=False):
+        return int(main(cmd_tokens))
+    return 0
+
+
 def cmd_nsys_sql_skill(args: argparse.Namespace) -> int:
     provider = NsysSqliteMetricsProvider(args.sqlite)
     if args.list_skills:
@@ -555,6 +756,34 @@ def cmd_nsys_diff(args: argparse.Namespace) -> int:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text, encoding="utf-8")
         print(f"[nsys-diff] wrote: {path}")
+    else:
+        print(text)
+    return 0
+
+
+def cmd_nsys_module_kernel_compare(args: argparse.Namespace) -> int:
+    stream_ids = [int(v) for v in (args.stream_id or [])]
+    payload = compare_module_kernel_json(
+        base_json=str(args.base_json),
+        target_json=str(args.target_json),
+        base_label=str(args.base_label or "base"),
+        target_label=str(args.target_label or "target"),
+        nvtx_text=str(args.nvtx_text or ""),
+        device_id=int(args.device_id),
+        stream_ids=stream_ids,
+        top_k=int(args.top_k),
+        timeline_limit_per_stream=int(args.timeline_limit_per_stream),
+    )
+    fmt = str(args.format or "json").strip().lower()
+    if fmt in {"md", "markdown"}:
+        text = module_kernel_compare_to_markdown(payload)
+    else:
+        text = json.dumps(payload, ensure_ascii=False, indent=2 if args.pretty else None)
+    if args.output:
+        path = Path(args.output)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+        print(f"[nsys-module-kernel-compare] wrote: {path}")
     else:
         print(text)
     return 0
@@ -740,6 +969,18 @@ def build_parser() -> argparse.ArgumentParser:
     )
     trace.set_defaults(func=cmd_trace)
 
+    nsys_panel = sub.add_parser(
+        "nsys-panel",
+        help="interactive panel to choose nsys command and fill args",
+        description=(
+            "Interactive panel for nsys commands.\n"
+            "You can pick one nsys subcommand, see its description, fill required/optional args, "
+            "then choose to run it immediately or only print the generated command."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    nsys_panel.set_defaults(func=cmd_nsys_panel)
+
     nsys_sql = sub.add_parser("nsys-sql-skill", help="run built-in Nsight SQLite SQL skills")
     nsys_sql.add_argument("--sqlite", required=True, help="nsys exported sqlite path")
     nsys_sql.add_argument("--list-skills", action="store_true", help="list available skills and parameters")
@@ -842,6 +1083,55 @@ def build_parser() -> argparse.ArgumentParser:
     nsys_diff.add_argument("--output", default="")
     nsys_diff.add_argument("--pretty", action="store_true")
     nsys_diff.set_defaults(func=cmd_nsys_diff)
+
+    nsys_module_kernel_compare = sub.add_parser(
+        "nsys-module-kernel-compare",
+        help=(
+            "compare two nsys-sql-skill kernel JSON exports for one module/NVTX scope "
+            "(stream timeline + resource usage deltas)"
+        ),
+    )
+    nsys_module_kernel_compare.add_argument("--base-json", required=True, help="baseline kernel JSON path")
+    nsys_module_kernel_compare.add_argument("--target-json", required=True, help="target kernel JSON path")
+    nsys_module_kernel_compare.add_argument("--base-label", default="base", help="display label for baseline")
+    nsys_module_kernel_compare.add_argument("--target-label", default="target", help="display label for target")
+    nsys_module_kernel_compare.add_argument(
+        "--nvtx-text",
+        default="",
+        help=(
+            "optional SQL-LIKE NVTX filter (% and _ supported; * also accepted). "
+            "Empty means no NVTX filter."
+        ),
+    )
+    nsys_module_kernel_compare.add_argument(
+        "--device-id",
+        type=int,
+        default=-1,
+        help="device filter; -1 means all devices (default: -1)",
+    )
+    nsys_module_kernel_compare.add_argument(
+        "--stream-id",
+        action="append",
+        type=int,
+        default=[],
+        help="stream filter, repeatable (default: keep all streams)",
+    )
+    nsys_module_kernel_compare.add_argument(
+        "--top-k",
+        type=int,
+        default=20,
+        help="top delta rows for kernel-duration compare (default: 20)",
+    )
+    nsys_module_kernel_compare.add_argument(
+        "--timeline-limit-per-stream",
+        type=int,
+        default=40,
+        help="timeline sample rows kept per stream for each workload (default: 40)",
+    )
+    nsys_module_kernel_compare.add_argument("--format", default="json", choices=["json", "markdown", "md"])
+    nsys_module_kernel_compare.add_argument("--output", default="")
+    nsys_module_kernel_compare.add_argument("--pretty", action="store_true")
+    nsys_module_kernel_compare.set_defaults(func=cmd_nsys_module_kernel_compare)
 
     nsys_timeline = sub.add_parser(
         "nsys-timeline-html",
@@ -1322,6 +1612,10 @@ def entry_nsys_sql_skill() -> int:
     return _run_nsys_alias("nsys-sql-skill")
 
 
+def entry_nsys_panel() -> int:
+    return _run_nsys_alias("nsys-panel")
+
+
 def entry_nsys_export() -> int:
     return _run_nsys_alias("nsys-export")
 
@@ -1332,6 +1626,10 @@ def entry_nsys_analyze() -> int:
 
 def entry_nsys_diff() -> int:
     return _run_nsys_alias("nsys-diff")
+
+
+def entry_nsys_module_kernel_compare() -> int:
+    return _run_nsys_alias("nsys-module-kernel-compare")
 
 
 def entry_nsys_timeline_html() -> int:

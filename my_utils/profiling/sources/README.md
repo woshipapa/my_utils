@@ -12,6 +12,7 @@ Offline Nsight Systems SQLite post-processing parsers and analysis utilities.
 | `nsys_iterations.py` | NVTX-marker-based iteration detection (`detect_iterations`) |
 | `nsys_mfu.py` | MFU helpers (`compute_mfu_single`, `infer_peak_tflops`) |
 | `nsys_flat_export.py` | Flat kernel timeline export to JSON/CSV (`export_kernels_flat`) |
+| `nsys_module_kernel_compare.py` | Compare two module-level kernel JSON exports (`compare_module_kernel_json`) |
 | `nsys_analyze.py` | All-in-one analysis (`analyze_nsys_sqlite`, `analyze_to_markdown`) |
 | `nsys_diff.py` | Before/after comparison (`diff_nsys_sqlite`, `diff_to_markdown`) |
 | `nsys_timeline_html.py` | Static HTML timeline export (`export_timeline_html`) |
@@ -250,12 +251,14 @@ It can also be registered in `MetricsCollector` as a standard provider.
 
 | Subcommand | Purpose |
 |---|---|
+| `nsys-panel` | interactive panel to choose one nsys subcommand and fill args |
 | `nsys-sql-skill` | run one SQL skill with params |
 | `nsys-analyze` | all-in-one analysis |
 | `nsys-iter-overlap` | per-iteration compute/comm/overlap |
 | `nsys-iter-outliers` | iteration outlier detection |
 | `nsys-export` | flat kernel export |
 | `nsys-diff` | before/after diff |
+| `nsys-module-kernel-compare` | compare two `nsys-sql-skill` kernel JSON exports for one module scope |
 | `nsys-timeline-html` | static timeline html |
 
 Tip:
