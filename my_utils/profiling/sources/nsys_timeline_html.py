@@ -163,21 +163,18 @@ def _parse_rank_from_text(text: object) -> Optional[int]:
 
 def _normalize_nvtx_like_pattern(text: object) -> str:
     """
-    Normalize user NVTX query into a SQL LIKE pattern.
+    Normalize user NVTX query into a SQL LIKE pattern without implicit wildcards.
 
     Behavior:
     - empty -> "%"
     - shell-style wildcard "*" is converted to "%"
-    - if resulting text contains "%", keep as-is
-    - otherwise default to substring match: "%text%"
+    - otherwise keep the user input as-is (exact LIKE match unless user adds wildcard)
     """
     raw = str(text or "").strip()
     if not raw:
         return "%"
     normalized = raw.replace("*", "%")
-    if "%" in normalized:
-        return normalized
-    return f"%{normalized}%"
+    return normalized
 
 
 def _intervals_overlap(start_a: int, end_a: int, start_b: int, end_b: int) -> bool:
@@ -3302,6 +3299,32 @@ def _collect_timeline_state(
                 len(selected_nvtx_windows),
             )
         )
+        if progress_cb:
+            progress_cb(
+                "  info:     nvtx_match_count={} selected_count={} nvtx_index={}".format(
+                    len(matched_nvtx),
+                    len(selected_nvtx_windows),
+                    int(nvtx_index),
+                )
+            )
+            if selected_nvtx_windows:
+                selected_limit = len(selected_nvtx_windows) if int(nvtx_index) >= 0 else min(len(selected_nvtx_windows), 8)
+                for i, row in enumerate(selected_nvtx_windows[:selected_limit]):
+                    progress_cb(
+                        "  info:     selected_nvtx[{}] full_name={} start_ns={} end_ns={} duration_ms={}".format(
+                            int(i),
+                            str(row.get("nvtx_text") or ""),
+                            _to_int(row.get("start_ns"), -1),
+                            _to_int(row.get("end_ns"), -1),
+                            _safe_float(row.get("duration_ms")),
+                        )
+                    )
+                if selected_limit < len(selected_nvtx_windows):
+                    progress_cb(
+                        "  info:     selected_nvtx_omitted={} (set --nvtx-index to inspect one scope)".format(
+                            len(selected_nvtx_windows) - selected_limit
+                        )
+                    )
         if selected_nvtx_windows:
             debug_log(
                 "selected nvtx sample={}".format(

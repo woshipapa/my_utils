@@ -1227,7 +1227,8 @@ def build_parser() -> argparse.ArgumentParser:
         default="",
         help=(
             "NVTX text LIKE pattern to restrict analysis to the union time window of all "
-            "matching NVTX ranges (e.g. 'forward', '%%step_%%', 'backward'). "
+            "matching NVTX ranges. No implicit wildcard is added; use %/_ (or *) explicitly "
+            "for fuzzy matching (e.g. '%%step_%%'). "
             "When set, start_ns/end_ns are derived automatically from matching ranges "
             "unless --start-ns/--end-ns are explicitly provided."
         ),
@@ -1268,6 +1269,7 @@ def build_parser() -> argparse.ArgumentParser:
         default="",
         help=(
             "optional SQL-LIKE NVTX filter (% and _ supported; * also accepted). "
+            "No implicit wildcard is added. "
             "Empty means no NVTX filter."
         ),
     )
@@ -1359,6 +1361,7 @@ def build_parser() -> argparse.ArgumentParser:
         default="",
         help=(
             "SQL LIKE pattern for NVTX text matching (example: 'qwen_layer_%%'). "
+            "No implicit wildcard is added; use %/_ (or *) explicitly. "
             "When set, timeline focuses on matched NVTX scopes."
         ),
     )
@@ -1564,6 +1567,7 @@ def build_parser() -> argparse.ArgumentParser:
         default="",
         help=(
             "SQL LIKE pattern for NVTX text matching. "
+            "No implicit wildcard is added; use %/_ (or *) explicitly. "
             "Each sqlite uses its own matched NVTX scope(s)."
         ),
     )

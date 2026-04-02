@@ -33,6 +33,13 @@ def _first_gpu_name_from_conn(conn: sqlite3.Connection) -> str:
         return ""
 
 
+def _normalize_like_pattern(text: str) -> str:
+    raw = str(text or "").strip()
+    if not raw:
+        return ""
+    return raw.replace("*", "%")
+
+
 def _resolve_nvtx_text(
     conn: sqlite3.Connection,
     schema: NsightSchema,
@@ -88,9 +95,7 @@ def _resolve_nvtx_text(
             "warning": "NVTX table missing start/end columns.",
         }
 
-    like_pattern = str(nvtx_text).strip()
-    if "%" not in like_pattern:
-        like_pattern = f"%{like_pattern}%"
+    like_pattern = _normalize_like_pattern(str(nvtx_text))
 
     sql = (
         f"SELECT {text_expr} AS nvtx_text, "
@@ -179,7 +184,7 @@ def _resolve_nvtx_kernel_span(
     limit: int,
 ) -> Dict[str, object]:
     """Resolve attributed GPU kernel span for NVTX text via correlationId mapping."""
-    like_pattern = str(nvtx_text or "").strip()
+    like_pattern = _normalize_like_pattern(str(nvtx_text or ""))
     if not like_pattern:
         return {
             "pattern": "",
@@ -188,8 +193,6 @@ def _resolve_nvtx_kernel_span(
             "kernel_end_ns": -1,
             "warning": "empty nvtx_text pattern",
         }
-    if "%" not in like_pattern:
-        like_pattern = f"%{like_pattern}%"
 
     skill = engine.get_skill("nvtx_kernel_sm_detail")
     if skill is None:
@@ -548,8 +551,9 @@ def analyze_nsys_sqlite(
 
         with _phase("nvtx_wall_efficiency"):
             _eff_nvtx_pattern = (
-                f"%{nvtx_text}%" if nvtx_text and "%" not in nvtx_text
-                else (nvtx_text if nvtx_text else f"%{iteration_marker}%")
+                _normalize_like_pattern(str(nvtx_text))
+                if nvtx_text
+                else f"%{iteration_marker}%"
             )
             nvtx_wall_efficiency = _run_subphase(
                 "nvtx_wall_efficiency.skill",
@@ -648,8 +652,9 @@ def analyze_nsys_sqlite(
 
         with _phase("bottleneck_classification"):
             _bottleneck_pattern = (
-                f"%{nvtx_text}%" if nvtx_text and "%" not in nvtx_text
-                else (nvtx_text if nvtx_text else f"%{iteration_marker}%")
+                _normalize_like_pattern(str(nvtx_text))
+                if nvtx_text
+                else f"%{iteration_marker}%"
             )
             try:
                 bottleneck_classification = _run_subphase(

@@ -576,6 +576,83 @@ def test_timeline_debug_logs_emit_matched_kernel_counts(tmp_path: Path) -> None:
     assert any("matched_kernels=" in msg for msg in progress_messages), progress_messages
 
 
+def test_timeline_progress_emits_selected_nvtx_full_name(tmp_path: Path) -> None:
+    db = tmp_path / "timeline_progress_nvtx_name.sqlite"
+    _init_sqlite(db)
+
+    out = tmp_path / "timeline_progress_nvtx_name.html"
+    progress_messages: List[str] = []
+
+    export_timeline_html(
+        str(db),
+        output_path=str(out),
+        device_id=0,
+        nvtx_text="%sample_0%",
+        nvtx_index=1,
+        include_metrics=False,
+        debug=False,
+        progress_cb=progress_messages.append,
+    )
+
+    assert any("nvtx_match_count=" in msg for msg in progress_messages), progress_messages
+    assert any("selected_nvtx[0] full_name=sample_0 step=2 rank=0" in msg for msg in progress_messages), progress_messages
+
+
+def test_timeline_compare_progress_emits_selected_nvtx_full_name(tmp_path: Path) -> None:
+    db_a = tmp_path / "timeline_compare_progress_a.sqlite"
+    db_b = tmp_path / "timeline_compare_progress_b.sqlite"
+    _init_sqlite(db_a)
+    _init_sqlite(db_b, scale=1.2)
+
+    out = tmp_path / "timeline_compare_progress.html"
+    progress_messages: List[str] = []
+
+    export_timeline_compare_html(
+        [str(db_a), str(db_b)],
+        output_path=str(out),
+        device_id=0,
+        nvtx_text="%sample_0%",
+        nvtx_index=1,
+        include_metrics=False,
+        debug=False,
+        progress_cb=progress_messages.append,
+    )
+
+    assert any("[1/2]" in msg and "selected_nvtx[0] full_name=sample_0 step=2 rank=0" in msg for msg in progress_messages), progress_messages
+    assert any("[2/2]" in msg and "selected_nvtx[0] full_name=sample_0 step=2 rank=0" in msg for msg in progress_messages), progress_messages
+
+
+def test_timeline_nvtx_text_requires_explicit_wildcard(tmp_path: Path) -> None:
+    db = tmp_path / "timeline_nvtx_explicit_wildcard.sqlite"
+    _init_sqlite(db)
+
+    out_exact = tmp_path / "timeline_nvtx_exact.html"
+    exact_progress: List[str] = []
+    export_timeline_html(
+        str(db),
+        output_path=str(out_exact),
+        device_id=0,
+        nvtx_text="sample_0",
+        include_metrics=False,
+        debug=False,
+        progress_cb=exact_progress.append,
+    )
+    assert any("nvtx_match_count=0 selected_count=0" in msg for msg in exact_progress), exact_progress
+
+    out_like = tmp_path / "timeline_nvtx_like.html"
+    like_progress: List[str] = []
+    export_timeline_html(
+        str(db),
+        output_path=str(out_like),
+        device_id=0,
+        nvtx_text="%sample_0%",
+        include_metrics=False,
+        debug=False,
+        progress_cb=like_progress.append,
+    )
+    assert any("nvtx_match_count=2 selected_count=2" in msg for msg in like_progress), like_progress
+
+
 def test_timeline_allstream_js_not_blocked_when_metrics_disabled(tmp_path: Path) -> None:
     db = tmp_path / "timeline_no_metrics_allstream.sqlite"
     _init_sqlite(db)
@@ -1753,6 +1830,33 @@ def test_analyze_nsys_sqlite_nvtx_scope_extends_to_gpu_kernel_span(tmp_path: Pat
     assert int(summary.get("kernel_rows") or 0) >= 1, summary
     warns = list(result.get("warnings") or [])
     assert any("NVTX_SCOPE_KERNEL_SPAN" in str(w) for w in warns), warns
+
+
+def test_analyze_nvtx_text_requires_explicit_wildcard(tmp_path: Path) -> None:
+    from my_utils.profiling.sources.nsys_analyze import analyze_nsys_sqlite
+
+    db = tmp_path / "analyze_nvtx_explicit_wildcard.sqlite"
+    _init_sqlite(db)
+
+    exact = analyze_nsys_sqlite(
+        str(db),
+        device_id=0,
+        nvtx_text="sample_0",
+        top_k=10,
+    )
+    exact_info = dict(exact.get("nvtx_text_info") or {})
+    assert int(exact_info.get("count") or 0) == 0, exact_info
+    assert "No NVTX ranges matched pattern 'sample_0'" in str(exact_info.get("warning") or ""), exact_info
+
+    like = analyze_nsys_sqlite(
+        str(db),
+        device_id=0,
+        nvtx_text="%sample_0%",
+        top_k=10,
+    )
+    like_info = dict(like.get("nvtx_text_info") or {})
+    assert int(like_info.get("count") or 0) >= 2, like_info
+    assert not str(like_info.get("warning") or ""), like_info
 
 
 # ===========================================================================
