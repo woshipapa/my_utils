@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import html
 import json
 import math
 import re
@@ -557,11 +558,22 @@ def _diff_streams(
         seq_ratio = SequenceMatcher(None, b_seq, t_seq, autojunk=False).ratio() if (b_seq or t_seq) else 1.0
         b_set = set(b.get("kernel_set") or [])
         t_set = set(t.get("kernel_set") or [])
+        base_event_count = _to_int(b.get("event_count"), 0)
+        target_event_count = _to_int(t.get("event_count"), 0)
+        added = sorted(t_set - b_set)
+        removed = sorted(b_set - t_set)
+        change_hint = "reorder_or_timing_change"
+        if target_event_count < base_event_count and float(seq_ratio) < 0.98:
+            change_hint = "possible_fusion_in_target"
+        elif target_event_count > base_event_count and float(seq_ratio) < 0.98:
+            change_hint = "possible_split_in_target"
+        elif added or removed:
+            change_hint = "kernel_set_changed"
         rows.append(
             {
                 "stream_id": int(stream_id),
-                "base_event_count": _to_int(b.get("event_count"), 0),
-                "target_event_count": _to_int(t.get("event_count"), 0),
+                "base_event_count": base_event_count,
+                "target_event_count": target_event_count,
                 "base_total_kernel_ms": _to_float(b.get("total_kernel_ms"), 0.0),
                 "target_total_kernel_ms": _to_float(t.get("total_kernel_ms"), 0.0),
                 "delta_total_kernel_ms": round(
@@ -575,10 +587,11 @@ def _diff_streams(
                 )
                 if (b.get("weighted_occupancy_pct") is not None or t.get("weighted_occupancy_pct") is not None)
                 else None,
-                "kernel_set_added": sorted(t_set - b_set),
-                "kernel_set_removed": sorted(b_set - t_set),
+                "kernel_set_added": added,
+                "kernel_set_removed": removed,
                 "kernel_set_common_count": len(b_set & t_set),
                 "sequence_similarity": round(float(seq_ratio), 6),
+                "change_hint": change_hint,
                 "first_divergence": _first_divergence(b_seq, t_seq),
                 "base_timeline_sample": list(b.get("timeline_sample") or []),
                 "target_timeline_sample": list(t.get("timeline_sample") or []),
@@ -663,25 +676,25 @@ def _diff_kernel_resources(
     }
 
 
-def compare_module_kernel_json(
+def compare_module_kernel_rows(
     *,
-    base_json: str,
-    target_json: str,
+    base_rows: Sequence[Dict[str, object]],
+    target_rows: Sequence[Dict[str, object]],
     base_label: str = "base",
     target_label: str = "target",
+    base_source_path: str = "",
+    target_source_path: str = "",
     nvtx_text: str = "",
     device_id: int = -1,
     stream_ids: Optional[Sequence[int]] = None,
     top_k: int = 20,
     timeline_limit_per_stream: int = 40,
 ) -> Dict[str, object]:
-    base_rows = _load_rows(base_json)
-    target_rows = _load_rows(target_json)
     streams = list(stream_ids or [])
     base_profile = _build_profile(
-        base_rows,
+        list(base_rows or []),
         label=base_label,
-        source_path=base_json,
+        source_path=base_source_path,
         nvtx_text=nvtx_text,
         device_id=device_id,
         stream_ids=streams,
@@ -689,9 +702,9 @@ def compare_module_kernel_json(
         timeline_limit_per_stream=timeline_limit_per_stream,
     )
     target_profile = _build_profile(
-        target_rows,
+        list(target_rows or []),
         label=target_label,
-        source_path=target_json,
+        source_path=target_source_path,
         nvtx_text=nvtx_text,
         device_id=device_id,
         stream_ids=streams,
@@ -750,6 +763,35 @@ def compare_module_kernel_json(
         "target": target_profile,
         "compare": compare_payload,
     }
+
+
+def compare_module_kernel_json(
+    *,
+    base_json: str,
+    target_json: str,
+    base_label: str = "base",
+    target_label: str = "target",
+    nvtx_text: str = "",
+    device_id: int = -1,
+    stream_ids: Optional[Sequence[int]] = None,
+    top_k: int = 20,
+    timeline_limit_per_stream: int = 40,
+) -> Dict[str, object]:
+    base_rows = _load_rows(base_json)
+    target_rows = _load_rows(target_json)
+    return compare_module_kernel_rows(
+        base_rows=base_rows,
+        target_rows=target_rows,
+        base_label=base_label,
+        target_label=target_label,
+        base_source_path=base_json,
+        target_source_path=target_json,
+        nvtx_text=nvtx_text,
+        device_id=device_id,
+        stream_ids=stream_ids,
+        top_k=top_k,
+        timeline_limit_per_stream=timeline_limit_per_stream,
+    )
 
 
 def module_kernel_compare_to_markdown(payload: Dict[str, object]) -> str:
@@ -850,7 +892,247 @@ def module_kernel_compare_to_markdown(payload: Dict[str, object]) -> str:
                 _short_kernel_name(str(div.get("target_kernel") or ""), width=56),
             )
         )
+        lines.append(f"- change_hint: `{stream.get('change_hint', 'reorder_or_timing_change')}`")
         lines.append(f"- kernel_set_added: `{len(stream.get('kernel_set_added', []) or [])}`")
         lines.append(f"- kernel_set_removed: `{len(stream.get('kernel_set_removed', []) or [])}`")
         lines.append("")
     return "\n".join(lines)
+
+
+def module_kernel_compare_to_html(payload: Dict[str, object]) -> str:
+    base = dict(payload.get("base") or {})
+    target = dict(payload.get("target") or {})
+    compare = dict(payload.get("compare") or {})
+    module_delta = dict(compare.get("module_delta") or {})
+    kernel_set = dict(compare.get("kernel_set_diff") or {})
+    kernel_resource_diff = dict(compare.get("kernel_resource_diff") or {})
+
+    base_label = str(base.get("label") or "base")
+    target_label = str(target.get("label") or "target")
+    base_path = str(base.get("source_path") or "")
+    target_path = str(target.get("source_path") or "")
+
+    def _esc(v: object) -> str:
+        return html.escape(str(v if v is not None else ""))
+
+    def _fmt_f(v: object, digits: int = 3, suffix: str = "") -> str:
+        if v is None:
+            return "n/a"
+        try:
+            val = float(v)
+        except Exception:
+            return _esc(v)
+        if not math.isfinite(val):
+            return "n/a"
+        return f"{val:.{int(digits)}f}{suffix}"
+
+    def _fmt_i(v: object) -> str:
+        try:
+            return str(int(v))
+        except Exception:
+            return "0"
+
+    def _chips(items: Sequence[object], cls: str) -> str:
+        vals = [str(x) for x in items if str(x or "").strip()]
+        if not vals:
+            return "<span class='chip chip-empty'>none</span>"
+        return "".join([f"<span class='chip {cls}'>{_esc(v)}</span>" for v in vals[:24]])
+
+    def _timeline_table(rows: Sequence[Dict[str, object]], *, label: str) -> str:
+        if not rows:
+            return f"<div class='empty'>No timeline rows in { _esc(label) }.</div>"
+        head = (
+            "<tr><th>idx</th><th>kernel</th><th>kind</th><th>start_ms</th><th>dur_ms</th>"
+            "<th>tpb</th><th>regs</th><th>shared_bytes</th><th>occ_pct</th></tr>"
+        )
+        body_rows: List[str] = []
+        for row in rows:
+            body_rows.append(
+                "<tr>"
+                f"<td>{_fmt_i(row.get('timeline_index'))}</td>"
+                f"<td><code title='{_esc(row.get('kernel_name'))}'>{_esc(_short_kernel_name(str(row.get('kernel_name') or ''), width=64))}</code></td>"
+                f"<td>{_esc(row.get('kind'))}</td>"
+                f"<td>{_fmt_f(row.get('start_offset_ms'), 3)}</td>"
+                f"<td>{_fmt_f(row.get('duration_ms'), 3)}</td>"
+                f"<td>{_esc(row.get('threads_per_block'))}</td>"
+                f"<td>{_esc(row.get('registers_per_thread'))}</td>"
+                f"<td>{_esc(row.get('total_shared_bytes'))}</td>"
+                f"<td>{_fmt_f(row.get('occupancy_pct'), 2)}</td>"
+                "</tr>"
+            )
+        return (
+            "<table class='tbl'>"
+            f"<thead>{head}</thead><tbody>{''.join(body_rows)}</tbody></table>"
+        )
+
+    resource_rows: List[str] = []
+    for row in list(kernel_resource_diff.get("changed_kernels") or [])[:80]:
+        diff_map = dict(row.get("resource_diffs") or {})
+        detail_rows: List[str] = []
+        for key in sorted(diff_map.keys()):
+            dv = dict(diff_map.get(key) or {})
+            detail_rows.append(
+                "<tr>"
+                f"<td>{_esc(key)}</td>"
+                f"<td>{_esc(dv.get('base'))}</td>"
+                f"<td>{_esc(dv.get('target'))}</td>"
+                "</tr>"
+            )
+        detail_html = (
+            "<details><summary>resource diff detail</summary>"
+            "<table class='tbl tbl-mini'><thead><tr><th>field</th><th>base</th><th>target</th></tr></thead>"
+            f"<tbody>{''.join(detail_rows) or '<tr><td colspan=\"3\">none</td></tr>'}</tbody></table></details>"
+        )
+        resource_rows.append(
+            "<tr>"
+            f"<td><code title='{_esc(row.get('kernel_name'))}'>{_esc(_short_kernel_name(str(row.get('kernel_name') or ''), width=72))}</code></td>"
+            f"<td>{_esc(row.get('change_type'))}</td>"
+            f"<td>{_esc(','.join(str(x) for x in (row.get('changed_keys') or [])))}</td>"
+            f"<td>{_fmt_i(row.get('base_invocations'))} -> {_fmt_i(row.get('target_invocations'))}</td>"
+            f"<td>{_fmt_f(row.get('base_total_ms'), 3)} -> {_fmt_f(row.get('target_total_ms'), 3)}</td>"
+            f"<td>{detail_html}</td>"
+            "</tr>"
+        )
+
+    duration_delta_rows: List[str] = []
+    for row in list(compare.get("top_kernel_duration_deltas") or [])[:60]:
+        duration_delta_rows.append(
+            "<tr>"
+            f"<td><code title='{_esc(row.get('kernel_name'))}'>{_esc(_short_kernel_name(str(row.get('kernel_name') or ''), width=72))}</code></td>"
+            f"<td>{_fmt_f(row.get('base_total_ms'), 3)}</td>"
+            f"<td>{_fmt_f(row.get('target_total_ms'), 3)}</td>"
+            f"<td>{_fmt_f(row.get('delta_ms'), 3)}</td>"
+            f"<td>{_fmt_f(row.get('ratio_target_over_base'), 3)}</td>"
+            "</tr>"
+        )
+
+    stream_cards: List[str] = []
+    for stream in list(compare.get("stream_deltas") or []):
+        sid = _fmt_i(stream.get("stream_id"))
+        divergence = dict(stream.get("first_divergence") or {})
+        base_rows = list(stream.get("base_timeline_sample") or [])
+        target_rows = list(stream.get("target_timeline_sample") or [])
+        stream_cards.append(
+            "\n".join(
+                [
+                    "<section class='card'>",
+                    f"<h3>Stream {sid}</h3>",
+                    "<div class='pill-grid'>",
+                    f"<div class='pill'><span>change_hint</span><strong>{_esc(stream.get('change_hint'))}</strong></div>",
+                    f"<div class='pill'><span>sequence_similarity</span><strong>{_fmt_f(stream.get('sequence_similarity'), 4)}</strong></div>",
+                    f"<div class='pill'><span>events</span><strong>{_fmt_i(stream.get('base_event_count'))} -> {_fmt_i(stream.get('target_event_count'))}</strong></div>",
+                    f"<div class='pill'><span>total_ms</span><strong>{_fmt_f(stream.get('base_total_kernel_ms'), 3)} -> {_fmt_f(stream.get('target_total_kernel_ms'), 3)}</strong></div>",
+                    f"<div class='pill'><span>delta_ms</span><strong>{_fmt_f(stream.get('delta_total_kernel_ms'), 3)}</strong></div>",
+                    f"<div class='pill'><span>occ_delta_pct</span><strong>{_fmt_f(stream.get('delta_occ_pct'), 3)}</strong></div>",
+                    "</div>",
+                    "<div class='divergence'>"
+                    f"first_divergence idx={_esc(divergence.get('index'))} | "
+                    f"base={_esc(_short_kernel_name(str(divergence.get('base_kernel') or ''), width=56))} | "
+                    f"target={_esc(_short_kernel_name(str(divergence.get('target_kernel') or ''), width=56))}"
+                    "</div>",
+                    "<div class='chip-row'>"
+                    "<span class='chip-title'>kernel_set_added</span>"
+                    f"{_chips(stream.get('kernel_set_added') or [], 'chip-add')}"
+                    "</div>",
+                    "<div class='chip-row'>"
+                    "<span class='chip-title'>kernel_set_removed</span>"
+                    f"{_chips(stream.get('kernel_set_removed') or [], 'chip-del')}"
+                    "</div>",
+                    "<div class='timeline-grid'>",
+                    "<div>",
+                    f"<div class='sub-title'>{_esc(base_label)} timeline sample</div>",
+                    _timeline_table(base_rows, label=base_label),
+                    "</div>",
+                    "<div>",
+                    f"<div class='sub-title'>{_esc(target_label)} timeline sample</div>",
+                    _timeline_table(target_rows, label=target_label),
+                    "</div>",
+                    "</div>",
+                    "</section>",
+                ]
+            )
+        )
+
+    page = "\n".join(
+        [
+            "<!doctype html>",
+            "<html><head><meta charset='utf-8'/>",
+            "<title>NSYS Module Kernel Compare</title>",
+            "<style>",
+            "body{font-family:Arial,sans-serif;margin:20px;background:#0f1116;color:#e7e9ee;}",
+            ".meta{margin-bottom:12px;color:#a8afbf;font-size:13px;}",
+            ".card{background:#171c28;border:1px solid #2a3243;border-radius:8px;padding:12px;margin-bottom:14px;}",
+            ".pill-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:8px;margin:8px 0 10px 0;}",
+            ".pill{background:#111827;border:1px solid #2b3b57;border-radius:6px;padding:8px 10px;}",
+            ".pill span{display:block;font-size:11px;color:#8fa1bf;margin-bottom:4px;}",
+            ".pill strong{font-size:14px;color:#edf4ff;}",
+            ".tbl{width:100%;border-collapse:collapse;font-size:12px;table-layout:fixed;}",
+            ".tbl th,.tbl td{border-top:1px solid #2a3243;padding:6px 7px;text-align:left;vertical-align:top;word-break:break-word;}",
+            ".tbl thead th{border-top:none;color:#9cb0d0;font-weight:600;}",
+            ".tbl code{background:#1b2740;border:1px solid #324868;border-radius:4px;padding:1px 4px;color:#edf4ff;}",
+            ".tbl-mini{margin-top:8px;font-size:11px;}",
+            ".timeline-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(460px,1fr));gap:10px;}",
+            ".sub-title{font-size:12px;color:#dbe6ff;margin-bottom:6px;}",
+            ".chip-row{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin:6px 0;}",
+            ".chip-title{font-size:11px;color:#93a5c3;min-width:132px;}",
+            ".chip{font-size:11px;border-radius:999px;padding:2px 8px;border:1px solid #44506a;background:#1a2233;color:#dce8ff;}",
+            ".chip-add{border-color:#2f8f6b;background:#143528;color:#c9ffe7;}",
+            ".chip-del{border-color:#a35d5d;background:#3a1f1f;color:#ffd9d9;}",
+            ".chip-empty{opacity:0.7;}",
+            ".divergence{font-size:12px;color:#a9b9d6;margin:6px 0 10px 0;}",
+            ".empty{font-size:12px;color:#95a5bf;padding:8px 0;}",
+            "</style></head><body>",
+            "<h2>NSYS Module Kernel Compare</h2>",
+            (
+                "<div class='meta'>"
+                f"base={_esc(base_label)} ({_esc(base_path)}) | "
+                f"target={_esc(target_label)} ({_esc(target_path)})"
+                "</div>"
+            ),
+            "<section class='card'>",
+            "<h3>Module Delta</h3>",
+            "<div class='pill-grid'>",
+            f"<div class='pill'><span>event_count_delta</span><strong>{_fmt_i(module_delta.get('event_count_delta'))}</strong></div>",
+            f"<div class='pill'><span>stream_count_delta</span><strong>{_fmt_i(module_delta.get('stream_count_delta'))}</strong></div>",
+            f"<div class='pill'><span>total_kernel_ms_delta</span><strong>{_fmt_f(module_delta.get('total_kernel_ms_delta'), 3)}</strong></div>",
+            f"<div class='pill'><span>busy_union_ms_delta</span><strong>{_fmt_f(module_delta.get('busy_union_ms_delta'), 3)}</strong></div>",
+            f"<div class='pill'><span>window_span_ms_delta</span><strong>{_fmt_f(module_delta.get('window_span_ms_delta'), 3)}</strong></div>",
+            f"<div class='pill'><span>weighted_occ_pct_delta</span><strong>{_fmt_f(module_delta.get('weighted_occupancy_pct_delta'), 3)}</strong></div>",
+            "</div>",
+            "</section>",
+            "<section class='card'>",
+            "<h3>Kernel Set Diff</h3>",
+            "<div class='pill-grid'>",
+            f"<div class='pill'><span>added_count</span><strong>{_fmt_i(kernel_set.get('added_count'))}</strong></div>",
+            f"<div class='pill'><span>removed_count</span><strong>{_fmt_i(kernel_set.get('removed_count'))}</strong></div>",
+            f"<div class='pill'><span>common_count</span><strong>{_fmt_i(kernel_set.get('common_count'))}</strong></div>",
+            "</div>",
+            "<div class='chip-row'><span class='chip-title'>added</span>" + _chips(kernel_set.get("added") or [], "chip-add") + "</div>",
+            "<div class='chip-row'><span class='chip-title'>removed</span>" + _chips(kernel_set.get("removed") or [], "chip-del") + "</div>",
+            "</section>",
+            "<section class='card'>",
+            "<h3>Same-Kernel Resource Diff</h3>",
+            (
+                "<div class='meta'>"
+                f"common={_fmt_i(kernel_resource_diff.get('common_kernel_count'))} | "
+                f"changed={_fmt_i(kernel_resource_diff.get('changed_kernel_count'))} | "
+                f"geometry_only={_fmt_i(kernel_resource_diff.get('geometry_only_changed_count'))} | "
+                f"resource_or_impl={_fmt_i(kernel_resource_diff.get('resource_or_impl_changed_count'))}"
+                "</div>"
+            ),
+            "<table class='tbl'><thead><tr><th>kernel</th><th>change_type</th><th>changed_keys</th><th>inv</th><th>total_ms</th><th>detail</th></tr></thead>",
+            f"<tbody>{''.join(resource_rows) or '<tr><td colspan=\"6\">No changed kernels</td></tr>'}</tbody></table>",
+            "</section>",
+            "<section class='card'>",
+            "<h3>Top Kernel Duration Deltas</h3>",
+            "<table class='tbl'><thead><tr><th>kernel</th><th>base_ms</th><th>target_ms</th><th>delta_ms</th><th>ratio</th></tr></thead>",
+            f"<tbody>{''.join(duration_delta_rows) or '<tr><td colspan=\"5\">No delta rows</td></tr>'}</tbody></table>",
+            "</section>",
+            "<section class='card'>",
+            "<h3>Stream Deltas</h3>",
+            "</section>",
+            *stream_cards,
+            "</body></html>",
+        ]
+    )
+    return page

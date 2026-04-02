@@ -21,6 +21,8 @@ from .sources.nsys_diff import diff_nsys_sqlite, diff_to_markdown
 from .sources.nsys_flat_export import export_kernels_flat
 from .sources.nsys_module_kernel_compare import (
     compare_module_kernel_json,
+    compare_module_kernel_rows,
+    module_kernel_compare_to_html,
     module_kernel_compare_to_markdown,
 )
 from .sources.nsys_sql_skills import NsysSqlSkillEngine
@@ -303,6 +305,20 @@ def _nsys_panel_skip_reason(
     if command == "nsys-analyze":
         if dest in {"peak_tflops", "peak_precision"} and selected_values.get("model_flops_per_step") in (None, "", 0):
             return "only useful when --model-flops-per-step is set"
+
+    if command == "nsys-module-kernel-compare":
+        has_json = bool(str(selected_values.get("base_json") or "").strip()) or bool(
+            str(selected_values.get("target_json") or "").strip()
+        )
+        has_sqlite = bool(str(selected_values.get("base_sqlite") or "").strip()) or bool(
+            str(selected_values.get("target_sqlite") or "").strip()
+        )
+        if has_json and dest in {"base_sqlite", "target_sqlite", "sqlite_limit", "occupancy_arch"}:
+            return "ignored in JSON input mode"
+        if has_sqlite and dest in {"base_json", "target_json"}:
+            return "ignored in sqlite input mode"
+        if dest in {"sqlite_limit", "occupancy_arch"} and not has_sqlite:
+            return "only used in sqlite input mode"
 
     return ""
 
@@ -930,21 +946,106 @@ def cmd_nsys_diff(args: argparse.Namespace) -> int:
 
 
 def cmd_nsys_module_kernel_compare(args: argparse.Namespace) -> int:
+    def _load_rows_from_sqlite(sqlite_path: str) -> List[Dict[str, object]]:
+        provider = NsysSqliteMetricsProvider(str(sqlite_path))
+        skills = set(provider.list_sql_skills())
+        if "nvtx_kernel_sm_detail" not in skills:
+            raise ValueError(
+                f"sqlite '{sqlite_path}' does not support skill 'nvtx_kernel_sm_detail' under current schema"
+            )
+
+        exec_params: Dict[str, Any] = {
+            "nvtx_text": str(args.nvtx_text or "").strip() or "%",
+            "device_id": int(args.device_id),
+            "limit": int(args.sqlite_limit),
+        }
+        occ_arch = str(getattr(args, "occupancy_arch", "auto") or "auto").strip().lower()
+        use_h100_occupancy = False
+        if occ_arch == "h100":
+            use_h100_occupancy = True
+        elif occ_arch == "auto":
+            gpu_name = _detect_gpu_name_from_sqlite(str(sqlite_path))
+            use_h100_occupancy = "h100" in str(gpu_name).lower()
+
+        if use_h100_occupancy:
+            conn = sqlite3.connect(str(sqlite_path))
+            conn.row_factory = sqlite3.Row
+            try:
+                engine = NsysSqlSkillEngine(conn)
+                rows = engine.execute_nvtx_kernel_sm_detail_h100(**exec_params)
+            finally:
+                conn.close()
+            return list(rows or [])
+        return list(provider.run_sql_skill("nvtx_kernel_sm_detail", **exec_params) or [])
+
+    has_json_pair = bool(str(args.base_json or "").strip()) and bool(str(args.target_json or "").strip())
+    has_sqlite_pair = bool(str(args.base_sqlite or "").strip()) and bool(str(args.target_sqlite or "").strip())
+    has_any_json = bool(str(args.base_json or "").strip()) or bool(str(args.target_json or "").strip())
+    has_any_sqlite = bool(str(args.base_sqlite or "").strip()) or bool(str(args.target_sqlite or "").strip())
+    if has_any_json and has_any_sqlite:
+        print(
+            "[nsys-module-kernel-compare] choose one input mode: JSON pair or sqlite pair, do not mix.",
+            file=sys.stderr,
+        )
+        return 2
+    if has_any_json and not has_json_pair:
+        print(
+            "[nsys-module-kernel-compare] JSON mode requires both --base-json and --target-json.",
+            file=sys.stderr,
+        )
+        return 2
+    if has_any_sqlite and not has_sqlite_pair:
+        print(
+            "[nsys-module-kernel-compare] sqlite mode requires both --base-sqlite and --target-sqlite.",
+            file=sys.stderr,
+        )
+        return 2
+    if not has_json_pair and not has_sqlite_pair:
+        print(
+            "[nsys-module-kernel-compare] provide either (--base-json, --target-json) "
+            "or (--base-sqlite, --target-sqlite).",
+            file=sys.stderr,
+        )
+        return 2
+
     stream_ids = [int(v) for v in (args.stream_id or [])]
-    payload = compare_module_kernel_json(
-        base_json=str(args.base_json),
-        target_json=str(args.target_json),
-        base_label=str(args.base_label or "base"),
-        target_label=str(args.target_label or "target"),
-        nvtx_text=str(args.nvtx_text or ""),
-        device_id=int(args.device_id),
-        stream_ids=stream_ids,
-        top_k=int(args.top_k),
-        timeline_limit_per_stream=int(args.timeline_limit_per_stream),
-    )
+    if has_sqlite_pair:
+        try:
+            base_rows = _load_rows_from_sqlite(str(args.base_sqlite))
+            target_rows = _load_rows_from_sqlite(str(args.target_sqlite))
+        except Exception as exc:
+            print(f"[nsys-module-kernel-compare] failed to load sqlite rows: {exc}", file=sys.stderr)
+            return 2
+        payload = compare_module_kernel_rows(
+            base_rows=base_rows,
+            target_rows=target_rows,
+            base_label=str(args.base_label or "base"),
+            target_label=str(args.target_label or "target"),
+            base_source_path=str(args.base_sqlite),
+            target_source_path=str(args.target_sqlite),
+            nvtx_text=str(args.nvtx_text or ""),
+            device_id=int(args.device_id),
+            stream_ids=stream_ids,
+            top_k=int(args.top_k),
+            timeline_limit_per_stream=int(args.timeline_limit_per_stream),
+        )
+    else:
+        payload = compare_module_kernel_json(
+            base_json=str(args.base_json),
+            target_json=str(args.target_json),
+            base_label=str(args.base_label or "base"),
+            target_label=str(args.target_label or "target"),
+            nvtx_text=str(args.nvtx_text or ""),
+            device_id=int(args.device_id),
+            stream_ids=stream_ids,
+            top_k=int(args.top_k),
+            timeline_limit_per_stream=int(args.timeline_limit_per_stream),
+        )
     fmt = str(args.format or "json").strip().lower()
     if fmt in {"md", "markdown"}:
         text = module_kernel_compare_to_markdown(payload)
+    elif fmt == "html":
+        text = module_kernel_compare_to_html(payload)
     else:
         text = json.dumps(payload, ensure_ascii=False, indent=2 if args.pretty else None)
     if args.output:
@@ -1256,12 +1357,14 @@ def build_parser() -> argparse.ArgumentParser:
     nsys_module_kernel_compare = sub.add_parser(
         "nsys-module-kernel-compare",
         help=(
-            "compare two nsys-sql-skill kernel JSON exports for one module/NVTX scope "
-            "(stream timeline + resource usage deltas)"
+            "compare two profiles for one module/NVTX scope (stream timeline + resource deltas). "
+            "Supports JSON exports or direct sqlite inputs."
         ),
     )
-    nsys_module_kernel_compare.add_argument("--base-json", required=True, help="baseline kernel JSON path")
-    nsys_module_kernel_compare.add_argument("--target-json", required=True, help="target kernel JSON path")
+    nsys_module_kernel_compare.add_argument("--base-json", default="", help="baseline kernel JSON path")
+    nsys_module_kernel_compare.add_argument("--target-json", default="", help="target kernel JSON path")
+    nsys_module_kernel_compare.add_argument("--base-sqlite", default="", help="baseline nsys sqlite path")
+    nsys_module_kernel_compare.add_argument("--target-sqlite", default="", help="target nsys sqlite path")
     nsys_module_kernel_compare.add_argument("--base-label", default="base", help="display label for baseline")
     nsys_module_kernel_compare.add_argument("--target-label", default="target", help="display label for target")
     nsys_module_kernel_compare.add_argument(
@@ -1298,7 +1401,22 @@ def build_parser() -> argparse.ArgumentParser:
         default=40,
         help="timeline sample rows kept per stream for each workload (default: 40)",
     )
-    nsys_module_kernel_compare.add_argument("--format", default="json", choices=["json", "markdown", "md"])
+    nsys_module_kernel_compare.add_argument(
+        "--sqlite-limit",
+        type=int,
+        default=500000,
+        help="max rows fetched from nvtx_kernel_sm_detail per sqlite in sqlite mode (default: 500000)",
+    )
+    nsys_module_kernel_compare.add_argument(
+        "--occupancy-arch",
+        default="auto",
+        choices=["auto", "h100", "none"],
+        help=(
+            "sqlite mode only: occupancy attachment policy. "
+            "'auto' uses H100 estimate when TARGET_INFO reports H100."
+        ),
+    )
+    nsys_module_kernel_compare.add_argument("--format", default="json", choices=["json", "markdown", "md", "html"])
     nsys_module_kernel_compare.add_argument("--output", default="")
     nsys_module_kernel_compare.add_argument("--pretty", action="store_true")
     nsys_module_kernel_compare.set_defaults(func=cmd_nsys_module_kernel_compare)

@@ -2230,6 +2230,7 @@ def test_cli_nsys_module_kernel_compare_json_and_markdown(tmp_path: Path) -> Non
     target_json = tmp_path / "target_module_kernels.json"
     out_json = tmp_path / "module_compare.json"
     out_md = tmp_path / "module_compare.md"
+    out_html = tmp_path / "module_compare.html"
 
     base_rows = [
         {
@@ -2413,3 +2414,85 @@ def test_cli_nsys_module_kernel_compare_json_and_markdown(tmp_path: Path) -> Non
     assert "Same-Kernel Resource Diff" in md_text
     assert "Top Kernel Duration Deltas" in md_text
     assert "Stream 83" in md_text
+
+    rc_html = main(
+        [
+            "nsys-module-kernel-compare",
+            "--base-json",
+            str(base_json),
+            "--target-json",
+            str(target_json),
+            "--nvtx-text",
+            "dual_stream_wan_layer_22",
+            "--device-id",
+            "3",
+            "--format",
+            "html",
+            "--output",
+            str(out_html),
+        ]
+    )
+    assert rc_html == 0
+    assert out_html.exists()
+    html_text = out_html.read_text(encoding="utf-8")
+    assert "NSYS Module Kernel Compare" in html_text
+    assert "Same-Kernel Resource Diff" in html_text
+    assert "Top Kernel Duration Deltas" in html_text
+    assert "Stream 83" in html_text
+    assert "possible_fusion_in_target" in html_text or "possible_split_in_target" in html_text or "kernel_set_changed" in html_text
+
+
+def test_cli_nsys_module_kernel_compare_sqlite_mode(tmp_path: Path) -> None:
+    db_a = tmp_path / "module_compare_base.sqlite"
+    db_b = tmp_path / "module_compare_target.sqlite"
+    out_json = tmp_path / "module_compare_from_sqlite.json"
+    _init_sqlite(db_a, scale=1.0)
+    _init_sqlite(db_b, scale=1.25)
+
+    rc = main(
+        [
+            "nsys-module-kernel-compare",
+            "--base-sqlite",
+            str(db_a),
+            "--target-sqlite",
+            str(db_b),
+            "--nvtx-text",
+            "%sample_0%",
+            "--device-id",
+            "0",
+            "--sqlite-limit",
+            "200000",
+            "--format",
+            "json",
+            "--output",
+            str(out_json),
+        ]
+    )
+    assert rc == 0
+    payload = json.loads(out_json.read_text(encoding="utf-8"))
+    base = dict(payload.get("base") or {})
+    compare = dict(payload.get("compare") or {})
+    assert str(base.get("source_path") or "") == str(db_a)
+    stream_deltas = list(compare.get("stream_deltas") or [])
+    assert stream_deltas, compare
+    first_stream = dict(stream_deltas[0] or {})
+    assert "change_hint" in first_stream
+    base_timeline = list(first_stream.get("base_timeline_sample") or [])
+    assert base_timeline, first_stream
+    assert "registers_per_thread" in dict(base_timeline[0] or {})
+    assert "total_shared_bytes" in dict(base_timeline[0] or {})
+
+    rc_mix = main(
+        [
+            "nsys-module-kernel-compare",
+            "--base-json",
+            "dummy.json",
+            "--base-sqlite",
+            str(db_a),
+            "--target-sqlite",
+            str(db_b),
+            "--output",
+            str(tmp_path / "should_not_exist.json"),
+        ]
+    )
+    assert rc_mix == 2
