@@ -2414,6 +2414,8 @@ def test_cli_nsys_module_kernel_compare_json_and_markdown(tmp_path: Path) -> Non
     assert "Same-Kernel Resource Diff" in md_text
     assert "Top Kernel Duration Deltas" in md_text
     assert "Stream 83" in md_text
+    assert "kernel_set_added_list" in md_text
+    assert "gelu_fused" in md_text
 
     rc_html = main(
         [
@@ -2439,6 +2441,7 @@ def test_cli_nsys_module_kernel_compare_json_and_markdown(tmp_path: Path) -> Non
     assert "Same-Kernel Resource Diff" in html_text
     assert "Top Kernel Duration Deltas" in html_text
     assert "Stream 83" in html_text
+    assert "gelu_fused" in html_text
     assert "possible_fusion_in_target" in html_text or "possible_split_in_target" in html_text or "kernel_set_changed" in html_text
 
 

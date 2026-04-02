@@ -983,6 +983,8 @@ def module_kernel_compare_to_markdown(payload: Dict[str, object]) -> str:
     lines.append("")
     for stream in compare.get("stream_deltas", []) or []:
         stream_id = int((stream or {}).get("stream_id", -1))
+        added_list = [str(x) for x in (stream.get("kernel_set_added", []) or []) if str(x or "").strip()]
+        removed_list = [str(x) for x in (stream.get("kernel_set_removed", []) or []) if str(x or "").strip()]
         lines.append(f"### Stream {stream_id}")
         lines.append(f"- event_count: `{stream.get('base_event_count', 0)} -> {stream.get('target_event_count', 0)}`")
         lines.append(
@@ -1009,8 +1011,14 @@ def module_kernel_compare_to_markdown(payload: Dict[str, object]) -> str:
             )
         )
         lines.append(f"- change_hint: `{stream.get('change_hint', 'reorder_or_timing_change')}`")
-        lines.append(f"- kernel_set_added: `{len(stream.get('kernel_set_added', []) or [])}`")
-        lines.append(f"- kernel_set_removed: `{len(stream.get('kernel_set_removed', []) or [])}`")
+        lines.append(f"- kernel_set_added: `{len(added_list)}`")
+        lines.append(
+            "- kernel_set_added_list: " + (", ".join(f"`{x}`" for x in added_list) if added_list else "`(none)`")
+        )
+        lines.append(f"- kernel_set_removed: `{len(removed_list)}`")
+        lines.append(
+            "- kernel_set_removed_list: " + (", ".join(f"`{x}`" for x in removed_list) if removed_list else "`(none)`")
+        )
         lines.append("")
     return "\n".join(lines)
 
@@ -1056,7 +1064,7 @@ def module_kernel_compare_to_html(payload: Dict[str, object]) -> str:
         vals = [str(x) for x in items if str(x or "").strip()]
         if not vals:
             return "<span class='chip chip-empty'>none</span>"
-        return "".join([f"<span class='chip {cls}'>{_esc(v)}</span>" for v in vals[:24]])
+        return "".join([f"<span class='chip {cls}'>{_esc(v)}</span>" for v in vals])
 
     def _timeline_table(rows: Sequence[Dict[str, object]], *, label: str) -> str:
         if not rows:
