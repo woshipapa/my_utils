@@ -1,15 +1,15 @@
+# Python bytecode/cache
 __pycache__/
+**/__pycache__/
 *.py[cod]
 *$py.class
+
+# Tool caches
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+
+# Build artifacts
 build/
 dist/
 my_utils.egg-info/*
-
-# Python cache
-__pycache__/
-*.pyc
-*.pyo
-*.pyd
