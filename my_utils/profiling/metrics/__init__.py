@@ -1,11 +1,14 @@
 from .metrics_provider import BaseMetricsProvider, MetricsProvider, ProviderCapabilities
 from .metrics_providers import (
     CProfileStatsProvider,
+    DcgmCsvMetricsProvider,
     ModuleProfilerMetricsProvider,
     MyTimerMetricsProvider,
+    NcclLogMetricsProvider,
     NcuCsvMetricsProvider,
     NsysSqliteMetricsProvider,
     PerfStatTextProvider,
+    RasJsonMetricsProvider,
     TableCsvMetricsProvider,
     TorchProfilerMetricsProvider,
 )
@@ -52,6 +55,9 @@ __all__ = [
     "NsysSqliteMetricsProvider",
     "CProfileStatsProvider",
     "PerfStatTextProvider",
+    "DcgmCsvMetricsProvider",
+    "NcclLogMetricsProvider",
+    "RasJsonMetricsProvider",
     "ProviderSpec",
     "MetricsProviderRegistry",
     "register_builtin_providers",

@@ -148,6 +148,9 @@ class MetricsCollector:
         return self._store.write_events(all_events)
 
     def get_events(self) -> List[MetricEvent]:
+        in_memory = self._store.read_all_events(prefer_disk=False)
+        if in_memory and not self._store.has_buffer_overflowed():
+            return in_memory
         return self._store.read_all_events(prefer_disk=True)
 
     def analyze(self, events: Optional[Iterable[MetricEvent]] = None) -> AnalysisReport:

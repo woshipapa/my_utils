@@ -5,7 +5,9 @@ from typing import Dict, Iterable, List, Mapping, Optional
 
 from .analysis_rules import (
     AnalysisRule,
+    CommunicationHealthRule,
     CommunicationImbalanceRule,
+    CrossLayerConsistencyRule,
     DataloaderStallRule,
     DistributedSkewRule,
     GpuUtilizationThroughputRule,
@@ -14,6 +16,7 @@ from .analysis_rules import (
     LatencyVarianceRule,
     MemoryGrowthRule,
     PipelineBubbleRule,
+    RooflineGapRule,
 )
 
 
@@ -42,9 +45,12 @@ WORKLOAD_PROFILES: Dict[str, WorkloadProfile] = {
             "latency_variance",
             "latency_outlier",
             "comm_imbalance",
+            "comm_health",
             "pipeline_bubble",
             "distributed_skew",
             "gpu_utilization",
+            "roofline_gap",
+            "cross_layer_consistency",
         ],
         kpi_metrics=[
             "latency.step",
@@ -100,6 +106,19 @@ def _build_rule(rule_id: str, thresholds: Mapping[str, float]) -> AnalysisRule:
         return GpuUtilizationThroughputRule(utilization_threshold=float(thresholds.get("gpu_utilization_threshold", 0.40)))
     if rule_id == "distributed_skew":
         return DistributedSkewRule(skew_ratio_threshold=float(thresholds.get("distributed_skew_ratio_threshold", 1.20)))
+    if rule_id == "comm_health":
+        return CommunicationHealthRule(
+            p95_ratio_threshold=float(thresholds.get("comm_health_p95_ratio_threshold", 2.0)),
+            rank_imbalance_threshold=float(thresholds.get("comm_health_rank_imbalance_threshold", 1.30)),
+            min_good_busbw_gbps=float(thresholds.get("comm_health_min_busbw_gbps", 20.0)),
+        )
+    if rule_id == "roofline_gap":
+        return RooflineGapRule(gap_threshold=float(thresholds.get("roofline_gap_threshold", 0.20)))
+    if rule_id == "cross_layer_consistency":
+        return CrossLayerConsistencyRule(
+            min_step_coverage=float(thresholds.get("cross_layer_min_step_coverage", 0.40)),
+            min_tag_alignment_ratio=float(thresholds.get("cross_layer_min_tag_alignment_ratio", 0.60)),
+        )
     raise KeyError(f"Unknown rule id: {rule_id}")
 
 
@@ -131,8 +150,10 @@ def build_rules_for_workload(
             "dataloader_stall",
             "gpu_utilization",
             "distributed_skew",
+            "comm_health",
+            "roofline_gap",
+            "cross_layer_consistency",
         ):
             continue
         rules.append(_build_rule(rule_id, merged_thresholds))
     return rules
-

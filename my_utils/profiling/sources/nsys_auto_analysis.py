@@ -726,7 +726,179 @@ def analyze_cpu_pipeline(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 7. Multi-dimensional performance scoring (0-100)
+# 7. Communication health / roofline / cross-layer consistency
+# ─────────────────────────────────────────────────────────────────────────────
+
+def analyze_communication_health(
+    communication: Dict,
+    nccl_rows: List[Dict],
+) -> Dict:
+    overlap_pct_comm = _f(communication.get("overlap_pct_of_comm"))
+    bubble_pct = _f(communication.get("pipeline_bubble_pct"))
+    compute_comm_ratio = _f(communication.get("compute_comm_ratio"))
+
+    per_op_ms = [_f(r.get("total_ms")) for r in nccl_rows if _f(r.get("total_ms")) > 0]
+    mean_op_ms = sum(per_op_ms) / len(per_op_ms) if per_op_ms else 0.0
+    max_op_ms = max(per_op_ms) if per_op_ms else 0.0
+    op_skew = (max_op_ms / max(mean_op_ms, 1e-6)) if per_op_ms else 0.0
+
+    score = 100.0
+    score -= max(0.0, 30.0 - overlap_pct_comm) * 1.1
+    score -= bubble_pct * 1.4
+    if compute_comm_ratio < 5.0:
+        score -= (5.0 - compute_comm_ratio) * 7.0
+    if op_skew > 2.0:
+        score -= min(20.0, (op_skew - 2.0) * 8.0)
+    score = max(0.0, min(100.0, score))
+
+    issues: List[str] = []
+    if overlap_pct_comm < 30.0 and _f(communication.get("comm_total_ms")) > 5.0:
+        issues.append(
+            f"Communication overlap is low ({overlap_pct_comm:.1f}% of comm hidden by compute)."
+        )
+    if bubble_pct > 10.0:
+        issues.append(f"Communication-only bubble is high ({bubble_pct:.1f}% of total span).")
+    if compute_comm_ratio < 3.0:
+        issues.append(f"Compute/comm ratio is low ({compute_comm_ratio:.2f}x, recommended >=5x).")
+    if op_skew > 2.0:
+        issues.append(f"NCCL op-time skew is high (max/mean={op_skew:.2f}).")
+
+    status = "healthy"
+    if score < 50:
+        status = "critical"
+    elif score < 70:
+        status = "degraded"
+    elif score < 85:
+        status = "watch"
+
+    return {
+        "health_score": round(score, 1),
+        "status": status,
+        "overlap_pct_of_comm": round(overlap_pct_comm, 1),
+        "pipeline_bubble_pct": round(bubble_pct, 1),
+        "compute_comm_ratio": round(compute_comm_ratio, 2),
+        "op_skew_ratio_max_over_mean": round(op_skew, 2) if op_skew else 0.0,
+        "issues": issues,
+    }
+
+
+def analyze_roofline_gap(
+    gpu_metrics: Dict,
+    specs: Optional[GpuSpecs],
+) -> Dict:
+    sm_avg = _f((gpu_metrics.get("sm_active") or {}).get("avg"))
+    tc_avg = _f((gpu_metrics.get("tensor_active") or {}).get("avg"))
+    dram_avg = _f((gpu_metrics.get("dram_throughput") or {}).get("avg"))
+
+    compute_avg = max(sm_avg, tc_avg)
+    memory_avg = dram_avg
+    gap_pct = max(0.0, memory_avg - compute_avg)
+
+    # Proxy arithmetic intensity:
+    # High DRAM util with low compute util -> low arithmetic intensity / memory bound.
+    if memory_avg <= 1e-6:
+        ai_proxy = 0.0
+    else:
+        ai_proxy = compute_avg / memory_avg
+
+    bottleneck = "balanced"
+    if memory_avg > compute_avg + 10.0:
+        bottleneck = "memory_bound"
+    elif compute_avg > memory_avg + 10.0:
+        bottleneck = "compute_bound"
+
+    issues: List[str] = []
+    if gap_pct > 20.0:
+        issues.append(
+            f"Roofline gap is large ({gap_pct:.1f} points): memory utilisation exceeds compute utilisation."
+        )
+    if bottleneck == "memory_bound" and memory_avg > 70.0:
+        issues.append(
+            f"Workload appears memory-bound (dram={memory_avg:.1f}%, compute={compute_avg:.1f}%)."
+        )
+
+    achieved_compute_tflops = None
+    memory_bw_gbps = None
+    if specs:
+        achieved_compute_tflops = round(specs.fp16_tflops * compute_avg / 100.0, 2)
+        memory_bw_gbps = round(specs.hbm_peak_tbps * 1000.0 * memory_avg / 100.0, 2)
+
+    return {
+        "compute_util_pct": round(compute_avg, 1),
+        "memory_util_pct": round(memory_avg, 1),
+        "roofline_gap_pct": round(gap_pct, 1),
+        "arithmetic_intensity_proxy": round(ai_proxy, 3),
+        "bottleneck_hint": bottleneck,
+        "achieved_compute_tflops_est": achieved_compute_tflops,
+        "achieved_memory_gbps_est": memory_bw_gbps,
+        "issues": issues,
+    }
+
+
+def analyze_cross_layer_consistency(
+    summary: Dict,
+    stream_parallelism: Dict,
+    communication: Dict,
+    cpu_pipeline: Dict,
+    kernel_composition: Dict,
+) -> Dict:
+    timing = (summary or {}).get("timing") or {}
+    span_ms = _f(timing.get("span_ms"))
+    busy_ms = _f(timing.get("busy_ms"))
+
+    compute_ms = 0.0
+    categories = (kernel_composition or {}).get("categories") or {}
+    for name, item in categories.items():
+        if str(name).lower() == "communication":
+            continue
+        compute_ms += _f(item.get("total_ms"))
+    comm_ms = _f((communication or {}).get("comm_total_ms")) or _f((communication or {}).get("nccl_total_ms"))
+    cpu_sync_ms = _f((cpu_pipeline or {}).get("total_sync_ms"))
+    launch_gap_ms = _f((cpu_pipeline or {}).get("total_launch_gap_ms"))
+    stream_parallelism_ratio = _f((stream_parallelism or {}).get("parallelism_ratio"))
+
+    modeled_ms = compute_ms + comm_ms + cpu_sync_ms
+    coverage_ratio = modeled_ms / span_ms if span_ms > 0 else 0.0
+    busy_alignment_ratio = busy_ms / max(compute_ms + comm_ms, 1e-6) if (compute_ms + comm_ms) > 0 else 0.0
+
+    issues: List[str] = []
+    if span_ms > 0 and coverage_ratio < 0.45:
+        issues.append(
+            f"Cross-layer modeled time covers only {coverage_ratio * 100.0:.1f}% of wall span; missing layer metrics likely."
+        )
+    if busy_alignment_ratio > 1.5 or busy_alignment_ratio < 0.5:
+        issues.append(
+            f"GPU busy/model alignment is inconsistent (ratio={busy_alignment_ratio:.2f}); verify time-window and layer attribution."
+        )
+    if stream_parallelism_ratio > 1.05 and launch_gap_ms > 0 and (launch_gap_ms / max(span_ms, 1e-6)) > 0.05:
+        issues.append(
+            "Kernel launch gap is still high despite stream parallelism; CPU dispatch remains a bottleneck."
+        )
+
+    consistency_score = 100.0
+    consistency_score -= max(0.0, 45.0 - coverage_ratio * 100.0) * 0.8
+    consistency_score -= abs(1.0 - busy_alignment_ratio) * 25.0
+    consistency_score -= (launch_gap_ms / max(span_ms, 1e-6)) * 120.0
+    consistency_score = max(0.0, min(100.0, consistency_score))
+
+    return {
+        "consistency_score": round(consistency_score, 1),
+        "coverage_ratio": round(coverage_ratio, 3),
+        "busy_alignment_ratio": round(busy_alignment_ratio, 3),
+        "span_ms": round(span_ms, 3),
+        "modeled_ms": round(modeled_ms, 3),
+        "component_breakdown_ms": {
+            "compute_ms": round(compute_ms, 3),
+            "comm_ms": round(comm_ms, 3),
+            "cpu_sync_ms": round(cpu_sync_ms, 3),
+            "cpu_launch_gap_ms": round(launch_gap_ms, 3),
+        },
+        "issues": issues,
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 8. Multi-dimensional performance scoring (0-100)
 # ─────────────────────────────────────────────────────────────────────────────
 
 def compute_performance_scores(
@@ -837,9 +1009,12 @@ def generate_recommendations(
     memory_io: Dict,
     stream_parallelism: Dict,
     communication: Dict,
+    communication_health: Dict,
     gpu_metrics: Dict,
+    roofline_gap: Dict,
     kernel_composition: Dict,
     cpu_pipeline: Dict,
+    cross_layer_consistency: Dict,
     util_pct: Optional[float],
     short_kernels: List[Dict],
     kernel_jitter: List[Dict],
@@ -912,6 +1087,18 @@ def generate_recommendations(
              ["https://docs.nvidia.com/deeplearning/nccl/user-guide/",
               "https://deepspeed.readthedocs.io/en/latest/zero3.html"])
 
+    # --- Communication Health ---
+    ch_score = _f(communication_health.get("health_score"))
+    if ch_score < 70:
+        _add(ch_score, "communication_health",
+             "Stabilize communication health and tail latency",
+             f"Communication health score is {ch_score:.0f}. "
+             f"overlap={communication_health.get('overlap_pct_of_comm', 0):.1f}% "
+             f"bubble={communication_health.get('pipeline_bubble_pct', 0):.1f}% "
+             f"op_skew={communication_health.get('op_skew_ratio_max_over_mean', 0):.2f}. "
+             "Inspect rank-level stragglers, NCCL algorithm/protocol choice, and transport-level RAS counters.",
+             ["https://docs.nvidia.com/deeplearning/nccl/user-guide/"])
+
     # --- Memory Efficiency ---
     me = _f(scores.get("memory_efficiency"))
     small_pct = _f(memory_io.get("small_transfers_pct"))
@@ -964,6 +1151,32 @@ def generate_recommendations(
              " ".join(detail_parts) or "Profile CPU-side dispatch bottlenecks.",
              ["https://developer.nvidia.com/blog/cuda-graphs/",
               "https://docs.nvidia.com/cuda/cuda-c-best-practices-guide/#asynchronous-transfers"])
+
+    # --- Roofline Gap ---
+    rg_gap = _f(roofline_gap.get("roofline_gap_pct"))
+    if rg_gap > 15:
+        _add(max(0.0, 100.0 - rg_gap), "roofline",
+             "Close roofline gap between memory and compute",
+             f"Roofline gap is {rg_gap:.1f} points "
+             f"(compute={roofline_gap.get('compute_util_pct', 0):.1f}%, "
+             f"memory={roofline_gap.get('memory_util_pct', 0):.1f}%, "
+             f"hint={roofline_gap.get('bottleneck_hint', 'balanced')}). "
+             "For memory-bound windows, prioritize memory traffic reduction and fusion; "
+             "for compute-bound windows, improve occupancy and tensor-core utilization.",
+             ["https://docs.nvidia.com/nsight-compute/",
+              "https://crd.lbl.gov/departments/computer-science/PAR/research/roofline/"])
+
+    # --- Cross-layer consistency ---
+    cl_score = _f(cross_layer_consistency.get("consistency_score"))
+    if cl_score < 75:
+        _add(cl_score, "cross_layer_consistency",
+             "Improve cross-layer observability consistency",
+             f"Consistency score is {cl_score:.0f} "
+             f"(coverage={_f(cross_layer_consistency.get('coverage_ratio')) * 100.0:.1f}%, "
+             f"busy_alignment={cross_layer_consistency.get('busy_alignment_ratio', 0):.2f}). "
+             "Align step/rank tags and units across CPU, communication, and GPU events to reduce attribution ambiguity.",
+             ["https://perfetto.dev/docs/",
+              "https://opentelemetry.io/docs/"])
 
     # --- Short kernels / launch overhead ---
     short_pct = 0.0
@@ -1036,12 +1249,21 @@ def build_comprehensive_analysis(
     gm = analyze_gpu_metrics(gpu_metrics_aggregate, gpu_metrics_percentiles, specs)
     kernel_comp = analyze_kernel_composition(aggregate_kernels, span_ms)
     cpu_pipe = analyze_cpu_pipeline(cpu_launch_gap, sync_breakdown, span_ms)
+    comm_health = analyze_communication_health(comm, nccl_breakdown)
+    roofline_gap = analyze_roofline_gap(gm, specs)
+    cross_layer_consistency = analyze_cross_layer_consistency(
+        summary,
+        stream_para,
+        comm,
+        cpu_pipe,
+        kernel_comp,
+    )
 
     scores = compute_performance_scores(
         util_pct, mem_io, stream_para, comm, gm, cpu_pipe,
     )
     recs = generate_recommendations(
-        scores, mem_io, stream_para, comm, gm, kernel_comp, cpu_pipe,
+        scores, mem_io, stream_para, comm, comm_health, gm, roofline_gap, kernel_comp, cpu_pipe, cross_layer_consistency,
         util_pct, short_kernels, kernel_duration_stats,
     )
 
@@ -1059,9 +1281,12 @@ def build_comprehensive_analysis(
         "memory_io": mem_io,
         "stream_parallelism": stream_para,
         "communication": comm,
+        "communication_health": comm_health,
         "gpu_metrics": gm,
+        "roofline_gap": roofline_gap,
         "kernel_composition": kernel_comp,
         "cpu_pipeline": cpu_pipe,
+        "cross_layer_consistency": cross_layer_consistency,
         "performance_scores": scores,
         "recommendations": recs,
     }
@@ -1228,6 +1453,22 @@ def comprehensive_to_markdown(analysis: Dict) -> str:
     for issue in comm.get("issues", []):
         lines.append(f"\n> ⚠️  {issue}")
 
+    # ── Communication Health ────────────────────────────────────────────────
+    h2("🩺 Communication Health")
+    ch = a.get("communication_health", {})
+    lines.append(
+        f"Health score: **{_f(ch.get('health_score')):.1f}/100** · "
+        f"Status: **{str(ch.get('status') or 'unknown')}**"
+    )
+    lines.append(
+        f"Overlap: **{_f(ch.get('overlap_pct_of_comm')):.1f}%** · "
+        f"Bubble: **{_f(ch.get('pipeline_bubble_pct')):.1f}%** · "
+        f"Compute/Comm: **{_f(ch.get('compute_comm_ratio')):.2f}x** · "
+        f"Op skew(max/mean): **{_f(ch.get('op_skew_ratio_max_over_mean')):.2f}**"
+    )
+    for issue in ch.get("issues", []):
+        lines.append(f"\n> ⚠️  {issue}")
+
     # ── GPU Metrics ──────────────────────────────────────────────────────────
     h2("📊 GPU Hardware Metrics")
     gm = a.get("gpu_metrics", {})
@@ -1262,6 +1503,25 @@ def comprehensive_to_markdown(analysis: Dict) -> str:
         _mrow("tensor_active", "Tensor Active (%)")
         _mrow("dram_throughput", "DRAM Throughput (%)")
     for issue in gm.get("issues", []):
+        lines.append(f"\n> ⚠️  {issue}")
+
+    # ── Roofline Gap ───────────────────────────────────────────────────────
+    h2("📐 Roofline Gap")
+    rg = a.get("roofline_gap", {})
+    lines.append(
+        f"Compute util: **{_f(rg.get('compute_util_pct')):.1f}%** · "
+        f"Memory util: **{_f(rg.get('memory_util_pct')):.1f}%** · "
+        f"Gap: **{_f(rg.get('roofline_gap_pct')):.1f}** points · "
+        f"Hint: **{str(rg.get('bottleneck_hint') or 'balanced')}**"
+    )
+    ai_proxy = rg.get("arithmetic_intensity_proxy")
+    if ai_proxy is not None:
+        lines.append(f"Arithmetic intensity proxy: **{_f(ai_proxy):.3f}**")
+    if rg.get("achieved_compute_tflops_est") is not None:
+        lines.append(f"Estimated achieved compute: **{_f(rg.get('achieved_compute_tflops_est')):.2f} TFLOPS**")
+    if rg.get("achieved_memory_gbps_est") is not None:
+        lines.append(f"Estimated achieved memory BW: **{_f(rg.get('achieved_memory_gbps_est')):.2f} GB/s**")
+    for issue in rg.get("issues", []):
         lines.append(f"\n> ⚠️  {issue}")
 
     # ── Kernel Composition ───────────────────────────────────────────────────
@@ -1311,6 +1571,25 @@ def comprehensive_to_markdown(analysis: Dict) -> str:
                 f"{r.get('total_ms', 0):.1f}", f"{r.get('avg_ms', 0):.2f}",
             ))
     for issue in cp.get("issues", []):
+        lines.append(f"\n> ⚠️  {issue}")
+
+    # ── Cross-layer Consistency ─────────────────────────────────────────────
+    h2("🧬 Cross-Layer Consistency")
+    cl = a.get("cross_layer_consistency", {})
+    lines.append(
+        f"Consistency score: **{_f(cl.get('consistency_score')):.1f}/100** · "
+        f"Coverage: **{_f(cl.get('coverage_ratio')) * 100.0:.1f}%** · "
+        f"Busy alignment ratio: **{_f(cl.get('busy_alignment_ratio')):.2f}**"
+    )
+    comp = cl.get("component_breakdown_ms") or {}
+    if comp:
+        lines.append(
+            f"Modeled components: compute={_f(comp.get('compute_ms')):.1f} ms, "
+            f"comm={_f(comp.get('comm_ms')):.1f} ms, "
+            f"cpu_sync={_f(comp.get('cpu_sync_ms')):.1f} ms, "
+            f"launch_gap={_f(comp.get('cpu_launch_gap_ms')):.1f} ms."
+        )
+    for issue in cl.get("issues", []):
         lines.append(f"\n> ⚠️  {issue}")
 
     # ── Recommendations ──────────────────────────────────────────────────────

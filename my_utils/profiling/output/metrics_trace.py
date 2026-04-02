@@ -236,6 +236,7 @@ def metric_events_to_chrome_trace(
     process_name_map: Dict[int, str] = {}
     thread_id_map: Dict[Tuple[int, str], int] = {}
     thread_name_map: Dict[Tuple[int, int], str] = {}
+    pid_next_tid: Dict[int, int] = {}
 
     def resolve_pid(event: MetricEvent) -> Tuple[int, Optional[str]]:
         rank = _extract_rank(event)
@@ -263,9 +264,10 @@ def metric_events_to_chrome_trace(
         label = _first_str(event.tags, ("stage", "op", "kernel", "module", "func", "api", "device")) or event.name
         key = (pid, label)
         if key not in thread_id_map:
-            thread_id = len([item for item in thread_id_map if item[0] == pid]) + 1
+            thread_id = int(pid_next_tid.get(pid, 1))
             thread_id_map[key] = thread_id
             thread_name_map[(pid, thread_id)] = label
+            pid_next_tid[pid] = thread_id + 1
         return thread_id_map[key]
 
     trace_events: List[Dict[str, Any]] = []
@@ -377,4 +379,3 @@ def export_events_file_to_chrome_trace(
 ) -> str:
     events = MetricsStore.read_events_file(events_path)
     return write_chrome_trace(events, output_path=output_path, config=config)
-

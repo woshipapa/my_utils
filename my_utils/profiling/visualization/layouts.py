@@ -5,7 +5,7 @@ HTML布局构建器
 """
 
 from dataclasses import dataclass
-from typing import Any, Optional, Callable
+from typing import Any, Dict, Optional, Callable
 from enum import Enum
 import time
 
@@ -53,6 +53,33 @@ class AnalysisReport:
     recommendations: list[Recommendation]
     summary: str
     overall_score: float
+
+
+@dataclass(frozen=True)
+class PanelSpec:
+    """可扩展的面板定义"""
+    panel_id: str
+    title: str
+    description: str = ""
+    order: int = 0
+    enabled: bool = True
+    min_height: str = "260px"
+
+
+def default_timeline_panel_specs(include_metrics: bool = True) -> list[PanelSpec]:
+    """默认时间线面板顺序（含可扩展新面板）"""
+    specs = [
+        PanelSpec("gpu_metrics", "GPU Metrics In Window", "Per-metric/device curves", order=10, enabled=include_metrics, min_height="300px"),
+        PanelSpec("rank_heatmap", "Rank Heatmap", "Cross-rank/device duration matrix", order=20),
+        PanelSpec("roofline_proxy", "Roofline Proxy", "Compute-vs-memory utilisation scatter", order=30),
+        PanelSpec("gil_lane", "Python GIL Lane", "Python runtime/GIL thread lanes", order=40),
+        PanelSpec("kernel_category", "Kernel Category Breakdown", "Overlap-aware category mix", order=50),
+        PanelSpec("nvtx_stability", "Per-Matched-NVTX Category Stability", "Window-level category stability", order=60),
+        PanelSpec("all_streams", "All Streams Overlap + Metrics Alignment", "Merged stream timeline", order=70),
+        PanelSpec("nvtx_scopes", "Matched NVTX Scopes", "Matched NVTX range table", order=80),
+        PanelSpec("kernel_timeline", "Kernel Timeline By Stream", "Per-stream kernel bars", order=90),
+    ]
+    return [item for item in sorted(specs, key=lambda x: x.order) if item.enabled]
 
 
 class LayoutBuilder:
@@ -232,6 +259,56 @@ class LayoutBuilder:
                     <div class="chart-wrapper">
                         {right_chart_html}
                     </div>
+                </div>
+            </div>
+            """
+        })
+        return self
+
+    def add_panel_grid(
+        self,
+        panel_html_map: Dict[str, str],
+        *,
+        panel_specs: Optional[list[PanelSpec]] = None,
+        title: str = "Panels",
+    ) -> "LayoutBuilder":
+        """
+        添加可扩展面板网格（按 PanelSpec 顺序）
+
+        Args:
+            panel_html_map: {"panel_id": "<html>"} 映射
+            panel_specs: 面板规范列表，默认使用 default_timeline_panel_specs()
+            title: 区域标题
+        """
+        specs = panel_specs or default_timeline_panel_specs()
+        cards: list[str] = []
+        for spec in specs:
+            panel_html = panel_html_map.get(spec.panel_id)
+            if not panel_html:
+                continue
+            subtitle = f'<div class="panel-subtitle">{spec.description}</div>' if spec.description else ""
+            cards.append(
+                f"""
+                <div class="panel-card" style="min-height: {spec.min_height};">
+                    <h3>{spec.title}</h3>
+                    {subtitle}
+                    <div class="panel-body">
+                        {panel_html}
+                    </div>
+                </div>
+                """
+            )
+
+        if not cards:
+            return self
+
+        self.sections.append({
+            "type": "panel_grid",
+            "content": f"""
+            <div class="panel-grid-section">
+                <h2>{title}</h2>
+                <div class="panel-grid">
+                    {''.join(cards)}
                 </div>
             </div>
             """
@@ -680,6 +757,50 @@ class LayoutBuilder:
         .chart-wrapper {
             position: relative;
             height: 400px;
+        }
+
+        .panel-grid-section {
+            background: white;
+            border-radius: 16px;
+            padding: 24px;
+            margin-bottom: 24px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+        }
+
+        .panel-grid-section h2 {
+            margin-bottom: 16px;
+            color: #2c3e50;
+        }
+
+        .panel-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+            gap: 16px;
+        }
+
+        .panel-card {
+            background: #f8fafc;
+            border: 1px solid #e2e8f0;
+            border-radius: 12px;
+            padding: 16px;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .panel-card h3 {
+            margin-bottom: 6px;
+            color: #2c3e50;
+            font-size: 1rem;
+        }
+
+        .panel-subtitle {
+            color: #64748b;
+            font-size: 0.85rem;
+            margin-bottom: 10px;
+        }
+
+        .panel-body {
+            flex: 1;
         }
 
         /* Two Column Layout */

@@ -23,6 +23,15 @@ _DEFAULT_FOCUS_METRIC_TOKENS: Tuple[str, ...] = (
     "unallocated warps in active sm s",
     "tensor active",
     "tensor__active",
+    "dram throughput",
+    "dram read bandwidth",
+    "dram write bandwidth",
+    "dram bytes read",
+    "dram bytes write",
+    "dram__throughput",
+    "dram__bytes_read",
+    "dram__bytes_write",
+    "nvlink",
 )
 _DEFAULT_KERNEL_CATEGORY_MAPS: Dict[str, Dict[str, Dict[str, str]]] = {
     "sglang": {
@@ -1665,6 +1674,227 @@ def _collect_metric_samples(
     return series
 
 
+def _build_rank_heatmap_rows(kernels: Sequence[Dict[str, object]]) -> List[Dict[str, object]]:
+    grouped: Dict[Tuple[Optional[int], int], Dict[str, object]] = {}
+    for row in kernels:
+        rank_raw = row.get("rank")
+        rank = int(rank_raw) if isinstance(rank_raw, int) else None
+        dev = _to_int(row.get("device_id"), -1)
+        key = (rank, dev)
+        item = grouped.setdefault(
+            key,
+            {
+                "rank": rank,
+                "device_id": dev,
+                "total_ms": 0.0,
+                "compute_ms": 0.0,
+                "comm_ms": 0.0,
+                "kernel_count": 0,
+                "streams": set(),
+                "occ_num": 0.0,
+                "occ_den": 0.0,
+            },
+        )
+        dur_ms = _safe_float(row.get("duration_ms"))
+        item["total_ms"] = _safe_float(item.get("total_ms")) + dur_ms
+        item["kernel_count"] = int(item.get("kernel_count") or 0) + 1
+        item["streams"].add(_to_int(row.get("stream_id"), 0))
+        if str(row.get("kind") or "") == "comm":
+            item["comm_ms"] = _safe_float(item.get("comm_ms")) + dur_ms
+        else:
+            item["compute_ms"] = _safe_float(item.get("compute_ms")) + dur_ms
+        occ = row.get("occupancy_pct_estimate")
+        if occ is not None:
+            item["occ_num"] = _safe_float(item.get("occ_num")) + dur_ms * _safe_float(occ)
+            item["occ_den"] = _safe_float(item.get("occ_den")) + dur_ms
+
+    rows: List[Dict[str, object]] = []
+    for (rank, dev), item in grouped.items():
+        occ_den = _safe_float(item.get("occ_den"))
+        avg_occ = (_safe_float(item.get("occ_num")) / occ_den) if occ_den > 0 else None
+        rows.append(
+            {
+                "rank": rank,
+                "device_id": int(dev),
+                "total_ms": round(_safe_float(item.get("total_ms")), 6),
+                "compute_ms": round(_safe_float(item.get("compute_ms")), 6),
+                "comm_ms": round(_safe_float(item.get("comm_ms")), 6),
+                "kernel_count": int(item.get("kernel_count") or 0),
+                "stream_count": len(set(item.get("streams") or set())),
+                "avg_occupancy_pct": round(avg_occ, 3) if avg_occ is not None else None,
+            }
+        )
+    rows.sort(
+        key=lambda x: (
+            x.get("rank") is None,
+            int(x.get("rank")) if x.get("rank") is not None else 10**9,
+            int(x.get("device_id") or -1),
+        )
+    )
+    return rows
+
+
+def _series_points_numeric(series_item: Dict[str, object]) -> List[Tuple[int, float]]:
+    points_raw = list(series_item.get("points") or [])
+    out: List[Tuple[int, float]] = []
+    for item in points_raw:
+        if not isinstance(item, (list, tuple)) or len(item) < 2:
+            continue
+        t = _to_int(item[0], -1)
+        v = _safe_float(item[1], float("nan"))
+        if t < 0 or not math.isfinite(v):
+            continue
+        out.append((t, v))
+    out.sort(key=lambda x: x[0])
+    return out
+
+
+def _resample_points(points: Sequence[Tuple[int, float]], target_len: int) -> List[Tuple[int, float]]:
+    items = list(points)
+    if target_len <= 0 or len(items) <= target_len:
+        return items
+    if target_len == 1:
+        return [items[-1]]
+    result: List[Tuple[int, float]] = []
+    span = float(len(items) - 1)
+    for idx in range(target_len):
+        pos = int(round((idx / float(target_len - 1)) * span))
+        pos = max(0, min(len(items) - 1, pos))
+        result.append(items[pos])
+    return result
+
+
+def _series_device_id(name: object) -> int:
+    m = re.search(r"\[gpu\s+(\d+)\]", str(name or ""), flags=re.IGNORECASE)
+    if not m:
+        return -1
+    try:
+        return int(m.group(1))
+    except Exception:
+        return -1
+
+
+def _series_role(name: object) -> str:
+    n = _normalize_metric_text(name)
+    if "dram throughput" in n or "dram bytes" in n or "hbm" in n or "mem bw" in n:
+        return "memory"
+    if "tensor active" in n or "sm active" in n or "compute warps in flight" in n:
+        return "compute"
+    return ""
+
+
+def _build_roofline_proxy_data(
+    metric_series: Sequence[Dict[str, object]],
+    *,
+    max_points: int = 240,
+) -> Dict[str, object]:
+    by_dev_role: Dict[int, Dict[str, Dict[str, object]]] = {}
+    for item in metric_series:
+        name = str(item.get("name") or "")
+        role = _series_role(name)
+        if not role:
+            continue
+        dev = _series_device_id(name)
+        points = _series_points_numeric(item)
+        if len(points) < 2:
+            continue
+        min_v = min(v for _, v in points)
+        max_v = max(v for _, v in points)
+        variation = max_v - min_v
+        role_bucket = by_dev_role.setdefault(dev, {})
+        current = role_bucket.get(role)
+        if current is None or _safe_float(current.get("variation")) < variation:
+            role_bucket[role] = {
+                "name": name,
+                "points": points,
+                "variation": variation,
+            }
+
+    paired_points: List[Dict[str, object]] = []
+    stats_rows: List[Dict[str, object]] = []
+    for dev, roles in sorted(by_dev_role.items(), key=lambda x: int(x[0])):
+        comp = roles.get("compute")
+        mem = roles.get("memory")
+        if not comp or not mem:
+            continue
+        comp_points = list(comp.get("points") or [])
+        mem_points = list(mem.get("points") or [])
+        sample_len = min(len(comp_points), len(mem_points), max(2, int(max_points)))
+        comp_resampled = _resample_points(comp_points, sample_len)
+        mem_resampled = _resample_points(mem_points, sample_len)
+
+        dev_points: List[Tuple[float, float]] = []
+        for (tc, cv), (tm, mv) in zip(comp_resampled, mem_resampled):
+            ts = int((tc + tm) // 2)
+            mem_pct = max(0.0, min(100.0, float(mv)))
+            comp_pct = max(0.0, min(100.0, float(cv)))
+            paired_points.append(
+                {
+                    "device_id": int(dev),
+                    "ts_ns": ts,
+                    "x_mem_pct": round(mem_pct, 4),
+                    "y_compute_pct": round(comp_pct, 4),
+                }
+            )
+            dev_points.append((mem_pct, comp_pct))
+        if dev_points:
+            avg_mem = sum(p[0] for p in dev_points) / float(len(dev_points))
+            avg_comp = sum(p[1] for p in dev_points) / float(len(dev_points))
+            gap = max(0.0, avg_mem - avg_comp)
+            stats_rows.append(
+                {
+                    "device_id": int(dev),
+                    "point_count": len(dev_points),
+                    "avg_mem_pct": round(avg_mem, 3),
+                    "avg_compute_pct": round(avg_comp, 3),
+                    "gap_pct": round(gap, 3),
+                    "compute_series": str(comp.get("name") or ""),
+                    "memory_series": str(mem.get("name") or ""),
+                }
+            )
+    return {
+        "points": paired_points[: int(max_points) * max(1, len(stats_rows))],
+        "stats": stats_rows,
+    }
+
+
+def _build_gil_lane_series(
+    metric_series: Sequence[Dict[str, object]],
+    *,
+    max_points: int = 1500,
+) -> List[Dict[str, object]]:
+    tokens = (
+        "gil",
+        "python thread",
+        "thread util",
+        "interpreter",
+        "cpython",
+    )
+    rows: List[Dict[str, object]] = []
+    for item in metric_series:
+        name = str(item.get("name") or "")
+        norm = _normalize_metric_text(name)
+        if not any(token in norm for token in tokens):
+            continue
+        points = _series_points_numeric(item)
+        if not points:
+            continue
+        sampled = _downsample_points(points, max_points=max_points)
+        values = [float(v) for _, v in sampled]
+        rows.append(
+            {
+                "name": name,
+                "color": str(item.get("color") or _color_for_name(name)),
+                "points": [[int(t), float(v)] for t, v in sampled],
+                "avg": sum(values) / float(max(1, len(values))),
+                "min": min(values),
+                "max": max(values),
+                "samples": len(values),
+            }
+        )
+    return rows
+
+
 def _render_html(
     *,
     sqlite_path: str,
@@ -1741,6 +1971,10 @@ def _render_html(
             }
         )
 
+    rank_heatmap_rows = _build_rank_heatmap_rows(kernels)
+    roofline_proxy = _build_roofline_proxy_data(metric_series if include_metrics else [])
+    gil_lane_series = _build_gil_lane_series(metric_series if include_metrics else [])
+
     payload = {
         "window_start_ns": int(window_start_ns),
         "window_end_ns": int(display_end_ns),
@@ -1752,6 +1986,9 @@ def _render_html(
         "chart_width": int(width_px),
         "all_stream_groups": all_stream_groups,
         "overlay_metrics_per_track": int(max(0, int(overlay_metrics_per_track))),
+        "rank_heatmap_rows": rank_heatmap_rows,
+        "roofline_proxy": roofline_proxy,
+        "gil_lane_series": gil_lane_series,
     }
     payload_json = json.dumps(payload, ensure_ascii=False)
 
@@ -1780,6 +2017,16 @@ def _render_html(
         ".simple-table{width:100%;border-collapse:collapse;font-size:11px;color:#dce5f8;margin-top:8px;}",
         ".simple-table th,.simple-table td{border-bottom:1px solid #2a3243;padding:4px 6px;text-align:left;vertical-align:top;}",
         ".simple-table th{color:#9cb0d0;font-weight:600;}",
+        ".heatmap-table{width:100%;border-collapse:collapse;font-size:11px;color:#dce5f8;margin-top:8px;}",
+        ".heatmap-table th,.heatmap-table td{border-bottom:1px solid #2a3243;padding:5px 7px;text-align:left;vertical-align:middle;}",
+        ".heatmap-table th{color:#9cb0d0;font-weight:600;}",
+        ".heat-cell{position:relative;border-radius:4px;padding:2px 6px;display:inline-block;min-width:72px;text-align:right;color:#eaf1ff;font-family:Consolas,Monaco,monospace;}",
+        ".roofline-wrap{display:flex;flex-wrap:wrap;gap:10px;align-items:flex-start;}",
+        ".roofline-legend{font-size:11px;color:#96a5bf;display:flex;flex-direction:column;gap:4px;min-width:220px;}",
+        ".gil-lane-grid{display:flex;flex-direction:column;gap:8px;}",
+        ".gil-lane-item{background:#121826;border:1px solid #2a3243;border-radius:6px;padding:6px;}",
+        ".gil-lane-title{font-size:11px;color:#d6deef;margin-bottom:4px;word-break:break-word;}",
+        ".gil-lane-sub{font-size:11px;color:#95a4bf;margin-top:4px;}",
         ".row{display:flex;align-items:center;margin:8px 0;}",
         ".label{width:140px;color:#a8afbf;font-size:12px;}",
         f".track{{position:relative;height:24px;width:{int(width_px)}px;background:#1a1f2b;border-radius:4px;overflow:hidden;}}",
@@ -1827,6 +2074,26 @@ def _render_html(
                 "</div>",
             ]
         )
+
+    lines.extend(
+        [
+            "<div class='card'>",
+            "<h3 class='panel-title'>Rank Heatmap</h3>",
+            "<div id='rank-heatmap-root'></div>",
+            "<div class='axis-note'>Aggregates compute/comm duration by rank-device pair for fast straggler detection.</div>",
+            "</div>",
+            "<div class='card'>",
+            "<h3 class='panel-title'>Roofline Proxy</h3>",
+            "<div id='roofline-root'></div>",
+            "<div class='axis-note'>Proxy scatter: X=memory throughput (%), Y=compute activity (%), grouped by GPU device.</div>",
+            "</div>",
+            "<div class='card'>",
+            "<h3 class='panel-title'>Python GIL Lane</h3>",
+            "<div id='gil-lane-root'></div>",
+            "<div class='axis-note'>Renders python/gil/thread-util metric lanes when such signals exist in the selected window.</div>",
+            "</div>",
+        ]
+    )
 
     category_rows = list((kernel_category_summary or {}).get("rows") or [])
     if category_rows:
@@ -2764,6 +3031,150 @@ def _render_html(
             "    }",
             "    render();",
             "    root.appendChild(panel);",
+            "  }",
+            "})();",
+            "</script>",
+            "<script>",
+            "(function(){",
+            "  const d = TIMELINE_DATA || {};",
+            "  const fmt = (v, digits=3) => {",
+            "    const x = Number(v);",
+            "    if (!Number.isFinite(x)) return 'n/a';",
+            "    return x.toFixed(Number(digits));",
+            "  };",
+            "  const mk = (tag, attrs={}) => {",
+            "    const el = document.createElementNS('http://www.w3.org/2000/svg', tag);",
+            "    for (const [k,v] of Object.entries(attrs)) el.setAttribute(k, String(v));",
+            "    return el;",
+            "  };",
+            "",
+            "  const rankRows = Array.isArray(d.rank_heatmap_rows) ? d.rank_heatmap_rows : [];",
+            "  const rankRoot = document.getElementById('rank-heatmap-root');",
+            "  if (rankRoot) {",
+            "    if (!rankRows.length) {",
+            "      rankRoot.innerHTML = \"<div class='empty'>No rank-attributed kernels in this window.</div>\";",
+            "    } else {",
+            "      const maxTotal = Math.max(...rankRows.map((r) => Number(r.total_ms || 0)), 1);",
+            "      const table = document.createElement('table'); table.className = 'heatmap-table';",
+            "      table.innerHTML = \"<thead><tr><th>rank</th><th>device</th><th>total ms</th><th>compute ms</th><th>comm ms</th><th>kernels</th><th>streams</th><th>avg occ %</th></tr></thead>\";",
+            "      const body = document.createElement('tbody');",
+            "      for (const r of rankRows) {",
+            "        const tr = document.createElement('tr');",
+            "        const rankText = (r.rank === null || r.rank === undefined) ? 'unknown' : String(r.rank);",
+            "        const heat = Math.max(0, Math.min(1, Number(r.total_ms || 0) / maxTotal));",
+            "        const bg = `rgba(83, 158, 255, ${0.15 + 0.55 * heat})`;",
+            "        const occ = (r.avg_occupancy_pct === null || r.avg_occupancy_pct === undefined) ? 'n/a' : fmt(r.avg_occupancy_pct, 2);",
+            "        tr.innerHTML = [",
+            "          `<td><code>${rankText}</code></td>`,",
+            "          `<td><code>${Number((r.device_id === null || r.device_id === undefined) ? -1 : r.device_id)}</code></td>`,",
+            "          `<td><span class='heat-cell' style='background:${bg}'>${fmt(r.total_ms,3)}</span></td>`,",
+            "          `<td>${fmt(r.compute_ms,3)}</td>`,",
+            "          `<td>${fmt(r.comm_ms,3)}</td>`,",
+            "          `<td>${Number(r.kernel_count || 0)}</td>`,",
+            "          `<td>${Number(r.stream_count || 0)}</td>`,",
+            "          `<td>${occ}</td>`,",
+            "        ].join('');",
+            "        body.appendChild(tr);",
+            "      }",
+            "      table.appendChild(body);",
+            "      rankRoot.appendChild(table);",
+            "    }",
+            "  }",
+            "",
+            "  const roofRoot = document.getElementById('roofline-root');",
+            "  const roof = (d.roofline_proxy && typeof d.roofline_proxy === 'object') ? d.roofline_proxy : {};",
+            "  const roofPoints = Array.isArray(roof.points) ? roof.points : [];",
+            "  const roofStats = Array.isArray(roof.stats) ? roof.stats : [];",
+            "  if (roofRoot) {",
+            "    if (!roofPoints.length) {",
+            "      roofRoot.innerHTML = \"<div class='empty'>Roofline proxy requires both compute-activity and memory-throughput metric series.</div>\";",
+            "    } else {",
+            "      const wrap = document.createElement('div'); wrap.className = 'roofline-wrap';",
+            "      const W = 780, H = 300, pad = 36;",
+            "      const svg = mk('svg', {width:W, height:H, viewBox:`0 0 ${W} ${H}`});",
+            "      const x0 = pad, y0 = pad, cw = W - pad * 2, ch = H - pad * 2;",
+            "      const x = (v) => x0 + Math.max(0, Math.min(100, Number(v || 0))) / 100 * cw;",
+            "      const y = (v) => y0 + (1 - Math.max(0, Math.min(100, Number(v || 0))) / 100) * ch;",
+            "      svg.appendChild(mk('rect', {x:x0, y:y0, width:cw, height:ch, fill:'#111827', stroke:'#32405b'}));",
+            "      svg.appendChild(mk('line', {x1:x0, y1:y0+ch, x2:x0+cw, y2:y0+ch, stroke:'#5f6f89'}));",
+            "      svg.appendChild(mk('line', {x1:x0, y1:y0, x2:x0, y2:y0+ch, stroke:'#5f6f89'}));",
+            "      const diag = mk('line', {x1:x0, y1:y0+ch, x2:x0+cw, y2:y0, stroke:'#4d9cff', 'stroke-dasharray':'4 4', opacity:'0.6'});",
+            "      svg.appendChild(diag);",
+            "      for (let t = 0; t <= 100; t += 25) {",
+            "        const tx = x(t);",
+            "        const ty = y(t);",
+            "        svg.appendChild(mk('line', {x1:tx, y1:y0+ch, x2:tx, y2:y0+ch+4, stroke:'#6e7d98'}));",
+            "        const lx = mk('text', {x:tx-8, y:y0+ch+16, fill:'#97a7c2', 'font-size':10}); lx.textContent = String(t); svg.appendChild(lx);",
+            "        svg.appendChild(mk('line', {x1:x0-4, y1:ty, x2:x0, y2:ty, stroke:'#6e7d98'}));",
+            "        const ly = mk('text', {x:4, y:ty+3, fill:'#97a7c2', 'font-size':10}); ly.textContent = String(t); svg.appendChild(ly);",
+            "      }",
+            "      const devColors = ['#63b3ff','#7dd3fc','#a3e635','#fbbf24','#fb7185','#c4b5fd'];",
+            "      const colorByDev = (dev) => devColors[Math.abs(Number(dev || 0)) % devColors.length];",
+            "      for (const p of roofPoints) {",
+            "        const cx = x(p.x_mem_pct);",
+            "        const cy = y(p.y_compute_pct);",
+            "        const c = mk('circle', {cx, cy, r:2.5, fill:colorByDev(p.device_id), opacity:'0.72'});",
+            "        const tt = mk('title', {});",
+            "        tt.textContent = `gpu=${p.device_id} mem=${fmt(p.x_mem_pct,2)}% compute=${fmt(p.y_compute_pct,2)}% ts=${Math.round(Number(p.ts_ns || 0))}`;",
+            "        c.appendChild(tt);",
+            "        svg.appendChild(c);",
+            "      }",
+            "      const xLab = mk('text', {x:x0+cw/2-70, y:H-6, fill:'#9fb0ca', 'font-size':11}); xLab.textContent = 'Memory Throughput (%)'; svg.appendChild(xLab);",
+            "      const yLab = mk('text', {x:8, y:14, fill:'#9fb0ca', 'font-size':11}); yLab.textContent = 'Compute Activity (%)'; svg.appendChild(yLab);",
+            "      wrap.appendChild(svg);",
+            "      const legend = document.createElement('div'); legend.className = 'roofline-legend';",
+            "      if (roofStats.length) {",
+            "        for (const row of roofStats) {",
+            "          const div = document.createElement('div');",
+            "          div.textContent = `gpu ${row.device_id}: avg_mem=${fmt(row.avg_mem_pct,2)}% avg_compute=${fmt(row.avg_compute_pct,2)}% gap=${fmt(row.gap_pct,2)}`;",
+            "          div.style.color = colorByDev(row.device_id);",
+            "          legend.appendChild(div);",
+            "        }",
+            "      } else {",
+            "        legend.textContent = 'No per-device roofline stats';",
+            "      }",
+            "      wrap.appendChild(legend);",
+            "      roofRoot.appendChild(wrap);",
+            "    }",
+            "  }",
+            "",
+            "  const gilRoot = document.getElementById('gil-lane-root');",
+            "  const gilSeries = Array.isArray(d.gil_lane_series) ? d.gil_lane_series : [];",
+            "  if (gilRoot) {",
+            "    if (!gilSeries.length) {",
+            "      gilRoot.innerHTML = \"<div class='empty'>No GIL/thread-utilization series detected.</div>\";",
+            "    } else {",
+            "      const grid = document.createElement('div'); grid.className = 'gil-lane-grid';",
+            "      for (const s of gilSeries) {",
+            "        const card = document.createElement('div'); card.className = 'gil-lane-item';",
+            "        const title = document.createElement('div'); title.className = 'gil-lane-title'; title.textContent = String(s.name || 'series');",
+            "        const W = 760, H = 90, padL = 38, padR = 8, padT = 10, padB = 20;",
+            "        const svg = mk('svg', {width:W, height:H, viewBox:`0 0 ${W} ${H}`});",
+            "        svg.appendChild(mk('rect', {x:padL, y:padT, width:W-padL-padR, height:H-padT-padB, fill:'#111725', stroke:'#32405b'}));",
+            "        const ptsRaw = Array.isArray(s.points) ? s.points : [];",
+            "        let minV = Number.POSITIVE_INFINITY, maxV = Number.NEGATIVE_INFINITY;",
+            "        for (const p of ptsRaw) { const v = Number(p[1]); if (Number.isFinite(v)) { minV = Math.min(minV, v); maxV = Math.max(maxV, v);} }",
+            "        if (!Number.isFinite(minV) || !Number.isFinite(maxV)) { minV = 0; maxV = 1; }",
+            "        if (Math.abs(maxV - minV) < 1e-12) maxV = minV + 1.0;",
+            "        const x0 = padL, y0 = padT, cw = W-padL-padR, ch = H-padT-padB;",
+            "        const x = (i) => x0 + (i / Math.max(1, ptsRaw.length - 1)) * cw;",
+            "        const y = (v) => y0 + (1 - ((Number(v)-minV)/(maxV-minV))) * ch;",
+            "        const pts = [];",
+            "        for (let i = 0; i < ptsRaw.length; i++) {",
+            "          const v = Number(ptsRaw[i][1]);",
+            "          if (!Number.isFinite(v)) continue;",
+            "          pts.push(`${x(i).toFixed(2)},${y(v).toFixed(2)}`);",
+            "        }",
+            "        if (pts.length >= 2) svg.appendChild(mk('polyline', {points:pts.join(' '), fill:'none', stroke:String(s.color || '#7aa2ff'), 'stroke-width':1.4}));",
+            "        const minTxt = mk('text', {x:4, y:y0+ch, fill:'#9aa7be', 'font-size':10}); minTxt.textContent = fmt(minV,2); svg.appendChild(minTxt);",
+            "        const maxTxt = mk('text', {x:4, y:y0+10, fill:'#9aa7be', 'font-size':10}); maxTxt.textContent = fmt(maxV,2); svg.appendChild(maxTxt);",
+            "        const sub = document.createElement('div'); sub.className = 'gil-lane-sub';",
+            "        sub.textContent = `samples=${Number(s.samples || ptsRaw.length)} avg=${fmt(s.avg,3)} min=${fmt(s.min,3)} max=${fmt(s.max,3)}`;",
+            "        card.appendChild(title); card.appendChild(svg); card.appendChild(sub);",
+            "        grid.appendChild(card);",
+            "      }",
+            "      gilRoot.appendChild(grid);",
+            "    }",
             "  }",
             "})();",
             "</script>",

@@ -10,7 +10,15 @@ from .charts import (
     create_chart_renderer,
 )
 from .html_generator import HTMLReportGenerator, QuickReportGenerator
-from .layouts import AnalysisReport, Finding, LayoutBuilder, Recommendation, Severity
+from .layouts import (
+    AnalysisReport,
+    Finding,
+    LayoutBuilder,
+    PanelSpec,
+    Recommendation,
+    Severity,
+    default_timeline_panel_specs,
+)
 from .transformers import DataTransformer, MetricEvent
 
 __all__ = [
@@ -22,6 +30,8 @@ __all__ = [
     "MetricEvent",
     "DataTransformer",
     "LayoutBuilder",
+    "PanelSpec",
+    "default_timeline_panel_specs",
     "Severity",
     "Finding",
     "Recommendation",
@@ -29,4 +39,3 @@ __all__ = [
     "HTMLReportGenerator",
     "QuickReportGenerator",
 ]
-

@@ -162,11 +162,18 @@ def _build_args_from_action(action: argparse.Action, raw_value: str) -> List[str
         return []
     if _is_bool_action(action):
         low = value.lower()
-        enabled = low in {"1", "y", "yes", "true", "on"}
+        if low in {"", "default", "keep", "skip"}:
+            return []
+        if low in {"1", "y", "yes", "true", "on", "enable", "enabled"}:
+            target = True
+        elif low in {"0", "n", "no", "false", "off", "disable", "disabled"}:
+            target = False
+        else:
+            return []
         if isinstance(action, argparse._StoreTrueAction):
-            return [name] if enabled else []
-        # store_false: pass flag when user wants false/disable
-        return [name] if enabled else []
+            return [name] if target else []
+        # store_false: option means disable (set False)
+        return [name] if (not target) else []
     if _is_append_action(action):
         parts = _split_user_values(value)
         out: List[str] = []
@@ -188,6 +195,116 @@ def _prompt_bool(question: str, *, default: bool = False) -> bool:
     if not raw:
         return bool(default)
     return raw in {"y", "yes", "1", "true", "on"}
+
+
+def _normalize_bool_text(raw: str) -> Optional[bool]:
+    low = str(raw or "").strip().lower()
+    if not low:
+        return None
+    if low in {"1", "y", "yes", "true", "on", "enable", "enabled"}:
+        return True
+    if low in {"0", "n", "no", "false", "off", "disable", "disabled"}:
+        return False
+    if low in {"default", "keep", "skip", "s", "k", "d"}:
+        return None
+    return None
+
+
+def _group_actions_by_dest(actions: List[argparse.Action]) -> List[List[argparse.Action]]:
+    by_dest: Dict[str, List[argparse.Action]] = {}
+    for action in actions:
+        by_dest.setdefault(str(action.dest), []).append(action)
+    grouped: List[List[argparse.Action]] = []
+    seen: set[str] = set()
+    for action in actions:
+        dest = str(action.dest)
+        if dest in seen:
+            continue
+        seen.add(dest)
+        grouped.append(list(by_dest.get(dest, [action])))
+    return grouped
+
+
+def _bool_group_default(actions: List[argparse.Action]) -> bool:
+    for action in actions:
+        if action.default not in (None, argparse.SUPPRESS):
+            return bool(action.default)
+    # Heuristic fallback based on action type.
+    if all(isinstance(action, argparse._StoreFalseAction) for action in actions):
+        return True
+    return False
+
+
+def _bool_group_option_for_target(actions: List[argparse.Action], target: bool) -> str:
+    if target:
+        for action in actions:
+            if isinstance(action, argparse._StoreTrueAction):
+                return _choose_opt_name(action)
+    else:
+        for action in actions:
+            if isinstance(action, argparse._StoreFalseAction):
+                return _choose_opt_name(action)
+    return ""
+
+
+def _coerce_value_for_action(action: argparse.Action, raw: str) -> Any:
+    value = str(raw or "").strip()
+    if not value:
+        return None
+    if _is_append_action(action):
+        return _split_user_values(value)
+    if action.nargs in ("+", "*"):
+        return _split_user_values(value)
+    if action.type is not None:
+        try:
+            return action.type(value)
+        except Exception:
+            return value
+    return value
+
+
+def _nsys_panel_skip_reason(
+    command_name: str,
+    action_group: List[argparse.Action],
+    selected_values: Dict[str, Any],
+) -> str:
+    if not action_group:
+        return ""
+    dest = str(action_group[0].dest or "")
+    command = str(command_name or "")
+
+    if dest == "debug_rows" and selected_values.get("debug") is False:
+        return "requires debug mode enabled"
+
+    if command in {"nsys-timeline-html", "nsys-timeline-compare-html"}:
+        metric_related = {
+            "metric_name_like",
+            "metrics_limit",
+            "metrics_max_points",
+            "overlay_metrics_per_track",
+            "default_focus_metrics",
+            "include_all_metric_sources",
+        }
+        if dest in metric_related and not bool(selected_values.get("include_metrics", False)):
+            return "requires --include-metrics"
+        if dest == "nvtx_index" and not str(selected_values.get("nvtx_text") or "").strip():
+            return "requires --nvtx-text"
+
+    if command == "nsys-sql-skill":
+        if bool(selected_values.get("list_skills", False)):
+            if dest in {"skill", "param", "debug", "debug_rows", "occupancy_arch", "schema_view", "output"}:
+                return "ignored when --list-skills is enabled"
+        skill_name = str(selected_values.get("skill") or "").strip().lower()
+        if dest == "schema_view" and skill_name not in {"schema_inspect"}:
+            return "only used when --skill schema_inspect"
+        if dest == "occupancy_arch" and skill_name not in {"kernel_occupancy_estimate", "nvtx_kernel_sm_detail"}:
+            return "only used for occupancy-related skills"
+
+    if command == "nsys-analyze":
+        if dest in {"peak_tflops", "peak_precision"} and selected_values.get("model_flops_per_step") in (None, "", 0):
+            return "only useful when --model-flops-per-step is set"
+
+    return ""
 
 
 def _sqlite_table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
@@ -534,14 +651,24 @@ def cmd_nsys_panel(args: argparse.Namespace) -> int:
         print(f"\n[{selected_name}]\n")
 
     user_actions = _iter_user_actions(selected)
-    required_actions = [a for a in user_actions if bool(a.required)]
-    optional_actions = [a for a in user_actions if not bool(a.required)]
+    required_groups = [
+        group
+        for group in _group_actions_by_dest([a for a in user_actions if bool(a.required)])
+        if group
+    ]
+    optional_groups = [
+        group
+        for group in _group_actions_by_dest([a for a in user_actions if not bool(a.required)])
+        if group
+    ]
 
     cmd_tokens: List[str] = [selected_name]
+    selected_values: Dict[str, Any] = {}
 
-    if required_actions:
+    if required_groups:
         print("Required arguments:")
-        for action in required_actions:
+        for group in required_groups:
+            action = group[0]
             opt = _choose_opt_name(action)
             info = _action_help_text(action)
             meta = _action_meta_text(action)
@@ -554,20 +681,56 @@ def cmd_nsys_panel(args: argparse.Namespace) -> int:
                 if not value:
                     print("    this argument is required")
                     continue
-                cmd_tokens.extend(_build_args_from_action(action, value))
+                args_from_value = _build_args_from_action(action, value)
+                if not args_from_value:
+                    print("    invalid value, try again")
+                    continue
+                cmd_tokens.extend(args_from_value)
+                selected_values[str(action.dest)] = _coerce_value_for_action(action, value)
                 break
 
-    if optional_actions and _prompt_bool("Configure optional arguments?", default=False):
+    if optional_groups and _prompt_bool("Configure optional arguments?", default=False):
         print("\nOptional arguments (press Enter to skip):")
-        for action in optional_actions:
+        for group in optional_groups:
+            action = group[0]
+            skip_reason = _nsys_panel_skip_reason(selected_name, group, selected_values)
+            if skip_reason:
+                opt = _choose_opt_name(action)
+                print(f"  {opt} [skip] {skip_reason}")
+                continue
+
+            bool_group = all(_is_bool_action(item) for item in group)
+            if bool_group:
+                default_bool = _bool_group_default(group)
+                enable_opt = _bool_group_option_for_target(group, True)
+                disable_opt = _bool_group_option_for_target(group, False)
+                info_items = sorted({_action_help_text(item) for item in group if _action_help_text(item)})
+                info = " | ".join(info_items) if info_items else "(no description)"
+                default_text = "on" if default_bool else "off"
+                toggle_hint = "on/off/skip"
+                shown_opt = enable_opt or disable_opt or _choose_opt_name(action)
+                prompt = f"  {shown_opt} ({info}; default={default_text}; input {toggle_hint}) > "
+                while True:
+                    raw = input(prompt).strip()
+                    target = _normalize_bool_text(raw)
+                    if raw and target is None:
+                        print("    invalid input, use on/off/skip")
+                        continue
+                    break
+                if target is None:
+                    selected_values[str(action.dest)] = default_bool
+                    continue
+                selected_values[str(action.dest)] = bool(target)
+                if bool(target) == bool(default_bool):
+                    continue
+                opt = _bool_group_option_for_target(group, bool(target))
+                if opt:
+                    cmd_tokens.append(opt)
+                continue
+
             opt = _choose_opt_name(action)
             info = _action_help_text(action)
             meta = _action_meta_text(action)
-            if _is_bool_action(action):
-                enabled = _prompt_bool(f"  {opt} ({info}) enable?", default=False)
-                if enabled:
-                    cmd_tokens.append(opt)
-                continue
             prompt = f"  {opt} ({info}"
             if meta:
                 prompt += f"; {meta}"
@@ -575,7 +738,12 @@ def cmd_nsys_panel(args: argparse.Namespace) -> int:
             value = input(prompt).strip()
             if not value:
                 continue
-            cmd_tokens.extend(_build_args_from_action(action, value))
+            args_from_value = _build_args_from_action(action, value)
+            if not args_from_value:
+                print("    invalid value, skipped")
+                continue
+            cmd_tokens.extend(args_from_value)
+            selected_values[str(action.dest)] = _coerce_value_for_action(action, value)
 
     cmd_display = "myutils-profile " + " ".join(shlex.quote(x) for x in cmd_tokens)
     print("\nGenerated command:")

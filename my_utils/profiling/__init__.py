@@ -24,12 +24,15 @@ from .analyzers.workload_profiles import (
 from .metrics.metrics_provider import BaseMetricsProvider, MetricsProvider, ProviderCapabilities
 from .metrics.metrics_providers import (
     CProfileStatsProvider,
+    DcgmCsvMetricsProvider,
     ModuleProfilerMetricsProvider,
     MyTimerMetricsProvider,
+    NcclLogMetricsProvider,
     NcuCsvMetricsProvider,
     NsysSqliteGlobMetricsProvider,
     NsysSqliteMetricsProvider,
     PerfStatTextProvider,
+    RasJsonMetricsProvider,
     TableCsvMetricsProvider,
     TorchProfilerMetricsProvider,
 )
@@ -155,6 +158,9 @@ __all__ = [
     "NsysSqliteMetricsProvider",
     "CProfileStatsProvider",
     "PerfStatTextProvider",
+    "DcgmCsvMetricsProvider",
+    "NcclLogMetricsProvider",
+    "RasJsonMetricsProvider",
     "ReportDiff",
     "compare_reports",
     "write_diff",

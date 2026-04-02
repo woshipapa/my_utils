@@ -43,7 +43,13 @@ class CaptureController:
         self._window_nvtx_token: object | None = None
 
         # 记录是哪个 profile_name 触发 start（用于 ON_TRIGGER_FUNC_EXIT）
-        self._triggered_by_profile_name: Optional[str] = None
+        self._triggered_by_profile_name: Optional[str] = None
+
+        self._start_profile_name_set: Set[str] = set()
+
+        self._stop_profile_name_set: Set[str] = set()
+
+        self._ranks_filter_set: Optional[Set[int]] = None
 
         self._lock = threading.Lock()
 
@@ -52,6 +58,48 @@ class CaptureController:
         if stop_policy == "ON_TARGET_FUNC_EXIT":
             return "ON_TRIGGER_FUNC_EXIT"
         return stop_policy
+
+    @staticmethod
+
+    def _to_str_set(values: Any) -> Set[str]:
+
+        out: Set[str] = set()
+
+        if values is None:
+
+            return out
+
+        for item in values:
+
+            text = str(item).strip()
+
+            if text:
+
+                out.add(text)
+
+        return out
+
+    @staticmethod
+
+    def _to_int_set(values: Any) -> Optional[Set[int]]:
+
+        if values is None:
+
+            return None
+
+        out: Set[int] = set()
+
+        for item in values:
+
+            try:
+
+                out.add(int(item))
+
+            except Exception:
+
+                continue
+
+        return out
 
     # -----------------------
     # control-plane
@@ -87,6 +135,12 @@ class CaptureController:
             )
             self._spec.setdefault("stop_edge", "EXIT")
 
+            self._start_profile_name_set = self._to_str_set(self._spec.get("start_profile_names", []) or [])
+
+            self._stop_profile_name_set = self._to_str_set(self._spec.get("stop_profile_names", []) or [])
+
+            self._ranks_filter_set = self._to_int_set(self._spec.get("ranks_filter", None))
+
             self._log(
                 f"[Capture] ARMED window={self._window_id} "
                 f"start={{iter={self._spec.get('start_iter')}, mb={self._spec.get('start_mb')}, names={self._spec.get('start_profile_names')}}} "
@@ -107,6 +161,9 @@ class CaptureController:
             self._window_id = None
             self._triggered_by_profile_name = None
             self._window_nvtx_token = None
+            self._start_profile_name_set = set()
+            self._stop_profile_name_set = set()
+            self._ranks_filter_set = None
         if token_to_stop is not None:
             self._window_labeler.stop(token_to_stop)
         self._log(f"[Capture] DISARM window={window_id}")
@@ -187,6 +244,8 @@ class CaptureController:
         profile_names: list[str],
         expected_iter: Optional[int],
         expected_mb: Optional[int],
+        profile_name_set: Optional[Set[str]] = None,
+        ranks_set: Optional[Set[int]] = None,
     ) -> bool:
         spec = self._spec or {}
         debug = bool(spec.get("debug_match", False))
@@ -200,7 +259,7 @@ class CaptureController:
             )
 
         # name gate
-        targets: Set[str] = set(profile_names or [])
+        targets: Set[str] = profile_name_set if profile_name_set is not None else set(profile_names or [])
         if targets and event.profile_name not in targets:
             if debug:
                 self._log(f"[Capture][Match] FAIL name")
@@ -231,16 +290,15 @@ class CaptureController:
                 return False
 
         # rank gate
-        ranks = spec.get("ranks_filter", None)
-        if ranks is not None:
+        active_ranks_set = ranks_set if ranks_set is not None else self._to_int_set(spec.get("ranks_filter", None))
+        if active_ranks_set is not None:
             if event.rank is None:
                 if debug:
-                    self._log(f"[Capture][Match] FAIL rank None expected in {ranks}")
+                    self._log(f"[Capture][Match] FAIL rank None expected in {sorted(active_ranks_set)}")
                 return False
-            ranks_set = set(map(int, ranks))
-            if int(event.rank) not in ranks_set:
+            if int(event.rank) not in active_ranks_set:
                 if debug:
-                    self._log(f"[Capture][Match] FAIL rank got={event.rank} expected in {sorted(ranks_set)}")
+                    self._log(f"[Capture][Match] FAIL rank got={event.rank} expected in {sorted(active_ranks_set)}")
                 return False
 
         if debug:
@@ -254,6 +312,8 @@ class CaptureController:
             profile_names=spec.get("start_profile_names", []) or [],
             expected_iter=spec.get("start_iter", None),
             expected_mb=spec.get("start_mb", None),
+            profile_name_set=self._start_profile_name_set,
+            ranks_set=self._ranks_filter_set,
         )
 
     def _match_stop(self, event: HookEvent) -> bool:
@@ -263,6 +323,8 @@ class CaptureController:
             profile_names=spec.get("stop_profile_names", []) or [],
             expected_iter=spec.get("stop_iter", None),
             expected_mb=spec.get("stop_mb", None),
+            profile_name_set=self._stop_profile_name_set,
+            ranks_set=self._ranks_filter_set,
         )
 
     def _should_stop_on_event(self, event: HookEvent, *, edge: str) -> bool:
@@ -333,3 +395,10 @@ class CaptureController:
             self._logger.info(msg)
         except Exception:
             pass
+
+
+
+
+
+
+

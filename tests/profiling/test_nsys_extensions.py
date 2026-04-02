@@ -945,12 +945,20 @@ def test_timeline_focus_metrics_enabled_by_default(tmp_path: Path) -> None:
 
     conn = sqlite3.connect(str(db))
     cur = conn.cursor()
-    cur.execute("INSERT INTO StringIds(id, value) VALUES (?, ?)", (7788, "random_metric_should_be_filtered"))
+    cur.executemany(
+        "INSERT INTO StringIds(id, value) VALUES (?, ?)",
+        [
+            (7788, "random_metric_should_be_filtered"),
+            (7789, "NVLINK TX Throughput"),
+        ],
+    )
     cur.executemany(
         "INSERT INTO CUPTI_ACTIVITY_KIND_GPU_METRIC(timestamp, metricId, value, sourceId) VALUES (?, ?, ?, ?)",
         [
             (2000, 7788, 12.0, 1),
             (3000, 7788, 15.0, 1),
+            (2500, 7789, 22.0, 1),
+            (3500, 7789, 24.0, 1),
         ],
     )
     conn.commit()
@@ -976,6 +984,8 @@ def test_timeline_focus_metrics_enabled_by_default(tmp_path: Path) -> None:
     payload = json.loads(m.group(1))
     names = {str(s.get("name", "")) for s in (payload.get("metrics") or [])}
     assert any("tensor__active" in n for n in names), names
+    assert any("dram" in n.lower() for n in names), names
+    assert any("nvlink" in n.lower() for n in names), names
     assert all("random_metric_should_be_filtered" not in n for n in names), names
 
 

@@ -70,12 +70,15 @@ def _require_context_obj(context: Mapping[str, Any], *keys: str) -> Any:
 def register_builtin_providers(registry: MetricsProviderRegistry) -> MetricsProviderRegistry:
     from .metrics_providers import (
         CProfileStatsProvider,
+        DcgmCsvMetricsProvider,
         ModuleProfilerMetricsProvider,
         MyTimerMetricsProvider,
+        NcclLogMetricsProvider,
         NcuCsvMetricsProvider,
         NsysSqliteGlobMetricsProvider,
         NsysSqliteMetricsProvider,
         PerfStatTextProvider,
+        RasJsonMetricsProvider,
         TableCsvMetricsProvider,
         TorchProfilerMetricsProvider,
     )
@@ -133,6 +136,21 @@ def register_builtin_providers(registry: MetricsProviderRegistry) -> MetricsProv
         payload["provider_id"] = provider_id
         return PerfStatTextProvider(**payload)
 
+    def make_dcgm_csv(provider_id: str, params: Mapping[str, Any], context: Mapping[str, Any]) -> MetricsProvider:
+        payload = dict(params)
+        payload["provider_id"] = provider_id
+        return DcgmCsvMetricsProvider(**payload)
+
+    def make_nccl_log(provider_id: str, params: Mapping[str, Any], context: Mapping[str, Any]) -> MetricsProvider:
+        payload = dict(params)
+        payload["provider_id"] = provider_id
+        return NcclLogMetricsProvider(**payload)
+
+    def make_ras_json(provider_id: str, params: Mapping[str, Any], context: Mapping[str, Any]) -> MetricsProvider:
+        payload = dict(params)
+        payload["provider_id"] = provider_id
+        return RasJsonMetricsProvider(**payload)
+
     registry.register("my_timer", make_my_timer)
     registry.register("torch_profiler", make_torch_profiler)
     registry.register("module_profiler", make_module_profiler)
@@ -142,6 +160,9 @@ def register_builtin_providers(registry: MetricsProviderRegistry) -> MetricsProv
     registry.register("nsys_sqlite_glob", make_nsys_sqlite)
     registry.register("cprofile", make_cprofile)
     registry.register("perf_stat", make_perf_stat)
+    registry.register("dcgm_csv", make_dcgm_csv)
+    registry.register("nccl_log", make_nccl_log)
+    registry.register("ras_json", make_ras_json)
     return registry
 
 

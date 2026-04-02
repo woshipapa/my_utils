@@ -38,6 +38,29 @@ def _group_key(event: MetricEvent) -> str:
     return event.name
 
 
+def _to_ratio(value) -> Optional[float]:
+    numeric = _to_float(value)
+    if numeric is None:
+        return None
+    if numeric > 1.0:
+        numeric = numeric / 100.0
+    return max(0.0, min(1.0, float(numeric)))
+
+
+def _percentile(values: List[float], q: float) -> Optional[float]:
+    if not values:
+        return None
+    items = sorted(float(v) for v in values)
+    if len(items) == 1:
+        return items[0]
+    qq = max(0.0, min(1.0, float(q)))
+    pos = qq * float(len(items) - 1)
+    lo = int(pos)
+    hi = min(len(items) - 1, lo + 1)
+    frac = pos - float(lo)
+    return float(items[lo] * (1.0 - frac) + items[hi] * frac)
+
+
 class AnalysisRule(ABC):
     rule_id = "rule"
 
@@ -501,3 +524,324 @@ class DistributedSkewRule(AnalysisRule):
             "Align NCCL timeline with skewed stages to identify communication head-of-line blocking.",
         ]
 
+
+class CommunicationHealthRule(AnalysisRule):
+    rule_id = "comm_health"
+
+    def __init__(
+        self,
+        *,
+        p95_ratio_threshold: float = 2.0,
+        rank_imbalance_threshold: float = 1.30,
+        min_good_busbw_gbps: float = 20.0,
+    ) -> None:
+        self.p95_ratio_threshold = float(p95_ratio_threshold)
+        self.rank_imbalance_threshold = float(rank_imbalance_threshold)
+        self.min_good_busbw_gbps = float(min_good_busbw_gbps)
+
+    def apply(self, events: List[MetricEvent], context: Dict[str, object]) -> Optional[Finding]:
+        latencies_ms: List[float] = []
+        busbw_values: List[float] = []
+        by_rank_latency: Dict[str, List[float]] = defaultdict(list)
+        issue_count = 0
+
+        for event in events:
+            name_l = str(event.name or "").lower()
+            level = str(event.tags.get("level", "")).lower()
+            severity = str(event.tags.get("severity", "")).lower()
+            if "nccl" in name_l or name_l.startswith("comm.") or name_l.startswith("ras."):
+                if any(token in name_l for token in ("error", "fault", "timeout", "issue")):
+                    numeric = _to_float(event.value)
+                    if numeric is not None and numeric > 0:
+                        issue_count += int(max(1.0, numeric))
+                if level in ("warn", "warning", "error", "fatal") or severity in ("warn", "warning", "error", "critical", "fatal"):
+                    issue_count += 1
+
+            value = _to_float(event.value)
+            if value is None:
+                continue
+
+            if "busbw" in name_l or "algbw" in name_l:
+                busbw_values.append(float(value))
+
+            is_comm_latency = (
+                name_l.startswith("comm.")
+                or "nccl" in name_l
+                or name_l.startswith("latency.comm")
+            )
+            if not is_comm_latency:
+                continue
+
+            value_ms = _to_ms(value, event.unit)
+            if value_ms is None:
+                continue
+            latencies_ms.append(value_ms)
+            rank = event.tags.get("rank")
+            if rank is not None:
+                by_rank_latency[str(rank)].append(value_ms)
+
+        if not latencies_ms and not busbw_values and issue_count <= 0:
+            return None
+
+        p50 = _percentile(latencies_ms, 0.50) or 0.0
+        p95 = _percentile(latencies_ms, 0.95) or 0.0
+        jitter_ratio = (p95 / p50) if p50 > 1e-12 else 0.0
+
+        rank_ratio = 1.0
+        rank_mean_latency = {
+            rank: statistics.mean(values)
+            for rank, values in by_rank_latency.items()
+            if values
+        }
+        if len(rank_mean_latency) >= 2:
+            vals = list(rank_mean_latency.values())
+            low = min(vals)
+            high = max(vals)
+            if low > 1e-12:
+                rank_ratio = high / low
+
+        median_busbw = _percentile(busbw_values, 0.50)
+        health_score = 100.0
+        issues: List[str] = []
+        if jitter_ratio >= self.p95_ratio_threshold:
+            health_score -= 20.0
+            issues.append(
+                f"Communication tail latency jitter is high (p95/p50={jitter_ratio:.2f}, threshold={self.p95_ratio_threshold:.2f})."
+            )
+        if rank_ratio >= self.rank_imbalance_threshold:
+            health_score -= 20.0
+            issues.append(
+                f"Cross-rank comm latency imbalance is high (max/min={rank_ratio:.2f}, threshold={self.rank_imbalance_threshold:.2f})."
+            )
+        if median_busbw is not None and median_busbw < self.min_good_busbw_gbps:
+            health_score -= 15.0
+            issues.append(
+                f"NCCL bandwidth is low (median busbw={median_busbw:.2f} GB/s, expected >= {self.min_good_busbw_gbps:.2f} GB/s)."
+            )
+        if issue_count > 0:
+            health_score -= min(40.0, float(issue_count) * 5.0)
+            issues.append(f"Detected {issue_count} NCCL/RAS warning-or-error signals.")
+
+        if not issues:
+            return None
+
+        severity = "warning"
+        if issue_count > 0 or health_score < 50:
+            severity = "high"
+        elif health_score < 70:
+            severity = "warning"
+        else:
+            severity = "info"
+
+        return Finding(
+            finding_type="communication_health",
+            severity=severity,
+            title="Communication Health Degradation",
+            description=f"Communication health score is {max(0.0, health_score):.1f}/100.",
+            data={
+                "health_score": max(0.0, health_score),
+                "issue_count": int(issue_count),
+                "latency_p50_ms": p50,
+                "latency_p95_ms": p95,
+                "latency_jitter_ratio": jitter_ratio,
+                "rank_latency_ratio": rank_ratio,
+                "rank_mean_latency_ms": rank_mean_latency,
+                "median_busbw_gbps": median_busbw,
+                "issues": issues,
+            },
+            finding_id=self.rule_id,
+        )
+
+    def recommendations(self, finding: Finding) -> List[str]:
+        return [
+            "Enable NCCL debug timeline and align p95 windows with rank-level communication traces.",
+            "Check topology affinity (NUMA/NVLink/PCIe) and rebalance payload sizes across ranks.",
+            "Track RAS/error counters alongside NCCL busbw to separate transport issues from scheduling issues.",
+        ]
+
+
+class RooflineGapRule(AnalysisRule):
+    rule_id = "roofline_gap"
+
+    def __init__(self, *, gap_threshold: float = 0.20) -> None:
+        self.gap_threshold = float(gap_threshold)
+
+    def apply(self, events: List[MetricEvent], context: Dict[str, object]) -> Optional[Finding]:
+        compute_utils: List[float] = []
+        memory_utils: List[float] = []
+        total_flops = 0.0
+        total_bytes = 0.0
+
+        for event in events:
+            name_l = str(event.name or "").lower()
+            ratio = _to_ratio(event.value)
+            if ratio is not None:
+                if any(token in name_l for token in ("sm.active", "sm.util", "tensor.active", "compute.gpu", "warps in flight")):
+                    compute_utils.append(ratio)
+                if any(token in name_l for token in ("dram", "hbm", "memory_throughput", "mem_bw", "bandwidth")):
+                    memory_utils.append(ratio)
+
+            value = _to_float(event.value)
+            if value is None:
+                continue
+            if "flops" in name_l:
+                total_flops += float(value)
+            if str(event.unit).lower() == "bytes" or "bytes" in name_l:
+                total_bytes += float(value)
+
+        if not compute_utils and not memory_utils:
+            return None
+
+        compute_avg = statistics.mean(compute_utils) if compute_utils else 0.0
+        memory_avg = statistics.mean(memory_utils) if memory_utils else 0.0
+        gap = max(0.0, memory_avg - compute_avg)
+        bottleneck_hint = "memory_bound" if memory_avg >= compute_avg else "compute_bound"
+
+        if total_flops > 0 and total_bytes > 0:
+            arithmetic_intensity = total_flops / max(total_bytes, 1.0)
+        else:
+            arithmetic_intensity = None
+
+        if gap < self.gap_threshold:
+            return None
+
+        severity = "warning" if gap < 0.35 else "high"
+        return Finding(
+            finding_type="roofline",
+            severity=severity,
+            title="Roofline Headroom Gap",
+            description=(
+                f"Observed roofline gap is {gap:.1%} "
+                f"(compute={compute_avg:.1%}, memory={memory_avg:.1%}, hint={bottleneck_hint})."
+            ),
+            data={
+                "gap_threshold": self.gap_threshold,
+                "roofline_gap": gap,
+                "compute_utilization": compute_avg,
+                "memory_utilization": memory_avg,
+                "bottleneck_hint": bottleneck_hint,
+                "arithmetic_intensity_flops_per_byte": arithmetic_intensity,
+            },
+            finding_id=self.rule_id,
+        )
+
+    def recommendations(self, finding: Finding) -> List[str]:
+        return [
+            "Correlate compute-utilization and DRAM-throughput time windows to identify memory-bound kernels.",
+            "Use operator fusion / data-layout optimization to move points upward in the roofline plane.",
+            "For low arithmetic intensity, prioritize memory traffic reduction before tuning raw FLOPS.",
+        ]
+
+
+class CrossLayerConsistencyRule(AnalysisRule):
+    rule_id = "cross_layer_consistency"
+
+    def __init__(
+        self,
+        *,
+        min_step_coverage: float = 0.40,
+        min_tag_alignment_ratio: float = 0.60,
+    ) -> None:
+        self.min_step_coverage = float(min_step_coverage)
+        self.min_tag_alignment_ratio = float(min_tag_alignment_ratio)
+
+    def apply(self, events: List[MetricEvent], context: Dict[str, object]) -> Optional[Finding]:
+        step_latency_ms: Dict[str, float] = defaultdict(float)
+        component_latency_ms: Dict[str, float] = defaultdict(float)
+        step_tagged = 0
+        layer_tagged = 0
+
+        has_rank_comm = False
+        has_rank_compute = False
+
+        for event in events:
+            name_l = str(event.name or "").lower()
+            value = _to_float(event.value)
+            if value is None:
+                continue
+            value_ms = _to_ms(value, event.unit)
+            step = event.tags.get("step")
+
+            if step is not None:
+                step_tagged += 1
+            if step and value_ms is not None and event.name.startswith("latency.step"):
+                step_latency_ms[str(step)] += value_ms
+
+            is_component = False
+            if value_ms is not None and (
+                name_l.startswith("latency.kernel")
+                or name_l.startswith("comm.")
+                or "nccl" in name_l
+                or "sync" in name_l
+                or "dataloader" in name_l
+                or "python" in name_l
+            ):
+                is_component = True
+                if step:
+                    component_latency_ms[str(step)] += value_ms
+
+            if is_component and step is not None:
+                layer_tagged += 1
+
+            if ("comm." in name_l or "nccl" in name_l) and "rank" in event.tags:
+                has_rank_comm = True
+            if ("kernel" in name_l or "compute." in name_l) and "rank" in event.tags:
+                has_rank_compute = True
+
+        coverage_items: List[Dict[str, float]] = []
+        for step, step_ms in step_latency_ms.items():
+            comp_ms = component_latency_ms.get(step, 0.0)
+            coverage = comp_ms / step_ms if step_ms > 1e-12 else 0.0
+            coverage_items.append(
+                {
+                    "step": float(step) if str(step).isdigit() else step,
+                    "step_ms": step_ms,
+                    "component_ms": comp_ms,
+                    "coverage": coverage,
+                }
+            )
+
+        issues: List[str] = []
+        if coverage_items:
+            mean_cov = statistics.mean(float(item["coverage"]) for item in coverage_items)
+            if mean_cov < self.min_step_coverage:
+                issues.append(
+                    f"Cross-layer step coverage is low ({mean_cov:.1%}); step latency is insufficiently explained by component layers."
+                )
+        else:
+            mean_cov = None
+
+        tag_alignment_ratio = (layer_tagged / step_tagged) if step_tagged > 0 else 1.0
+        if step_tagged > 0 and tag_alignment_ratio < self.min_tag_alignment_ratio:
+            issues.append(
+                f"Only {tag_alignment_ratio:.1%} of step-tagged events are aligned to component layers; missing step tags reduce correlation quality."
+            )
+        if has_rank_comm and not has_rank_compute:
+            issues.append("Communication events have rank tags, but compute events do not; cross-rank attribution is incomplete.")
+
+        if not issues:
+            return None
+
+        severity = "warning" if len(issues) > 1 else "info"
+        return Finding(
+            finding_type="consistency",
+            severity=severity,
+            title="Cross-Layer Consistency Gaps",
+            description=f"Detected {len(issues)} observability-consistency gap(s) across step/comm/compute/cpu layers.",
+            data={
+                "min_step_coverage": self.min_step_coverage,
+                "min_tag_alignment_ratio": self.min_tag_alignment_ratio,
+                "mean_step_coverage": mean_cov,
+                "tag_alignment_ratio": tag_alignment_ratio,
+                "coverage_by_step": coverage_items[:40],
+                "issues": issues,
+            },
+            finding_id=self.rule_id,
+        )
+
+    def recommendations(self, finding: Finding) -> List[str]:
+        return [
+            "Unify step/rank tags across GPU kernels, NCCL communication, and CPU synchronization events.",
+            "Ensure each layer emits comparable latency metrics in the same time units for cross-layer joins.",
+            "Add missing observability at layer boundaries (dispatch, comm, kernel, and runtime stalls).",
+        ]

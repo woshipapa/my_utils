@@ -162,3 +162,81 @@ def test_nsys_panel_execute_selected_command(monkeypatch) -> None:
         "--output",
         "out.json",
     ]
+
+
+def test_nsys_panel_bool_conflict_groups_and_semantic_skip(monkeypatch, capsys) -> None:
+    prompts: list[str] = []
+
+    def _fake_input(prompt: str) -> str:
+        prompts.append(str(prompt))
+        text = str(prompt)
+        line = text.strip()
+        if text.startswith("command >"):
+            return "nsys-timeline-html"
+        if line.startswith("--sqlite"):
+            return "demo.sqlite"
+        if line.startswith("--output"):
+            return "out.html"
+        if "Configure optional arguments?" in text:
+            return "y"
+        if line.startswith("--include-metrics"):
+            return "on"
+        if line.startswith("--default-focus-metrics"):
+            return "off"
+        if line.startswith("--debug"):
+            return "off"
+        if "Execute now?" in text:
+            return "n"
+        return ""
+
+    monkeypatch.setattr("builtins.input", _fake_input)
+    rc = main(["nsys-panel"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "myutils-profile nsys-timeline-html --sqlite demo.sqlite --output out.html --include-metrics --no-default-focus-metrics --no-debug" in out
+    assert "--debug --no-debug" not in out
+    assert "--default-focus-metrics --no-default-focus-metrics" not in out
+
+    debug_prompts = [p for p in prompts if "--debug" in p or "--no-debug" in p]
+    assert len(debug_prompts) == 1, debug_prompts
+    focus_prompts = [p for p in prompts if "--default-focus-metrics" in p or "--no-default-focus-metrics" in p]
+    assert len(focus_prompts) == 1, focus_prompts
+    debug_rows_prompts = [p for p in prompts if "--debug-rows" in p]
+    assert len(debug_rows_prompts) == 0, debug_rows_prompts
+
+
+def test_nsys_panel_respects_list_skills_short_circuit(monkeypatch, capsys) -> None:
+    prompts: list[str] = []
+
+    def _fake_input(prompt: str) -> str:
+        prompts.append(str(prompt))
+        text = str(prompt)
+        line = text.strip()
+        if text.startswith("command >"):
+            return "nsys-sql-skill"
+        if line.startswith("--sqlite"):
+            return "skills.sqlite"
+        if "Configure optional arguments?" in text:
+            return "y"
+        if line.startswith("--list-skills"):
+            return "on"
+        if line.startswith("--pretty"):
+            return "on"
+        if "Execute now?" in text:
+            return "n"
+        return ""
+
+    monkeypatch.setattr("builtins.input", _fake_input)
+    rc = main(["nsys-panel"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "myutils-profile nsys-sql-skill --sqlite skills.sqlite --list-skills --pretty" in out
+    assert "--skill" not in out.split("Generated command:")[-1]
+    assert "--param" not in out.split("Generated command:")[-1]
+
+    skill_prompts = [p for p in prompts if "--skill" in p]
+    param_prompts = [p for p in prompts if "--param" in p]
+    debug_prompts = [p for p in prompts if "--debug" in p or "--no-debug" in p]
+    assert len(skill_prompts) == 0, skill_prompts
+    assert len(param_prompts) == 0, param_prompts
+    assert len(debug_prompts) == 0, debug_prompts

@@ -28,7 +28,9 @@ class MetricsStore:
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.file_path = self.output_dir / file_name
         self._lock = threading.Lock()
-        self._buffer: Deque[MetricEvent] = deque(maxlen=max(1, int(max_memory_events)))
+        self._max_memory_events = max(1, int(max_memory_events))
+        self._buffer: Deque[MetricEvent] = deque(maxlen=self._max_memory_events)
+        self._buffer_overflowed = False
 
     def write_events(self, events: Iterable[MetricEvent]) -> int:
         event_list = list(events)
@@ -38,6 +40,8 @@ class MetricsStore:
         lines = []
         with self._lock:
             for evt in event_list:
+                if len(self._buffer) >= self._max_memory_events:
+                    self._buffer_overflowed = True
                 self._buffer.append(evt)
                 lines.append(json.dumps(evt.to_dict(), ensure_ascii=False))
 
@@ -57,8 +61,13 @@ class MetricsStore:
     def clear(self, *, clear_disk: bool = False) -> None:
         with self._lock:
             self._buffer.clear()
+            self._buffer_overflowed = False
             if clear_disk and self.file_path.exists():
                 os.remove(self.file_path)
+
+    def has_buffer_overflowed(self) -> bool:
+        with self._lock:
+            return bool(self._buffer_overflowed)
 
     @staticmethod
     def read_events_file(path: str) -> List[MetricEvent]:

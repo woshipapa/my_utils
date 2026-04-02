@@ -1,6 +1,8 @@
 from .analysis_rules import (
     AnalysisRule,
+    CommunicationHealthRule,
     CommunicationImbalanceRule,
+    CrossLayerConsistencyRule,
     DataloaderStallRule,
     DistributedSkewRule,
     GpuUtilizationThroughputRule,
@@ -9,6 +11,7 @@ from .analysis_rules import (
     LatencyVarianceRule,
     MemoryGrowthRule,
     PipelineBubbleRule,
+    RooflineGapRule,
 )
 from .distributed_alignment import align_stage_latency, analyze_rank_skew
 from .metrics_analyzer import MetricsAnalyzer
@@ -27,10 +30,13 @@ __all__ = [
     "LatencyVarianceRule",
     "LatencyOutlierRule",
     "CommunicationImbalanceRule",
+    "CommunicationHealthRule",
     "PipelineBubbleRule",
     "DataloaderStallRule",
     "GpuUtilizationThroughputRule",
     "DistributedSkewRule",
+    "RooflineGapRule",
+    "CrossLayerConsistencyRule",
     "align_stage_latency",
     "analyze_rank_skew",
     "MetricsAnalyzer",
