@@ -2458,6 +2458,8 @@ def test_cli_nsys_module_kernel_compare_sqlite_mode(tmp_path: Path) -> None:
             str(db_b),
             "--nvtx-text",
             "%sample_0%",
+            "--nvtx-index",
+            "1",
             "--device-id",
             "0",
             "--sqlite-limit",
@@ -2471,8 +2473,17 @@ def test_cli_nsys_module_kernel_compare_sqlite_mode(tmp_path: Path) -> None:
     assert rc == 0
     payload = json.loads(out_json.read_text(encoding="utf-8"))
     base = dict(payload.get("base") or {})
+    target = dict(payload.get("target") or {})
     compare = dict(payload.get("compare") or {})
     assert str(base.get("source_path") or "") == str(db_a)
+    base_scope_sel = dict(base.get("nvtx_scope_selection") or {})
+    target_scope_sel = dict(target.get("nvtx_scope_selection") or {})
+    base_scope = dict(base_scope_sel.get("selected_scope") or {})
+    target_scope = dict(target_scope_sel.get("selected_scope") or {})
+    assert int(base_scope_sel.get("requested_nvtx_index") or -1) == 1
+    assert int(target_scope_sel.get("requested_nvtx_index") or -1) == 1
+    assert "sample_0 step=2 rank=0" in str(base_scope.get("nvtx_text") or ""), base_scope
+    assert "sample_0 step=2 rank=0" in str(target_scope.get("nvtx_text") or ""), target_scope
     stream_deltas = list(compare.get("stream_deltas") or [])
     assert stream_deltas, compare
     first_stream = dict(stream_deltas[0] or {})

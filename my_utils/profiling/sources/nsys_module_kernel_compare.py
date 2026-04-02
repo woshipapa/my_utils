@@ -189,6 +189,8 @@ def _sorted_values(values: Iterable[object]) -> List[object]:
 @dataclass
 class _KernelEvent:
     nvtx_text: str
+    nvtx_start_ns: Optional[int]
+    nvtx_end_ns: Optional[int]
     device_id: int
     stream_id: int
     kind: str
@@ -229,8 +231,20 @@ def _normalize_event(row: Dict[str, object]) -> Optional[_KernelEvent]:
     if total_shared is None:
         total_shared = _to_int(static_shared, 0) + _to_int(dynamic_shared, 0)
     occ = _maybe_float(_pick_first(row, ["occupancy_pct_h100_estimate", "occupancy_pct_estimate"]))
+    nvtx_start = _pick_first(row, ["nvtx_start_ns", "nvtxStartNs"])
+    nvtx_end = _pick_first(row, ["nvtx_end_ns", "nvtxEndNs"])
+    nvtx_start_i: Optional[int] = None
+    nvtx_end_i: Optional[int] = None
+    if nvtx_start is not None and nvtx_end is not None:
+        s = _to_int(nvtx_start, -1)
+        e = _to_int(nvtx_end, -1)
+        if s >= 0 and e > s:
+            nvtx_start_i = s
+            nvtx_end_i = e
     return _KernelEvent(
         nvtx_text=str(row.get("nvtx_text") or row.get("nvtx_name") or ""),
+        nvtx_start_ns=nvtx_start_i,
+        nvtx_end_ns=nvtx_end_i,
         device_id=_to_int(_pick_first(row, ["device_id", "deviceId"]), -1),
         stream_id=_to_int(_pick_first(row, ["stream_id", "streamId"]), -1),
         kind=_kind_from_row(row, kernel_name),
@@ -268,6 +282,7 @@ def _build_profile(
     label: str,
     source_path: str,
     nvtx_text: str,
+    nvtx_index: int,
     device_id: int,
     stream_ids: Sequence[int],
     top_k: int,
@@ -288,6 +303,72 @@ def _build_profile(
             continue
         events.append(ev)
 
+    selected_scope_info: Optional[Dict[str, object]] = None
+    matched_scope_rows: List[Dict[str, object]] = []
+    if int(nvtx_index) >= 0 and events:
+        scope_set: Dict[Tuple[int, int, str], Dict[str, object]] = {}
+        for ev in events:
+            if ev.nvtx_start_ns is not None and ev.nvtx_end_ns is not None:
+                key = (int(ev.nvtx_start_ns), int(ev.nvtx_end_ns), str(ev.nvtx_text or ""))
+                if key not in scope_set:
+                    scope_set[key] = {
+                        "nvtx_text": str(ev.nvtx_text or ""),
+                        "start_ns": int(ev.nvtx_start_ns),
+                        "end_ns": int(ev.nvtx_end_ns),
+                        "duration_ms": round((int(ev.nvtx_end_ns) - int(ev.nvtx_start_ns)) / 1e6, 6),
+                    }
+        if scope_set:
+            matched_scope_rows = sorted(
+                list(scope_set.values()),
+                key=lambda x: (int(x.get("start_ns") or -1), int(x.get("end_ns") or -1), str(x.get("nvtx_text") or "")),
+            )
+            idx = max(0, min(int(nvtx_index), len(matched_scope_rows) - 1))
+            selected_scope_info = dict(matched_scope_rows[idx])
+            ss = int(selected_scope_info.get("start_ns") or -1)
+            se = int(selected_scope_info.get("end_ns") or -1)
+            st = str(selected_scope_info.get("nvtx_text") or "")
+            events = [
+                ev
+                for ev in events
+                if (
+                    ev.nvtx_start_ns is not None
+                    and ev.nvtx_end_ns is not None
+                    and int(ev.nvtx_start_ns) == ss
+                    and int(ev.nvtx_end_ns) == se
+                    and str(ev.nvtx_text or "") == st
+                )
+            ]
+        else:
+            # Fallback when source rows do not carry nvtx_start/end: synthesize by nvtx_text.
+            by_text: Dict[str, Dict[str, object]] = {}
+            for ev in events:
+                txt = str(ev.nvtx_text or "")
+                item = by_text.setdefault(
+                    txt,
+                    {
+                        "nvtx_text": txt,
+                        "start_ns": int(ev.start_ns),
+                        "end_ns": int(ev.end_ns),
+                    },
+                )
+                item["start_ns"] = min(int(item.get("start_ns") or ev.start_ns), int(ev.start_ns))
+                item["end_ns"] = max(int(item.get("end_ns") or ev.end_ns), int(ev.end_ns))
+            matched_scope_rows = sorted(
+                [
+                    {
+                        **item,
+                        "duration_ms": round((int(item.get("end_ns") or 0) - int(item.get("start_ns") or 0)) / 1e6, 6),
+                    }
+                    for item in by_text.values()
+                ],
+                key=lambda x: (int(x.get("start_ns") or -1), int(x.get("end_ns") or -1), str(x.get("nvtx_text") or "")),
+            )
+            if matched_scope_rows:
+                idx = max(0, min(int(nvtx_index), len(matched_scope_rows) - 1))
+                selected_scope_info = dict(matched_scope_rows[idx])
+                selected_text = str(selected_scope_info.get("nvtx_text") or "")
+                events = [ev for ev in events if str(ev.nvtx_text or "") == selected_text]
+
     events.sort(key=lambda x: (x.start_ns, x.stream_id, x.end_ns, x.kernel_name))
     if not events:
         return {
@@ -295,8 +376,14 @@ def _build_profile(
             "source_path": str(source_path),
             "filters": {
                 "nvtx_text": str(nvtx_text or ""),
+                "nvtx_index": int(nvtx_index),
                 "device_id": int(device_id),
                 "stream_ids": sorted(stream_filter),
+            },
+            "nvtx_scope_selection": {
+                "requested_nvtx_index": int(nvtx_index),
+                "matched_scope_count": len(matched_scope_rows),
+                "selected_scope": selected_scope_info,
             },
             "summary": {
                 "event_count": 0,
@@ -466,8 +553,14 @@ def _build_profile(
         "source_path": str(source_path),
         "filters": {
             "nvtx_text": str(nvtx_text or ""),
+            "nvtx_index": int(nvtx_index),
             "device_id": int(device_id),
             "stream_ids": sorted(stream_filter),
+        },
+        "nvtx_scope_selection": {
+            "requested_nvtx_index": int(nvtx_index),
+            "matched_scope_count": len(matched_scope_rows),
+            "selected_scope": selected_scope_info,
         },
         "summary": {
             "event_count": len(events),
@@ -685,6 +778,7 @@ def compare_module_kernel_rows(
     base_source_path: str = "",
     target_source_path: str = "",
     nvtx_text: str = "",
+    nvtx_index: int = -1,
     device_id: int = -1,
     stream_ids: Optional[Sequence[int]] = None,
     top_k: int = 20,
@@ -696,6 +790,7 @@ def compare_module_kernel_rows(
         label=base_label,
         source_path=base_source_path,
         nvtx_text=nvtx_text,
+        nvtx_index=int(nvtx_index),
         device_id=device_id,
         stream_ids=streams,
         top_k=top_k,
@@ -706,6 +801,7 @@ def compare_module_kernel_rows(
         label=target_label,
         source_path=target_source_path,
         nvtx_text=nvtx_text,
+        nvtx_index=int(nvtx_index),
         device_id=device_id,
         stream_ids=streams,
         top_k=top_k,
@@ -772,6 +868,7 @@ def compare_module_kernel_json(
     base_label: str = "base",
     target_label: str = "target",
     nvtx_text: str = "",
+    nvtx_index: int = -1,
     device_id: int = -1,
     stream_ids: Optional[Sequence[int]] = None,
     top_k: int = 20,
@@ -787,6 +884,7 @@ def compare_module_kernel_json(
         base_source_path=base_json,
         target_source_path=target_json,
         nvtx_text=nvtx_text,
+        nvtx_index=int(nvtx_index),
         device_id=device_id,
         stream_ids=stream_ids,
         top_k=top_k,
@@ -807,6 +905,24 @@ def module_kernel_compare_to_markdown(payload: Dict[str, object]) -> str:
     lines.append("")
     lines.append(f"- base: `{base.get('label', 'base')}` ({base.get('source_path', '')})")
     lines.append(f"- target: `{target.get('label', 'target')}` ({target.get('source_path', '')})")
+    base_scope = dict(base.get("nvtx_scope_selection") or {}).get("selected_scope") or {}
+    target_scope = dict(target.get("nvtx_scope_selection") or {}).get("selected_scope") or {}
+    if base_scope:
+        lines.append(
+            "- base_selected_nvtx: `{}` start_ns=`{}` end_ns=`{}`".format(
+                str(base_scope.get("nvtx_text") or ""),
+                str(base_scope.get("start_ns") or ""),
+                str(base_scope.get("end_ns") or ""),
+            )
+        )
+    if target_scope:
+        lines.append(
+            "- target_selected_nvtx: `{}` start_ns=`{}` end_ns=`{}`".format(
+                str(target_scope.get("nvtx_text") or ""),
+                str(target_scope.get("start_ns") or ""),
+                str(target_scope.get("end_ns") or ""),
+            )
+        )
     lines.append("")
     lines.append("## Module Delta")
     lines.append("")
@@ -911,6 +1027,10 @@ def module_kernel_compare_to_html(payload: Dict[str, object]) -> str:
     target_label = str(target.get("label") or "target")
     base_path = str(base.get("source_path") or "")
     target_path = str(target.get("source_path") or "")
+    base_scope_sel = dict(base.get("nvtx_scope_selection") or {})
+    target_scope_sel = dict(target.get("nvtx_scope_selection") or {})
+    base_scope = dict(base_scope_sel.get("selected_scope") or {})
+    target_scope = dict(target_scope_sel.get("selected_scope") or {})
 
     def _esc(v: object) -> str:
         return html.escape(str(v if v is not None else ""))
@@ -1087,6 +1207,22 @@ def module_kernel_compare_to_html(payload: Dict[str, object]) -> str:
                 "<div class='meta'>"
                 f"base={_esc(base_label)} ({_esc(base_path)}) | "
                 f"target={_esc(target_label)} ({_esc(target_path)})"
+                "</div>"
+            ),
+            (
+                "<div class='meta'>"
+                f"nvtx_index(base/target)={_esc((base.get('filters') or {}).get('nvtx_index'))}/"
+                f"{_esc((target.get('filters') or {}).get('nvtx_index'))} | "
+                f"matched_scopes(base/target)={_esc(base_scope_sel.get('matched_scope_count'))}/"
+                f"{_esc(target_scope_sel.get('matched_scope_count'))}"
+                "</div>"
+            ),
+            (
+                "<div class='meta'>"
+                f"base_selected_nvtx={_esc(base_scope.get('nvtx_text'))} "
+                f"[{_esc(base_scope.get('start_ns'))}, {_esc(base_scope.get('end_ns'))}] | "
+                f"target_selected_nvtx={_esc(target_scope.get('nvtx_text'))} "
+                f"[{_esc(target_scope.get('start_ns'))}, {_esc(target_scope.get('end_ns'))}]"
                 "</div>"
             ),
             "<section class='card'>",

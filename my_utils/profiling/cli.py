@@ -313,12 +313,15 @@ def _nsys_panel_skip_reason(
         has_sqlite = bool(str(selected_values.get("base_sqlite") or "").strip()) or bool(
             str(selected_values.get("target_sqlite") or "").strip()
         )
+        has_nvtx_text = bool(str(selected_values.get("nvtx_text") or "").strip())
         if has_json and dest in {"base_sqlite", "target_sqlite", "sqlite_limit", "occupancy_arch"}:
             return "ignored in JSON input mode"
         if has_sqlite and dest in {"base_json", "target_json"}:
             return "ignored in sqlite input mode"
         if dest in {"sqlite_limit", "occupancy_arch"} and not has_sqlite:
             return "only used in sqlite input mode"
+        if dest == "nvtx_index" and not has_nvtx_text:
+            return "requires --nvtx-text"
 
     return ""
 
@@ -1024,6 +1027,7 @@ def cmd_nsys_module_kernel_compare(args: argparse.Namespace) -> int:
             base_source_path=str(args.base_sqlite),
             target_source_path=str(args.target_sqlite),
             nvtx_text=str(args.nvtx_text or ""),
+            nvtx_index=int(args.nvtx_index),
             device_id=int(args.device_id),
             stream_ids=stream_ids,
             top_k=int(args.top_k),
@@ -1036,6 +1040,7 @@ def cmd_nsys_module_kernel_compare(args: argparse.Namespace) -> int:
             base_label=str(args.base_label or "base"),
             target_label=str(args.target_label or "target"),
             nvtx_text=str(args.nvtx_text or ""),
+            nvtx_index=int(args.nvtx_index),
             device_id=int(args.device_id),
             stream_ids=stream_ids,
             top_k=int(args.top_k),
@@ -1374,6 +1379,15 @@ def build_parser() -> argparse.ArgumentParser:
             "optional SQL-LIKE NVTX filter (% and _ supported; * also accepted). "
             "No implicit wildcard is added. "
             "Empty means no NVTX filter."
+        ),
+    )
+    nsys_module_kernel_compare.add_argument(
+        "--nvtx-index",
+        type=int,
+        default=-1,
+        help=(
+            "index of matched NVTX scope after start-time sort. "
+            "-1 means keep all matched scopes (default: -1)"
         ),
     )
     nsys_module_kernel_compare.add_argument(
