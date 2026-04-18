@@ -73,6 +73,8 @@ myutils-profile ncu-csv-analyze --csv ./ncu_raw.csv --top-k 20 --pretty
 myutils-profile ncu-report-skill --report ./run.ncu-rep --list-skills --pretty
 myutils-profile ncu-report-skill --report ./run.ncu-rep --skill summary --pretty
 myutils-profile ncu-report-skill --report ./run.ncu-rep --skill per_metric_stats --pretty
+myutils-profile ncu-report-skill --report ./run.ncu-rep --skill rule_results --pretty
+myutils-profile ncu-report-skill --report ./run.ncu-rep --skill bottleneck_report --param top_k=10 --pretty
 myutils-profile ncu-report-analyze --report ./run.ncu-rep --top-k 20 --pretty
 ```
 
@@ -82,3 +84,19 @@ myutils-profile ncu-report-analyze --report ./run.ncu-rep --top-k 20 --pretty
 - `per_metric_stats`（每个 metric 的 samples/min/max/avg/p50/p90/p99）
 - `top_kernels`
 - `all_metrics`（全指标明细行，默认上限 20000，可调）
+- `rule_results`（官方 NCU rules 解析）
+- `bottleneck_report`（`rules + fallback heuristics + coverage`）
+
+## 完整性与瓶颈定位
+
+`bottleneck_report` 里新增了三层信息：
+
+- `coverage`: 关键分析维度覆盖检查（SOL compute/memory、occupancy、scheduler、stall、memory hierarchy、launch）。
+- `rule_findings`: 直接来自 NCU `rule_results_as_dicts()` 的诊断结论（优先级最高）。
+- `heuristic_findings`: 当 rule 不完整时的 fallback 判定（SM/DRAM/occupancy/issue/stall 信号）。
+
+建议流程：
+
+1. 先看 `coverage_score`，低于 100 先补采指标再下结论。
+2. 再看 `top_bottlenecks`，优先处理 `source=ncu_rule`。
+3. 最后结合 `all_metrics`/源码做二次确认。

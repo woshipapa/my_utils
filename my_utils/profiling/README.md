@@ -64,6 +64,7 @@ myutils-profile ncu-csv-analyze --csv ./ncu_raw.csv --top-k 20 --pretty
 ```bash
 myutils-profile ncu-report-skill --report ./run.ncu-rep --list-skills --pretty
 myutils-profile ncu-report-skill --report ./run.ncu-rep --skill per_metric_stats --pretty
+myutils-profile ncu-report-skill --report ./run.ncu-rep --skill bottleneck_report --param top_k=10 --pretty
 myutils-profile ncu-report-analyze --report ./run.ncu-rep --top-k 20 --pretty
 ```
 
