@@ -6,6 +6,7 @@
 
 - `run_ncu_quick_yaml.py`: YAML 启动器，自动拼接 `ncu` 命令。
 - `ncu_quick_launch.yaml`: 最小模板（先跑通）。
+- `ncu_full_collection.yaml`: 训练场景全覆盖模板（优先保证瓶颈诊断完整性）。
 - `ncu_2026_1_1_full_args.yaml`: 全量参数模板（按官方分类 + 每项注释）。
 - `ncu_2026_1_1_cli_quick_reference.md`: 参数扫描记录与分类索引。
 - `ncu_csv_tools.py`: ncu CSV 解析与分析技能引擎。
@@ -31,6 +32,13 @@ python my_utils/profiling/ncu/run_ncu_quick_yaml.py \
 ```bash
 python my_utils/profiling/ncu/run_ncu_quick_yaml.py \
   --config my_utils/profiling/ncu/ncu_2026_1_1_full_args.yaml
+```
+
+训练全覆盖模板（推荐用于定位 bottleneck）：
+
+```bash
+python my_utils/profiling/ncu/run_ncu_quick_yaml.py \
+  --config my_utils/profiling/ncu/ncu_full_collection.yaml
 ```
 
 ## `profile_switches` 规则

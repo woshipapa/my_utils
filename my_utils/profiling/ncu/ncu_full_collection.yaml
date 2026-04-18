@@ -1,0 +1,82 @@
+## NCU full-collection preset for training workloads (single/multi-process).
+##
+## Run:
+##   python my_utils/profiling/ncu/run_ncu_quick_yaml.py \
+##     --config my_utils/profiling/ncu/ncu_full_collection.yaml
+##
+## Optional command override:
+##   python my_utils/profiling/ncu/run_ncu_quick_yaml.py \
+##     --config my_utils/profiling/ncu/ncu_full_collection.yaml -- \
+##     torchrun --nproc_per_node=8 pretrain_gpt.py --config cfg.yaml
+##
+## Notes:
+## - Keep `target_processes=all` for torchrun/deepspeed/mpirun style launchers.
+## - This preset is for bottleneck diagnosis quality (not minimal overhead).
+
+output_dir: ./logs/ncu
+output_prefix: ncu_full_collection
+
+env:
+  CUDA_VISIBLE_DEVICES: "0"
+
+ncu:
+  enabled: true
+  mode: launch-and-attach
+  target_processes: all
+  target_processes_filter: ""
+
+  # Full data path for diagnosis completeness.
+  set: full
+  section:
+    - SpeedOfLight
+    - ComputeWorkloadAnalysis
+    - MemoryWorkloadAnalysis
+    - Occupancy
+    - SchedulerStats
+    - WarpStateStats
+    - LaunchStats
+  metrics: []
+  rule: []
+  apply_rules: "on"
+
+  kernel_name_base: demangled
+  replay_mode: kernel
+  launch_count: 1
+  launch_skip: 0
+
+  # Default to start immediately. If you use cudaProfilerStart/Stop, switch to "off".
+  profile_from_start: "on"
+
+  # NVTX filter is optional. Leave empty to profile all kernels.
+  nvtx: ""
+  nvtx_include: ""
+  nvtx_exclude: ""
+  range_filter: ""
+
+  # Keep report file + useful console print.
+  page: details
+  csv: ""
+  print_summary: "on"
+  print_details: "on"
+  print_metric_name: full
+  export: ""
+
+  profile_switches:
+    "force-overwrite": "on"
+    "print-rule-details": "on"
+    "print-units": auto
+    "print-kernel-base": demangled
+
+  extra_args: []
+
+# Default command is torchrun-style; replace with your launcher if needed:
+# - deepspeed ...      (DeepSpeed)
+# - python train.py    (HF Trainer / custom)
+# - python -m verl...  (VERL)
+# - slime ...          (SLIME)
+command:
+  - torchrun
+  - --nproc_per_node=1
+  - train.py
+  - --config
+  - configs/train.yaml

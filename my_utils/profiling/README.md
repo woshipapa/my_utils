@@ -42,6 +42,13 @@ python my_utils/profiling/ncu/run_ncu_quick_yaml.py \
   --config my_utils/profiling/ncu/ncu_2026_1_1_full_args.yaml
 ```
 
+训练全覆盖模板（优先保证瓶颈定位完整）：
+
+```bash
+python my_utils/profiling/ncu/run_ncu_quick_yaml.py \
+  --config my_utils/profiling/ncu/ncu_full_collection.yaml
+```
+
 ## 2) 离线分析（nsys sqlite）
 
 ```bash
@@ -73,6 +80,7 @@ myutils-profile ncu-report-analyze --report ./run.ncu-rep --top-k 20 --pretty
 - `my_utils/profiling/templates/nsys_quick_launch.yaml`
 - `my_utils/profiling/templates/nsys_2026_2_full_args.yaml`
 - `my_utils/profiling/ncu/ncu_quick_launch.yaml`
+- `my_utils/profiling/ncu/ncu_full_collection.yaml`
 - `my_utils/profiling/ncu/ncu_2026_1_1_full_args.yaml`
 
 ## 6) 详细文档入口
