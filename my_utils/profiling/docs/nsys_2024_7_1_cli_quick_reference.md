@@ -1,5 +1,8 @@
 # Nsight Systems 2024.7.1 CLI Profile 快速参考
 
+> Archive note: 最新版本请使用 [nsys_2026_2_cli_quick_reference.md](./nsys_2026_2_cli_quick_reference.md)。
+
+
 基于 NVIDIA 官方 2024.7 User Guide，面向训练任务（PyTorch/torchrun、单机多卡、多机）整理。
 
 ## 1) 命令骨架

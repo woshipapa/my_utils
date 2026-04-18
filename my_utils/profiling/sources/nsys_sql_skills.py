@@ -646,7 +646,7 @@ def _build_builtin_skills(schema: NsightSchema) -> Dict[str, SqlSkill]:
         tags=["schema", "tables", "columns"],
     )
 
-    # 11) GPU metrics aggregate (nsys --gpu-metrics-device style hardware sampling)
+    # 11) GPU metrics aggregate (nsys --gpu-metrics-devices style hardware sampling)
     if schema.metrics_table:
         metrics_table = _ident(schema.metrics_table)
         metrics_ts_col = schema.resolve_column(metrics_table, ("timestamp",))
@@ -2046,7 +2046,7 @@ def _build_builtin_skills(schema: NsightSchema) -> Dict[str, SqlSkill]:
         )
 
     # ── Skill 25: GPU metrics percentile distribution ─────────────────────────
-    # Requires the GPU metrics table (--gpu-metrics-device flag during capture).
+    # Requires the GPU metrics table (--gpu-metrics-devices flag during capture).
     # Uses SQLite window functions (available since SQLite 3.25 / 2018) to
     # compute approximate percentiles via ROW_NUMBER over sorted values.
     # Reference: NVIDIA Nsight Systems metrics naming conventions.
@@ -2065,7 +2065,7 @@ def _build_builtin_skills(schema: NsightSchema) -> Dict[str, SqlSkill]:
                     "metrics (sm_active, tensor_active, dram_throughput, etc.). "
                     "High p95 with low avg reveals bursty utilisation; "
                     "low p95 with low avg confirms sustained underutilisation. "
-                    "Requires --gpu-metrics-device capture."
+                    "Requires --gpu-metrics-devices capture."
                 ),
                 category="metrics",
                 sql=(

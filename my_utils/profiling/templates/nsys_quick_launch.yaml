@@ -1,0 +1,29 @@
+## Minimal one-click nsys launcher config.
+## Run:
+##   python my_utils/profiling/templates/run_nsys_quick_yaml.py --config my_utils/profiling/templates/nsys_quick_launch.yaml
+
+output_dir: ./logs/nsys
+output_prefix: nsys_profile_%p
+
+env:
+  ENABLE_NVTX: "1"
+
+nsys_launch:
+  enabled: true
+  version_hint: ""
+  export_format: none
+  trace: cuda,nvtx,osrt,cublas,cudnn,nccl
+  capture_range: cudaProfilerApi
+  capture_range_end: stop
+  sample: process-tree
+  gpu_metrics_devices: all
+  nic_metrics_mode: lf
+  syscall: process-tree
+  cudabacktrace: false
+  extra_profile_args: []
+
+command:
+  - python
+  - train.py
+  - --config
+  - configs/train.yaml

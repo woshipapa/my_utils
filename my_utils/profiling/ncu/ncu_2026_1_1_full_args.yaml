@@ -1,0 +1,199 @@
+## Nsight Compute CLI v2026.1.1 全量参数模板（按官方分组）
+##
+## 使用:
+##   python my_utils/profiling/ncu/run_ncu_quick_yaml.py \
+##     --config my_utils/profiling/ncu/ncu_2026_1_1_full_args.yaml
+##
+## 约定:
+## - null: 不传该参数
+## - "__flag__": 传裸参数（例如 --help）
+## - 列表: 同一参数重复传递多次
+## - core 字段 + profile_switches 可混用；同名参数以 profile_switches 为准
+
+output_dir: ./logs/ncu
+output_prefix: ncu_profile
+
+env:
+  CUDA_VISIBLE_DEVICES: "0"
+
+ncu:
+  # ---- core fields（便捷字段）----
+  enabled: true
+  mode: launch-and-attach
+  set: full
+  section: []
+  metrics: []
+  rule: []
+  target_processes: application-only
+  target_processes_filter: ""
+  kernel_name_base: demangled
+  kernel_name: ""
+  kernel_id: ""
+  launch_count: 1
+  launch_skip: 0
+  replay_mode: kernel
+  profile_from_start: "off"
+  nvtx: ""
+  nvtx_include: ""
+  nvtx_exclude: ""
+  range_filter: ""
+  call_stack: ""
+  call_stack_type: ""
+  native_include: ""
+  native_exclude: ""
+  python_include: ""
+  python_exclude: ""
+  devices: ""
+  chips: ""
+  page: details
+  print_summary: ""
+  print_details: ""
+  print_source: ""
+  print_metric_name: ""
+  csv: ""
+  export: ""
+  import_report: ""
+  open_in_ui: ""
+
+  # ---- official switches (v2026.1.1) ----
+  # 说明：key 会转换为 --<key>=<value>
+  profile_switches:
+    # General / connection / session
+    "help": null # 显示帮助信息（常用 "__flag__"）。
+    "version": null # 显示版本信息（常用 "__flag__"）。
+    "mode": null # 交互模式：launch-and-attach / launch / attach。
+    "port": null # launch/attach 模式通信端口基值。
+    "hostname": null # attach 时指定目标主机。
+    "max-connections": null # 连接端口池大小上限。
+    "config-file": null # 开关配置文件解析（on/off）。
+    "config-file-path": null # 指定配置文件路径。
+    "verbose": null # 更详细日志输出。
+    "quiet": null # 降低日志输出量。
+    "log-file": null # 将日志写到指定文件。
+    "null-stdin": null # 使被测应用 stdin 为空设备。
+    "check-exit-code": null # 导入/处理流程时检查退出码。
+    "support-32bit": null # 允许 32-bit 支持路径（平台相关）。
+    "injection-path-64": null # 指定 64-bit 注入库路径。
+    "preload-library": null # 预加载用户库（影响被测进程）。
+    "forward-signals": null # 信号是否转发到被测进程。
+    "kill": null # attach/launch 管控时杀进程行为。
+
+    # Target process / multi-process
+    "target-processes": null # 进程范围：all / application-only 等。
+    "target-processes-filter": null # 进程过滤规则（名称/路径匹配）。
+    "devices": null # 限定 GPU 设备。
+    "chips": null # 限定芯片架构/型号。
+
+    # Launch / profile window / kernel selection
+    "profile-from-start": null # 应用启动即采集(on)或等待触发(off)。
+    "disable-profiler-start-stop": null # 忽略 cudaProfilerStart/Stop 控制。
+    "launch-count": null # 限定采集 kernel launch 数量。
+    "launch-skip": null # 跳过前 N 次 launch。
+    "launch-skip-before-match": null # 在匹配条件前是否应用 skip。
+    "kernel-name": null # 按内核名过滤。
+    "kernel-id": null # 按 kernel id 过滤。
+    "kernel-name-base": null # 内核名基准：mangled/demangled 等。
+    "filter-mode": null # kernel 过滤策略（and/or 等）。
+    "range-filter": null # 对 Range Replay 的范围过滤。
+    "graph-profiling": null # CUDA graph 采集行为控制。
+    "disable-extra-suffixes": null # 关闭结果名额外后缀。
+    "rename-kernels": null # 内核重命名开关。
+    "rename-kernels-path": null # 重命名规则 YAML 路径。
+    "rename-kernels-export": null # 导出可编辑重命名规则。
+
+    # Replay / cache / clock
+    "replay-mode": null # replay 模式：kernel/application/range 等。
+    "app-replay-mode": null # application replay 的匹配模式。
+    "app-replay-match": null # application replay 匹配键。
+    "app-replay-buffer": null # application replay 缓冲策略。
+    "range-replay-options": null # range replay 附加配置。
+    "cache-control": null # replay 时缓存清理策略。
+    "clock-control": null # replay 时 GPU 时钟控制策略。
+    "pipeline-boost-state": null # pipeline boost 配置（平台相关）。
+
+    # Sections / sets / metrics / rules
+    "set": null # section 集合（如 full/speed-of-light）。
+    "section": null # 显式 section 列表（可多次传）。
+    "section-folder": null # 额外 section 搜索目录（可多次传）。
+    "section-folder-recursive": null # 递归扫描 section 目录。
+    "section-folder-restore": null # 恢复默认 section 路径。
+    "list-sets": null # 列出可用 sets（常用 "__flag__"）。
+    "list-sections": null # 列出可用 sections。
+    "list-rules": null # 列出可用 rules。
+    "list-metrics": null # 列出可用 metrics。
+    "list-chips": null # 列出可用芯片目标。
+    "metrics": null # 指定 metrics（可多次传）。
+    "metric-distribution-groups": null # 指定 metric 分布组。
+    "query-metrics": null # 查询 metrics 元数据。
+    "query-metrics-mode": null # metrics 查询模式。
+    "query-metrics-collection": null # metrics 采集查询行为。
+    "rule": null # 启用指定 rule（可多次传）。
+    "apply-rules": null # 是否执行 rules 分析。
+
+    # NVTX / lockstep / call stack filtering
+    "nvtx": null # NVTX 过滤主开关/模式。
+    "nvtx-include": null # 仅采集匹配 NVTX range。
+    "nvtx-exclude": null # 排除匹配 NVTX range。
+    "nvtx-push-pop-scope": null # NVTX push/pop 匹配作用域。
+    "lockstep-kernel-launch": null # lockstep kernel launch 模式。
+    "lockstep-nvtx-include": null # lockstep 下 NVTX include 规则。
+    "lockstep-nvtx-exclude": null # lockstep 下 NVTX exclude 规则。
+    "call-stack": null # 启用 CPU 调用栈采集。
+    "call-stack-type": null # 调用栈类型：native/python。
+    "native-include": null # native 调用栈 include 过滤。
+    "native-exclude": null # native 调用栈 exclude 过滤。
+    "python-include": null # python 调用栈 include 过滤。
+    "python-exclude": null # python 调用栈 exclude 过滤。
+
+    # PM / warp sampling
+    "pm-sampling-interval": null # PM sampling 间隔。
+    "pm-sampling-max-passes": null # PM sampling 最大 pass 数。
+    "pm-sampling-buffer-size": null # PM sampling 缓冲大小。
+    "disable-pm-warp-sampling": null # 关闭 PM/warp sampling。
+    "warp-sampling-interval": null # warp sampling 间隔。
+    "warp-sampling-max-passes": null # warp sampling 最大 pass 数。
+    "warp-sampling-buffer-size": null # warp sampling 缓冲大小。
+    "warp-samples-per-interval": null # 每个采样间隔的 warp 样本数。
+
+    # MPS / communicator
+    "mps": null # MPS 模式控制。
+    "mps-num-clients": null # MPS 客户端数量。
+    "mps-timeout": null # MPS 等待超时。
+    "communicator": null # 通信采集模式（分布式场景）。
+    "communicator-tcp-hostname": null # 通信器主机名。
+    "communicator-tcp-port": null # 通信器端口。
+    "communicator-tcp-num-peers": null # 通信器 peer 数量。
+
+    # File / import-export / source
+    "export": null # 导出报告路径（.ncu-rep）。
+    "import": null # 导入已有报告路径。
+    "open-in-ui": null # 采集/导入后自动打开 UI。
+    "force-overwrite": null # 覆盖已有输出。
+    "import-sass": null # 导入 SASS 辅助数据。
+    "import-source": null # 导入源码辅助数据。
+    "resolve-source-file": null # 源文件解析策略。
+    "source-folders": null # 额外源码目录（可多次传）。
+
+    # Console / report printing
+    "page": null # 控制台报告页（details/raw/source/session）。
+    "csv": null # 控制台输出 CSV 格式。
+    "print-summary": null # 打印摘要块。
+    "print-details": null # 打印明细块。
+    "print-source": null # 打印源码关联信息。
+    "print-fp": null # 浮点显示格式控制。
+    "print-units": null # 指标单位显示策略。
+    "print-kernel-base": null # 打印内核名基准。
+    "print-metric-name": null # 指标名显示模式。
+    "print-metric-instances": null # 打印指标实例维度。
+    "print-metric-attribution": null # 指标归因信息显示。
+    "print-rule-details": null # 打印 rule 详细信息。
+    "print-nvtx-rename": null # 打印 NVTX 重命名信息。
+
+  # 兜底参数：原样拼接
+  extra_args: []
+
+command:
+  - python
+  - train.py
+  - --config
+  - configs/train.yaml

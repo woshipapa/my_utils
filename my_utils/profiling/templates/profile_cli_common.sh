@@ -2,7 +2,7 @@
 
 _profile_is_true() {
     local v="${1:-0}"
-    v="${v,,}"
+    v="$(printf '%s' "$v" | tr '[:upper:]' '[:lower:]')"
     [[ "$v" == "1" || "$v" == "true" || "$v" == "yes" || "$v" == "on" ]]
 }
 
@@ -18,12 +18,112 @@ _profile_slug() {
     echo "$s"
 }
 
+_profile_detect_nsys_version() {
+    local hint="${NSYS_VERSION_HINT:-}"
+    if [[ "$hint" =~ ([0-9]{4})\.([0-9]+) ]]; then
+        echo "${BASH_REMATCH[1]} ${BASH_REMATCH[2]}"
+        return 0
+    fi
+    local raw
+    raw="$(nsys --version 2>/dev/null || true)"
+    if [[ "$raw" =~ ([0-9]{4})\.([0-9]+) ]]; then
+        echo "${BASH_REMATCH[1]} ${BASH_REMATCH[2]}"
+    else
+        echo "0 0"
+    fi
+}
+
+_profile_version_gte() {
+    local major="${1:-0}"
+    local minor="${2:-0}"
+    if (( NSYS_VER_MAJOR > major )); then
+        return 0
+    fi
+    if (( NSYS_VER_MAJOR == major && NSYS_VER_MINOR >= minor )); then
+        return 0
+    fi
+    return 1
+}
+
+_profile_contains_token() {
+    local needle="${1:-}"
+    shift || true
+    local token
+    for token in "$@"; do
+        if [[ "$token" == "$needle" ]]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+_profile_resolve_nsys_compat() {
+    read -r NSYS_VER_MAJOR NSYS_VER_MINOR < <(_profile_detect_nsys_version)
+
+    IFS=',' read -r -a _trace_in <<< "${NSYS_TRACE}"
+    local _trace_had_syscall=0
+    local _tok
+    local _trace_out=()
+    for _tok in "${_trace_in[@]}"; do
+        _tok="${_tok// /}"
+        [[ -z "${_tok}" ]] && continue
+        if [[ "${_tok}" == "syscall" ]]; then
+            _trace_had_syscall=1
+            continue
+        fi
+        _trace_out+=("${_tok}")
+    done
+    if [[ ${#_trace_out[@]} -eq 0 ]]; then
+        _trace_out=(cuda nvtx osrt cublas cudnn)
+    fi
+    NSYS_TRACE="$(IFS=,; echo "${_trace_out[*]}")"
+
+    if _profile_version_gte 2026 0; then
+        if [[ -z "${NSYS_SYSCALL}" && "${_trace_had_syscall}" == "1" ]]; then
+            NSYS_SYSCALL="process-tree"
+        fi
+    elif [[ -n "${NSYS_SYSCALL}" && "${NSYS_SYSCALL}" != "none" ]]; then
+        if ! _profile_contains_token "syscall" "${_trace_out[@]}"; then
+            NSYS_TRACE="${NSYS_TRACE},syscall"
+        fi
+        NSYS_SYSCALL=""
+    else
+        NSYS_SYSCALL=""
+    fi
+
+    local nic_mode
+    nic_mode="$(printf '%s' "${NSYS_NIC_METRICS_MODE}" | tr '[:upper:]' '[:lower:]')"
+    if [[ -z "${nic_mode}" ]]; then
+        if _profile_is_true "${NSYS_NIC_METRICS}"; then
+            if _profile_version_gte 2026 0; then
+                nic_mode="lf"
+            else
+                nic_mode="true"
+            fi
+        fi
+    fi
+    if _profile_version_gte 2026 0; then
+        if [[ "${nic_mode}" == "true" || "${nic_mode}" == "1" ]]; then
+            nic_mode="lf"
+        elif [[ "${nic_mode}" == "false" || "${nic_mode}" == "0" ]]; then
+            nic_mode="none"
+        fi
+    else
+        if [[ "${nic_mode}" == "lf" || "${nic_mode}" == "hf" ]]; then
+            nic_mode="true"
+        elif [[ "${nic_mode}" == "none" ]]; then
+            nic_mode="false"
+        fi
+    fi
+    NSYS_NIC_METRICS_MODE="${nic_mode}"
+}
+
 profile_collect_cli_args() {
     PROFILE_SETTINGS=(
-        "${NSYS_SETTINGS[@]}"
-        "${NSYS_LAUNCH_SETTINGS[@]}"
-        "${TORCH_PROFILER_SETTINGS[@]}"
-        "${PROFILING_ENV_SETTINGS[@]}"
+        "${NSYS_SETTINGS[@]-}"
+        "${NSYS_LAUNCH_SETTINGS[@]-}"
+        "${TORCH_PROFILER_SETTINGS[@]-}"
+        "${PROFILING_ENV_SETTINGS[@]-}"
     )
 }
 
@@ -50,6 +150,9 @@ profile_init_defaults() {
     NSYS_SAMPLE=${NSYS_SAMPLE:-}
     NSYS_CUDABACKTRACE=${NSYS_CUDABACKTRACE:-0}
     NSYS_NIC_METRICS=${NSYS_NIC_METRICS:-0}
+    NSYS_NIC_METRICS_MODE=${NSYS_NIC_METRICS_MODE:-}
+    NSYS_SYSCALL=${NSYS_SYSCALL:-}
+    NSYS_VERSION_HINT=${NSYS_VERSION_HINT:-}
     NSYS_NVTX_CAPTURE=${NSYS_NVTX_CAPTURE:-}
     NSYS_NVTX_DOMAIN_INCLUDE=${NSYS_NVTX_DOMAIN_INCLUDE:-}
     NSYS_NVTX_DOMAIN_EXCLUDE=${NSYS_NVTX_DOMAIN_EXCLUDE:-}
@@ -153,8 +256,13 @@ profile_build_cli_args() {
         if _profile_is_true "$NSYS_CUDABACKTRACE"; then
             NSYS_LAUNCH_SETTINGS+=(--nsys_launch.cudabacktrace)
         fi
-        if _profile_is_true "$NSYS_NIC_METRICS"; then
+        if [[ -n "$NSYS_NIC_METRICS_MODE" ]]; then
+            NSYS_LAUNCH_SETTINGS+=(--nsys_launch.nic_metrics_mode "$NSYS_NIC_METRICS_MODE")
+        elif _profile_is_true "$NSYS_NIC_METRICS"; then
             NSYS_LAUNCH_SETTINGS+=(--nsys_launch.nic_metrics)
+        fi
+        if [[ -n "$NSYS_SYSCALL" ]]; then
+            NSYS_LAUNCH_SETTINGS+=(--nsys_launch.syscall "$NSYS_SYSCALL")
         fi
         if [[ -n "$NSYS_SAMPLE" ]]; then
             NSYS_LAUNCH_SETTINGS+=(--nsys_launch.sample "$NSYS_SAMPLE")
@@ -212,6 +320,7 @@ profile_prepare() {
     local preset_file="${1:-${PROFILE_PRESET:-}}"
     profile_load_preset "$preset_file"
     profile_init_defaults
+    _profile_resolve_nsys_compat
     profile_resolve_nsys_output
     profile_build_cli_args
 }
@@ -222,7 +331,9 @@ profile_wrap_exec_with_nsys() {
         return 0
     fi
 
-    local -n exec_ref="$array_name"
+    # macOS default bash(3.2) has no nameref(local -n), so use eval-based copy.
+    local exec_ref=()
+    eval "exec_ref=(\"\${${array_name}[@]-}\")"
     local nsys_cmd=(
         nsys profile
         --output="$NSYS_OUTPUT"
@@ -250,9 +361,21 @@ profile_wrap_exec_with_nsys() {
     if [[ -n "$NSYS_SAMPLE" ]]; then
         nsys_cmd+=(--sample="$NSYS_SAMPLE")
     fi
-    if _profile_is_true "$NSYS_NIC_METRICS"; then
+    if [[ -n "$NSYS_NIC_METRICS_MODE" ]]; then
+        nsys_cmd+=(--nic-metrics="$NSYS_NIC_METRICS_MODE")
+    elif _profile_is_true "$NSYS_NIC_METRICS"; then
         nsys_cmd+=(--nic-metrics=true)
+    fi
+    if [[ -n "$NSYS_SYSCALL" ]]; then
+        nsys_cmd+=(--syscall="$NSYS_SYSCALL")
     fi
 
     exec_ref=("${nsys_cmd[@]}" "${exec_ref[@]}")
+
+    eval "${array_name}=()"
+    local _item _quoted
+    for _item in "${exec_ref[@]}"; do
+        printf -v _quoted '%q' "${_item}"
+        eval "${array_name}+=(${_quoted})"
+    done
 }

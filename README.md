@@ -165,6 +165,61 @@ See:
 
 Use the built-in profiling templates in `my_utils` so a new framework only needs a launcher script plus config parsing.
 
+最简单的一键抓取（不改你现有训练脚本）：
+
+```bash
+bash my_utils/profiling/templates/run_nsys_quick.sh -- python train.py --config cfg.yaml
+```
+
+可选兼容参数（按 nsys 版本自动 fallback）：
+
+```bash
+NSYS_NIC_METRICS_MODE=lf NSYS_SYSCALL=process-tree \
+bash my_utils/profiling/templates/run_nsys_quick.sh -- python train.py
+```
+
+YAML 一键抓取（更适合团队共享参数）：
+
+```bash
+python my_utils/profiling/templates/run_nsys_quick_yaml.py \
+  --config my_utils/profiling/templates/nsys_quick_launch.yaml
+```
+
+全量参数模板（Nsight Systems v2026.2，逐项注释）：
+
+```bash
+python my_utils/profiling/templates/run_nsys_quick_yaml.py \
+  --config my_utils/profiling/templates/nsys_2026_2_full_args.yaml
+```
+
+`run_nsys_quick` / `run_nsys_quick_yaml` 都是 launcher-agnostic，可直接包装：
+
+- `torchrun ...`
+- `deepspeed ...`
+- `accelerate launch ...`
+- `python -m verl.trainer.main_ppo ...`
+- `ray job submit ... -- python3 train.py ...`
+
+分布式下如果你发现 `capture-range-end=stop` 不稳定，可改用手动 stop 模式（推荐 YAML）：
+
+```bash
+# profile.yaml
+# nsys_launch:
+#   enabled: true
+#   capture_range: cudaProfilerApi
+#   capture_range_end: none
+#   extra_profile_args:
+#     - --session-new=my_train_sess
+#     - --flush-on-cudaprofilerstop=false
+
+python my_utils/profiling/templates/run_nsys_quick_yaml.py \
+  --config profile.yaml \
+  -- torchrun --nproc_per_node=8 --no_python python train.py
+
+# 到目标 step/range 后手动结束
+nsys stop --session=my_train_sess
+```
+
 ### 1) Locate template files
 
 ```bash
@@ -180,6 +235,10 @@ Template folder includes:
 - `preset_nsys_default.env`
 - `preset_torch_profiler.env`
 - `preset_disabled.env`
+- `run_nsys_quick.sh`
+- `run_nsys_quick_yaml.py`
+- `nsys_quick_launch.yaml`
+- `nsys_2026_2_full_args.yaml`
 
 ### 2) Add a minimal launcher script
 

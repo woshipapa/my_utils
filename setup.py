@@ -48,6 +48,11 @@ setup(
             "profiling/templates/*.sh",
             "profiling/templates/*.env",
             "profiling/templates/*.md",
+            "profiling/templates/*.yaml",
+            "profiling/templates/*.py",
+            "profiling/ncu/*.md",
+            "profiling/ncu/*.yaml",
+            "profiling/ncu/*.sh",
         ]
     },
     entry_points={
@@ -62,6 +67,10 @@ setup(
             "nsys-timeline-html=my_utils.profiling.cli:entry_nsys_timeline_html",
             "nsys-iter-overlap=my_utils.profiling.cli:entry_nsys_iter_overlap",
             "nsys-iter-outliers=my_utils.profiling.cli:entry_nsys_iter_outliers",
+            "ncu-csv-skill=my_utils.profiling.cli:entry_ncu_csv_skill",
+            "ncu-csv-analyze=my_utils.profiling.cli:entry_ncu_csv_analyze",
+            "ncu-report-skill=my_utils.profiling.cli:entry_ncu_report_skill",
+            "ncu-report-analyze=my_utils.profiling.cli:entry_ncu_report_analyze",
         ]
     },
     install_requires=install_requires,

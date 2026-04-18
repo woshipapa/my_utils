@@ -49,10 +49,26 @@ class NsysLaunchConfig:
     trace: str = "cuda,nvtx,osrt,cublas,cudnn"
     capture_range: str = "cudaProfilerApi"
     capture_range_end: str = "stop"
+
+    # Preferred field for modern nsys; retained legacy alias below for compatibility.
     gpu_metrics_devices: str = ""
+    # Legacy alias retained so old configs still work.
+    gpu_metrics_device: str = ""
+
     sample: str = ""
     cudabacktrace: bool = False
+
+    # Legacy boolean toggle retained for compatibility.
     nic_metrics: bool = False
+    # Preferred explicit mode: lf | hf | none (or legacy true/false strings).
+    nic_metrics_mode: str = ""
+
+    # For nsys >= 2026, prefer explicit syscall switch over trace=syscall.
+    syscall: str = ""
+
+    # Optional override for tool version detection, examples: "2026.2", "2024.7".
+    version_hint: str = ""
+
     nvtx_capture: str = ""
     nvtx_domain_include: str = ""
     nvtx_domain_exclude: str = ""

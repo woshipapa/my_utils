@@ -488,7 +488,7 @@ def analyze_gpu_metrics(
     specs: Optional[GpuSpecs],
 ) -> Dict:
     """
-    Analyse GPU hardware sampling metrics (requires --gpu-metrics-device).
+    Analyse GPU hardware sampling metrics (requires --gpu-metrics-devices).
 
     Classifies each metric row into sm_active / tensor_active / dram_throughput.
     Reports average and p95 to reveal sustained vs bursty utilisation.
@@ -1475,7 +1475,7 @@ def comprehensive_to_markdown(analysis: Dict) -> str:
     if not gm.get("available"):
         lines.append(
             "*GPU hardware metrics not available. Re-profile with "
-            "`--gpu-metrics-device all` to enable SM active, tensor active, "
+            "`--gpu-metrics-devices all` to enable SM active, tensor active, "
             "and DRAM throughput analysis.*"
         )
     else:

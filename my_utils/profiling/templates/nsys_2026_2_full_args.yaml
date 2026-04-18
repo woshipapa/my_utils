@@ -1,0 +1,176 @@
+## Nsight Systems v2026.2 全量 profile 参数 YAML 模板
+##
+## 使用:
+##   python my_utils/profiling/templates/run_nsys_quick_yaml.py \
+##     --config my_utils/profiling/templates/nsys_2026_2_full_args.yaml
+##
+## 约定:
+## - null: 不传该参数
+## - "__flag__": 传裸参数（例如 --help）
+## - 列表: 对同一参数重复传递（例如 --env-var=A=1 --env-var=B=2）
+## - core 字段 + profile_switches 可混用；同名参数以 profile_switches 为准
+
+output_dir: ./logs/nsys
+output_prefix: nsys_profile_%p
+
+env:
+  ENABLE_NVTX: "1"
+
+nsys_launch:
+  # ---- core fields (与 NsysLaunchConfig 对齐) ----
+  enabled: true
+  version_hint: ""
+  output: ""
+  force_overwrite: true
+  export_format: none
+  trace: cuda,nvtx,osrt,cublas,cudnn,nccl
+  capture_range: cudaProfilerApi
+  capture_range_end: stop
+  sample: process-tree
+  gpu_metrics_devices: all
+  gpu_metrics_device: ""
+  nic_metrics: false
+  nic_metrics_mode: lf
+  syscall: process-tree
+  cudabacktrace: false
+  nvtx_capture: ""
+  nvtx_domain_include: ""
+  nvtx_domain_exclude: ""
+
+  # ---- 官方全量 profile 开关（v2026.2）----
+  # 说明：这里的 key 使用官方连字符命名，启动器会转成 --<key>=<value>
+  profile_switches:
+    "accelerator-trace": null # 加速器事件追踪开关。
+    "after-collection-start": null # 采集开始后执行动作/脚本。
+    "after-report-ready": null # 报告就绪后执行动作/脚本。
+    "auto-report-name": null # 自动生成报告文件名。
+    "backtrace": null # 回溯方法（如 dwarf/fp/lbr/auto）。
+    "capture-range": null # 采集触发方式（none/nvtx/cudaProfilerApi/hotkey）。
+    "capture-range-end": null # 采集结束方式（stop/stop-shutdown/repeat/none）。
+    "clock-frequency-changes": null # 时钟频率变化事件。
+    "command-file": null # 从命令文件读取 profile 参数。
+    "cpu-cluster-events": null # CPU cluster 事件采集。
+    "cpu-core-events": null # CPU core 事件采集。
+    "cpu-core-metrics": null # CPU core 指标采集。
+    "cpu-metrics": null # CPU 指标总开关。
+    "cpu-socket-events": null # CPU socket 事件采集。
+    "cpu-socket-metrics": null # CPU socket 指标采集。
+    "cpuctxsw": null # CPU 上下文切换事件。
+    "cuda-event-trace": null # CUDA event 追踪。
+    "cuda-flush-interval": null # CUDA 事件 flush 间隔。
+    "cuda-graph-trace": null # CUDA Graph 追踪模式。
+    "cuda-memory-usage": null # CUDA 显存分配/释放时间线。
+    "cuda-trace-all-apis": null # 追踪全部 CUDA API。
+    "cuda-trace-scope": null # CUDA trace 作用域（process-tree/system-wide）。
+    "cuda-um-cpu-page-faults": null # CUDA UM CPU 页错误追踪。
+    "cuda-um-gpu-page-faults": null # CUDA UM GPU 页错误追踪。
+    "cudabacktrace": null # CUDA API 事件附加回溯。
+    "dask": null # Dask 相关采集开关。
+    "debug-symbols": null # 调试符号处理策略。
+    "delay": null # 延迟开始采集。
+    "discard-environment": null # 丢弃父进程环境变量。
+    "duration": null # 采集持续时长（秒）。
+    "duration-frames": null # 按帧数限制采集时长。
+    "dx-force-declare": null # DirectX 声明相关选项。
+    "dx-force-declare-adapter-removal-support": null # DirectX adapter removal 声明支持。
+    "dx12-gpu-workload": null # DirectX12 GPU workload 采集。
+    "dx12-wait-calls": null # DirectX12 wait 调用采集。
+    "enable": null # 细粒度启用项（官方 enable 开关）。
+    "env-var": null # 注入环境变量（可重复传）。
+    "etw-provider": null # ETW provider 采集设置（Windows）。
+    "event-sample": null # 事件采样模式参数。
+    "event-sampling": null # 硬件事件采样开关。
+    "event-sampling-interval": null # 硬件事件采样间隔。
+    "event-sampling-multiplex-interval": null # 事件采样复用切换间隔。
+    "export": null # 导出格式（none/sqlite/json/arrow 等）。
+    "flush-on": null # flush 策略（2026 新入口）。
+    "flush-on-cudaprofilerstop": null # cudaProfilerStop 时是否 flush。
+    "force-overwrite": null # 覆盖同名输出文件。
+    "ftrace": null # Linux ftrace 事件采集。
+    "ftrace-keep-user-config": null # 保留用户已有 ftrace 配置。
+    "gds-libs-path": null # GPUDirect Storage 库路径。
+    "gds-metrics": null # GPUDirect Storage 指标采集。
+    "gpu-metrics-devices": null # GPU 指标采集设备（none/all/列表）。
+    "gpu-metrics-frequency": null # GPU 指标采样频率。
+    "gpu-metrics-set": null # GPU 指标集合选择。
+    "gpu-video-device": null # GPU 视频设备选择。
+    "gpuctxsw": null # GPU 上下文切换事件。
+    "help": null # 帮助开关；用 __flag__ 传裸参数。
+    "hotkey-capture": null # 热键触发采集配置。
+    "ib-net-info-devices": null # IB 网络信息采集设备。
+    "ib-net-info-files": null # IB 网络信息输入文件。
+    "ib-net-info-output": null # IB 网络信息输出位置。
+    "ib-switch-congestion": null # IB 交换机拥塞采集开关。
+    "ib-switch-congestion-devices": null # IB 交换机拥塞设备列表。
+    "ib-switch-congestion-nic-device": null # IB 拥塞对应 NIC 设备。
+    "ib-switch-congestion-percent": null # IB 拥塞百分比阈值。
+    "ib-switch-congestion-threshold-high": null # IB 拥塞高阈值。
+    "ib-switch-metrics": null # IB 交换机指标采集开关。
+    "ib-switch-metrics-devices": null # IB 交换机指标设备列表。
+    "ib-switch-metrics-nic": null # IB 指标 NIC 过滤。
+    "ib-switch-metrics-nic-device": null # IB 指标 NIC 设备。
+    "inherit-environment": null # 继承父进程环境变量。
+    "injection-use-detours": null # 注入机制设置（detours）。
+    "isr": null # 中断服务例程事件采集。
+    "kill": null # 停止目标进程时 kill 策略。
+    "mpi-impl": null # MPI 实现类型。
+    "nic-metrics": null # NIC 指标模式（lf/hf/none）。
+    "nvtx-capture": null # NVTX 触发采集范围。
+    "nvtx-domain-exclude": null # 排除 NVTX domain。
+    "nvtx-domain-include": null # 仅包含 NVTX domain。
+    "opengl-gpu-workload": null # OpenGL GPU workload 采集。
+    "os-events": null # 操作系统事件采集。
+    "osrt-backtrace": null # OS runtime 回溯开关。
+    "osrt-backtrace-depth": null # OS runtime 回溯深度。
+    "osrt-backtrace-stack-size": null # OS runtime 回溯栈大小。
+    "osrt-backtrace-threshold": null # OS runtime 回溯阈值。
+    "osrt-file-access": null # OS runtime 文件访问采集。
+    "osrt-threshold": null # OS runtime 事件阈值。
+    "output": null # 输出文件前缀。
+    "process-scope": null # 进程范围控制。
+    "python-backtrace": null # Python 回溯采集。
+    "python-functions-trace": null # Python 函数调用追踪。
+    "python-sampling": null # Python 栈采样开关。
+    "python-sampling-frequency": null # Python 栈采样频率。
+    "pytorch": null # PyTorch 相关采集增强。
+    "qnx-kernel": null # QNX 内核采集开关。
+    "qnx-kernel-events": null # QNX 内核事件类型。
+    "qnx-kernel-events-mode": null # QNX 内核事件模式。
+    "resolve-symbols": null # 符号解析策略。
+    "retain-etw-files": null # 保留 ETW 中间文件。
+    "run-as": null # 以指定用户运行。
+    "sample": null # CPU 采样模式。
+    "samples-per-backtrace": null # 每次回溯样本数。
+    "sampling-frequency": null # 采样频率。
+    "sampling-period": null # 采样周期。
+    "sampling-trigger": null # 采样触发条件。
+    "session-new": null # 新建可手动 stop 的 session 名。
+    "show-output": null # 显示目标程序输出。
+    "soc-metrics": null # SoC 指标采集。
+    "soc-metrics-frequency": null # SoC 指标采样频率。
+    "soc-metrics-set": null # SoC 指标集合。
+    "start-frame-index": null # 图形帧采集起始帧。
+    "start-later": null # 启动后先不立即采集。
+    "stats": null # 采集后输出统计摘要。
+    "stop-on-exit": null # 目标进程退出时停止采集。
+    "syscall": null # 系统调用追踪范围。
+    "trace": null # trace 域集合。
+    "trace-fork-before-exec": null # fork/exec 前追踪行为。
+    "vsync": null # vsync 相关事件。
+    "vulkan-gpu-workload": null # Vulkan GPU workload 采集。
+    "wait": null # 结束时等待策略。
+    "wddm-additional-events": null # WDDM 扩展事件。
+    "wddm-backtraces": null # WDDM 回溯采集。
+    "wddm-memory-trace": null # WDDM 内存追踪。
+    "xhv-trace": null # XHV/Hyper-V trace 开关。
+    "xhv-trace-events": null # XHV trace 事件类型。
+    "xhv-vm-symbols": null # XHV VM 符号处理。
+
+  # 兜底参数：用于传递尚未映射的实验参数（原样拼接）
+  extra_profile_args: []
+
+command:
+  - python
+  - train.py
+  - --config
+  - configs/train.yaml

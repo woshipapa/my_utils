@@ -1,0 +1,39 @@
+## Minimal ncu launcher config.
+## Run:
+##   python my_utils/profiling/ncu/run_ncu_quick_yaml.py --config my_utils/profiling/ncu/ncu_quick_launch.yaml
+
+output_dir: ./logs/ncu
+output_prefix: ncu_profile
+
+env:
+  CUDA_VISIBLE_DEVICES: "0"
+
+ncu:
+  enabled: true
+  mode: launch-and-attach
+  set: full
+  target_processes: application-only
+  kernel_name_base: demangled
+  launch_count: 1
+  launch_skip: 0
+  profile_from_start: "off"
+  section:
+    - LaunchStats
+  metrics: []
+  replay_mode: kernel
+  export: ""
+
+  # Full overrides:
+  # - null: do not pass
+  # - "__flag__": pass bare option
+  # - list: repeat option multiple times
+  profile_switches: {}
+
+  # Raw fallback args, appended as-is
+  extra_args: []
+
+command:
+  - python
+  - train.py
+  - --config
+  - configs/train.yaml

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Nsight Systems 2024.7.1 reusable template for model training profiling.
+# Nsight Systems 2026.2 reusable template for model training profiling.
 # Usage:
 #   1) Copy this file and edit APP_CMD / APP_ARGS
 #   2) Optional: set env vars before launch
@@ -10,6 +10,54 @@
 # - For torchrun + wrapped command (nsys profile ... python ...), keep --no_python.
 
 set -euo pipefail
+
+# -----------------------------------------------------------------------------
+# Helpers
+# -----------------------------------------------------------------------------
+_is_true() {
+  local v="${1:-}"
+  v="$(printf '%s' "$v" | tr '[:upper:]' '[:lower:]')"
+  [[ "$v" == "1" || "$v" == "true" || "$v" == "yes" || "$v" == "on" ]]
+}
+
+_nsys_detect_version() {
+  local hint="${NSYS_VERSION_HINT:-}"
+  if [[ "$hint" =~ ([0-9]{4})\.([0-9]+) ]]; then
+    echo "${BASH_REMATCH[1]} ${BASH_REMATCH[2]}"
+    return 0
+  fi
+  local raw
+  raw="$(nsys --version 2>/dev/null || true)"
+  if [[ "$raw" =~ ([0-9]{4})\.([0-9]+) ]]; then
+    echo "${BASH_REMATCH[1]} ${BASH_REMATCH[2]}"
+  else
+    echo "0 0"
+  fi
+}
+
+_nsys_version_gte() {
+  local major="${1:-0}"
+  local minor="${2:-0}"
+  if (( NSYS_VER_MAJOR > major )); then
+    return 0
+  fi
+  if (( NSYS_VER_MAJOR == major && NSYS_VER_MINOR >= minor )); then
+    return 0
+  fi
+  return 1
+}
+
+_nsys_contains_token() {
+  local needle="${1:-}"
+  shift || true
+  local token
+  for token in "$@"; do
+    if [[ "$token" == "$needle" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
 
 # -----------------------------------------------------------------------------
 # User section: model/framework command
@@ -64,7 +112,7 @@ if [[ "${USE_DISTRIBUTED_LAUNCHER}" == "1" ]]; then
 fi
 
 # -----------------------------------------------------------------------------
-# Nsight Systems section (2024.7.1 style)
+# Nsight Systems section (2026.2 style)
 # -----------------------------------------------------------------------------
 NSYS_PROFILER="${NSYS_PROFILER:-1}"
 NSYS_OUTPUT_DIR="${NSYS_OUTPUT_DIR:-./logs/nsys}"
@@ -89,7 +137,10 @@ NSYS_CUDABACKTRACE="${NSYS_CUDABACKTRACE:-true}"
 # sample: process-tree | system-wide | none
 NSYS_SAMPLE="${NSYS_SAMPLE:-process-tree}"
 NSYS_SHOW_OUTPUT="${NSYS_SHOW_OUTPUT:-true}"
-NSYS_NIC_METRICS="${NSYS_NIC_METRICS:-false}"
+NSYS_NIC_METRICS="${NSYS_NIC_METRICS:-false}"      # legacy bool
+NSYS_NIC_METRICS_MODE="${NSYS_NIC_METRICS_MODE:-}" # preferred: lf|hf|none
+NSYS_SYSCALL_MODE="${NSYS_SYSCALL_MODE:-}"         # preferred for nsys>=2026
+NSYS_VERSION_HINT="${NSYS_VERSION_HINT:-}"         # optional override, e.g. 2026.2
 NSYS_GPU_METRICS_DEVICES="${NSYS_GPU_METRICS_DEVICES:-none}"
 NSYS_GPU_METRICS_FREQUENCY="${NSYS_GPU_METRICS_FREQUENCY:-}"
 
@@ -98,20 +149,82 @@ RUN_CMD=("${APP_CMD[@]}")
 if [[ "${NSYS_PROFILER}" == "1" ]]; then
   mkdir -p "${NSYS_OUTPUT_DIR}"
 
+  read -r NSYS_VER_MAJOR NSYS_VER_MINOR < <(_nsys_detect_version)
+
+  # Normalize trace/syscall behavior across nsys versions.
+  IFS=',' read -r -a _trace_in <<< "${NSYS_TRACE}"
+  _trace_out=()
+  _trace_has_syscall=0
+  for _tok in "${_trace_in[@]}"; do
+    _tok="${_tok// /}"
+    [[ -z "${_tok}" ]] && continue
+    if [[ "${_tok}" == "syscall" ]]; then
+      _trace_has_syscall=1
+      continue
+    fi
+    _trace_out+=("${_tok}")
+  done
+  if [[ ${#_trace_out[@]} -eq 0 ]]; then
+    _trace_out=(cuda nvtx osrt cublas cudnn)
+  fi
+  NSYS_TRACE_RESOLVED="$(IFS=,; echo "${_trace_out[*]}")"
+
+  if _nsys_version_gte 2026 0; then
+    if [[ -z "${NSYS_SYSCALL_MODE}" && "${_trace_has_syscall}" == "1" ]]; then
+      NSYS_SYSCALL_MODE="process-tree"
+    fi
+  elif [[ -n "${NSYS_SYSCALL_MODE}" && "${NSYS_SYSCALL_MODE}" != "none" ]]; then
+    if ! _nsys_contains_token "syscall" "${_trace_out[@]}"; then
+      NSYS_TRACE_RESOLVED="${NSYS_TRACE_RESOLVED},syscall"
+    fi
+  fi
+
+  # Normalize NIC metrics behavior across nsys versions.
+  _nic_mode="$(printf '%s' "${NSYS_NIC_METRICS_MODE}" | tr '[:upper:]' '[:lower:]')"
+  if [[ -z "${_nic_mode}" ]]; then
+    if _is_true "${NSYS_NIC_METRICS}"; then
+      if _nsys_version_gte 2026 0; then
+        _nic_mode="lf"
+      else
+        _nic_mode="true"
+      fi
+    fi
+  fi
+  if _nsys_version_gte 2026 0; then
+    if [[ "${_nic_mode}" == "true" || "${_nic_mode}" == "1" ]]; then
+      _nic_mode="lf"
+    elif [[ "${_nic_mode}" == "false" || "${_nic_mode}" == "0" ]]; then
+      _nic_mode="none"
+    fi
+  else
+    if [[ "${_nic_mode}" == "lf" || "${_nic_mode}" == "hf" ]]; then
+      _nic_mode="true"
+    elif [[ "${_nic_mode}" == "none" ]]; then
+      _nic_mode="false"
+    fi
+  fi
+
   NSYS_CMD=(
     nsys profile
     "--output=${NSYS_OUTPUT_DIR}/${NSYS_OUTPUT_BASENAME}"
     "--force-overwrite=${NSYS_FORCE_OVERWRITE}"
     "--export=${NSYS_EXPORT}"
-    "--trace=${NSYS_TRACE}"
+    "--trace=${NSYS_TRACE_RESOLVED}"
     "--capture-range=${NSYS_CAPTURE_RANGE}"
     "--capture-range-end=${NSYS_CAPTURE_RANGE_END}"
     "--cudabacktrace=${NSYS_CUDABACKTRACE}"
     "--sample=${NSYS_SAMPLE}"
     "--show-output=${NSYS_SHOW_OUTPUT}"
-    "--nic-metrics=${NSYS_NIC_METRICS}"
     "--gpu-metrics-devices=${NSYS_GPU_METRICS_DEVICES}"
   )
+
+  if [[ -n "${_nic_mode}" ]]; then
+    NSYS_CMD+=("--nic-metrics=${_nic_mode}")
+  fi
+
+  if _nsys_version_gte 2026 0 && [[ -n "${NSYS_SYSCALL_MODE}" ]]; then
+    NSYS_CMD+=("--syscall=${NSYS_SYSCALL_MODE}")
+  fi
 
   if [[ -n "${NSYS_GPU_METRICS_FREQUENCY}" ]]; then
     NSYS_CMD+=("--gpu-metrics-frequency=${NSYS_GPU_METRICS_FREQUENCY}")
@@ -139,4 +252,3 @@ printf ' %q' "${CMD[@]}"
 printf '\n'
 
 "${CMD[@]}"
-

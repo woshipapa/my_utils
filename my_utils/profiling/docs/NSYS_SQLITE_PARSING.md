@@ -337,7 +337,7 @@ Compatibility tactics implemented:
 
 Practical expectation:
 
-- Nsight Systems 2024.7.1 exports are supported
+- Nsight Systems 2024.7.1 and 2026.2 exports are supported
 - future major schema jumps may require additional adaptation
 
 ## 9. Quick SQL Inspection Snippets
@@ -482,7 +482,7 @@ For device-sampled counters (`GPU_METRICS` / some `GENERIC_EVENTS`):
 - they may not directly carry process ownership
 - process attribution is done by time-window correlation with process activity
 
-### 12.2 `--gpu-metrics-device` support
+### 12.2 `--gpu-metrics-devices` support
 
 If Nsight Systems capture enables GPU metrics, SQLite commonly contains:
 
@@ -548,5 +548,6 @@ print(schema["table_count"], schema["version_info"])
   - Nsight Systems User Guide: https://docs.nvidia.com/nsight-systems/UserGuide/
   - Nsight Systems docs archives: https://docs.nvidia.com/nsight-systems/archives/index.html
   - 2022.4 exported data: https://docs.nvidia.com/nsight-systems/2022.4/nsys-exporter/exported_data.html
-  - 2024.7 User Guide: https://docs.nvidia.com/nsight-systems/2024.7/UserGuide/index.html
+  - 2026.2 User Guide: https://docs.nvidia.com/nsight-systems/UserGuide/index.html
+  - 2024.7 User Guide (archive baseline): https://docs.nvidia.com/nsight-systems/2024.7/UserGuide/index.html
   - 2026.1 analysis guide exported data: https://docs.nvidia.com/nsight-systems/2026.1/AnalysisGuide/exported_data.html

@@ -28,6 +28,18 @@ from .sources.nsys_module_kernel_compare import (
 from .sources.nsys_sql_skills import NsysSqlSkillEngine
 from .sources.nsys_sqlite_provider import NsysSqliteMetricsProvider
 from .sources.nsys_timeline_html import export_timeline_compare_html, export_timeline_html
+from .ncu.ncu_csv_tools import (
+    NcuCsvSkillEngine,
+    analyze_ncu_csv,
+    analyze_ncu_to_markdown,
+    skill_result_to_json,
+)
+from .ncu.ncu_report_tools import (
+    NcuReportSkillEngine,
+    analyze_ncu_report,
+    analyze_ncu_report_to_markdown,
+    report_result_to_json,
+)
 
 
 def _parse_tags(values: Iterable[str]) -> Dict[str, str]:
@@ -632,16 +644,20 @@ def cmd_nsys_panel(args: argparse.Namespace) -> int:
     parser = build_parser()
     subparsers = _collect_subparsers(parser)
     help_map = _collect_subparser_help(parser)
-    nsys_cmds = sorted(
-        [name for name in subparsers.keys() if name.startswith("nsys-") and name != "nsys-panel"]
+    profile_cmds = sorted(
+        [
+            name
+            for name in subparsers.keys()
+            if (name.startswith("nsys-") or name.startswith("ncu-")) and name != "nsys-panel"
+        ]
     )
-    if not nsys_cmds:
-        print("[nsys-panel] no nsys subcommands found")
+    if not profile_cmds:
+        print("[nsys-panel] no profiling subcommands found")
         return 2
 
-    print("=== NSYS Interactive Panel ===")
+    print("=== Profiling Interactive Panel (NSYS + NCU) ===")
     print("Select one command by index or name:")
-    for idx, name in enumerate(nsys_cmds, start=1):
+    for idx, name in enumerate(profile_cmds, start=1):
         desc = help_map.get(name) or str(getattr(subparsers[name], "description", "") or "").strip()
         print(f"  {idx}. {name} - {desc}")
 
@@ -650,15 +666,15 @@ def cmd_nsys_panel(args: argparse.Namespace) -> int:
         raw = input("command > ").strip()
         if not raw:
             continue
-        if raw in subparsers and raw in nsys_cmds:
+        if raw in subparsers and raw in profile_cmds:
             selected_name = raw
             break
         try:
             idx = int(raw)
         except Exception:
             idx = -1
-        if 1 <= idx <= len(nsys_cmds):
-            selected_name = nsys_cmds[idx - 1]
+        if 1 <= idx <= len(profile_cmds):
+            selected_name = profile_cmds[idx - 1]
             break
         print("Invalid selection, try again.")
 
@@ -943,6 +959,112 @@ def cmd_nsys_diff(args: argparse.Namespace) -> int:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text, encoding="utf-8")
         print(f"[nsys-diff] wrote: {path}")
+    else:
+        print(text)
+    return 0
+
+
+def cmd_ncu_csv_skill(args: argparse.Namespace) -> int:
+    engine = NcuCsvSkillEngine(args.csv)
+    if args.list_skills:
+        payload = engine.describe_skills()
+        text = skill_result_to_json(payload, pretty=bool(args.pretty))
+        if args.output:
+            path = Path(args.output)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text, encoding="utf-8")
+            print(f"[ncu-csv-skill] wrote: {path}")
+        else:
+            print(text)
+        return 0
+
+    if not args.skill:
+        print("[ncu-csv-skill] --skill is required unless --list-skills is set", file=sys.stderr)
+        return 2
+
+    params = _parse_kv_params(args.param)
+    payload = engine.run_skill(str(args.skill), **params)
+    text = skill_result_to_json(payload, pretty=bool(args.pretty))
+    if args.output:
+        path = Path(args.output)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+        print(f"[ncu-csv-skill] wrote: {path}")
+    else:
+        print(text)
+    return 0
+
+
+def cmd_ncu_csv_analyze(args: argparse.Namespace) -> int:
+    payload = analyze_ncu_csv(
+        args.csv,
+        top_k=int(args.top_k),
+        metric_like=str(args.metric_like or ""),
+        kernel_like=str(args.kernel_like or "%"),
+    )
+    if str(args.format).lower() in {"md", "markdown"}:
+        text = analyze_ncu_to_markdown(payload)
+    else:
+        text = skill_result_to_json(payload, pretty=bool(args.pretty))
+    if args.output:
+        path = Path(args.output)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+        print(f"[ncu-csv-analyze] wrote: {path}")
+    else:
+        print(text)
+    return 0
+
+
+def cmd_ncu_report_skill(args: argparse.Namespace) -> int:
+    engine = NcuReportSkillEngine(args.report)
+    if args.list_skills:
+        payload = engine.describe_skills()
+        text = report_result_to_json(payload, pretty=bool(args.pretty))
+        if args.output:
+            path = Path(args.output)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text, encoding="utf-8")
+            print(f"[ncu-report-skill] wrote: {path}")
+        else:
+            print(text)
+        return 0
+
+    if not args.skill:
+        print("[ncu-report-skill] --skill is required unless --list-skills is set", file=sys.stderr)
+        return 2
+
+    params = _parse_kv_params(args.param)
+    payload = engine.run_skill(str(args.skill), **params)
+    text = report_result_to_json(payload, pretty=bool(args.pretty))
+    if args.output:
+        path = Path(args.output)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+        print(f"[ncu-report-skill] wrote: {path}")
+    else:
+        print(text)
+    return 0
+
+
+def cmd_ncu_report_analyze(args: argparse.Namespace) -> int:
+    payload = analyze_ncu_report(
+        args.report,
+        top_k=int(args.top_k),
+        metric_like=str(args.metric_like or ""),
+        kernel_like=str(args.kernel_like or "%"),
+        include_all_metrics=bool(args.include_all_metrics),
+        all_metrics_limit=int(args.all_metrics_limit),
+    )
+    if str(args.format).lower() in {"md", "markdown"}:
+        text = analyze_ncu_report_to_markdown(payload)
+    else:
+        text = report_result_to_json(payload, pretty=bool(args.pretty))
+    if args.output:
+        path = Path(args.output)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+        print(f"[ncu-report-analyze] wrote: {path}")
     else:
         print(text)
     return 0
@@ -1358,6 +1480,75 @@ def build_parser() -> argparse.ArgumentParser:
     nsys_diff.add_argument("--output", default="")
     nsys_diff.add_argument("--pretty", action="store_true")
     nsys_diff.set_defaults(func=cmd_nsys_diff)
+
+    ncu_csv_skill = sub.add_parser("ncu-csv-skill", help="run built-in ncu CSV parsing skills")
+    ncu_csv_skill.add_argument("--csv", required=True, help="ncu csv path")
+    ncu_csv_skill.add_argument("--list-skills", action="store_true", help="list skills and params")
+    ncu_csv_skill.add_argument("--skill", default="", help="skill name")
+    ncu_csv_skill.add_argument(
+        "--param",
+        action="append",
+        default=[],
+        help="skill parameter in key=value format (can repeat)",
+    )
+    ncu_csv_skill.add_argument("--output", default="", help="optional json output path")
+    ncu_csv_skill.add_argument("--pretty", action="store_true", help="pretty-print json output")
+    ncu_csv_skill.set_defaults(func=cmd_ncu_csv_skill)
+
+    ncu_csv_analyze = sub.add_parser("ncu-csv-analyze", help="run summarized analysis for ncu csv")
+    ncu_csv_analyze.add_argument("--csv", required=True, help="ncu csv path")
+    ncu_csv_analyze.add_argument("--metric-like", default="", help="metric LIKE pattern (%/_/*)")
+    ncu_csv_analyze.add_argument("--kernel-like", default="%", help="kernel LIKE pattern (%/_/*)")
+    ncu_csv_analyze.add_argument("--top-k", type=int, default=20)
+    ncu_csv_analyze.add_argument("--format", default="json", choices=["json", "markdown", "md"])
+    ncu_csv_analyze.add_argument("--output", default="")
+    ncu_csv_analyze.add_argument("--pretty", action="store_true")
+    ncu_csv_analyze.set_defaults(func=cmd_ncu_csv_analyze)
+
+    ncu_report_skill = sub.add_parser("ncu-report-skill", help="run built-in ncu .ncu-rep parsing skills")
+    ncu_report_skill.add_argument("--report", required=True, help="ncu report path (.ncu-rep)")
+    ncu_report_skill.add_argument("--list-skills", action="store_true", help="list skills and params")
+    ncu_report_skill.add_argument("--skill", default="", help="skill name")
+    ncu_report_skill.add_argument(
+        "--param",
+        action="append",
+        default=[],
+        help="skill parameter in key=value format (can repeat)",
+    )
+    ncu_report_skill.add_argument("--output", default="", help="optional json output path")
+    ncu_report_skill.add_argument("--pretty", action="store_true", help="pretty-print json output")
+    ncu_report_skill.set_defaults(func=cmd_ncu_report_skill)
+
+    ncu_report_analyze = sub.add_parser(
+        "ncu-report-analyze",
+        help="run summarized analysis for ncu .ncu-rep (includes per-metric stats)",
+    )
+    ncu_report_analyze.add_argument("--report", required=True, help="ncu report path (.ncu-rep)")
+    ncu_report_analyze.add_argument("--metric-like", default="", help="metric LIKE pattern (%/_/*)")
+    ncu_report_analyze.add_argument("--kernel-like", default="%", help="kernel LIKE pattern (%/_/*)")
+    ncu_report_analyze.add_argument("--top-k", type=int, default=20)
+    ncu_report_analyze.add_argument(
+        "--include-all-metrics",
+        action="store_true",
+        default=True,
+        help="include all parsed metric rows in output payload",
+    )
+    ncu_report_analyze.add_argument(
+        "--no-include-all-metrics",
+        dest="include_all_metrics",
+        action="store_false",
+        help="omit all_metrics rows and keep aggregated analysis only",
+    )
+    ncu_report_analyze.add_argument(
+        "--all-metrics-limit",
+        type=int,
+        default=20000,
+        help="max rows in all_metrics payload",
+    )
+    ncu_report_analyze.add_argument("--format", default="json", choices=["json", "markdown", "md"])
+    ncu_report_analyze.add_argument("--output", default="")
+    ncu_report_analyze.add_argument("--pretty", action="store_true")
+    ncu_report_analyze.set_defaults(func=cmd_ncu_report_analyze)
 
     nsys_module_kernel_compare = sub.add_parser(
         "nsys-module-kernel-compare",
@@ -1946,6 +2137,22 @@ def entry_nsys_iter_overlap() -> int:
 
 def entry_nsys_iter_outliers() -> int:
     return _run_nsys_alias("nsys-iter-outliers")
+
+
+def entry_ncu_csv_skill() -> int:
+    return _run_nsys_alias("ncu-csv-skill")
+
+
+def entry_ncu_csv_analyze() -> int:
+    return _run_nsys_alias("ncu-csv-analyze")
+
+
+def entry_ncu_report_skill() -> int:
+    return _run_nsys_alias("ncu-report-skill")
+
+
+def entry_ncu_report_analyze() -> int:
+    return _run_nsys_alias("ncu-report-analyze")
 
 
 if __name__ == "__main__":

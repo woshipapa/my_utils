@@ -240,3 +240,63 @@ def test_nsys_panel_respects_list_skills_short_circuit(monkeypatch, capsys) -> N
     assert len(skill_prompts) == 0, skill_prompts
     assert len(param_prompts) == 0, param_prompts
     assert len(debug_prompts) == 0, debug_prompts
+
+
+def test_ncu_csv_skill_and_analyze(tmp_path: Path) -> None:
+    csv_path = tmp_path / "ncu.csv"
+    csv_path.write_text(
+        "\n".join(
+            [
+                "Kernel Name,Metric Name,Metric Value",
+                "k1,time_metric,10",
+                "k2,time_metric,20",
+                "k1,other_metric,1",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    out_skill = tmp_path / "skill.json"
+    rc = main(
+        [
+            "ncu-csv-skill",
+            "--csv",
+            str(csv_path),
+            "--skill",
+            "summary",
+            "--output",
+            str(out_skill),
+            "--pretty",
+        ]
+    )
+    assert rc == 0
+    assert out_skill.exists()
+
+    out_analyze = tmp_path / "analyze.json"
+    rc = main(
+        [
+            "ncu-csv-analyze",
+            "--csv",
+            str(csv_path),
+            "--output",
+            str(out_analyze),
+            "--pretty",
+        ]
+    )
+    assert rc == 0
+    assert out_analyze.exists()
+
+
+def test_ncu_alias_entry_forwards_subcommand(monkeypatch) -> None:
+    captured = {}
+
+    def _fake_main(argv=None):
+        captured["argv"] = list(argv or [])
+        return 0
+
+    monkeypatch.setattr(profiling_cli, "main", _fake_main)
+    monkeypatch.setattr(sys, "argv", ["ncu-csv-skill", "--csv", "x.csv", "--list-skills"])
+    rc = profiling_cli.entry_ncu_csv_skill()
+    assert rc == 0
+    assert captured["argv"][0] == "ncu-csv-skill"
