@@ -1013,6 +1013,7 @@ def load_ncu_report_rule_rows(
                     speedup = {}
                 focus_metrics = item.get("focus_metrics", [])
                 focus_summary = _focus_metrics_summary(focus_metrics, top_k=20)
+                message_type = rule_message.get("message_type", rule_message.get("type", ""))
 
                 out.append(
                     {
@@ -1025,7 +1026,7 @@ def load_ncu_report_rule_rows(
                         "section_identifier": str(item.get("section_identifier", "") or ""),
                         "parent_weights": item.get("parent_weights", {}),
                         "rule_message_title": str(rule_message.get("title", "") or ""),
-                        "rule_message_type": _enum_to_text(rule_message.get("message_type", "")),
+                        "rule_message_type": _enum_to_text(message_type),
                         "rule_message": str(rule_message.get("message", "") or ""),
                         "speedup_type": _enum_to_text(speedup.get("type", "")),
                         "speedup": _to_number(speedup.get("speedup")),
