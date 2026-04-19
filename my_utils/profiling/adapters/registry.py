@@ -9,6 +9,12 @@ from .deepspeed import DeepSpeedAdapter
 from .huggingface import HuggingFaceAdapter
 from .megatron import MegatronAdapter
 from .pytorch import PyTorchAdapter
+from .roll import RollAdapter
+from .sglang import SGLangAdapter
+from .slime import SlimeAdapter
+from .torchtitan import TorchTitanAdapter
+from .verl import VerlAdapter
+from .vllm import VLLMAdapter
 
 
 class FrameworkAdapterRegistry:
@@ -66,12 +72,17 @@ class FrameworkAdapterRegistry:
 
 def build_default_adapter_registry() -> FrameworkAdapterRegistry:
     registry = FrameworkAdapterRegistry()
-    registry.register(PyTorchAdapter())
+    registry.register(TorchTitanAdapter())
     registry.register(HuggingFaceAdapter())
+    registry.register(VerlAdapter())
+    registry.register(SlimeAdapter())
+    registry.register(RollAdapter())
+    registry.register(SGLangAdapter())
+    registry.register(VLLMAdapter())
     registry.register(DeepSpeedAdapter())
     registry.register(MegatronAdapter())
+    registry.register(PyTorchAdapter())
     return registry
 
 
 DEFAULT_ADAPTER_REGISTRY = build_default_adapter_registry()
-

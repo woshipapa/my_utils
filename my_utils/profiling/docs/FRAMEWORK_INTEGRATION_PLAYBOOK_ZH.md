@@ -45,6 +45,12 @@
 - `huggingface`
 - `deepspeed`
 - `megatron`
+- `torchtitan`
+- `verl`
+- `slime`
+- `roll`
+- `sglang`
+- `vllm`
 
 代码位置：`my_utils/profiling/adapters/*`
 
@@ -57,7 +63,7 @@
 - SGLang（`python -m sglang.launch_server ...`）
 - vLLM（`vllm serve ...`）
 
-说明：这些框架目前不一定都有专用 adapter，但**都可以被 NSYS/NCU wrapper 透明包裹**。
+说明：以上框架现在都可走 adapter 自动识别；同时也都支持 NSYS/NCU wrapper 透明包裹。
 
 ---
 

@@ -258,12 +258,18 @@ except Exception:
 try:
     from .profiling.adapters import (
         DEFAULT_ADAPTER_REGISTRY,
+        DeepSpeedAdapter,
         FrameworkAdapter,
         FrameworkAdapterRegistry,
         HuggingFaceAdapter,
         MegatronAdapter,
         PyTorchAdapter,
-        DeepSpeedAdapter,
+        RollAdapter,
+        SGLangAdapter,
+        SlimeAdapter,
+        TorchTitanAdapter,
+        VerlAdapter,
+        VLLMAdapter,
     )
 
     __all__.extend(
@@ -275,6 +281,12 @@ try:
             "HuggingFaceAdapter",
             "DeepSpeedAdapter",
             "MegatronAdapter",
+            "TorchTitanAdapter",
+            "VerlAdapter",
+            "SlimeAdapter",
+            "RollAdapter",
+            "SGLangAdapter",
+            "VLLMAdapter",
         ]
     )
 except Exception:

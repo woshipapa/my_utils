@@ -171,6 +171,12 @@ Adapters available:
 - `HuggingFaceAdapter`
 - `DeepSpeedAdapter`
 - `MegatronAdapter`
+- `TorchTitanAdapter`
+- `VerlAdapter`
+- `SlimeAdapter`
+- `RollAdapter`
+- `SGLangAdapter`
+- `VLLMAdapter`
 
 They can auto-generate provider specs from runtime context and register providers into `MetricsCollector`.
 

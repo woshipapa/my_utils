@@ -4,14 +4,18 @@ from typing import Any, Dict, List, Mapping
 
 from ..metrics.provider_registry import ProviderSpec
 from .base import FrameworkAdapter
+from .common import build_standard_training_specs, is_framework_mismatch, normalize_framework_name
 
 
 class PyTorchAdapter(FrameworkAdapter):
     name = "pytorch"
-    priority = 10
+    priority = 90
 
     def detect(self, context: Mapping[str, Any]) -> bool:
-        if context.get("framework") == "pytorch":
+        framework = normalize_framework_name(context.get("framework"))
+        if is_framework_mismatch(context, ("pytorch", "torch")):
+            return False
+        if framework in ("pytorch", "torch"):
             return True
         if "torch_profiler" in context or "profiler" in context:
             return True
@@ -23,29 +27,7 @@ class PyTorchAdapter(FrameworkAdapter):
             return False
 
     def build_provider_specs(self, context: Mapping[str, Any]) -> List[ProviderSpec]:
-        specs: List[ProviderSpec] = []
-        if "my_timer" in context or "timer" in context:
-            specs.append(ProviderSpec(provider_type="my_timer", provider_id="my_timer", enabled=True, params={}))
-        if "torch_profiler" in context or "profiler" in context:
-            specs.append(
-                ProviderSpec(
-                    provider_type="torch_profiler",
-                    provider_id="torch_profiler",
-                    enabled=True,
-                    params={"include_memory": True, "include_flops": True},
-                )
-            )
-        if "module_profiler" in context:
-            specs.append(
-                ProviderSpec(
-                    provider_type="module_profiler",
-                    provider_id="module_profiler",
-                    enabled=True,
-                    params={},
-                )
-            )
-        return specs
+        return build_standard_training_specs(context, include_module_profiler=True)
 
     def build_runtime_tags(self, context: Mapping[str, Any]) -> Dict[str, str]:
         return {"framework": self.name, "adapter": "PyTorchAdapter"}
-

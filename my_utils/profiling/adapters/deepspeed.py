@@ -4,6 +4,7 @@ from typing import Any, Dict, List, Mapping
 
 from ..metrics.provider_registry import ProviderSpec
 from .base import FrameworkAdapter
+from .common import build_standard_training_specs, is_framework_mismatch, normalize_framework_name
 
 
 class DeepSpeedAdapter(FrameworkAdapter):
@@ -11,7 +12,10 @@ class DeepSpeedAdapter(FrameworkAdapter):
     priority = 30
 
     def detect(self, context: Mapping[str, Any]) -> bool:
-        if context.get("framework") == "deepspeed":
+        framework = normalize_framework_name(context.get("framework"))
+        if is_framework_mismatch(context, ("deepspeed",)):
+            return False
+        if framework == "deepspeed":
             return True
         if "deepspeed_engine" in context:
             return True
@@ -23,20 +27,7 @@ class DeepSpeedAdapter(FrameworkAdapter):
             return False
 
     def build_provider_specs(self, context: Mapping[str, Any]) -> List[ProviderSpec]:
-        specs: List[ProviderSpec] = []
-        if "my_timer" in context or "timer" in context:
-            specs.append(ProviderSpec(provider_type="my_timer", provider_id="my_timer", enabled=True, params={}))
-        if "torch_profiler" in context:
-            specs.append(
-                ProviderSpec(
-                    provider_type="torch_profiler",
-                    provider_id="torch_profiler",
-                    enabled=True,
-                    params={"include_memory": True, "include_flops": True},
-                )
-            )
-        return specs
+        return build_standard_training_specs(context)
 
     def build_runtime_tags(self, context: Mapping[str, Any]) -> Dict[str, str]:
         return {"framework": self.name, "adapter": "DeepSpeedAdapter"}
-
