@@ -125,6 +125,7 @@ with labeler.range("train_step"):
 
 1. [`my_utils/profiling/README.md`](./my_utils/profiling/README.md)
 2. [`my_utils/profiling/docs/FRAMEWORK_INTEGRATION_PLAYBOOK_ZH.md`](./my_utils/profiling/docs/FRAMEWORK_INTEGRATION_PLAYBOOK_ZH.md)
-3. [`my_utils/profiling/templates/README.md`](./my_utils/profiling/templates/README.md)
-4. [`my_utils/profiling/ncu/README.md`](./my_utils/profiling/ncu/README.md)
-5. [`my_utils/profiling/docs/README.md`](./my_utils/profiling/docs/README.md)
+3. [`my_utils/profiling/examples/framework_playbook_samples/README.md`](./my_utils/profiling/examples/framework_playbook_samples/README.md)
+4. [`my_utils/profiling/templates/README.md`](./my_utils/profiling/templates/README.md)
+5. [`my_utils/profiling/ncu/README.md`](./my_utils/profiling/ncu/README.md)
+6. [`my_utils/profiling/docs/README.md`](./my_utils/profiling/docs/README.md)

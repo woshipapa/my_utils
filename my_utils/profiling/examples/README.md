@@ -16,6 +16,9 @@
 3. 我想直接用 CLI 配置跑离线分析  
 用 `collector_config_*.json` + `myutils-profile ingest`
 
+4. 我想按具体框架直接套命令（TorchTitan/SLIME/VERL/ROLL/HF/SGLang/vLLM）  
+看 `framework_playbook_samples/README.md`
+
 ## 最常用命令
 
 ### A) 最小统一 demo
@@ -66,6 +69,17 @@ myutils-profile ingest \
   --report-formats json,markdown,html
 ```
 
+### D) 框架一键模板（NSYS/NCU）
+
+```bash
+bash my_utils/profiling/examples/framework_playbook_samples/nsys_torchtitan.sh
+```
+
+```bash
+bash my_utils/profiling/examples/framework_playbook_samples/ncu_generic_wrap.sh -- \
+  torchrun --nproc_per_node=8 train.py --config cfg.yaml
+```
+
 ## 配置文件说明
 
 - `collector_config_example.json`  
@@ -76,6 +90,9 @@ myutils-profile ingest \
 
 - `collector_config_nsys_multi_rank_full.json`  
   多 rank sqlite_glob 的完整配置模板。
+
+- `framework_playbook_samples/*`  
+  面向 TorchTitan、Megatron、DeepSpeed、HF Trainer、VERL、SLIME、ROLL、SGLang、vLLM 的可复制启动模板。
 
 ## 常见坑
 

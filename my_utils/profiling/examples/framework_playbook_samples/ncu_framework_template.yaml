@@ -1,0 +1,34 @@
+# Cross-framework NCU YAML template
+# Replace command with your framework launch command.
+
+command:
+  - torchrun
+  - --nproc_per_node=1
+  - train.py
+  - --config
+  - cfg.yaml
+
+env:
+  CUDA_VISIBLE_DEVICES: "0"
+
+ncu:
+  enabled: true
+  mode: launch-and-attach
+  set: full
+  target_processes: all
+  replay_mode: application
+  profile_from_start: off
+  nvtx: true
+  nvtx_include: train_step/
+  launch_skip: 5
+  launch_count: 1
+  apply_rules: yes
+  section:
+    - LaunchStats
+    - Occupancy
+    - SpeedOfLight
+    - MemoryWorkloadAnalysis
+    - SchedulerStats
+  export: ./logs/ncu/ncu_profile.ncu-rep
+  profile_switches: {}
+  extra_args: []

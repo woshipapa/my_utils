@@ -1,0 +1,32 @@
+# Cross-framework NSYS YAML template
+# Replace command with your framework launch command.
+
+command:
+  - torchrun
+  - --nproc_per_node=8
+  - train.py
+  - --config
+  - cfg.yaml
+
+env:
+  CUDA_VISIBLE_DEVICES: "0,1,2,3,4,5,6,7"
+
+nsys_launch:
+  enabled: true
+  output: ./logs/nsys/nsys_profile_%p
+  trace: cuda,nvtx,cublas,cudnn,osrt
+  sample: none
+  cpuctxsw: none
+  python_sampling: false
+  python_sampling_frequency: 1000
+  force_overwrite: true
+  stop_on_exit: true
+  target_processes: all
+  capture_range: cudaProfilerApi
+  capture_range_end: stop
+  gpu_metrics_devices: all
+  cuda_memory_usage: true
+  cudabacktrace: all:500
+  flush_on_cuda_api_exit: false
+  extra_profile_args: []
+  profile_switches: {}
