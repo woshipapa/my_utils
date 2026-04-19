@@ -1,17 +1,26 @@
 # artifacts
 
-## 作用
-`artifacts` 负责中间产物的落盘/回读与离线分析输入（如 CSV）。
+离线产物层：中间数据落盘/回读，以及 NCU CSV 分析辅助。
 
-## 文件
-- `dump_utils.py`: `DumpTensorIO`、`DumpConfig`、`UniversalDumper`、`UniversalLoader`。
-- `ncu_analyze_from_csv.py`: NCU CSV 指标分析与对比。
+## 30秒定位
 
-## 常用导入
+1. 我想把 tensor/中间结果落盘  
+用 `UniversalDumper` / `DumpConfig`
+
+2. 我想做 NCU CSV 指标分析对比  
+用 `analyze_sm_throughput_from_csv` / `compare_kernel_metrics`
+
+## 最小示例
+
 ```python
-from my_utils.artifacts.dump_utils import DumpConfig, UniversalDumper, get_dumper
-from my_utils.artifacts.ncu_analyze_from_csv import analyze_sm_throughput_from_csv
+from my_utils.artifacts import DumpConfig, UniversalDumper
+
+cfg = DumpConfig(output_dir="./dump_out")
+dumper = UniversalDumper(cfg)
+dumper.dump_tensor("x", x_tensor)
 ```
 
-## 说明
-- 这里偏离线能力，适合训练后批量分析与回归对比。
+## 关键文件
+
+- `dump_utils.py`: `DumpTensorIO`、`DumpConfig`、`UniversalDumper`、`UniversalLoader`
+- `ncu_analyze_from_csv.py`: NCU CSV 指标分析与对比工具  

@@ -1,19 +1,34 @@
 # distributed
 
-## 作用
-`distributed` 放置分布式训练相关的辅助能力：时钟对齐、跨进程屏障、序列并行 padding。
+分布式训练辅助层。
 
-## 文件
-- `clockSyncUtils.py`: `ClockSynchronizer` / `SocketClockSynchronizer`。
-- `etcd_utils.py`: 基于 etcd 的 barrier（可选依赖 `etcd3`）。
-- `pad.py`: sequence parallel 场景的 `pad/remove_pad`（可选依赖 `megatron.core`）。
+## 30秒定位
 
-## 常用导入
+1. 需要 rank 间时间对齐  
+用 `ClockSynchronizer`
+
+2. 需要 etcd barrier  
+用 `etcd_barrier`（可选依赖 `etcd3`）
+
+3. 需要 sequence parallel padding  
+用 `pad_for_sequence_parallel` / `remove_pad_by_value`（可选依赖 `megatron.core`）
+
+## 最小示例
+
 ```python
-from my_utils.distributed.clockSyncUtils import ClockSynchronizer
-from my_utils.distributed import etcd_barrier
-from my_utils.distributed import pad_for_sequence_parallel, remove_pad_by_value
+from my_utils.distributed import ClockSynchronizer
+
+sync = ClockSynchronizer()
+offset = sync.sync_once()
+print("clock offset us:", offset)
 ```
 
-## 说明
-- `etcd` / `megatron` 相关接口是可选导入，缺依赖时不影响其它模块。
+## 关键文件
+
+- `clockSyncUtils.py`: `ClockSynchronizer`、`SocketClockSynchronizer`
+- `etcd_utils.py`: `etcd_barrier`
+- `pad.py`: sequence parallel padding helpers
+
+## 注意
+
+- `etcd` 与 `megatron` 能力是“可选导入”，缺依赖时不影响其它模块。  

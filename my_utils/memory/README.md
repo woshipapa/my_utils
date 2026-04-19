@@ -1,18 +1,35 @@
 # memory
 
-## 作用
-`memory` 聚焦内存相关诊断：快照、OOM 信号、GPU 内存/硬件利用率监控。
+内存诊断层：snapshot、OOM 信号、GPU 内存/利用率跟踪。
 
-## 文件
-- `memory_snapshot.py`: `MemorySnapshotter` / `global_snapshotter`。
-- `oom_restore.py`: 分布式 OOM 标志设置与检测。
-- `gpu_mem_tracker.py`: `GPU_Performance_Tracker`（可选依赖 `pynvml` / `matplotlib`）。
+## 30秒定位
 
-## 常用导入
+1. 我想在关键阶段留内存快照  
+用 `global_snapshotter`
+
+2. 我想跨 rank 传播 OOM 标记  
+用 `set_oom_flag` / `check_oom_flag`
+
+3. 我想监控 GPU 显存与利用率  
+用 `GPU_Performance_Tracker`（可选依赖 `pynvml`）
+
+## 最小示例
+
 ```python
-from my_utils.memory.memory_snapshot import global_snapshotter
-from my_utils.memory.oom_restore import set_oom_flag, check_oom_flag
+from my_utils.memory import global_snapshotter, set_oom_flag, check_oom_flag
+
+global_snapshotter.snapshot("before_step")
+# ... train step ...
+if check_oom_flag():
+    print("OOM detected")
 ```
 
-## 说明
-- 监控与快照能力建议按需开启，避免在长跑训练里引入额外开销。
+## 关键文件
+
+- `memory_snapshot.py`: `MemorySnapshotter`、`global_snapshotter`
+- `oom_restore.py`: OOM flag set/check
+- `gpu_mem_tracker.py`: `GPU_Performance_Tracker`
+
+## 注意
+
+- 监控与快照建议按需开启，避免长跑训练中引入额外开销。  

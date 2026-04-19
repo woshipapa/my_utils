@@ -1,18 +1,34 @@
 # hooks
 
-## 作用
-`hooks` 放置基于 PyTorch hook 的观测工具，关注前向/模块粒度跟踪与局部 profiling 控制。
+基于 PyTorch hook 的观测与局部 profiling 控制。
 
-## 文件
-- `ForwardProfileHook.py`: 训练迭代窗口触发 profiler start/stop。
-- `module_hook.py`: `ForwardTraceRecorder`，记录模块级输入输出与元信息。
-- `moduleProfiler.py`: `ModuleProfiler`，模块耗时统计（可选）。
+## 30秒定位
 
-## 常用导入
+1. 我想按训练窗口触发 profiler start/stop  
+用 `ForwardProfilerHook`
+
+2. 我想记录模块级前向输入输出信息  
+用 `ForwardTraceRecorder`
+
+3. 我想要模块级耗时统计（历史方案）  
+用 `ModuleProfiler`（可选）
+
+## 最小示例
+
 ```python
-from my_utils.hooks.ForwardProfileHook import ForwardProfilerHook
-from my_utils.hooks.module_hook import ForwardTraceRecorder
+from my_utils.hooks import ForwardTraceRecorder
+
+recorder = ForwardTraceRecorder()
+recorder.register(model)
+# forward 后可读取 recorder 的记录结果
 ```
 
-## 说明
-- 旧路径 `my_utils.ForwardProfileHook`、`my_utils.module_hook` 仍兼容。
+## 关键文件
+
+- `ForwardProfileHook.py`: `ForwardProfilerHook`
+- `module_hook.py`: `ForwardTraceRecorder`
+- `moduleProfiler.py`: `ModuleProfiler`
+
+## 兼容性
+
+- 旧路径 `my_utils.ForwardProfileHook`、`my_utils.module_hook` 仍可用。  

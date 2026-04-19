@@ -1,20 +1,46 @@
 # core
 
-## 作用
-`core` 放置不依赖具体 profiling 后端的基础能力：日志、计时、方法 patch、通用调试工具。
+基础工具层，不依赖具体 profiling 后端。
 
-## 文件
-- `annotations.py`: 参数化 shape 的装饰器工具。
-- `logger.py`: `GlobalLogger` 单例日志与 profile 事件写出。
-- `method_patch.py`: 运行时方法替换与恢复。
-- `utils.py`: `MyTimer`、`NoOpMyTimer`、`ChecksumUtils`、调试辅助函数等。
+## 30秒定位
 
-## 常用导入
+1. 我想做计时与日志  
+看 `utils.py` + `logger.py`
+
+2. 我想临时 patch 某个方法  
+看 `method_patch.py`
+
+3. 我想做通用调试（tensor/checksum）  
+看 `utils.py`
+
+## 最小示例
+
 ```python
-from my_utils.core.logger import GlobalLogger, get_global_logger
-from my_utils.core.utils import MyTimer, NoOpMyTimer, setup_logging_and_timer
-from my_utils.core.method_patch import MethodPatcher
+from my_utils.core import setup_logging_and_timer
+
+logger, timer = setup_logging_and_timer(
+    logger_name="train",
+    log_file="train.log",
+    use_cuda=True,
+    rank=0,
+)
+
+timer.start("step")
+# ... training code ...
+timer.stop("step")
 ```
 
-## 说明
-- 旧路径 `from my_utils.utils import MyTimer` 仍兼容，但新代码建议使用 `my_utils.core.*`。
+## 关键文件
+
+- `utils.py`: `MyTimer`、`NoOpMyTimer`、`ChecksumUtils`、调试函数
+- `logger.py`: `GlobalLogger`、`get_global_logger`
+- `method_patch.py`: `MethodPatcher`、`MethodPatchHandle`
+- `annotations.py`: `parametrize_shapes`
+
+## 常用导入
+
+```python
+from my_utils.core import MyTimer, NoOpMyTimer, setup_logging_and_timer
+from my_utils.core import GlobalLogger, get_global_logger
+from my_utils.core import MethodPatcher
+```
