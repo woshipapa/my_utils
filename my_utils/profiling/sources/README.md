@@ -1,295 +1,102 @@
-﻿# sources
+# sources（NSYS SQLite 离线解析）
 
-Offline Nsight Systems SQLite post-processing parsers and analysis utilities.
+这个目录负责：读取 `nsys export` 产生的 SQLite，然后做可复用分析。
 
-## Files
+## 30秒定位
 
-| File | Description |
-|---|---|
-| `nsys_schema_adapter.py` | SQLite schema auto-detection across nsys versions (`NsightSchema`, `detect_nsys_version`) |
-| `nsys_sql_skills.py` | Built-in SQL skill engine (`NsysSqlSkillEngine`) and overlap utilities |
-| `nsys_sqlite_provider.py` | Main provider (`NsysSqliteMetricsProvider`) that wraps analysis APIs |
-| `nsys_iterations.py` | NVTX-marker-based iteration detection (`detect_iterations`) |
-| `nsys_mfu.py` | MFU helpers (`compute_mfu_single`, `infer_peak_tflops`) |
-| `nsys_flat_export.py` | Flat kernel timeline export to JSON/CSV (`export_kernels_flat`) |
-| `nsys_module_kernel_compare.py` | Compare two module-level kernel JSON exports (`compare_module_kernel_json`) |
-| `nsys_analyze.py` | All-in-one analysis (`analyze_nsys_sqlite`, `analyze_to_markdown`) |
-| `nsys_diff.py` | Before/after comparison (`diff_nsys_sqlite`, `diff_to_markdown`) |
-| `nsys_timeline_html.py` | Static HTML timeline export (`export_timeline_html`) |
+1. 我只想看训练整体分析  
+用 CLI：`myutils-profile nsys-analyze`
 
----
+2. 我想跑某个 SQL skill  
+用 CLI：`myutils-profile nsys-sql-skill`
 
-## nsys_schema_adapter.py
+3. 我想导出 kernel 明细  
+用 CLI：`myutils-profile nsys-export`
 
-### NsightSchema
+4. 我想对比两次 profile  
+用 CLI：`myutils-profile nsys-diff`
 
-Auto-detects SQLite schema produced by `nsys export` and handles table/column variants across exporter versions.
+5. 我想出 timeline HTML  
+用 CLI：`myutils-profile nsys-timeline-html`
 
-Key attributes:
+## 最常用命令
 
-| Attribute | Description |
-|---|---|
-| `kernel_table` | `CUPTI_ACTIVITY_KIND_KERNEL` (or variant) |
-| `runtime_table` | `CUPTI_ACTIVITY_KIND_RUNTIME` |
-| `nvtx_table` | `NVTX_EVENTS` |
-| `string_table` | `StringIds` / `STRINGIDS` for ID->string mapping |
-| `memcpy_table` | `CUPTI_ACTIVITY_KIND_MEMCPY` |
-| `memset_table` | `CUPTI_ACTIVITY_KIND_MEMSET` |
-| `sync_table` | `CUPTI_ACTIVITY_KIND_SYNCHRONIZATION` |
-| `metrics_table` | GPU sampling metrics table (`GPU_METRICS` / `CUPTI_ACTIVITY_KIND_GPU_METRIC` / variants) |
-| `metrics_timestamp_col` | timestamp column alias (`timestamp` / `rawTimestamp` / `start` / `time`) |
-| `metrics_id_col` | metric id alias (`metricId` / `nameId` / `eventId`) |
-| `metrics_value_col` | metric value alias (`value` / `metricValue` / `val`) |
-| `meta_table` | `META_DATA_EXPORT` / `EXPORT_META_DATA` |
-| `version` | `NsysVersionInfo` (`exporter_version`, `adapter_family`) |
+统一分析：
 
-Version families:
-
-| Family | Condition |
-|---|---|
-| `nsys_2024_plus` | year >= 2024 |
-| `nsys_2023` | year == 2023 |
-| `nsys_2022` | year == 2022 |
-| `generic` | unknown / old |
-
-Example:
-
-```python
-schema = NsightSchema(conn)
-schema.table_exists("NVTX_EVENTS")
-schema.columns("CUPTI_ACTIVITY_KIND_KERNEL")
-schema.resolve_column("CUPTI_ACTIVITY_KIND_KERNEL", ["shortName", "demangledName"])
-schema.summary()
+```bash
+myutils-profile nsys-analyze --sqlite ./train_rank0.sqlite --output ./nsys_analyze.json
 ```
 
-`globalTid` decode:
+列出 SQL skills：
 
-```python
-pid = (global_tid // 0x1000000) % 0x1000000
-tid = global_tid % 0x1000000
+```bash
+myutils-profile nsys-sql-skill --sqlite ./train_rank0.sqlite --list-skills --pretty
 ```
 
----
-
-## nsys_sql_skills.py
-
-### NsysSqlSkillEngine
-
-Executes built-in parameterized SQL queries against an nsys SQLite export. SQL is built from detected schema aliases.
-
-```python
-engine = NsysSqlSkillEngine(conn)
-engine.list_skills()
-engine.describe_skill("top_kernels")
-engine.execute("top_kernels", device_id=0, limit=20)
-```
-
-### Built-in SQL skills
-
-| # | Skill | Category | Required Tables | Key Output |
-|---|---|---|---|---|
-| 1 | `top_kernels` | kernels | KERNEL | kernel_name, total_ms, avg_ms, invocations |
-| 2 | `aggregate_kernels` | kernels | KERNEL | kernel_name, total/avg/min/max ms, invocations |
-| 3 | `nccl_breakdown` | communication | KERNEL | NCCL kernel aggregates |
-| 4 | `kernel_map` | kernels | KERNEL | start_ns, end_ns, stream_id, correlation_id, kernel_name |
-| 5 | `gpu_idle_gaps` | kernels | KERNEL | stream gap analysis |
-| 6 | `kernel_launch_overhead` | kernels | KERNEL + RUNTIME | api_name, api_ms, kernel_ms, overhead_us |
-| 7 | `aggregate_nvtx_ranges` | nvtx | NVTX_EVENTS | nvtx_name, range_count, total_ms, avg_ms |
-| 8 | `nvtx_kernel_map` | nvtx | NVTX_EVENTS + RUNTIME + KERNEL | launch-attribution map |
-| 9 | `memcpy_in_window` | memory | MEMCPY | copy_kind, count, total_ms |
-| 10 | `thread_utilization` | system | COMPOSITE_EVENTS | global_tid, thread_name, cpu_pct |
-| 11 | `schema_inspect` | utility | sqlite_master | table/column metadata; CLI can render grouped columns and Mermaid relation graph |
-| 12 | `gpu_metrics_aggregate` | metrics | GPU_METRICS (+ TARGET_INFO_GPU_METRICS or StringIds) | metric_name, metric_device, sample_count, avg/min/max value |
-| 13 | `memcpy_bandwidth_analysis` | memory | MEMCPY | total_gb, total_ms, avg/min/max gbps |
-| 14 | `sync_breakdown` | pipeline | SYNCHRONIZATION | sync_type, count, total/avg/max ms |
-| 15 | `memset_breakdown` | memory | MEMSET | fill_value, total_gb, total_ms, avg_gbps |
-| 16 | `kernel_occupancy_estimate` | compute | KERNEL | raw launch metrics (threads_per_block, registersPerThread, static_shared_bytes, dynamic_shared_bytes, total_shared_bytes); occupancy_pct_estimate uses sqlite theoretical occupancy when available |
-| 17 | `stream_parallelism` | pipeline | KERNEL | bucket-based concurrent stream stats (cross-bucket kernel expansion) |
-| 18 | `nvtx_memcpy_breakdown` | memory | NVTX_EVENTS + MEMCPY | nvtx_text + memcpy aggregates |
-| 19 | `nvtx_gpu_metrics_breakdown` | metrics | NVTX_EVENTS + GPU_METRICS (+ TARGET_INFO_GPU_METRICS or StringIds) | metric sampling stats per NVTX range: metric_name, metric_device, sample_count, avg/min/max value |
-| 20 | `nvtx_kernel_sm_detail` | compute | NVTX_EVENTS + RUNTIME + KERNEL | per-kernel launch config in NVTX range via launch attribution (`NVTX -> runtime -> correlationId -> kernel`), including static/dynamic shared memory; occupancy_pct_estimate uses sqlite theoretical occupancy when available |
-| 21 | `nvtx_ranges_hierarchy` | nvtx | NVTX_EVENTS | raw NVTX rows; hierarchy derived in Python O(N) |
-
-Skills are schema-guarded and appear only when required tables/columns exist.
-
-Common params:
-
-| Param | Type | Default | Applies |
-|---|---|---|---|
-| `device_id` | int | -1 | most GPU skills |
-| `limit` | int | varies | most skills |
-| `start_ns` / `end_ns` | int | -1 | windowed skills |
-| `min_gap_ns` | int | 1_000_000 | `gpu_idle_gaps` |
-| `bucket_ns` | int | 1_000_000 | `stream_parallelism` |
-| `metric_name_like` | str | `%` | `gpu_metrics_aggregate`, `nvtx_gpu_metrics_breakdown` |
-| `include_all_sources` | bool | false | `gpu_metrics_aggregate`, `nvtx_gpu_metrics_breakdown`; false prefers GPU metric sources and filters ETW/FTrace-like generic sources |
-| `nvtx_text` | str | `%` or required | NVTX text filter skills |
-| `top_level_only` | bool | false | `nvtx_ranges_hierarchy` |
-
-### Schema Inspect Display
-
-When using CLI with `schema_inspect`, you can control how schema is rendered:
+运行一个 skill：
 
 ```bash
 myutils-profile nsys-sql-skill \
   --sqlite ./train_rank0.sqlite \
-  --skill schema_inspect \
-  --schema-view both \
+  --skill top_kernels \
+  --param device_id=0 \
+  --param limit=20 \
   --pretty
 ```
 
-`--schema-view` options:
-- `flat`: raw row list (`table_name`, `column_name`, `column_type`, `is_pk`)
-- `grouped`: all columns grouped by each table
-- `mermaid`: inferred table relations + Mermaid flowchart string
-- `both`: grouped tables + relations + Mermaid (default)
-
-### Occupancy notes (H100)
-
-For occupancy fields:
-- `occupancy_pct_estimate` comes from sqlite theoretical occupancy columns when present.
-- if sqlite does not provide that column, `occupancy_pct_estimate` is `NULL`.
-- H100 helper execution (`execute_*_h100`) keeps `occupancy_pct_estimate` and additionally appends
-  `occupancy_pct_h100_estimate`, so you can compare sqlite-reported theoretical occupancy vs our strict H100 calculation.
-
-Use Python helper for H100(sm_90):
-
-```python
-from my_utils.profiling.sources.nsys_sql_skills import calculate_h100_occupancy
-```
-
-Convenience engine APIs:
-
-```python
-engine.execute_kernel_occupancy_estimate_h100(device_id=0, limit=50)
-engine.execute_nvtx_kernel_sm_detail_h100(nvtx_text="%forward%", device_id=0)
-```
-
-These add `occupancy_pct_h100_estimate` per row.
-
-### Stream parallelism note
-
-`stream_parallelism` now expands each kernel over every covered bucket (`start_bucket..end_bucket`) instead of assigning only by start time. This avoids undercounting for long kernels.
-
-### NVTX hierarchy note
-
-`nvtx_ranges_hierarchy` no longer uses O(N^2) SQL self-joins. It fetches sorted raw rows and builds parent/child with an O(N) per-thread stack in Python.
-
-### Engine methods
-
-```python
-engine.list_skills()
-engine.describe_skills()
-engine.execute("top_kernels", device_id=0, limit=20)
-engine.execute("nvtx_gpu_metrics_breakdown", nvtx_text="%sample_0%", metric_name_like="%active%", include_all_sources=0)
-engine.execute_kernel_occupancy_estimate_h100(device_id=0, limit=50)
-engine.execute_nvtx_kernel_sm_detail_h100(nvtx_text="%sample_0%", device_id=0)
-
-engine.analyze_compute_comm_overlap(device_id=0)
-engine.summarize_gpu_kernels(device_id=0, top_k=10)
-engine.detect_iterations(marker="sample_0", device_id=0)
-engine.analyze_per_iteration_overlap(marker="sample_0", device_id=0)
-engine.detect_iteration_outliers(marker="sample_0", device_id=0, threshold_sigma=2.0)
-```
-
----
-
-## nsys_analyze.py
-
-`analyze_nsys_sqlite()` provides an all-in-one summary:
-- schema info
-- gpu summary (span/busy/idle/utilization)
-- compute/comm overlap
-- top kernels, NCCL breakdown
-- iteration stats
-- sync and memcpy bandwidth breakdown
-- optional MFU
-
-MFU step-time priority:
-1. median `iterations[*].duration_ms`
-2. fallback `summary.timing.span_ms`
-
----
-
-## nsys_diff.py
-
-`diff_nsys_sqlite()` compares two SQLite profiles and reports delta for:
-- utilization
-- overlap
-- top kernel deltas
-- top NVTX deltas
-
----
-
-## nsys_flat_export.py
-
-`export_kernels_flat()` exports kernel timeline rows (JSON/CSV), optionally attaching iteration index.
-
----
-
-## NsysSqliteMetricsProvider
-
-High-level provider API:
-
-```python
-provider = NsysSqliteMetricsProvider("train_rank0.sqlite")
-provider.describe_schema()
-provider.list_sql_skills()
-provider.describe_sql_skills()
-provider.run_sql_skill("top_kernels", device_id=0, limit=20)
-provider.summarize_gpu_kernels(device_id=0, top_k=20)
-provider.analyze_compute_comm_overlap(device_id=0)
-provider.detect_iterations(marker="sample_0", device_id=0)
-provider.compute_mfu(model_flops_per_step=1e15, peak_tflops=989.0, precision="fp16")
-```
-
-It can also be registered in `MetricsCollector` as a standard provider.
-
----
-
-## CLI quick map
-
-| Subcommand | Purpose |
-|---|---|
-| `nsys-panel` | interactive panel to choose one nsys subcommand and fill args |
-| `nsys-sql-skill` | run one SQL skill with params |
-| `nsys-analyze` | all-in-one analysis |
-| `nsys-iter-overlap` | per-iteration compute/comm/overlap |
-| `nsys-iter-outliers` | iteration outlier detection |
-| `nsys-export` | flat kernel export |
-| `nsys-diff` | before/after diff |
-| `nsys-module-kernel-compare` | compare two `nsys-sql-skill` kernel JSON exports for one module scope |
-| `nsys-timeline-html` | static timeline html |
-
-Tip:
-- use `nsys-analyze` first for overview
-- use `nsys-sql-skill` for deep dive
-- use `nsys-iter-overlap` when stream overlap matters
-- for `kernel_occupancy_estimate` / `nvtx_kernel_sm_detail`, CLI supports `--occupancy-arch auto|h100|none` (default `auto`)
-  to attach `occupancy_pct_h100_estimate` when GPU is H100.
-- if a skill is unavailable for current sqlite schema (for example missing GPU metrics table),
-  `nsys-sql-skill` now prints explicit reason/hint instead of failing silently.
-
-Timeline viewer can focus on a specific NVTX range and overlay GPU metrics:
+导出 kernel 明细：
 
 ```bash
-myutils-profile nsys-timeline-html \
-  --sqlite ./train_rank0.sqlite \
-  --output ./timeline_nvtx.html \
-  --nvtx-text "%sample_0%" \
-  --include-metrics \
-  --metric-name-like "%active%"
+myutils-profile nsys-export --sqlite ./train_rank0.sqlite --format csv --output ./kernels.csv
 ```
 
-By default, `--nvtx-text` uses all matched NVTX scopes (`--nvtx-index -1`).
-Set `--nvtx-index N` only when you want a single matched scope.
-When NVTX texts include `rank=<id>`, timeline kernel lanes are grouped by rank (all ranks in one HTML).
-Timeline metrics are rendered as multiple independent panels (one metric/device per panel),
-so each panel has its own Y-axis and avoids unit conflicts across metrics.
-When GPU metric rows include device dimension (`deviceId/gpuId`), timeline metric series are split as `[gpu N]`
-to avoid mixing multiple devices in one curve.
+两次对比：
 
----
+```bash
+myutils-profile nsys-diff --before-sqlite ./a.sqlite --after-sqlite ./b.sqlite --output ./diff.json
+```
 
-All internal timestamps are nanoseconds. Most report values are milliseconds.
-Compute vs comm classification uses kernel name containing `nccl` (case-insensitive).
+timeline html：
+
+```bash
+myutils-profile nsys-timeline-html --sqlite ./train_rank0.sqlite --output ./timeline.html
+```
+
+## 关键文件（按职责）
+
+- `nsys_schema_adapter.py`  
+  跨版本 schema 识别（不同 nsys 导出的表名/列名差异适配）。
+
+- `nsys_sql_skills.py`  
+  内置 SQL skill 引擎（top kernels、overlap、nvtx、memcpy、occupancy 等）。
+
+- `nsys_sqlite_provider.py`  
+  上层 provider 封装，给统一 metrics 管线调用。
+
+- `nsys_analyze.py`  
+  一站式分析聚合（summary/overlap/nccl/iterations/mfu）。
+
+- `nsys_diff.py`  
+  before/after 差异分析。
+
+- `nsys_flat_export.py`  
+  扁平化导出 kernel timeline 到 json/csv。
+
+- `nsys_timeline_html.py`  
+  静态 HTML 时间线导出。
+
+- `nsys_iterations.py`  
+  基于 NVTX marker 的 iteration 切分。
+
+- `nsys_mfu.py`  
+  MFU 相关辅助计算。
+
+- `nsys_module_kernel_compare.py`  
+  模块级 kernel 对比（更细粒度）。
+
+## 调试建议
+
+1. 先用 `schema_inspect` skill 看 sqlite 是否识别正确。  
+2. 再跑 `nsys-analyze` 看总览。  
+3. 如果出现回退，优先跑 `nsys-diff`。  
+4. 需要可视化定位时再导出 `timeline.html`。  

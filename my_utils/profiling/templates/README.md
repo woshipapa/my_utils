@@ -1,247 +1,170 @@
-# Profiling Shell Templates
+# NSYS 快速使用手册
 
-This folder provides shell templates for both capture-time profiling and offline Nsight SQLite post-processing.
+这份 README 只做一件事：让你按需求秒选命令。
 
-## Files
+## 30秒流程图
 
-### Capture templates
-- `profile_cli_common.sh`: shared shell helpers to load env presets, build training CLI args, and optionally wrap execution with `nsys profile`.
-- `preset_nsys_default.env`: common Nsight Systems capture preset.
-- `preset_torch_profiler.env`: common torch profiler preset.
-- `preset_disabled.env`: disable all profiling by default.
-- `run_nsys_quick.sh`: quickest wrapper to run any command with version-compatible `nsys profile`.
-- `run_nsys_quick_yaml.py`: YAML-driven one-click wrapper for `nsys profile`.
-- `nsys_quick_launch.yaml`: minimal YAML template for `run_nsys_quick_yaml.py`.
-- `nsys_2026_2_full_args.yaml`: full v2026.2 profile switches template with per-arg comments.
+```mermaid
+flowchart TD
+    A[开始: 我要分析训练整体性能] --> B[run_nsys_quick.sh 先抓一份trace]
+    B --> C{是否需要精细参数}
+    C -->|是| D[切到 run_nsys_quick_yaml.py + nsys_quick_launch.yaml]
+    C -->|否| E[直接进入离线分析]
 
-### Offline NSYS templates
-- `nsys_offline_common.sh`: shared helpers for offline scripts (`PYTHONPATH`, file checks, CLI runner).
-- `run_nsys_sql_skill.sh`: run one SQL skill or list built-in skills.
-- `run_nsys_analyze.sh`: run unified nsys analysis (`summary + overlap + nccl + iterations + mfu`).
-- `run_nsys_export.sh`: flat-export kernels timeline to JSON/CSV.
-- `run_nsys_diff.sh`: compare two sqlite profiles by kernel/nvtx aggregates.
-- `run_nsys_timeline_html.sh`: export static timeline HTML.
-- `run_nsys_full_postprocess.sh`: one-shot pipeline to generate all major offline artifacts.
-
-## Quick usage
-
-### A) Capture-time (training launch)
-
-Fastest path:
-
-```bash
-/path/to/my_utils/profiling/templates/run_nsys_quick.sh -- python train.py --config cfg.yaml
+    D --> E[生成 sqlite]
+    E --> F[nsys-analyze 统一报告]
+    F --> G{还想看什么}
+    G -->|版本差异| H[nsys-diff]
+    G -->|时间线页面| I[nsys-timeline-html]
+    G -->|kernel明细| J[nsys-export]
+    H --> K[定位退化点]
+    I --> K
+    J --> K
+    K --> L[结束]
 ```
 
-Or with explicit compatibility overrides:
+## 先选场景
+
+1. 我想快速抓训练全局时间线
+2. 我想用 YAML 配置 NSYS 参数
+3. 我想只抓训练过程某一段（capture range）
+4. 我已经有 sqlite，想做离线分析
+5. 我想对比两次训练
+6. 我想出 timeline HTML
+
+## 场景 -> 直接命令
+
+### 1) 快速抓训练全局时间线（最常用）
 
 ```bash
-NSYS_NIC_METRICS_MODE=lf \
-NSYS_SYSCALL=process-tree \
-/path/to/my_utils/profiling/templates/run_nsys_quick.sh -- python train.py
+bash my_utils/profiling/templates/run_nsys_quick.sh -- python train.py --config cfg.yaml
 ```
 
-Framework-integrated path:
+作用：给你的训练命令外层自动加 `nsys profile`，快速产出 profile 文件。
+
+### 2) 用 YAML 管理参数（推荐长期用）
 
 ```bash
-source /path/to/my_utils/profiling/templates/profile_cli_common.sh
-
-PROFILE_PRESET=/path/to/my_utils/profiling/templates/preset_nsys_default.env
-profile_prepare "$PROFILE_PRESET"
-
-EXEC_CMD=(python path/to/train.py)
-profile_wrap_exec_with_nsys EXEC_CMD
-
-CMD=(
-  torchrun ... --no_python
-  "${EXEC_CMD[@]}"
-  "${PROFILE_SETTINGS[@]}"
-  --your_framework_args ...
-)
-"${CMD[@]}"
+python my_utils/profiling/templates/run_nsys_quick_yaml.py \
+  --config my_utils/profiling/templates/nsys_quick_launch.yaml
 ```
 
-YAML one-click path:
+作用：通过 YAML 统一管理参数，不用改脚本。
+
+全量参数模板：
 
 ```bash
-python /path/to/my_utils/profiling/templates/run_nsys_quick_yaml.py \
-  --config /path/to/my_utils/profiling/templates/nsys_quick_launch.yaml
+python my_utils/profiling/templates/run_nsys_quick_yaml.py \
+  --config my_utils/profiling/templates/nsys_2026_2_full_args.yaml
 ```
 
-YAML with command override:
+### 3) 只抓某一段训练（capture range + 手动 stop）
+
+启动（不自动结束）：
 
 ```bash
-python /path/to/my_utils/profiling/templates/run_nsys_quick_yaml.py \
-  --config /path/to/profile.yaml \
-  -- torchrun --nproc_per_node=8 --no_python python train.py --config cfg.yaml
+python my_utils/profiling/templates/run_nsys_quick_yaml.py \
+  --config /path/to/profile.yaml -- \
+  torchrun --nproc_per_node=8 --no_python python train.py
 ```
 
-The YAML launcher supports:
+`profile.yaml` 关键字段：
 
-- `env`: env var overrides (for example `CUDA_VISIBLE_DEVICES`, `NCCL_DEBUG`).
-- `command`: string or argv list.
-- `nsys_launch`: all `NsysLaunchConfig` fields.
-- `nsys_launch.profile_switches`: official switch map (`key -> value`) for full-arg configuration.
-- `nsys_launch.extra_profile_args`: raw extra nsys switches for quick experiments.
+```yaml
+nsys_launch:
+  capture_range: cudaProfilerApi
+  capture_range_end: none
+  extra_profile_args:
+    - --session-new=my_train_sess
+    - --flush-on-cudaprofilerstop=false
+```
 
-Full-args template:
+结束采集：
 
 ```bash
-python /path/to/my_utils/profiling/templates/run_nsys_quick_yaml.py \
-  --config /path/to/my_utils/profiling/templates/nsys_2026_2_full_args.yaml
+nsys stop --session=my_train_sess
 ```
 
-`profile_switches` value conventions:
+作用：适合只看训练中间某段，避免抓全程超大文件。
 
-- `null`: do not pass this switch.
-- scalar (`str/int/float/bool`): converted to `--key=value`.
-- list: converted to repeated `--key=item`.
-- `"__flag__"`: converted to bare `--key` (for flag-style switches such as `--help`).
-
-Manual stop mode (recommended for some distributed capture-range cases):
+### 4) 已有 sqlite，直接做统一分析
 
 ```bash
-# 1) Start with session + capture-range-end=none
-python /path/to/my_utils/profiling/templates/run_nsys_quick_yaml.py \
-  --config /path/to/profile.yaml \
-  -- torchrun --nproc_per_node=8 --no_python python train.py
-
-# profile.yaml snippet:
-# nsys_launch:
-#   enabled: true
-#   capture_range: cudaProfilerApi
-#   capture_range_end: none
-#   extra_profile_args:
-#     - --session-new=my_train_sess
-#     - --flush-on-cudaprofilerstop=false
-#
-# 2) Stop from another shell when your target training range is done
-# nsys stop --session=my_train_sess
+myutils-profile nsys-analyze --sqlite ./train_rank0.sqlite --output ./nsys_analyze.json
 ```
 
-Notes:
+作用：输出 summary/overlap/nccl/iteration/mfu 等聚合结果。
 
-- `capture_range` still controls start (for example by `cudaProfilerStart()`).
-- `capture_range_end=none` means capture does not end on `cudaProfilerStop()` automatically.
-- `nsys stop --session=<name>` ends the session and flushes report output.
-
-### A2) Framework launcher compatibility
-
-| Framework | Official launch style (summary) | Direct wrapping command |
-|---|---|---|
-| Megatron-LM | `torchrun ... pretrain_gpt.py ...` | `run_nsys_quick.sh -- torchrun ... --no_python python pretrain_gpt.py ...` |
-| DeepSpeed | `deepspeed --num_gpus=... train.py ...` | `run_nsys_quick.sh -- deepspeed --num_gpus=... train.py ...` |
-| Hugging Face Trainer | `accelerate launch ... train.py ...` or `deepspeed ...` | `run_nsys_quick.sh -- accelerate launch ... train.py ...` |
-| VERL | `python -m verl.trainer.main_ppo ...` | `run_nsys_quick.sh -- python -m verl.trainer.main_ppo ...` |
-| SLIME | `ray job submit ... -- python3 train.py ...` | `run_nsys_quick.sh -- ray job submit ... -- python3 train.py ...` |
-
-Compatibility note:
-
-- The wrapper is launcher-agnostic. It prepends `nsys profile ...` to any final executable command.
-- For distributed `torchrun`, keep `--no_python` when the wrapped executable starts with `python ...`.
-- For Ray/SLIME, wrap the `ray job submit` CLI itself on the submit node. For per-worker traces in a cluster, inject the wrapper in the worker startup command.
-
-### B) Offline sqlite processing
+### 5) 对比两次训练（定位退化）
 
 ```bash
-# Analyze
-SQLITE_PATH=/abs/path/to/trace.sqlite \
-OUTPUT=./nsys_metrics_out/analyze.json \
-/path/to/my_utils/profiling/templates/run_nsys_analyze.sh
-
-# Export kernels
-SQLITE_PATH=/abs/path/to/trace.sqlite \
-FORMAT=csv \
-OUTPUT=./nsys_metrics_out/kernels.csv \
-/path/to/my_utils/profiling/templates/run_nsys_export.sh
-
-# SQL skill
-SQLITE_PATH=/abs/path/to/trace.sqlite \
-SKILL_NAME=top_kernels \
-SKILL_PARAMS="device_id=0 limit=20" \
-/path/to/my_utils/profiling/templates/run_nsys_sql_skill.sh
-
-# Timeline HTML
-SQLITE_PATH=/abs/path/to/trace.sqlite \
-OUTPUT=./nsys_metrics_out/timeline.html \
-/path/to/my_utils/profiling/templates/run_nsys_timeline_html.sh
-
-# Diff two runs
-BEFORE_SQLITE=/abs/path/to/before.sqlite \
-AFTER_SQLITE=/abs/path/to/after.sqlite \
-OUTPUT=./nsys_metrics_out/diff.json \
-/path/to/my_utils/profiling/templates/run_nsys_diff.sh
-
-# One-shot full pipeline
-SQLITE_PATH=/abs/path/to/trace.sqlite \
-OUT_DIR=./nsys_metrics_out \
-OUTPUT_PREFIX=run_a \
-/path/to/my_utils/profiling/templates/run_nsys_full_postprocess.sh
+myutils-profile nsys-diff \
+  --before-sqlite ./before.sqlite \
+  --after-sqlite ./after.sqlite \
+  --output ./diff.json
 ```
 
-## Common environment variables (offline)
+作用：比较 kernel/nvtx 变化，快速定位性能回退。
 
-- Required:
-  - `SQLITE_PATH` for single-run scripts.
-  - `BEFORE_SQLITE` and `AFTER_SQLITE` for `run_nsys_diff.sh`.
-- Basic filters:
-  - `DEVICE_ID` (default `-1`, all devices)
-  - `START_NS` / `END_NS` (default `-1`, no trim)
-  - `LIMIT` (default `500000` for analyze/export)
-- Analysis tuning:
-  - `TOP_K`, `ITERATION_MARKER`
-  - `MODEL_FLOPS_PER_STEP`, `PEAK_TFLOPS`, `PEAK_PRECISION`
-- Output:
-  - `OUTPUT`, `OUT_DIR`, `OUTPUT_PREFIX`
+### 6) 导出时间线与明细
 
-## NSYS output naming (capture)
+导出 kernel 明细：
 
-When `NSYS_OUTPUT` is empty, `profile_cli_common.sh` auto-composes output path by:
+```bash
+myutils-profile nsys-export --sqlite ./train_rank0.sqlite --format csv --output ./kernels.csv
+```
 
-- base path: `NSYS_OUTPUT_DIR` + `NSYS_OUTPUT_PREFIX`
-- step window: `step_<NSYS_START_STEP>_<NSYS_STOP_STEP>`
-- capture range: `cap_<NSYS_CAPTURE_RANGE>` (except `none`)
-- metrics tag: `with_metrics_<NSYS_GPU_METRICS_DEVICES>` or `no_metrics`
-- optional custom suffix: `NSYS_OUTPUT_SUFFIX`
+导出 timeline HTML：
 
-Example output:
+```bash
+myutils-profile nsys-timeline-html --sqlite ./train_rank0.sqlite --output ./timeline.html
+```
 
-`./logs/nsys/nsys_profile_rank_%q{RANK}_step_1_3_cap_cudaProfilerApi_with_metrics_0`
+## 常见训练框架写法（可直接包裹）
 
-## What the framework must parse
+Megatron-LM:
 
-The framework config parser (for example tyro/argparse/hydra) should support:
+```bash
+bash my_utils/profiling/templates/run_nsys_quick.sh -- \
+  torchrun ... --no_python python pretrain_gpt.py ...
+```
 
-- `--torch_profiler.*`
-- `--nsys_profiler.*`
-- `--profiling_env.*`
-- `--nsys_launch.*`
+DeepSpeed:
 
-Recommended config objects are in `my_utils.profiling.config`:
+```bash
+bash my_utils/profiling/templates/run_nsys_quick.sh -- \
+  deepspeed --num_gpus=8 train.py ...
+```
 
-- `TorchProfilerConfig`
-- `NsysProfilerConfig`
-- `ProfilingEnvConfig`
-- `NsysLaunchConfig`
+Hugging Face Trainer / Accelerate:
 
-At runtime, use helper functions in `my_utils.profiling.frameworkless`:
+```bash
+bash my_utils/profiling/templates/run_nsys_quick.sh -- \
+  accelerate launch ... train.py ...
+```
 
-- `apply_profiling_environment`
-- `create_nsys_capture_backend`
-- `build_nsys_launch_prefix`
+VERL:
 
-## Nsys version-aware fallback
+```bash
+bash my_utils/profiling/templates/run_nsys_quick.sh -- \
+  python -m verl.trainer.main_ppo ...
+```
 
-`build_nsys_launch_prefix` now performs best-effort version-aware switch selection:
+SLIME / Ray:
 
-- For `nsys >= 2026`: `nic_metrics=true` maps to `--nic-metrics=lf`.
-- For older `nsys`: `nic_metrics_mode=lf|hf` falls back to `--nic-metrics=true`.
-- For `nsys >= 2026`: `trace` containing `syscall` is translated to `--syscall=process-tree` (or explicit `nsys_launch.syscall`).
-- Legacy field `gpu_metrics_device` is still accepted and mapped to `--gpu-metrics-devices`.
-- Optional override `nsys_launch.version_hint` (example: `2026.2`) can force behavior when runtime detection is unavailable.
+```bash
+bash my_utils/profiling/templates/run_nsys_quick.sh -- \
+  ray job submit ... -- python3 train.py ...
+```
 
-Shell template variables:
+## 你主要会改的文件
 
-- `NSYS_NIC_METRICS_MODE` (preferred: `lf|hf|none`)
-- `NSYS_SYSCALL` (preferred for `nsys>=2026`)
-- `NSYS_VERSION_HINT` (optional override for version detection)
+- `run_nsys_quick.sh`: 最快入口
+- `run_nsys_quick_yaml.py`: YAML 启动器
+- `nsys_quick_launch.yaml`: 最小模板
+- `nsys_2026_2_full_args.yaml`: 全参数模板
+- `preset_nsys_default.env`: 常用采集预设
+
+## 一句话建议
+
+先用 `run_nsys_quick.sh` 跑通，再切到 `nsys_quick_launch.yaml` 固化参数，最后用 `nsys-analyze` / `nsys-diff` 做稳定分析。
