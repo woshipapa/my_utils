@@ -94,3 +94,4 @@ myutils-profile ncu-report-analyze --report ./run.ncu-rep --top-k 20 --pretty
 - NSYS：`my_utils/profiling/templates/README.md`
 - NCU：`my_utils/profiling/ncu/README.md`
 - 设计与文档索引：`my_utils/profiling/docs/README.md`
+- 跨框架实战指南（Megatron/DeepSpeed/SGLang/vLLM）：`my_utils/profiling/docs/FRAMEWORK_INTEGRATION_PLAYBOOK_ZH.md`
