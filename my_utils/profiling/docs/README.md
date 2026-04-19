@@ -19,6 +19,7 @@ This directory contains design and governance docs for the unified profiling sys
 - [nsys_2024_7_1_cli_quick_reference.md](./nsys_2024_7_1_cli_quick_reference.md) (archive baseline)
 - [../ncu/README.md](../ncu/README.md)
 - [../ncu/ncu_2026_1_1_cli_quick_reference.md](../ncu/ncu_2026_1_1_cli_quick_reference.md)
+- [../ncu/NCU_ANALYSIS_COMPLETENESS_AUDIT_2026_04_19.md](../ncu/NCU_ANALYSIS_COMPLETENESS_AUDIT_2026_04_19.md)
 - [TORCH_COMPILE_REFERENCE.md](./TORCH_COMPILE_REFERENCE.md)
 - [MIGRATION_CHECKLIST.md](./MIGRATION_CHECKLIST.md)
 - [RELEASE_GOVERNANCE.md](./RELEASE_GOVERNANCE.md)

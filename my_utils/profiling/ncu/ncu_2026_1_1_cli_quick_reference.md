@@ -10,7 +10,7 @@
 - 处理方式：提取所有长参数名（去除单字符短别名），得到 111 个参数。
 - 参数详细用途：已逐项写入 [`ncu_2026_1_1_full_args.yaml`](./ncu_2026_1_1_full_args.yaml) 的注释中。
 
-## 2) 分类索引（111 个）
+## 2) 分类索引（111 个，来自 Command Line Options 正式表）
 
 ### A. General / Session / Connection
 
@@ -51,6 +51,15 @@
 ### J. Console / Report Printing
 
 `page`, `csv`, `print-summary`, `print-details`, `print-source`, `print-fp`, `print-units`, `print-kernel-base`, `print-metric-name`, `print-metric-instances`, `print-metric-attribution`, `print-rule-details`, `print-nvtx-rename`
+
+## 2.5) 文档正文/历史兼容补充（不计入 111 官方表）
+
+- `communicator-num-peers`: 在正文示例出现的兼容写法；建议优先使用 `communicator-tcp-num-peers`。
+- `communicator-shmem-num-peers`: 在 `--communicator shmem` 说明段出现。
+- `details-all`: 文档明确标注已弃用，被 `print-details=all` 替代。
+- `kernel-regex-base`: 在 `print-kernel-base` 说明里作为旧名称被引用。
+
+备注：NVTX 小节示例中出现 `--nvtx-inlcude`（拼写错误），应为 `--nvtx-include`。
 
 ## 3) 建议用法
 

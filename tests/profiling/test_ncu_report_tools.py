@@ -123,6 +123,10 @@ def _fake_module() -> _FakeNcuReportModule:
                     "smsp__issue_active.avg.pct_of_peak_sustained_active": _FakeMetric("40", "%"),
                     "smsp__warps_eligible.avg": _FakeMetric("0.9", ""),
                     "smsp__pcsamp_warps_issue_stalled_long_scoreboard": _FakeMetric("68", "%"),
+                    "memory_ideal_l2_transactions_global": _FakeMetric("100", ""),
+                    "memory_l2_transactions_global": _FakeMetric("180", ""),
+                    "smsp__branch_divergence": _FakeMetric("32", "%"),
+                    "l1tex__data_bank_conflicts_pipe_lsu_mem_shared.sum": _FakeMetric("4", ""),
                 },
                 rules=k1_rules,
             ),
@@ -157,12 +161,15 @@ def test_ncu_report_skill_engine_summary(tmp_path: Path) -> None:
     engine = NcuReportSkillEngine(str(rep), ncu_report_module=_fake_module())
     summary = engine.run_skill("summary", metric_like="%", top_k=10)
     assert isinstance(summary, dict)
-    assert int(summary["metric_records"]) == 9
+    assert int(summary["metric_records"]) == 13
     per_metric = engine.run_skill("per_metric_stats", metric_like="%")
     assert isinstance(per_metric, list) and per_metric
-    bottleneck = engine.run_skill("bottleneck_report", metric_like="%", top_k=5)
+    bottleneck = engine.run_skill("bottleneck_report", metric_like="%", top_k=10)
     assert isinstance(bottleneck, dict)
     assert "top_bottlenecks" in bottleneck
+    heuristic = bottleneck.get("heuristic_findings", [])
+    categories = {str(x.get("category")) for x in heuristic if isinstance(x, dict)}
+    assert "global_memory_coalescing" in categories
 
 
 def test_load_ncu_report_rule_rows(tmp_path: Path) -> None:

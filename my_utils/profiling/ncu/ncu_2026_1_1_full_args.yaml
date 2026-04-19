@@ -163,6 +163,8 @@ ncu:
     "communicator-tcp-hostname": null # 通信器主机名。
     "communicator-tcp-port": null # 通信器端口。
     "communicator-tcp-num-peers": null # 通信器 peer 数量。
+    "communicator-num-peers": null # 文档示例中出现的兼容写法（建议优先用 communicator-tcp-num-peers）。
+    "communicator-shmem-num-peers": null # 文档示例中 shmem communicator 的 peer 参数。
 
     # File / import-export / source
     "export": null # 导出报告路径（.ncu-rep）。
@@ -188,6 +190,8 @@ ncu:
     "print-metric-attribution": null # 指标归因信息显示。
     "print-rule-details": null # 打印 rule 详细信息。
     "print-nvtx-rename": null # 打印 NVTX 重命名信息。
+    "details-all": null # 已弃用旧参数（被 print-details=all 替代）。
+    "kernel-regex-base": null # 旧文档名（现通常使用 kernel-name-base / print-kernel-base）。
 
   # 兜底参数：原样拼接
   extra_args: []

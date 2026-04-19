@@ -163,6 +163,11 @@ def _name_has_tokens(name: str, tokens: Sequence[str]) -> bool:
     return all(str(token or "").lower() in low for token in tokens)
 
 
+def _name_has_any_tokens(name: str, tokens: Sequence[str]) -> bool:
+    low = _normalize_metric_name(name)
+    return any(str(token or "").lower() in low for token in tokens)
+
+
 def _metric_stat_value(row: Dict[str, object], stat: str = "avg") -> Optional[float]:
     value = _to_number(row.get(stat))
     if value is not None:
@@ -253,7 +258,9 @@ def _find_signal(
     token_groups: Sequence[Sequence[str]],
     *,
     stat: str = "avg",
+    exclude_tokens: Sequence[str] = (),
 ) -> Optional[Dict[str, object]]:
+    best: Optional[Dict[str, object]] = None
     for tokens in token_groups:
         for row in metric_stats:
             metric_name = str(row.get("metric_name", ""))
@@ -261,16 +268,20 @@ def _find_signal(
                 continue
             if not _name_has_tokens(metric_name, tokens):
                 continue
+            if exclude_tokens and _name_has_any_tokens(metric_name, exclude_tokens):
+                continue
             value = _metric_stat_value(row, stat=stat)
             if value is None:
                 continue
-            return {
+            candidate = {
                 "metric_name": metric_name,
                 "value": value,
                 "samples": int(row.get("samples", 0) or 0),
                 "stat": stat,
             }
-    return None
+            if best is None or int(candidate["samples"]) > int(best["samples"]):
+                best = candidate
+    return best
 
 
 def _extract_top_stall_metrics(
@@ -363,6 +374,36 @@ def _build_metric_coverage(metric_stats: List[Dict[str, object]]) -> Dict[str, o
             (("launch",), ("grid", "block")),
             "Kernel launch/block/grid stats",
         ),
+        (
+            "source_coalescing",
+            (
+                ("ideal", "transactions", "global"),
+                ("transactions", "global"),
+                ("sectors", "global"),
+            ),
+            "Source-counters style global transaction efficiency signals",
+        ),
+        (
+            "control_flow_divergence",
+            (("branch",), ("diverg",), ("predication",)),
+            "Control-flow efficiency / divergence signals",
+        ),
+        (
+            "shared_memory_conflicts",
+            (("shared", "bank", "conflict"), ("bank", "conflict")),
+            "Shared-memory bank conflict signals",
+        ),
+        (
+            "tensor_core_roofline_readiness",
+            (
+                ("tensor",),
+                ("pipe_tensor",),
+                ("roofline",),
+                ("arithmetic", "intensity"),
+                ("flop", "count"),
+            ),
+            "Tensor/roofline readiness signals (compute intensity + tensor usage)",
+        ),
     ]
 
     details: List[Dict[str, object]] = []
@@ -380,7 +421,8 @@ def _build_metric_coverage(metric_stats: List[Dict[str, object]]) -> Dict[str, o
         recommendation = (
             "missing categories detected; consider collecting with "
             "`ncu --set full --section ComputeWorkloadAnalysis,MemoryWorkloadAnalysis,"
-            "Occupancy,SchedulerStats,WarpStateStats,LaunchStats,SpeedOfLight`"
+            "Occupancy,SchedulerStats,WarpStateStats,LaunchStats,SpeedOfLight` "
+            "and add source-level counters/lineinfo when investigating coalescing/divergence."
         )
     return {
         "coverage_score": score,
@@ -444,6 +486,53 @@ def _build_heuristic_findings(metric_stats: List[Dict[str, object]], *, top_k: i
         ),
     )
     eligible = _find_signal(metric_stats, (("warps_eligible",),))
+    ideal_l2_txn_global = _find_signal(
+        metric_stats,
+        (
+            ("ideal", "transactions", "global"),
+            ("memory", "ideal", "l2", "transactions", "global"),
+            ("l2", "transactions", "global", "ideal"),
+        ),
+    )
+    actual_l2_txn_global = _find_signal(
+        metric_stats,
+        (
+            ("memory", "l2", "transactions", "global"),
+            ("l2", "transactions", "global"),
+            ("transactions", "global"),
+        ),
+        exclude_tokens=("ideal",),
+    )
+    branch_divergence = _find_signal(
+        metric_stats,
+        (
+            ("branch", "diverg"),
+            ("diverg",),
+            ("branch", "efficiency"),
+        ),
+    )
+    shared_bank_conflict = _find_signal(
+        metric_stats,
+        (
+            ("shared", "bank", "conflict"),
+            ("bank", "conflict"),
+        ),
+    )
+    roofline_intensity = _find_signal(
+        metric_stats,
+        (
+            ("arithmetic", "intensity"),
+            ("roofline",),
+        ),
+    )
+    tensor_usage = _find_signal(
+        metric_stats,
+        (
+            ("pipe_tensor",),
+            ("tensor",),
+            ("hmma",),
+        ),
+    )
     stalls = _extract_top_stall_metrics(metric_stats, top_k=5)
 
     findings: List[Dict[str, object]] = []
@@ -452,6 +541,20 @@ def _build_heuristic_findings(metric_stats: List[Dict[str, object]], *, top_k: i
     occ_val = _to_number(occ.get("value")) if isinstance(occ, dict) else None
     issue_val = _to_number(issue.get("value")) if isinstance(issue, dict) else None
     eligible_val = _to_number(eligible.get("value")) if isinstance(eligible, dict) else None
+    ideal_l2_txn_global_val = (
+        _to_number(ideal_l2_txn_global.get("value")) if isinstance(ideal_l2_txn_global, dict) else None
+    )
+    actual_l2_txn_global_val = (
+        _to_number(actual_l2_txn_global.get("value")) if isinstance(actual_l2_txn_global, dict) else None
+    )
+    branch_divergence_val = (
+        _to_number(branch_divergence.get("value")) if isinstance(branch_divergence, dict) else None
+    )
+    shared_bank_conflict_val = (
+        _to_number(shared_bank_conflict.get("value")) if isinstance(shared_bank_conflict, dict) else None
+    )
+    roofline_intensity_val = _to_number(roofline_intensity.get("value")) if isinstance(roofline_intensity, dict) else None
+    tensor_usage_val = _to_number(tensor_usage.get("value")) if isinstance(tensor_usage, dict) else None
 
     if sm_val is not None and dram_val is not None:
         if dram_val >= 70.0 and sm_val < 70.0:
@@ -526,6 +629,55 @@ def _build_heuristic_findings(metric_stats: List[Dict[str, object]], *, top_k: i
             }
         )
 
+    if (
+        ideal_l2_txn_global_val is not None
+        and actual_l2_txn_global_val is not None
+        and ideal_l2_txn_global_val > 0
+    ):
+        txn_ratio = actual_l2_txn_global_val / ideal_l2_txn_global_val
+        if txn_ratio >= 1.3:
+            findings.append(
+                {
+                    "source": "heuristic",
+                    "category": "global_memory_coalescing",
+                    "title": "Actual global transactions are much higher than ideal",
+                    "summary": (
+                        "Likely uncoalesced global accesses. Review memory access patterns, "
+                        "data layout, and per-thread access stride."
+                    ),
+                    "evidence": {
+                        "actual_transactions_global": actual_l2_txn_global,
+                        "ideal_transactions_global": ideal_l2_txn_global,
+                        "actual_over_ideal": txn_ratio,
+                    },
+                    "confidence": "medium",
+                }
+            )
+
+    if branch_divergence_val is not None and branch_divergence_val >= 20.0:
+        findings.append(
+            {
+                "source": "heuristic",
+                "category": "control_flow_divergence",
+                "title": "Branch divergence signal is high",
+                "summary": "Warp control flow likely diverges. Consider branch simplification or data regrouping.",
+                "evidence": {"branch_divergence_signal": branch_divergence},
+                "confidence": "medium",
+            }
+        )
+
+    if shared_bank_conflict_val is not None and shared_bank_conflict_val > 0.0:
+        findings.append(
+            {
+                "source": "heuristic",
+                "category": "shared_memory_bank_conflict",
+                "title": "Shared-memory bank conflict signal detected",
+                "summary": "Shared-memory layout/access may cause bank conflicts; check padding/index mapping.",
+                "evidence": {"shared_bank_conflict_signal": shared_bank_conflict},
+                "confidence": "medium",
+            }
+        )
+
     findings = findings[: int(top_k)]
     return {
         "signals": {
@@ -534,6 +686,14 @@ def _build_heuristic_findings(metric_stats: List[Dict[str, object]], *, top_k: i
             "occupancy": occ,
             "issue_active": issue,
             "eligible_warps": eligible,
+            "ideal_l2_transactions_global": ideal_l2_txn_global,
+            "actual_l2_transactions_global": actual_l2_txn_global,
+            "branch_divergence": branch_divergence,
+            "shared_bank_conflict": shared_bank_conflict,
+            "roofline_intensity": roofline_intensity,
+            "tensor_usage": tensor_usage,
+            "roofline_intensity_value": roofline_intensity_val,
+            "tensor_usage_value": tensor_usage_val,
             "top_stalls": stalls,
         },
         "findings": findings,

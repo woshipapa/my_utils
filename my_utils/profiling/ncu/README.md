@@ -9,6 +9,7 @@
 - `ncu_full_collection.yaml`: 训练场景全覆盖模板（优先保证瓶颈诊断完整性）。
 - `ncu_2026_1_1_full_args.yaml`: 全量参数模板（按官方分类 + 每项注释）。
 - `ncu_2026_1_1_cli_quick_reference.md`: 参数扫描记录与分类索引。
+- `NCU_ANALYSIS_COMPLETENESS_AUDIT_2026_04_19.md`: 参数与分析完整性审计结论（对齐官方文档与 ADO 指南）。
 - `ncu_csv_tools.py`: ncu CSV 解析与分析技能引擎。
 - `ncu_report_tools.py`: `.ncu-rep` 直读解析与分析技能引擎（基于 `ncu_report`）。
 - `run_ncu_csv_skill.sh`: shell 包装（运行 `ncu-csv-skill`）。
@@ -99,9 +100,9 @@ myutils-profile ncu-report-analyze --report ./run.ncu-rep --top-k 20 --pretty
 
 `bottleneck_report` 里新增了三层信息：
 
-- `coverage`: 关键分析维度覆盖检查（SOL compute/memory、occupancy、scheduler、stall、memory hierarchy、launch）。
+- `coverage`: 关键分析维度覆盖检查（SOL compute/memory、occupancy、scheduler、stall、memory hierarchy、launch、source/coalescing、control-flow、shared bank conflict、tensor/roofline readiness）。
 - `rule_findings`: 直接来自 NCU `rule_results_as_dicts()` 的诊断结论（优先级最高）。
-- `heuristic_findings`: 当 rule 不完整时的 fallback 判定（SM/DRAM/occupancy/issue/stall 信号）。
+- `heuristic_findings`: 当 rule 不完整时的 fallback 判定（SM/DRAM/occupancy/issue/stall + coalescing ratio + divergence + bank conflict）。
 
 建议流程：
 
