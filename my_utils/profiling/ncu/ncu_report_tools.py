@@ -284,6 +284,67 @@ def _find_signal(
     return best
 
 
+def _find_metric_value(
+    metric_stats: List[Dict[str, object]],
+    metric_names: Sequence[str],
+    *,
+    token_groups: Sequence[Sequence[str]] = (),
+    stat: str = "avg",
+    exclude_tokens: Sequence[str] = (),
+) -> Optional[Dict[str, object]]:
+    exact = {str(name).strip().lower() for name in metric_names if str(name).strip()}
+    for row in metric_stats:
+        metric_name = str(row.get("metric_name", ""))
+        if metric_name.lower() not in exact:
+            continue
+        value = _metric_stat_value(row, stat=stat)
+        if value is None:
+            continue
+        return {
+            "metric_name": metric_name,
+            "value": value,
+            "samples": int(row.get("samples", 0) or 0),
+            "stat": stat,
+        }
+    if token_groups:
+        return _find_signal(
+            metric_stats,
+            token_groups,
+            stat=stat,
+            exclude_tokens=exclude_tokens,
+        )
+    return None
+
+
+def _signal_value(signal: Optional[Dict[str, object]]) -> Optional[float]:
+    if not isinstance(signal, dict):
+        return None
+    return _to_number(signal.get("value"))
+
+
+def _ratio_signal(
+    numerator: Optional[Dict[str, object]],
+    denominator: Optional[Dict[str, object]],
+    *,
+    name: str,
+    ideal: Optional[float] = None,
+) -> Optional[Dict[str, object]]:
+    num = _signal_value(numerator)
+    den = _signal_value(denominator)
+    if num is None or den is None or den == 0:
+        return None
+    out: Dict[str, object] = {
+        "metric_name": name,
+        "value": num / den,
+        "numerator": numerator,
+        "denominator": denominator,
+    }
+    if ideal is not None:
+        out["ideal"] = ideal
+        out["over_ideal"] = (num / den) / ideal if ideal else None
+    return out
+
+
 def _extract_top_stall_metrics(
     metric_stats: List[Dict[str, object]],
     *,
@@ -326,6 +387,392 @@ def _classify_stall_reason(metric_name: str) -> str:
     if "math_pipe_throttle" in low or "pipe_throttle" in low:
         return "math/pipe throttle (execution pipeline saturation)"
     return "general stall pressure"
+
+
+def _dimension_entry(
+    key: str,
+    title: str,
+    signals: Dict[str, object],
+    findings: List[Dict[str, object]],
+    actions: List[str],
+) -> Dict[str, object]:
+    present_signals = {k: v for k, v in signals.items() if v is not None}
+    return {
+        "key": key,
+        "title": title,
+        "signals": present_signals,
+        "findings": findings,
+        "actions": actions,
+        "status": "needs_attention" if findings else ("covered" if present_signals else "missing_metrics"),
+    }
+
+
+def _build_dimension_report(metric_stats: List[Dict[str, object]], *, top_k: int = 10) -> Dict[str, object]:
+    grid_size = _find_metric_value(metric_stats, ("launch__grid_size",), token_groups=(("launch", "grid_size"),))
+    block_size = _find_metric_value(metric_stats, ("launch__block_size",), token_groups=(("launch", "block_size"),))
+    waves_per_sm = _find_metric_value(
+        metric_stats,
+        ("launch__waves_per_multiprocessor",),
+        token_groups=(("launch", "waves", "multiprocessor"),),
+    )
+    num_sms = _find_metric_value(
+        metric_stats,
+        ("device__attribute_multiprocessor_count",),
+        token_groups=(("device", "multiprocessor", "count"),),
+    )
+    occ_limit_blocks = _find_metric_value(metric_stats, ("launch__occupancy_limit_blocks",))
+    occ_limit_regs = _find_metric_value(metric_stats, ("launch__occupancy_limit_registers",))
+    occ_limit_smem = _find_metric_value(metric_stats, ("launch__occupancy_limit_shared_mem",))
+    occ_limit_warps = _find_metric_value(metric_stats, ("launch__occupancy_limit_warps",))
+    regs_per_thread = _find_metric_value(metric_stats, ("launch__registers_per_thread",))
+    smem_per_block = _find_metric_value(metric_stats, ("launch__shared_mem_per_block",))
+    theoretical_occ = _find_metric_value(
+        metric_stats,
+        ("sm__maximum_warps_per_active_cycle_pct",),
+        token_groups=(("maximum", "warps", "active", "cycle", "pct"),),
+    )
+    achieved_occ = _find_metric_value(
+        metric_stats,
+        ("sm__warps_active.avg.pct_of_peak_sustained_active",),
+        token_groups=(("warps_active", "pct_of_peak_sustained_active"),),
+    )
+
+    occ_findings: List[Dict[str, object]] = []
+    grid_val = _signal_value(grid_size)
+    sm_val = _signal_value(num_sms)
+    waves_val = _signal_value(waves_per_sm)
+    theoretical_val = _signal_value(theoretical_occ)
+    achieved_val = _signal_value(achieved_occ)
+    if grid_val is not None and sm_val is not None and grid_val < sm_val:
+        occ_findings.append(
+            {
+                "category": "small_grid",
+                "title": "Grid has fewer CTAs than SMs",
+                "summary": "Some SMs may be idle for the whole kernel.",
+                "evidence": {"grid_size": grid_size, "num_sms": num_sms},
+            }
+        )
+    if waves_val is not None and waves_val < 1.0:
+        occ_findings.append(
+            {
+                "category": "small_grid",
+                "title": "Less than one wave per SM",
+                "summary": "Launch geometry is too small to fill the GPU.",
+                "evidence": {"waves_per_sm": waves_per_sm},
+            }
+        )
+    elif waves_val is not None and 1.0 <= waves_val < 2.0:
+        occ_findings.append(
+            {
+                "category": "tail_wave",
+                "title": "Partial tail wave likely",
+                "summary": "A partial final wave can make achieved occupancy lower than theoretical occupancy.",
+                "evidence": {"waves_per_sm": waves_per_sm},
+            }
+        )
+    if theoretical_val is not None and achieved_val is not None and theoretical_val >= 50.0 and achieved_val < 0.6 * theoretical_val:
+        occ_findings.append(
+            {
+                "category": "achieved_vs_theoretical_gap",
+                "title": "Achieved occupancy is far below theoretical occupancy",
+                "summary": "Look at stall reasons and tail effect; launch limits alone do not explain utilization.",
+                "evidence": {"theoretical_occupancy": theoretical_occ, "achieved_occupancy": achieved_occ},
+            }
+        )
+
+    sm_cycles_avg = _find_metric_value(metric_stats, ("sm__cycles_active.avg",), token_groups=(("sm", "cycles_active", "avg"),))
+    sm_cycles_max = _find_metric_value(metric_stats, ("sm__cycles_active.max",), token_groups=(("sm", "cycles_active", "max"),))
+    sm_cycles_min = _find_metric_value(metric_stats, ("sm__cycles_active.min",), token_groups=(("sm", "cycles_active", "min"),))
+    tail_findings: List[Dict[str, object]] = []
+    avg_cycles = _signal_value(sm_cycles_avg)
+    max_cycles = _signal_value(sm_cycles_max)
+    min_cycles = _signal_value(sm_cycles_min)
+    if avg_cycles and max_cycles is not None and max_cycles > 1.5 * avg_cycles:
+        tail_findings.append(
+            {
+                "category": "sm_active_cycle_imbalance",
+                "title": "Some SMs run much longer than average",
+                "summary": "This often indicates load imbalance or variable per-CTA work.",
+                "evidence": {"sm_cycles_avg": sm_cycles_avg, "sm_cycles_max": sm_cycles_max},
+            }
+        )
+    if avg_cycles and min_cycles is not None and min_cycles < 0.5 * avg_cycles:
+        tail_findings.append(
+            {
+                "category": "idle_sm_tail",
+                "title": "Some SMs have much lower active cycles than average",
+                "summary": "The kernel may have a tail effect or uneven block scheduling.",
+                "evidence": {"sm_cycles_avg": sm_cycles_avg, "sm_cycles_min": sm_cycles_min},
+            }
+        )
+
+    top_stalls = _extract_top_stall_metrics(metric_stats, top_k=max(5, int(top_k)))
+    pcsamp_samples = _find_metric_value(metric_stats, ("smsp__pcsamp_sample_count",))
+    stall_findings: List[Dict[str, object]] = []
+    sample_count = _signal_value(pcsamp_samples)
+    stall_ratios: List[Dict[str, object]] = []
+    for stall in top_stalls:
+        value = _signal_value(stall)
+        ratio = (value / sample_count) if value is not None and sample_count else None
+        enriched = dict(stall)
+        if ratio is not None:
+            enriched["pct_of_pcsamp_samples"] = 100.0 * ratio
+        enriched["meaning"] = _classify_stall_reason(str(stall.get("metric_name", "")))
+        stall_ratios.append(enriched)
+    if stall_ratios:
+        top = stall_ratios[0]
+        top_pct = _to_number(top.get("pct_of_pcsamp_samples"))
+        top_value = _to_number(top.get("value"))
+        if (top_pct is not None and top_pct >= 20.0) or (sample_count is None and top_value is not None and top_value > 0):
+            stall_findings.append(
+                {
+                    "category": "dominant_stall",
+                    "title": f"Dominant stall signal: {top.get('metric_name')}",
+                    "summary": str(top.get("meaning", "")),
+                    "evidence": {"top_stall": top, "top_stalls": stall_ratios[:5]},
+                }
+            )
+
+    tensor_active = _find_metric_value(
+        metric_stats,
+        (
+            "sm__pipe_tensor_cycles_active.avg.pct_of_peak_sustained_elapsed",
+            "sm__pipe_tensor_cycles_active.avg.pct_of_peak_sustained_active",
+        ),
+        token_groups=(("pipe_tensor", "cycles_active"), ("tensor", "cycles_active")),
+    )
+    fma_active = _find_metric_value(
+        metric_stats,
+        (
+            "sm__inst_executed_pipe_fma.avg.pct_of_peak_sustained_active",
+            "sm__inst_executed_pipe_fma.avg.pct_of_peak_sustained_elapsed",
+        ),
+        token_groups=(("inst_executed", "pipe_fma"),),
+    )
+    fp64_active = _find_metric_value(
+        metric_stats,
+        ("sm__inst_executed_pipe_fp64.avg.pct_of_peak_sustained_active",),
+        token_groups=(("pipe_fp64",),),
+    )
+    tensor_findings: List[Dict[str, object]] = []
+    tensor_val = _signal_value(tensor_active)
+    fma_val = _signal_value(fma_active)
+    fp64_val = _signal_value(fp64_active)
+    if tensor_val is not None and tensor_val == 0.0 and fma_val is not None and fma_val >= 30.0:
+        tensor_findings.append(
+            {
+                "category": "scalar_fma_no_tensor_core",
+                "title": "FMA pipe is active but tensor pipe is idle",
+                "summary": "For GEMM/attention/conv-like kernels this can indicate a missed tensor-core optimization.",
+                "evidence": {"tensor_active": tensor_active, "fma_active": fma_active},
+            }
+        )
+    if fp64_val is not None and fp64_val > 0.0:
+        tensor_findings.append(
+            {
+                "category": "fp64_activity",
+                "title": "FP64 pipe activity detected",
+                "summary": "If the kernel should be FP32/BF16, check accidental double literals or math functions.",
+                "evidence": {"fp64_active": fp64_active},
+            }
+        )
+
+    pm_metrics = []
+    for row in metric_stats:
+        name = str(row.get("metric_name", ""))
+        if name.startswith("pmsampling:"):
+            value = _metric_stat_value(row)
+            if value is not None:
+                pm_metrics.append(
+                    {
+                        "metric_name": name,
+                        "value": value,
+                        "samples": int(row.get("samples", 0) or 0),
+                    }
+                )
+    pm_metrics.sort(key=lambda x: float(x["value"]), reverse=True)
+    timeline_findings: List[Dict[str, object]] = []
+    if not pm_metrics:
+        timeline_findings.append(
+            {
+                "category": "missing_pm_sampling",
+                "title": "PM sampling metrics were not collected",
+                "summary": "Tail effects and pipeline bubbles are hard to confirm without pmsampling:* time-series metrics.",
+                "evidence": {},
+            }
+        )
+
+    dram_read_pct = _find_metric_value(
+        metric_stats,
+        ("dram__bytes_read.sum.pct_of_peak_sustained_elapsed",),
+        token_groups=(("dram", "read", "pct_of_peak"), ("dram", "throughput", "pct_of_peak")),
+    )
+    dram_write_pct = _find_metric_value(
+        metric_stats,
+        ("dram__bytes_write.sum.pct_of_peak_sustained_elapsed",),
+        token_groups=(("dram", "write", "pct_of_peak"),),
+    )
+    l1_hit = _find_metric_value(metric_stats, ("l1tex__t_sector_hit_rate.pct",), token_groups=(("l1tex", "hit_rate"),))
+    l2_hit = _find_metric_value(metric_stats, ("lts__t_sector_hit_rate.pct",), token_groups=(("lts", "hit_rate"),))
+    global_ld_sectors = _find_metric_value(
+        metric_stats,
+        ("l1tex__t_sectors_pipe_lsu_mem_global_op_ld.sum",),
+        token_groups=(("l1tex", "sectors", "global", "ld"),),
+    )
+    global_ld_requests = _find_metric_value(
+        metric_stats,
+        ("l1tex__t_requests_pipe_lsu_mem_global_op_ld.sum",),
+        token_groups=(("l1tex", "requests", "global", "ld"),),
+    )
+    sectors_per_ld_request = _ratio_signal(
+        global_ld_sectors,
+        global_ld_requests,
+        name="derived_global_load_sectors_per_request",
+        ideal=4.0,
+    )
+    store_bytes_per_sector = _find_metric_value(
+        metric_stats,
+        ("smsp__sass_average_data_bytes_per_sector_mem_global_op_st.ratio",),
+        token_groups=(("bytes", "sector", "global", "st"),),
+    )
+    local_ld = _find_metric_value(
+        metric_stats,
+        ("smsp__sass_inst_executed_op_local_ld.sum", "smsp__inst_executed_op_local_ld.sum"),
+        token_groups=(("local_ld",), ("op_local_ld",)),
+    )
+    local_st = _find_metric_value(
+        metric_stats,
+        ("smsp__sass_inst_executed_op_local_st.sum", "smsp__inst_executed_op_local_st.sum"),
+        token_groups=(("local_st",), ("op_local_st",)),
+    )
+    memory_findings: List[Dict[str, object]] = []
+    sectors_val = _signal_value(sectors_per_ld_request)
+    if sectors_val is not None and sectors_val > 5.0:
+        memory_findings.append(
+            {
+                "category": "uncoalesced_global_loads",
+                "title": "Global load sectors/request is above the ideal",
+                "summary": "Likely uncoalesced global loads. Ideal is about 4 sectors/request for 128B aligned warp loads.",
+                "evidence": {"sectors_per_ld_request": sectors_per_ld_request},
+            }
+        )
+    store_eff = _signal_value(store_bytes_per_sector)
+    if store_eff is not None and 0.0 < store_eff < 16.0:
+        memory_findings.append(
+            {
+                "category": "sparse_global_stores",
+                "title": "Low useful bytes per global store sector",
+                "summary": "Sparse or predicated writes may waste store bandwidth.",
+                "evidence": {"store_bytes_per_sector": store_bytes_per_sector},
+            }
+        )
+    if (_signal_value(local_ld) or 0.0) > 0.0 or (_signal_value(local_st) or 0.0) > 0.0:
+        memory_findings.append(
+            {
+                "category": "register_spill",
+                "title": "Local memory load/store instructions detected",
+                "summary": "Local memory operations often indicate register spill.",
+                "evidence": {"local_ld": local_ld, "local_st": local_st, "registers_per_thread": regs_per_thread},
+            }
+        )
+
+    dimensions = [
+        _dimension_entry(
+            "occupancy_launch_geometry",
+            "SM occupancy & launch geometry",
+            {
+                "grid_size": grid_size,
+                "block_size": block_size,
+                "num_sms": num_sms,
+                "waves_per_sm": waves_per_sm,
+                "occupancy_limit_blocks": occ_limit_blocks,
+                "occupancy_limit_registers": occ_limit_regs,
+                "occupancy_limit_shared_mem": occ_limit_smem,
+                "occupancy_limit_warps": occ_limit_warps,
+                "registers_per_thread": regs_per_thread,
+                "shared_mem_per_block": smem_per_block,
+                "theoretical_occupancy": theoretical_occ,
+                "achieved_occupancy": achieved_occ,
+            },
+            occ_findings,
+            [
+                "If grid/waves are small, increase parallel work or split reductions.",
+                "If registers/shared memory limit occupancy, tune launch bounds, tile size, or live ranges.",
+            ],
+        ),
+        _dimension_entry(
+            "thread_block_balance_tail_effect",
+            "Thread-block balance / tail effect",
+            {
+                "sm_cycles_active_avg": sm_cycles_avg,
+                "sm_cycles_active_max": sm_cycles_max,
+                "sm_cycles_active_min": sm_cycles_min,
+                "waves_per_sm": waves_per_sm,
+            },
+            tail_findings,
+            [
+                "For variable-size inputs, inspect per-CTA work distribution.",
+                "Consider sorting/packing by length, chunking long work, or work stealing.",
+            ],
+        ),
+        _dimension_entry(
+            "stall_breakdown",
+            "Stall reason breakdown",
+            {"pcsamp_sample_count": pcsamp_samples, "top_stalls": stall_ratios[: int(top_k)]},
+            stall_findings,
+            [
+                "Use source counters with -lineinfo to map dominant stalls to source lines.",
+                "For long_scoreboard, inspect global memory coalescing and add ILP/pipelining.",
+            ],
+        ),
+        _dimension_entry(
+            "tensor_core_compute",
+            "Tensor core / compute pipeline",
+            {"tensor_active": tensor_active, "fma_active": fma_active, "fp64_active": fp64_active},
+            tensor_findings,
+            [
+                "For matmul-like work with no tensor activity, consider CUTLASS/cuBLAS or MMA kernels.",
+                "For unexpected FP64 activity, audit floating-point literals and math functions.",
+            ],
+        ),
+        _dimension_entry(
+            "pm_sampling_timeline",
+            "SM utilization timeline / PM sampling",
+            {"top_pm_sampling_metrics": pm_metrics[: int(top_k)]},
+            timeline_findings,
+            [
+                "Collect pmsampling:* metrics to distinguish flat-low, long-tail, and sawtooth timeline shapes.",
+            ],
+        ),
+        _dimension_entry(
+            "memory_access_cache",
+            "Memory access pattern & cache efficiency",
+            {
+                "dram_read_pct_peak": dram_read_pct,
+                "dram_write_pct_peak": dram_write_pct,
+                "l1_hit_rate": l1_hit,
+                "l2_hit_rate": l2_hit,
+                "global_load_sectors": global_ld_sectors,
+                "global_load_requests": global_ld_requests,
+                "sectors_per_ld_request": sectors_per_ld_request,
+                "store_bytes_per_sector": store_bytes_per_sector,
+                "local_ld": local_ld,
+                "local_st": local_st,
+            },
+            memory_findings,
+            [
+                "For sectors/request > 5, rework lane-to-address mapping or vectorize loads.",
+                "For register spill, reduce live ranges or tune __launch_bounds__.",
+            ],
+        ),
+    ]
+    findings = [finding for dim in dimensions for finding in dim.get("findings", []) if isinstance(finding, dict)]
+    return {
+        "dimensions": dimensions,
+        "needs_attention": [dim["key"] for dim in dimensions if dim.get("status") == "needs_attention"],
+        "missing_metric_dimensions": [dim["key"] for dim in dimensions if dim.get("status") == "missing_metrics"],
+        "top_findings": findings[: int(top_k)],
+    }
 
 
 def _build_metric_coverage(metric_stats: List[Dict[str, object]]) -> Dict[str, object]:
@@ -540,7 +987,6 @@ def _build_heuristic_findings(metric_stats: List[Dict[str, object]], *, top_k: i
     dram_val = _to_number(dram.get("value")) if isinstance(dram, dict) else None
     occ_val = _to_number(occ.get("value")) if isinstance(occ, dict) else None
     issue_val = _to_number(issue.get("value")) if isinstance(issue, dict) else None
-    eligible_val = _to_number(eligible.get("value")) if isinstance(eligible, dict) else None
     ideal_l2_txn_global_val = (
         _to_number(ideal_l2_txn_global.get("value")) if isinstance(ideal_l2_txn_global, dict) else None
     )
@@ -707,6 +1153,7 @@ def _build_bottleneck_report(
     top_k: int,
 ) -> Dict[str, object]:
     coverage = _build_metric_coverage(metric_stats)
+    dimension_report = _build_dimension_report(metric_stats, top_k=max(int(top_k), 5))
     rule_findings = _build_rule_findings(rule_rows, top_k=max(int(top_k), 5))
     heuristic_payload = _build_heuristic_findings(metric_stats, top_k=max(int(top_k), 5))
     heuristic_findings = list(heuristic_payload.get("findings", []))
@@ -716,10 +1163,26 @@ def _build_bottleneck_report(
         top_bottlenecks.extend(rule_findings[: int(top_k)])
     if len(top_bottlenecks) < int(top_k):
         remain = int(top_k) - len(top_bottlenecks)
+        dimension_findings = [
+            {
+                "source": "dimension_report",
+                "category": str(item.get("category", "")),
+                "title": str(item.get("title", "")),
+                "summary": str(item.get("summary", "")),
+                "evidence": item.get("evidence", {}),
+                "confidence": "medium",
+            }
+            for item in dimension_report.get("top_findings", [])
+            if isinstance(item, dict)
+        ]
+        top_bottlenecks.extend(dimension_findings[:remain])
+    if len(top_bottlenecks) < int(top_k):
+        remain = int(top_k) - len(top_bottlenecks)
         top_bottlenecks.extend(heuristic_findings[:remain])
 
     notes: List[str] = [
         "Prefer NCU built-in rule findings when available; they are section-aware and metric-context aware.",
+        "Dimension findings follow the Codex NCU workflow: occupancy, balance, stalls, tensor core, timeline, memory.",
         "Heuristic findings are fallback signals and should be validated with kernel/source context.",
     ]
     if coverage.get("missing_categories"):
@@ -727,6 +1190,7 @@ def _build_bottleneck_report(
 
     return {
         "coverage": coverage,
+        "dimension_report": dimension_report,
         "signals": heuristic_payload.get("signals", {}),
         "rule_findings": rule_findings,
         "heuristic_findings": heuristic_findings,
@@ -992,6 +1456,20 @@ class NcuReportSkillEngine:
         report["filters"] = {"metric_like": metric_like, "kernel_like": kernel_like}
         return report
 
+    def _skill_dimension_report(
+        self,
+        *,
+        metric_like: str = "%",
+        kernel_like: str = "%",
+        top_k: int = 10,
+    ) -> Dict[str, object]:
+        metric_stats = self._skill_per_metric_stats(metric_like=metric_like, kernel_like=kernel_like)
+        return {
+            "report_path": self.report_path,
+            "filters": {"metric_like": metric_like, "kernel_like": kernel_like},
+            **_build_dimension_report(metric_stats, top_k=top_k),
+        }
+
     def _build_skills(self) -> Dict[str, ReportSkill]:
         return {
             "summary": ReportSkill(
@@ -1064,6 +1542,18 @@ class NcuReportSkillEngine:
                     SkillParam("top_k", "top bottlenecks limit", "int", False, 10),
                 ],
                 run_fn=self._skill_bottleneck_report,
+            ),
+            "dimension_report": ReportSkill(
+                name="dimension_report",
+                title="Six-Dimension Diagnostic Report",
+                description="Diagnose occupancy, balance, stalls, tensor core, timeline, and memory signals.",
+                category="diagnose",
+                params=[
+                    SkillParam("metric_like", "metric LIKE pattern", "str", False, "%"),
+                    SkillParam("kernel_like", "kernel LIKE pattern", "str", False, "%"),
+                    SkillParam("top_k", "top findings/signals limit", "int", False, 10),
+                ],
+                run_fn=self._skill_dimension_report,
             ),
         }
 
@@ -1305,6 +1795,23 @@ def analyze_ncu_report_to_markdown(payload: Dict[str, object]) -> str:
                 summary_text = str(item.get("summary", "")).strip()
                 if summary_text:
                     lines.append(f"  - {summary_text}")
+        dimension_report = bottleneck.get("dimension_report", {})
+        if isinstance(dimension_report, dict):
+            needs_attention = dimension_report.get("needs_attention", [])
+            if isinstance(needs_attention, list) and needs_attention:
+                lines.append(f"- dimensions_need_attention: {', '.join(str(x) for x in needs_attention)}")
+            dimensions = dimension_report.get("dimensions", [])
+            if isinstance(dimensions, list):
+                lines.append("")
+                lines.append("### Six Dimensions")
+                lines.append("")
+                for dim in dimensions:
+                    if not isinstance(dim, dict):
+                        continue
+                    lines.append(
+                        f"- {dim.get('key')}: {dim.get('status')} "
+                        f"({len(dim.get('signals', {}) or {})} signals, {len(dim.get('findings', []) or [])} findings)"
+                    )
     lines.append("")
     lines.append("## Top Kernels")
     lines.append("")

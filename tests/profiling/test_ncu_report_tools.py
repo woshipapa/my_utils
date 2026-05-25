@@ -143,6 +143,39 @@ def _fake_module() -> _FakeNcuReportModule:
     return _FakeNcuReportModule(_FakeContext([r0]))
 
 
+def _fake_dimension_module() -> _FakeNcuReportModule:
+    r0 = _FakeRange(
+        [
+            _FakeAction(
+                "dim_kernel",
+                {
+                    "launch__grid_size": _FakeMetric("64", ""),
+                    "launch__block_size": _FakeMetric("128", ""),
+                    "launch__waves_per_multiprocessor": _FakeMetric("0.5", ""),
+                    "device__attribute_multiprocessor_count": _FakeMetric("148", ""),
+                    "launch__registers_per_thread": _FakeMetric("160", ""),
+                    "sm__maximum_warps_per_active_cycle_pct": _FakeMetric("100", "%"),
+                    "sm__warps_active.avg.pct_of_peak_sustained_active": _FakeMetric("25", "%"),
+                    "sm__cycles_active.avg": _FakeMetric("100", "cycle"),
+                    "sm__cycles_active.max": _FakeMetric("300", "cycle"),
+                    "sm__cycles_active.min": _FakeMetric("20", "cycle"),
+                    "smsp__pcsamp_sample_count": _FakeMetric("100", ""),
+                    "smsp__pcsamp_warps_issue_stalled_long_scoreboard": _FakeMetric("45", ""),
+                    "sm__pipe_tensor_cycles_active.avg.pct_of_peak_sustained_elapsed": _FakeMetric("0", "%"),
+                    "sm__inst_executed_pipe_fma.avg.pct_of_peak_sustained_active": _FakeMetric("60", "%"),
+                    "sm__inst_executed_pipe_fp64.avg.pct_of_peak_sustained_active": _FakeMetric("1", "%"),
+                    "l1tex__t_sectors_pipe_lsu_mem_global_op_ld.sum": _FakeMetric("600", ""),
+                    "l1tex__t_requests_pipe_lsu_mem_global_op_ld.sum": _FakeMetric("100", ""),
+                    "smsp__sass_average_data_bytes_per_sector_mem_global_op_st.ratio": _FakeMetric("8", ""),
+                    "smsp__sass_inst_executed_op_local_ld.sum": _FakeMetric("2", ""),
+                    "smsp__sass_inst_executed_op_local_st.sum": _FakeMetric("0", ""),
+                },
+            )
+        ]
+    )
+    return _FakeNcuReportModule(_FakeContext([r0]))
+
+
 def test_load_ncu_report_records(tmp_path: Path) -> None:
     rep = tmp_path / "a.ncu-rep"
     rep.write_text("", encoding="utf-8")
@@ -170,6 +203,9 @@ def test_ncu_report_skill_engine_summary(tmp_path: Path) -> None:
     heuristic = bottleneck.get("heuristic_findings", [])
     categories = {str(x.get("category")) for x in heuristic if isinstance(x, dict)}
     assert "global_memory_coalescing" in categories
+    dimension_report = bottleneck.get("dimension_report", {})
+    assert isinstance(dimension_report, dict)
+    assert "dimensions" in dimension_report
 
 
 def test_load_ncu_report_rule_rows(tmp_path: Path) -> None:
@@ -197,3 +233,32 @@ def test_analyze_ncu_report(tmp_path: Path) -> None:
     assert "all_metrics" in payload
     assert "bottleneck_report" in payload
     assert "rule_results" in payload
+
+
+def test_ncu_dimension_report_detects_codex_skill_patterns(tmp_path: Path) -> None:
+    rep = tmp_path / "dim.ncu-rep"
+    rep.write_text("", encoding="utf-8")
+    engine = NcuReportSkillEngine(str(rep), ncu_report_module=_fake_dimension_module())
+    assert "dimension_report" in engine.list_skills()
+
+    report = engine.run_skill("dimension_report", top_k=20)
+    assert isinstance(report, dict)
+    findings = {
+        str(item.get("category"))
+        for item in report.get("top_findings", [])
+        if isinstance(item, dict)
+    }
+    assert "small_grid" in findings
+    assert "dominant_stall" in findings
+    assert "scalar_fma_no_tensor_core" in findings
+    assert "fp64_activity" in findings
+    assert "uncoalesced_global_loads" in findings
+    assert "register_spill" in findings
+
+    memory_dim = next(
+        item
+        for item in report["dimensions"]
+        if item["key"] == "memory_access_cache"
+    )
+    sectors = memory_dim["signals"]["sectors_per_ld_request"]
+    assert sectors["value"] == 6.0

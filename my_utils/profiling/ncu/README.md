@@ -93,6 +93,14 @@ myutils-profile ncu-report-skill --report ./run.ncu-rep --skill bottleneck_repor
 
 作用：输出 `rule_results + bottleneck_report + coverage`，用于快速定位瓶颈类别。
 
+按 Codex NCU workflow 看六维诊断：
+
+```bash
+myutils-profile ncu-report-skill --report ./run.ncu-rep --skill dimension_report --param top_k=10 --pretty
+```
+
+作用：按 occupancy/launch、tail effect、stall、tensor core、PM sampling timeline、memory/cache 六个维度输出证据和下一步动作。
+
 ### 5) CSV 分析（你已有导出 CSV 时）
 
 ```bash
@@ -106,8 +114,9 @@ myutils-profile ncu-csv-analyze --csv ./ncu_raw.csv --top-k 20 --pretty
 
 1. `coverage.coverage_score`: 是否采够关键维度指标。  
 2. `top_bottlenecks`: 优先看 `source=ncu_rule`。  
-3. `heuristic_findings`: rule 不完整时的 fallback（coalescing/divergence/bank-conflict 等）。  
-4. `top_kernels + per_metric_stats`: 具体 kernel 与指标证据。  
+3. `dimension_report`: 对照六维诊断，确认 small grid、tail、stall、tensor core、PM sampling、memory/cache 哪一类最可疑。
+4. `heuristic_findings`: rule 不完整时的 fallback（coalescing/divergence/bank-conflict 等）。
+5. `top_kernels + per_metric_stats`: 具体 kernel 与指标证据。
 
 ## 关键文件说明
 
