@@ -53,6 +53,9 @@ setup(
             "profiling/ncu/*.md",
             "profiling/ncu/*.yaml",
             "profiling/ncu/*.sh",
+            "profiling/nccl/*.md",
+            "profiling/nccl/*.yaml",
+            "profiling/nccl/*.sh",
         ]
     },
     entry_points={
@@ -71,6 +74,8 @@ setup(
             "ncu-csv-analyze=my_utils.profiling.cli:entry_ncu_csv_analyze",
             "ncu-report-skill=my_utils.profiling.cli:entry_ncu_report_skill",
             "ncu-report-analyze=my_utils.profiling.cli:entry_ncu_report_analyze",
+            "nccl-inspector-skill=my_utils.profiling.cli:entry_nccl_inspector_skill",
+            "nccl-inspector-analyze=my_utils.profiling.cli:entry_nccl_inspector_analyze",
         ]
     },
     install_requires=install_requires,

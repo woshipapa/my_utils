@@ -40,6 +40,12 @@ from .ncu.ncu_report_tools import (
     analyze_ncu_report_to_markdown,
     report_result_to_json,
 )
+from .nccl.nccl_inspector_tools import (
+    NcclInspectorSkillEngine,
+    analyze_nccl_inspector,
+    analyze_nccl_inspector_to_markdown,
+    inspector_result_to_json,
+)
 
 
 def _parse_tags(values: Iterable[str]) -> Dict[str, str]:
@@ -1070,6 +1076,60 @@ def cmd_ncu_report_analyze(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_nccl_inspector_skill(args: argparse.Namespace) -> int:
+    engine = NcclInspectorSkillEngine(args.input, prometheus_path=str(args.prometheus_path or ""))
+    if args.list_skills:
+        payload = engine.describe_skills()
+        text = inspector_result_to_json(payload, pretty=bool(args.pretty))
+        if args.output:
+            path = Path(args.output)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text, encoding="utf-8")
+            print(f"[nccl-inspector-skill] wrote: {path}")
+        else:
+            print(text)
+        return 0
+
+    if not args.skill:
+        print("[nccl-inspector-skill] --skill is required unless --list-skills is set", file=sys.stderr)
+        return 2
+
+    params = _parse_kv_params(args.param)
+    payload = engine.run_skill(str(args.skill), **params)
+    text = inspector_result_to_json(payload, pretty=bool(args.pretty))
+    if args.output:
+        path = Path(args.output)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+        print(f"[nccl-inspector-skill] wrote: {path}")
+    else:
+        print(text)
+    return 0
+
+
+def cmd_nccl_inspector_analyze(args: argparse.Namespace) -> int:
+    payload = analyze_nccl_inspector(
+        args.input,
+        prometheus_path=str(args.prometheus_path or ""),
+        top_k=int(args.top_k),
+        op_like=str(args.op_like or "%"),
+        comm_like=str(args.comm_like or "%"),
+        min_msg_size_bytes=int(args.min_msg_size_bytes),
+    )
+    if str(args.format).lower() in {"md", "markdown"}:
+        text = analyze_nccl_inspector_to_markdown(payload)
+    else:
+        text = inspector_result_to_json(payload, pretty=bool(args.pretty))
+    if args.output:
+        path = Path(args.output)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+        print(f"[nccl-inspector-analyze] wrote: {path}")
+    else:
+        print(text)
+    return 0
+
+
 def cmd_nsys_module_kernel_compare(args: argparse.Namespace) -> int:
     def _load_rows_from_sqlite(sqlite_path: str) -> List[Dict[str, object]]:
         provider = NsysSqliteMetricsProvider(str(sqlite_path))
@@ -1549,6 +1609,47 @@ def build_parser() -> argparse.ArgumentParser:
     ncu_report_analyze.add_argument("--output", default="")
     ncu_report_analyze.add_argument("--pretty", action="store_true")
     ncu_report_analyze.set_defaults(func=cmd_ncu_report_analyze)
+
+    nccl_skill = sub.add_parser(
+        "nccl-inspector-skill",
+        help="run built-in NCCL Inspector JSON/Prometheus parsing skills",
+    )
+    nccl_skill.add_argument("--input", required=True, help="NCCL Inspector JSON/JSONL file or dump directory")
+    nccl_skill.add_argument(
+        "--prometheus-path",
+        default="",
+        help="optional NCCL Inspector Prometheus textfile or directory",
+    )
+    nccl_skill.add_argument("--list-skills", action="store_true", help="list skills and params")
+    nccl_skill.add_argument("--skill", default="", help="skill name")
+    nccl_skill.add_argument(
+        "--param",
+        action="append",
+        default=[],
+        help="skill parameter in key=value format (can repeat)",
+    )
+    nccl_skill.add_argument("--output", default="", help="optional json output path")
+    nccl_skill.add_argument("--pretty", action="store_true", help="pretty-print json output")
+    nccl_skill.set_defaults(func=cmd_nccl_inspector_skill)
+
+    nccl_analyze = sub.add_parser(
+        "nccl-inspector-analyze",
+        help="summarize NCCL Inspector JSON dumps and optional Prometheus textfiles",
+    )
+    nccl_analyze.add_argument("--input", required=True, help="NCCL Inspector JSON/JSONL file or dump directory")
+    nccl_analyze.add_argument(
+        "--prometheus-path",
+        default="",
+        help="optional NCCL Inspector Prometheus textfile or directory",
+    )
+    nccl_analyze.add_argument("--op-like", default="%", help="operation LIKE pattern (%/_/*)")
+    nccl_analyze.add_argument("--comm-like", default="%", help="communicator name LIKE pattern (%/_/*)")
+    nccl_analyze.add_argument("--min-msg-size-bytes", type=int, default=0)
+    nccl_analyze.add_argument("--top-k", type=int, default=20)
+    nccl_analyze.add_argument("--format", default="json", choices=["json", "markdown", "md"])
+    nccl_analyze.add_argument("--output", default="")
+    nccl_analyze.add_argument("--pretty", action="store_true")
+    nccl_analyze.set_defaults(func=cmd_nccl_inspector_analyze)
 
     nsys_module_kernel_compare = sub.add_parser(
         "nsys-module-kernel-compare",
@@ -2153,6 +2254,14 @@ def entry_ncu_report_skill() -> int:
 
 def entry_ncu_report_analyze() -> int:
     return _run_nsys_alias("ncu-report-analyze")
+
+
+def entry_nccl_inspector_skill() -> int:
+    return _run_nsys_alias("nccl-inspector-skill")
+
+
+def entry_nccl_inspector_analyze() -> int:
+    return _run_nsys_alias("nccl-inspector-analyze")
 
 
 if __name__ == "__main__":

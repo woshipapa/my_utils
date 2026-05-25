@@ -87,6 +87,13 @@ from .sources.nsys_mfu import compute_mfu_compare, compute_mfu_single, infer_pea
 from .sources.nsys_schema_adapter import NsightSchema, NsysVersionInfo, detect_nsys_version
 from .sources.nsys_sql_skills import NsysSqlSkillEngine, SqlSkill, SqlSkillParam
 from .sources.nsys_timeline_html import export_timeline_html
+from .nccl.nccl_inspector_tools import (
+    NcclInspectorSkillEngine,
+    analyze_nccl_inspector,
+    analyze_nccl_inspector_to_markdown,
+    load_nccl_inspector_events,
+    load_nccl_prometheus_metrics,
+)
 
 VISUALIZATION_AVAILABLE = False
 try:
@@ -207,6 +214,11 @@ __all__ = [
     "diff_nsys_sqlite",
     "diff_to_markdown",
     "export_timeline_html",
+    "NcclInspectorSkillEngine",
+    "analyze_nccl_inspector",
+    "analyze_nccl_inspector_to_markdown",
+    "load_nccl_inspector_events",
+    "load_nccl_prometheus_metrics",
     "VISUALIZATION_AVAILABLE",
 ]
 

@@ -4,6 +4,7 @@
 
 - `nsys`：看训练全局时间线、通信/计算重叠、迭代耗时、跨版本对比。
 - `ncu`：看单 kernel 的瓶颈（SM/DRAM/occupancy/stall/rules）。
+- `nccl-inspector`：看 NCCL profiler plugin 输出的 collective/P2P 带宽、耗时、rank skew。
 
 ## 30秒流程图
 
@@ -12,6 +13,7 @@ flowchart TD
     A[开始: 我要做性能分析] --> B{分析目标}
     B -->|整段训练/多卡行为| C[走 NSYS]
     B -->|单个 kernel 瓶颈| D[走 NCU]
+    B -->|NCCL collective/P2P细节| E[走 NCCL Inspector]
 
     C --> C1[run_nsys_quick.sh 抓trace]
     C1 --> C2{是否已有 sqlite}
@@ -27,6 +29,10 @@ flowchart TD
     D2 -->|没有| D4[先运行采集命令]
     D3 --> D5[看 coverage + top_bottlenecks]
     D5 --> D6[结束]
+
+    E --> E1[启用 NCCL_PROFILER_PLUGIN + NCCL_INSPECTOR_ENABLE]
+    E1 --> E2[nccl-inspector-analyze 解析 JSON/Prometheus]
+    E2 --> E3[看 top_collectives/rank_skew/timing_sources]
 ```
 
 ## 一眼选命令（按需求）
@@ -81,6 +87,14 @@ myutils-profile ncu-report-analyze --report ./run.ncu-rep --top-k 20 --pretty
 
 说明：输出 `rule_results + bottleneck_report + coverage`。
 
+7. 我已经有 NCCL Inspector dump，想看通信明细
+
+```bash
+myutils-profile nccl-inspector-analyze --input ./nccl-inspector-logs --top-k 20 --pretty
+```
+
+说明：解析 NCCL profiler plugin 的 Inspector JSON/JSONL 输出，汇总 collective/P2P、带宽、耗时、rank skew。
+
 ## 常用配置文件
 
 - NSYS 快速模板：`my_utils/profiling/templates/nsys_quick_launch.yaml`
@@ -88,6 +102,7 @@ myutils-profile ncu-report-analyze --report ./run.ncu-rep --top-k 20 --pretty
 - NCU 快速模板：`my_utils/profiling/ncu/ncu_quick_launch.yaml`
 - NCU 训练全覆盖模板：`my_utils/profiling/ncu/ncu_full_collection.yaml`
 - NCU 全量参数模板：`my_utils/profiling/ncu/ncu_2026_1_1_full_args.yaml`
+- NCCL Inspector 文档：`my_utils/profiling/nccl/README.md`
 
 ## 深入文档入口
 
