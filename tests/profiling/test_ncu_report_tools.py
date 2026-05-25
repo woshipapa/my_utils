@@ -176,6 +176,34 @@ def _fake_dimension_module() -> _FakeNcuReportModule:
     return _FakeNcuReportModule(_FakeContext([r0]))
 
 
+def _fake_h100_dimension_module() -> _FakeNcuReportModule:
+    r0 = _FakeRange(
+        [
+            _FakeAction(
+                "h100_kernel",
+                {
+                    "device__attribute_compute_capability_major": _FakeMetric("9", ""),
+                    "device__attribute_compute_capability_minor": _FakeMetric("0", ""),
+                    "device__attribute_multiprocessor_count": _FakeMetric("132", ""),
+                    "device__attribute_max_warps_per_multiprocessor": _FakeMetric("64", ""),
+                    "launch__grid_size": _FakeMetric("96", ""),
+                    "launch__waves_per_multiprocessor": _FakeMetric("0.75", ""),
+                    "dram__throughput.avg.pct_of_peak_sustained_elapsed": _FakeMetric("8", "%"),
+                    "l1tex__average_t_sectors_per_request_pipe_lsu_mem_global_op_ld.ratio": _FakeMetric("6.5", ""),
+                    "smsp__inst_executed_op_global_ld.sum": _FakeMetric("200", ""),
+                    "smsp__inst_executed_op_global_st.sum": _FakeMetric("50", ""),
+                    "smsp__average_data_bytes_per_sector_mem_global_op_st.ratio": _FakeMetric("12", ""),
+                    "smsp__inst_executed_op_local_ld.sum": _FakeMetric("1", ""),
+                    "smsp__inst_executed_op_local_st.sum": _FakeMetric("1", ""),
+                    "smsp__average_warps_issue_stalled_long_scoreboard_per_issue_active.ratio": _FakeMetric("4.5", ""),
+                    "pmsampling:smsp__warps_issue_stalled_long_scoreboard.avg": _FakeMetric("3.0", ""),
+                },
+            )
+        ]
+    )
+    return _FakeNcuReportModule(_FakeContext([r0]))
+
+
 def test_load_ncu_report_records(tmp_path: Path) -> None:
     rep = tmp_path / "a.ncu-rep"
     rep.write_text("", encoding="utf-8")
@@ -262,3 +290,33 @@ def test_ncu_dimension_report_detects_codex_skill_patterns(tmp_path: Path) -> No
     )
     sectors = memory_dim["signals"]["sectors_per_ld_request"]
     assert sectors["value"] == 6.0
+
+
+def test_ncu_dimension_report_supports_h100_metric_aliases(tmp_path: Path) -> None:
+    rep = tmp_path / "h100.ncu-rep"
+    rep.write_text("", encoding="utf-8")
+    engine = NcuReportSkillEngine(str(rep), ncu_report_module=_fake_h100_dimension_module())
+    report = engine.run_skill("dimension_report", top_k=20)
+    assert isinstance(report, dict)
+    assert report["architecture"]["family"] == "hopper"
+    assert report["architecture"]["alias"] == "h100/sm_90"
+    assert report["architecture"]["compute_capability"] == "9.0"
+
+    memory_dim = next(
+        item
+        for item in report["dimensions"]
+        if item["key"] == "memory_access_cache"
+    )
+    signals = memory_dim["signals"]
+    assert signals["sectors_per_ld_request"]["value"] == 6.5
+    assert signals["global_ld_instructions"]["metric_name"] == "smsp__inst_executed_op_global_ld.sum"
+    assert signals["local_ld"]["metric_name"] == "smsp__inst_executed_op_local_ld.sum"
+
+    findings = {
+        str(item.get("category"))
+        for item in report.get("top_findings", [])
+        if isinstance(item, dict)
+    }
+    assert "small_grid" in findings
+    assert "uncoalesced_global_loads" in findings
+    assert "register_spill" in findings

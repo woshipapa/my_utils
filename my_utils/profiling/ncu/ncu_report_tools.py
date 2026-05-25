@@ -345,6 +345,46 @@ def _ratio_signal(
     return out
 
 
+def _detect_architecture(metric_stats: List[Dict[str, object]]) -> Dict[str, object]:
+    cc_major = _find_metric_value(metric_stats, ("device__attribute_compute_capability_major",))
+    cc_minor = _find_metric_value(metric_stats, ("device__attribute_compute_capability_minor",))
+    num_sms = _find_metric_value(metric_stats, ("device__attribute_multiprocessor_count",))
+    max_warps = _find_metric_value(metric_stats, ("device__attribute_max_warps_per_multiprocessor",))
+    major = _signal_value(cc_major)
+    minor = _signal_value(cc_minor)
+    sms = _signal_value(num_sms)
+
+    family = "unknown"
+    alias = "unknown"
+    if major is not None:
+        if int(major) == 9:
+            family = "hopper"
+            alias = "h100/sm_90"
+        elif int(major) == 10:
+            family = "blackwell"
+            alias = "b200/sm_100"
+    elif sms is not None:
+        if int(sms) == 132:
+            family = "hopper"
+            alias = "h100/sm_90"
+        elif int(sms) == 148:
+            family = "blackwell"
+            alias = "b200/sm_100"
+
+    return {
+        "family": family,
+        "alias": alias,
+        "compute_capability": f"{int(major)}.{int(minor or 0)}" if major is not None else "",
+        "num_sms": sms,
+        "signals": {
+            "compute_capability_major": cc_major,
+            "compute_capability_minor": cc_minor,
+            "multiprocessor_count": num_sms,
+            "max_warps_per_multiprocessor": max_warps,
+        },
+    }
+
+
 def _extract_top_stall_metrics(
     metric_stats: List[Dict[str, object]],
     *,
@@ -408,6 +448,7 @@ def _dimension_entry(
 
 
 def _build_dimension_report(metric_stats: List[Dict[str, object]], *, top_k: int = 10) -> Dict[str, object]:
+    architecture = _detect_architecture(metric_stats)
     grid_size = _find_metric_value(metric_stats, ("launch__grid_size",), token_groups=(("launch", "grid_size"),))
     block_size = _find_metric_value(metric_stats, ("launch__block_size",), token_groups=(("launch", "block_size"),))
     waves_per_sm = _find_metric_value(
@@ -604,7 +645,10 @@ def _build_dimension_report(metric_stats: List[Dict[str, object]], *, top_k: int
 
     dram_read_pct = _find_metric_value(
         metric_stats,
-        ("dram__bytes_read.sum.pct_of_peak_sustained_elapsed",),
+        (
+            "dram__bytes_read.sum.pct_of_peak_sustained_elapsed",
+            "dram__throughput.avg.pct_of_peak_sustained_elapsed",
+        ),
         token_groups=(("dram", "read", "pct_of_peak"), ("dram", "throughput", "pct_of_peak")),
     )
     dram_write_pct = _find_metric_value(
@@ -624,15 +668,49 @@ def _build_dimension_report(metric_stats: List[Dict[str, object]], *, top_k: int
         ("l1tex__t_requests_pipe_lsu_mem_global_op_ld.sum",),
         token_groups=(("l1tex", "requests", "global", "ld"),),
     )
-    sectors_per_ld_request = _ratio_signal(
-        global_ld_sectors,
-        global_ld_requests,
-        name="derived_global_load_sectors_per_request",
-        ideal=4.0,
+    sectors_per_ld_request = _find_metric_value(
+        metric_stats,
+        (
+            "l1tex__average_t_sectors_per_request_pipe_lsu_mem_global_op_ld.ratio",
+            "l1tex__t_sectors_per_request_pipe_lsu_mem_global_op_ld.ratio",
+        ),
+        token_groups=(("sectors", "request", "global", "ld"),),
+    )
+    if sectors_per_ld_request is None:
+        sectors_per_ld_request = _ratio_signal(
+            global_ld_sectors,
+            global_ld_requests,
+            name="derived_global_load_sectors_per_request",
+            ideal=4.0,
+        )
+    elif "ideal" not in sectors_per_ld_request:
+        sectors_per_ld_request = dict(sectors_per_ld_request)
+        sectors_per_ld_request["ideal"] = 4.0
+        value = _signal_value(sectors_per_ld_request)
+        sectors_per_ld_request["over_ideal"] = value / 4.0 if value is not None else None
+
+    global_ld_inst = _find_metric_value(
+        metric_stats,
+        (
+            "smsp__sass_inst_executed_op_global_ld.sum",
+            "smsp__inst_executed_op_global_ld.sum",
+        ),
+        token_groups=(("global_ld",), ("op_global_ld",)),
+    )
+    global_st_inst = _find_metric_value(
+        metric_stats,
+        (
+            "smsp__sass_inst_executed_op_global_st.sum",
+            "smsp__inst_executed_op_global_st.sum",
+        ),
+        token_groups=(("global_st",), ("op_global_st",)),
     )
     store_bytes_per_sector = _find_metric_value(
         metric_stats,
-        ("smsp__sass_average_data_bytes_per_sector_mem_global_op_st.ratio",),
+        (
+            "smsp__sass_average_data_bytes_per_sector_mem_global_op_st.ratio",
+            "smsp__average_data_bytes_per_sector_mem_global_op_st.ratio",
+        ),
         token_groups=(("bytes", "sector", "global", "st"),),
     )
     local_ld = _find_metric_value(
@@ -755,6 +833,8 @@ def _build_dimension_report(metric_stats: List[Dict[str, object]], *, top_k: int
                 "global_load_sectors": global_ld_sectors,
                 "global_load_requests": global_ld_requests,
                 "sectors_per_ld_request": sectors_per_ld_request,
+                "global_ld_instructions": global_ld_inst,
+                "global_st_instructions": global_st_inst,
                 "store_bytes_per_sector": store_bytes_per_sector,
                 "local_ld": local_ld,
                 "local_st": local_st,
@@ -768,6 +848,7 @@ def _build_dimension_report(metric_stats: List[Dict[str, object]], *, top_k: int
     ]
     findings = [finding for dim in dimensions for finding in dim.get("findings", []) if isinstance(finding, dict)]
     return {
+        "architecture": architecture,
         "dimensions": dimensions,
         "needs_attention": [dim["key"] for dim in dimensions if dim.get("status") == "needs_attention"],
         "missing_metric_dimensions": [dim["key"] for dim in dimensions if dim.get("status") == "missing_metrics"],

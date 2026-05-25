@@ -99,7 +99,7 @@ myutils-profile ncu-report-skill --report ./run.ncu-rep --skill bottleneck_repor
 myutils-profile ncu-report-skill --report ./run.ncu-rep --skill dimension_report --param top_k=10 --pretty
 ```
 
-作用：按 occupancy/launch、tail effect、stall、tensor core、PM sampling timeline、memory/cache 六个维度输出证据和下一步动作。
+作用：按 occupancy/launch、tail effect、stall、tensor core、PM sampling timeline、memory/cache 六个维度输出证据和下一步动作。H100/sm_90 和 B200/sm_100 常见 metric 命名都会做兼容解析。
 
 ### 5) CSV 分析（你已有导出 CSV 时）
 
@@ -117,6 +117,15 @@ myutils-profile ncu-csv-analyze --csv ./ncu_raw.csv --top-k 20 --pretty
 3. `dimension_report`: 对照六维诊断，确认 small grid、tail、stall、tensor core、PM sampling、memory/cache 哪一类最可疑。
 4. `heuristic_findings`: rule 不完整时的 fallback（coalescing/divergence/bank-conflict 等）。
 5. `top_kernels + per_metric_stats`: 具体 kernel 与指标证据。
+
+## H100 / B200 兼容说明
+
+- H100/Hopper 会识别 `device__attribute_compute_capability_major=9`、`device__attribute_multiprocessor_count=132` 等信号，输出 `architecture.alias=h100/sm_90`。
+- B200/Blackwell 会识别 `compute_capability_major=10` 或 148 SM，输出 `architecture.alias=b200/sm_100`。
+- 对 H100 常见旧命名和 B200 新命名都做了 alias，例如：
+  - `smsp__inst_executed_op_*` 与 `smsp__sass_inst_executed_op_*`
+  - 直接的 `l1tex__average_t_sectors_per_request_pipe_lsu_mem_global_op_ld.ratio`
+  - 由 `l1tex__t_sectors...sum / l1tex__t_requests...sum` 推导的 sectors/request
 
 ## 关键文件说明
 
