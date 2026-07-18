@@ -17,6 +17,7 @@ from .nsys_sqlite_provider import NsysSqliteMetricsProvider
 
 _RANK_RE = re.compile(r"\brank(?:\s*|[:=_-])(\d+)\b", re.IGNORECASE)
 _GPU_IDX_RE = re.compile(r"(?:gpu|device)\s*[_:#=\- ]?\s*(\d+)", re.IGNORECASE)
+_FUSION_ARROW = " <span class='fusion-arrow'>&rarr;</span> "
 _DEFAULT_FOCUS_METRIC_TOKENS: Tuple[str, ...] = (
     "compute warps in flight",
     "unallocated warps in active sms",
@@ -104,6 +105,10 @@ def _ident(name: str) -> str:
         if not (ch.isalnum() or ch == "_"):
             raise ValueError(f"unsafe SQL identifier: {name}")
     return text
+
+
+def _empty_table_row(colspan: int, text: str) -> str:
+    return f"<tr><td colspan='{colspan}'>{text}</td></tr>"
 
 
 def _color_for_name(name: str) -> str:
@@ -4622,21 +4627,21 @@ def export_timeline_compare_html(
                 "<div class='summary-box-title'>Kernel Hotspots</div>",
                 (
                     "<table class='summary-table'><thead><tr><th>kernel</th><th>kind</th><th>count</th><th>total</th></tr></thead>"
-                    f"<tbody>{hotspot_html or '<tr><td colspan=\"4\">No kernels</td></tr>'}</tbody></table>"
+                    f"<tbody>{hotspot_html or _empty_table_row(4, 'No kernels')}</tbody></table>"
                 ),
                 "</div>",
                 "<div class='summary-box'>",
                 "<div class='summary-box-title'>Metric Snapshot</div>",
                 (
                     "<table class='summary-table'><thead><tr><th>metric</th><th>avg</th><th>max</th><th>last</th></tr></thead>"
-                    f"<tbody>{metric_html or '<tr><td colspan=\"4\">Metrics not enabled</td></tr>'}</tbody></table>"
+                    f"<tbody>{metric_html or _empty_table_row(4, 'Metrics not enabled')}</tbody></table>"
                 ),
                 "</div>",
                 "<div class='summary-box'>",
                 "<div class='summary-box-title'>Category Breakdown (weighted, overlap-aware)</div>",
                 (
                     "<table class='summary-table'><thead><tr><th>category</th><th>weighted</th><th>share</th><th>instances</th></tr></thead>"
-                    f"<tbody>{category_html or '<tr><td colspan=\"4\">No category rows</td></tr>'}</tbody></table>"
+                    f"<tbody>{category_html or _empty_table_row(4, 'No category rows')}</tbody></table>"
                 ),
                 "</div>",
                 "</div>",
@@ -4733,21 +4738,21 @@ def export_timeline_compare_html(
             f"<div class='summary-box-title'>Metric Delta ({html.escape(str(base_item.get('label') or 'baseline'))} -> {html.escape(str(target_item.get('label') or 'target'))})</div>",
             (
                 "<table class='summary-table'><thead><tr><th>metric</th><th>base avg</th><th>target avg</th><th>delta avg</th><th>delta max</th></tr></thead>"
-                f"<tbody>{metric_delta_rows or '<tr><td colspan=\"5\">Metrics not enabled or no overlapping metric names</td></tr>'}</tbody></table>"
+                f"<tbody>{metric_delta_rows or _empty_table_row(5, 'Metrics not enabled or no overlapping metric names')}</tbody></table>"
             ),
             "</div>",
             "<div class='summary-box'>",
             "<div class='summary-box-title'>Kernel Delta</div>",
             (
                 "<table class='summary-table'><thead><tr><th>kernel</th><th>kind</th><th>count</th><th>total</th><th>delta</th></tr></thead>"
-                f"<tbody>{kernel_delta_rows or '<tr><td colspan=\"5\">No changed kernels</td></tr>'}</tbody></table>"
+                f"<tbody>{kernel_delta_rows or _empty_table_row(5, 'No changed kernels')}</tbody></table>"
             ),
             "</div>",
             "<div class='summary-box'>",
             "<div class='summary-box-title'>Category Delta (weighted, overlap-aware)</div>",
             (
                 "<table class='summary-table'><thead><tr><th>category</th><th>base</th><th>target</th><th>delta</th><th>share delta</th></tr></thead>"
-                f"<tbody>{category_delta_rows or '<tr><td colspan=\"5\">No changed categories</td></tr>'}</tbody></table>"
+                f"<tbody>{category_delta_rows or _empty_table_row(5, 'No changed categories')}</tbody></table>"
             ),
             "</div>",
             "</div>",
@@ -4817,12 +4822,12 @@ def export_timeline_compare_html(
                         (
                             f"<div class='fusion-side'><div class='fusion-side-title'>{html.escape(str(base_item.get('label') or 'baseline'))}</div>"
                             f"<div class='fusion-side-sub'>kernels={len(base_segment)} | total_ms={float(item.get('base_duration_ms') or 0.0):.6f}</div>"
-                            f"<div class='fusion-flow'>{' <span class=\"fusion-arrow\">&rarr;</span> '.join(base_names)}</div></div>"
+                            f"<div class='fusion-flow'>{_FUSION_ARROW.join(base_names)}</div></div>"
                         ),
                         (
                             f"<div class='fusion-side'><div class='fusion-side-title'>{html.escape(str(target_item.get('label') or 'target'))}</div>"
                             f"<div class='fusion-side-sub'>kernels={len(target_segment)} | total_ms={float(item.get('target_duration_ms') or 0.0):.6f}</div>"
-                            f"<div class='fusion-flow'>{' <span class=\"fusion-arrow\">&rarr;</span> '.join(target_names)}</div></div>"
+                            f"<div class='fusion-flow'>{_FUSION_ARROW.join(target_names)}</div></div>"
                         ),
                         "</div>",
                         "</div>",

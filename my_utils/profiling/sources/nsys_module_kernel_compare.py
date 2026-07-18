@@ -11,6 +11,10 @@ from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Pattern, Sequence, Tuple
 
 
+def _empty_table_row(colspan: int, text: str) -> str:
+    return f"<tr><td colspan='{colspan}'>{text}</td></tr>"
+
+
 def _to_int(value: object, default: int = 0) -> int:
     try:
         return int(value)
@@ -1109,7 +1113,7 @@ def module_kernel_compare_to_html(payload: Dict[str, object]) -> str:
         detail_html = (
             "<details><summary>resource diff detail</summary>"
             "<table class='tbl tbl-mini'><thead><tr><th>field</th><th>base</th><th>target</th></tr></thead>"
-            f"<tbody>{''.join(detail_rows) or '<tr><td colspan=\"3\">none</td></tr>'}</tbody></table></details>"
+            f"<tbody>{''.join(detail_rows) or _empty_table_row(3, 'none')}</tbody></table></details>"
         )
         resource_rows.append(
             "<tr>"
@@ -1265,12 +1269,12 @@ def module_kernel_compare_to_html(payload: Dict[str, object]) -> str:
                 "</div>"
             ),
             "<table class='tbl'><thead><tr><th>kernel</th><th>change_type</th><th>changed_keys</th><th>inv</th><th>total_ms</th><th>detail</th></tr></thead>",
-            f"<tbody>{''.join(resource_rows) or '<tr><td colspan=\"6\">No changed kernels</td></tr>'}</tbody></table>",
+            f"<tbody>{''.join(resource_rows) or _empty_table_row(6, 'No changed kernels')}</tbody></table>",
             "</section>",
             "<section class='card'>",
             "<h3>Top Kernel Duration Deltas</h3>",
             "<table class='tbl'><thead><tr><th>kernel</th><th>base_ms</th><th>target_ms</th><th>delta_ms</th><th>ratio</th></tr></thead>",
-            f"<tbody>{''.join(duration_delta_rows) or '<tr><td colspan=\"5\">No delta rows</td></tr>'}</tbody></table>",
+            f"<tbody>{''.join(duration_delta_rows) or _empty_table_row(5, 'No delta rows')}</tbody></table>",
             "</section>",
             "<section class='card'>",
             "<h3>Stream Deltas</h3>",
