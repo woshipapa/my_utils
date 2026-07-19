@@ -6,7 +6,7 @@ already done and what remains.
 
 Started 2026-07-18. Last updated 2026-07-19.
 
-**Status: 85 tests passing. Phase 1, 2, 4 done; Phase 3 partly done; Phase 5 open.**
+**Status: 85 tests passing. Phases 1-4 done, Phase 3 complete, Phase 5b done. NCU metric coverage measured at 40% of `--set full` core metrics (was 21%); run `verify_catalog_coverage()` for the live number.**
 
 ---
 
@@ -65,20 +65,18 @@ These prevent *wrong conclusions*, which is worse than no conclusion.
 - [x] ~~Physical-limit sanity check~~ — any achieved FLOP/s or bandwidth above
       hardware peak is reported as a measurement bug and stops the roofline
       analysis, instead of becoming a confident percentage.
-- [ ] Warm-up / autotuning contamination guard — Triton autotuning burns seconds
-      of non-representative GPU work into iteration 0 (`do_bench` defaults
-      25 ms warmup + 100 ms rep *per config*); refuse steady-state claims from a
-      single iteration.
-- [ ] CUDA-graph attribution mode — one `cudaGraphLaunch` correlation ID fans out
-      to N kernels; per-kernel CPU attribution is unavailable. Detect and say so.
-- [ ] Inductor `unique_kernel_names=0` detection — every kernel is named
-      `triton_`; refuse name-based attribution and tell the user to set
-      `TORCHINDUCTOR_UNIQUE_KERNEL_NAMES=1`.
-- [ ] nsys data-quality gate — GPU-metrics gaps labelled "Missing Data" are
-      *sampler buffer exhaustion*, not idle GPU; check Diagnostics Summary before
-      trusting a trace.
-- [ ] Multi-rank completeness check — refuse aggregate conclusions when the rank
-      set has holes (a glob matching 6 of 8 ranks silently biases every average).
+- [x] ~~Warm-up / autotuning contamination guard~~ — `analyzers/trace_quality.py`;
+      a single iteration blocks all steady-state claims, and >=5 launch configs
+      under one kernel name is flagged as an autotuning sweep.
+- [x] ~~CUDA-graph attribution mode~~ — detects graph replay and marks per-kernel
+      launch attribution unavailable rather than silently 1:N joining.
+- [x] ~~Inductor `unique_kernel_names=0` detection~~ — >1 kernel named `triton_`
+      blocks name-based attribution.
+- [x] ~~nsys data-quality gate~~ — parses Diagnostics Summary strings; "Missing
+      Data" ranges **block** the host-bound verdict, because reading lost samples
+      as idle inverts the conclusion.
+- [x] ~~Multi-rank completeness check~~ — a rank set with holes blocks straggler
+      and per-rank aggregate conclusions.
 
 ## Phase 4 — Documentation ✅
 
@@ -90,15 +88,29 @@ These prevent *wrong conclusions*, which is worse than no conclusion.
 - [x] ~~Linked from README, profiling README, docs index~~.
 - [x] ~~This progress log~~.
 
+## Phase 5b — Defects found in pre-existing code (external audit, verified) ✅
+
+- [x] ~~`achieved_compute_tflops` built from `sm_active`~~ — SM residency is a
+      *time* fraction, not FLOPs; a memory-bound kernel at 90% sm_active was
+      reported as 890 TFLOP/s on H100. Now derived from tensor-pipe activity
+      only, and `None` when that was not sampled.
+- [x] ~~Single-stream jobs scored 15/100~~ — that made `stream_parallelism` the
+      "primary bottleneck" for every CUDA-graph / torch.compile run by
+      construction. Now scored `None` (not assessable).
+- [x] ~~Unmeasured dimensions could win the bottleneck ranking~~ — the ranking
+      and the weighted average now skip dimensions that were never measured.
+
 ## Phase 5 — Remaining work 📋
 
 - [ ] Wire triage into the nsys analysis path (`nsys_auto_analysis`) so
       `nsys-analyze` leads with a verdict.
-- [ ] NCCL bus-bandwidth analysis — parse collective + size, compute busbw,
-      compare against per-platform ceilings (ring ~360 GB/s / NVLS ~480 GB/s on
-      8xH100; note NVLS legitimately exceeds the link spec).
-- [ ] Retire the duplicate GPU tables — `nsys_auto_analysis._GPU_DB` and
-      `nsys_mfu._PEAK_TFLOPS_*` should delegate to `hardware/gpu_specs.py`.
+- [x] ~~NCCL bus-bandwidth analysis~~ — `analyzers/nccl_bandwidth.py`: algbw ->
+      busbw with the nccl-tests factors, per-fabric ceilings incl. NVLS, protocol
+      mismatch detection, and a straggler-vs-bandwidth discriminator built on
+      arrival skew.
+- [x] ~~Retire the duplicate GPU table~~ — `nsys_auto_analysis.lookup_gpu_specs`
+      now delegates to `hardware/gpu_specs.py`, so it finally knows H800/A800/
+      H200/B200/H20 (it had none of them, on hardware this project runs on).
 - [ ] Framework-specific profiling recipes (how to profile CuTe DSL / TK / Triton
       / FA3 kernels, which metrics matter for warp-specialized and TMA kernels).
 - [ ] HTA-style analyses over nsys SQLite: launch-delay outliers, queue length,

@@ -93,8 +93,45 @@ _GPU_DB: List[Tuple[str, GpuSpecs]] = [
 
 
 def lookup_gpu_specs(gpu_name: str) -> Optional[GpuSpecs]:
-    """Return GPU hardware specs for the best-matching GPU model name, or None."""
+    """Return GPU hardware specs for the best-matching GPU model name, or None.
+
+    Delegates to :mod:`my_utils.profiling.hardware.gpu_specs`, which is the
+    authoritative table, and adapts the result to this module's ``GpuSpecs``
+    shape so callers do not change. The local ``_GPU_DB`` below is retained only
+    as a fallback for the (unlikely) case where the shared table cannot be
+    imported.
+
+    The shared table matters here for two reasons the local one got wrong:
+    it knows the export SKUs this project actually runs on (H800/A800, whose
+    NVLink bandwidth differs from H100/A100 even though the FLOPs match), and
+    all of its tensor peaks are **dense** - the local table mixed dense and
+    with-sparsity figures, which silently halved utilisation for the affected
+    parts.
+    """
     name_lower = str(gpu_name or "").lower()
+    if not name_lower:
+        return None
+
+    try:
+        from ..hardware.gpu_specs import lookup_gpu_spec as _lookup_shared
+    except Exception:  # pragma: no cover - only if the package layout changes
+        _lookup_shared = None
+
+    if _lookup_shared is not None:
+        shared = _lookup_shared(gpu_name)
+        if shared is not None:
+            # bf16 is the training dtype of interest; fall back to fp16 for
+            # pre-Ampere parts that have no bf16 path.
+            peak = shared.peak_tflops("bf16") or shared.peak_tflops("fp16") or 0.0
+            return GpuSpecs(
+                name=shared.name,
+                hbm_peak_tbps=shared.hbm_bandwidth_gbps / 1000.0,
+                pcie_peak_gbps=shared.pcie_gbps,
+                nvlink_peak_gbps=shared.nvlink_gbps,
+                sm_count=shared.sm_count,
+                fp16_tflops=peak,
+            )
+
     for key, specs in _GPU_DB:
         if key in name_lower:
             return specs
@@ -790,9 +827,15 @@ def analyze_roofline_gap(
     tc_avg = _f((gpu_metrics.get("tensor_active") or {}).get("avg"))
     dram_avg = _f((gpu_metrics.get("dram_throughput") or {}).get("avg"))
 
-    compute_avg = max(sm_avg, tc_avg)
+    # sm_active is the fraction of time an SM had at least one resident warp. It
+    # says nothing about how many FLOPs were issued: a purely memory-bound kernel
+    # can sit at 90% sm_active while doing almost no math. tensor_active is the
+    # only one of these that tracks actual math throughput, so it - not
+    # max(sm, tensor) - is what a compute estimate may be built on.
+    compute_avg = tc_avg if tc_avg > 0 else 0.0
+    residency_avg = max(sm_avg, tc_avg)
     memory_avg = dram_avg
-    gap_pct = max(0.0, memory_avg - compute_avg)
+    gap_pct = max(0.0, memory_avg - residency_avg)
 
     # Proxy arithmetic intensity:
     # High DRAM util with low compute util -> low arithmetic intensity / memory bound.
@@ -820,7 +863,12 @@ def analyze_roofline_gap(
     achieved_compute_tflops = None
     memory_bw_gbps = None
     if specs:
-        achieved_compute_tflops = round(specs.fp16_tflops * compute_avg / 100.0, 2)
+        # Only derive a FLOP rate from tensor-pipe activity. Deriving it from
+        # sm_active would report ~890 TFLOP/s on an H100 for a kernel that
+        # issued no math at all, which is the dimensional error this guards.
+        achieved_compute_tflops = (
+            round(specs.fp16_tflops * compute_avg / 100.0, 2) if compute_avg > 0 else None
+        )
         memory_bw_gbps = round(specs.hbm_peak_tbps * 1000.0 * memory_avg / 100.0, 2)
 
     return {
@@ -830,6 +878,11 @@ def analyze_roofline_gap(
         "arithmetic_intensity_proxy": round(ai_proxy, 3),
         "bottleneck_hint": bottleneck,
         "achieved_compute_tflops_est": achieved_compute_tflops,
+        "achieved_compute_basis": (
+            "tensor_pipe_active" if compute_avg > 0
+            else "unavailable: no tensor-pipe activity was sampled"
+        ),
+        "sm_residency_pct": round(residency_avg, 1),
         "achieved_memory_gbps_est": memory_bw_gbps,
         "issues": issues,
     }
@@ -961,10 +1014,15 @@ def compute_performance_scores(
     if sc == 0:
         sp_score = 0.0
     elif sc == 1:
-        sp_score = 15.0
+        # A single stream is not evidence of a problem. CUDA-graph capture,
+        # torch.compile and ncu's own replay all serialise onto one stream, and
+        # plenty of healthy training loops use one. Scoring it 15/100 made it the
+        # "primary bottleneck" for those runs by construction, so treat it as
+        # not-assessable instead of bad.
+        sp_score = None
     else:
         sp_score = _clamp(min(ratio - 1.0, 2.0) / 2.0 * 80.0 + 20.0)
-    if stream_parallelism.get("copy_stream_detected"):
+    if sp_score is not None and stream_parallelism.get("copy_stream_detected"):
         sp_score = _clamp(sp_score + 10.0)
 
     # 4. Communication Efficiency
@@ -987,14 +1045,27 @@ def compute_performance_scores(
         ("communication", comm_score, 0.20),
         ("cpu_pipeline", cpu_score, 0.15),
     ]
-    overall = round(sum(s * w for _, s, w in weights), 1)
 
-    scores = {k: round(v, 1) for k, v, _ in weights}
+    # A dimension scored None was not measurable on this trace. Including it
+    # would let an absent measurement win the "lowest score" ranking and be
+    # reported as the primary bottleneck, which is how an unmeasured axis
+    # becomes a confident finding. Drop it from both the average and the
+    # ranking, and renormalise the weights over what remains.
+    measured = [(k, v, w) for k, v, w in weights if v is not None]
+    unmeasured = [k for k, v, _ in weights if v is None]
+
+    total_weight = sum(w for _, _, w in measured)
+    overall = round(sum(v * w for _, v, w in measured) / total_weight, 1) if total_weight else 0.0
+
+    scores = {k: round(v, 1) for k, v, _ in measured}
+    for key in unmeasured:
+        scores[key] = None
     scores["overall"] = overall
+    scores["unmeasured_dimensions"] = unmeasured
 
-    # Identify primary and secondary bottlenecks (lowest two scores)
-    ranked = sorted(weights, key=lambda x: x[1])
-    scores["primary_bottleneck"] = ranked[0][0]
+    # Rank only what was actually measured.
+    ranked = sorted(measured, key=lambda x: x[1])
+    scores["primary_bottleneck"] = ranked[0][0] if ranked else "unknown"
     scores["secondary_bottleneck"] = ranked[1][0] if len(ranked) > 1 else "none"
 
     return scores
