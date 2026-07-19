@@ -558,3 +558,21 @@ def test_green_context_grid_is_judged_against_the_partition():
     )
     # 20 blocks genuinely fills a 16-SM partition, so this must not be flagged.
     assert not [f for f in result["findings"] if f["category"] == "small_grid"]
+
+
+@pytest.mark.parametrize(
+    "name,expected",
+    [
+        # LDMC/STMC are multimem.ld_reduce / multimem.st: the NVSwitch really did
+        # the reduction. Underscore is a word character, so \b does not fire here.
+        ("ncclSymkDevKernel_AllReduce_LDMC_STMC_bf16", True),
+        ("ncclSymkDevKernel_AllGather_STMC", True),
+        ("allreduce_two_shot_multimem_intra_node_kernel", True),
+        # Naming the NVLS *algorithm* is not evidence the multicast path ran.
+        ("ncclDevKernel_AllReduce_Sum_bf16_NVLS_SIMPLE", False),
+        ("allreduce_one_shot_push_intra_node_kernel", False),
+        ("ampere_sgemm_128x64_nn", False),
+    ],
+)
+def test_nvls_multicast_detection(name, expected):
+    assert kernel_taxonomy.uses_nvls_multicast(name) is expected

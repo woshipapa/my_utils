@@ -32,6 +32,7 @@ __all__ = [
     "parse_nccl_kernel",
     "uses_tensor_cores",
     "is_communication_kernel",
+    "uses_nvls_multicast",
     "KERNEL_CATEGORIES",
     "CATEGORY_EXPECTATIONS",
 ]
@@ -182,7 +183,8 @@ _FRAMEWORK_PATTERNS: Tuple[Tuple[str, re.Pattern], ...] = (
         r"|\bmega_kernel_(?:dispatch|moe)"
         r"|\bkernel_(?:consumer|producer|gemm_rs_producer|fused_ag_gemm|fused_gemm_allreduce)"
         r"|\bkernel_(?:pre|post)_attn_(?:qkv_pack_)?a2a"
-        r"|\b(?:all_to_all_kernel|allreduce_(?:one|two)_shot|reduce_scatter_ring_push)"
+        r"|\b(?:all_to_all_kernel|allreduce_(?:one|two)_shot|allreduce_double_tree"
+        r"|reduce_scatter_ring_push|consumer_(?:ring_)?all_reduce)"
         r"|\b_forward_p(?:ull|ush)"
         r"|\bbarrier_all_intra_node"
         r"|\bmoe_(?:grouped|gather_(?:rs|ar)_grouped)_gemm"
@@ -417,6 +419,24 @@ _NCCL_COLLECTIVES: Tuple[str, ...] = (
     "broadcast", "reduce", "sendrecv", "scatter", "gather",
 )
 _NCCL_ALGOS: Tuple[str, ...] = ("ring", "tree", "nvls", "collnetdirect", "collnetchain", "collnet", "pat")
+
+# NCCL's symmetric-memory kernels (ncclSymkDevKernel_*) encode the transport in
+# the name: LDMC/STMC are multimem.ld_reduce / multimem.st, i.e. the reduction
+# happened inside the NVSwitch. Seeing them is positive evidence that NVLink
+# SHARP is engaged, not merely that NVLS was requested.
+_NCCL_SYMMETRIC_RE = re.compile(r"ncclsymk", re.IGNORECASE)
+# Underscore is a word character, so \b does not fire inside "LDMC_STMC".
+_NCCL_MULTICAST_RE = re.compile(r"(?:^|[^a-z0-9])(?:ld|st)mc(?:[^a-z0-9]|$)|multimem", re.IGNORECASE)
+
+
+def uses_nvls_multicast(kernel_name: str) -> bool:
+    """Whether a collective kernel actually performs in-switch (NVLS) reduction.
+
+    Distinct from ``algorithm == 'nvls'`` in the kernel name, which only says
+    NCCL selected the algorithm. LDMC/STMC or a ``multimem`` token means the
+    multicast instructions are really being issued.
+    """
+    return bool(_NCCL_MULTICAST_RE.search(str(kernel_name or "")))
 _NCCL_PROTOS: Tuple[str, ...] = ("ll128", "ll", "simple")
 
 
