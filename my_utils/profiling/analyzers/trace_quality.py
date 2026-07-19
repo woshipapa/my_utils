@@ -627,3 +627,220 @@ def check_diagnostic_events(
             ),
         ))
     return issues
+
+
+# ---------------------------------------------------------------------------
+# Multi-tenancy: MPS, MIG, vGPU
+# ---------------------------------------------------------------------------
+
+# Emitted verbatim by ncu when a metric needs a unit shared with another MIG
+# instance. Greppable, so a collection log is enough to detect the condition.
+MIG_SHARED_UNIT_ERROR = (
+    "When profiling on a MIG instance, it is not possible to collect metrics "
+    "from GPU units that are shared with other MIG instances"
+)
+
+
+def check_multi_tenancy(
+    metrics: Optional[Mapping[str, Any]] = None,
+    *,
+    collection_log: str = "",
+    mps_primary_client: Optional[bool] = None,
+) -> List[QualityIssue]:
+    """Detect tenancy modes that change what a measurement even means.
+
+    Each of these is a documented reason a well-written kernel measures badly,
+    or a reason an attribution cannot be made at all. They are invisible in the
+    numbers themselves - only a launch attribute or a collection-log string
+    reveals them - which is exactly why they get missed.
+    """
+    issues: List[QualityIssue] = []
+    view = metrics or {}
+
+    def _flag(name: str) -> bool:
+        value = view.get(name)
+        try:
+            return value is not None and float(value) > 0
+        except (TypeError, ValueError):
+            return False
+
+    if _flag("launch__uses_mps"):
+        # NVIDIA is explicit that ncu "does generally not support isolating the
+        # performance of individual clients" under MPS. Anything per-client is
+        # therefore not a weak conclusion, it is an unavailable one.
+        primary_only = mps_primary_client is False
+        issues.append(QualityIssue(
+            key="mps_shared_measurement",
+            title="Kernel ran under MPS; per-client attribution is not available",
+            detail=(
+                "Nsight Compute profiles how the GPU is utilised across all MPS clients "
+                "concurrently and does not isolate individual clients. Measured throughput "
+                "includes work from every co-resident client."
+                + (" Instruction-level source and warp sampling are attributed to the "
+                   "primary client only, and this kernel is not it."
+                   if primary_only else "")
+            ),
+            invalidates=("per_client_attribution", "kernel_throughput", "sol_classification"),
+            blocks=True,
+            severity="high",
+            evidence={"launch__uses_mps": view.get("launch__uses_mps")},
+            remedy=(
+                "Profile the client alone, or accept whole-GPU attribution. If MPS must "
+                "stay on, use --replay-mode range (kernel mode lets each MPS client "
+                "contribute only a single launch) and --primary-client to narrow the window."
+            ),
+        ))
+
+    if _flag("launch__uses_vgpu"):
+        issues.append(QualityIssue(
+            key="vgpu_counters_shared",
+            title="Kernel ran on a vGPU; counters may include other VMs",
+            detail=(
+                "Enabling profiling for a VM grants access to the GPU's global performance "
+                "counters, which may include activity from other VMs on the same physical "
+                "GPU. That VM can also lock clocks for everyone else."
+            ),
+            invalidates=("kernel_throughput", "dram_bandwidth", "sol_classification"),
+            blocks=False,
+            severity="high",
+            evidence={"launch__uses_vgpu": view.get("launch__uses_vgpu")},
+            remedy="Confirm exclusive use of the physical GPU before trusting counter-derived numbers.",
+        ))
+
+    if _flag("launch__uses_nvlink_centric_scheduling"):
+        # A documented reason a good kernel measures badly, in the same family as
+        # green contexts: the denominator is the whole device but the kernel was
+        # never given the whole device.
+        issues.append(QualityIssue(
+            key="nvlink_centric_scheduling",
+            title="NVLink-centric scheduling was active; SM utilisation reads low by design",
+            detail=(
+                "Some SM resources are not available to a workload under NVLink-centric "
+                "scheduling, which NVIDIA documents as producing lower-than-expected "
+                "measured utilisation. A low SM SOL here is not necessarily a defect."
+            ),
+            invalidates=("sm_utilization_verdict", "occupancy_verdict"),
+            blocks=False,
+            severity="medium",
+            evidence={"launch__uses_nvlink_centric_scheduling": 1},
+            remedy="Discount the SM SOL accordingly, or re-measure without NVLink-centric scheduling.",
+        ))
+
+    log = str(collection_log or "")
+    if MIG_SHARED_UNIT_ERROR in log or "MIG instance" in log:
+        issues.append(QualityIssue(
+            key="mig_shared_units",
+            title="MIG instance shares GPU units; some metrics could not be collected",
+            detail=(
+                "Profiling on a shared Compute Instance cannot read units owned by other "
+                "MIG instances. Metrics from exclusively-owned units are still valid, so "
+                "this is a partial collection rather than a failed one - but any absent "
+                "metric here means 'not permitted', not 'zero'."
+            ),
+            invalidates=("dram_bandwidth", "l2_metrics"),
+            blocks=False,
+            severity="medium",
+            evidence={"marker": MIG_SHARED_UNIT_ERROR},
+            remedy=(
+                "Use an isolated Compute Instance for full coverage. Note also that ncu "
+                "cannot set clocks on any Compute Instance: pass --clock-control none and "
+                "lock externally with 'nvidia-smi --lock-gpu-clocks=tdp,tdp'."
+            ),
+        ))
+    return issues
+
+
+# ---------------------------------------------------------------------------
+# Dataloader attribution
+# ---------------------------------------------------------------------------
+
+# PyTorch names its DataLoader worker and pin-memory threads at the OS level.
+# VERIFIED in PyTorch main at torch/utils/data/_utils/worker.py:271 and
+# torch/utils/data/_utils/pin_memory.py:23.
+#
+# UNVERIFIED, and load-bearing for the SQL below: that nsys actually records
+# these names in its ThreadNames table. The join is plausible - nsys does
+# populate ThreadNames from OS thread names - but it has not been run against a
+# real report here. Treat DATALOADER_ATTRIBUTION_SQL as a starting point to
+# check, not as a result. The motivation is sound either way: torch.profiler
+# cannot see into worker *processes* at all, so if nsys does capture them this
+# is the only route to worker-side attribution.
+DATALOADER_THREAD_PREFIXES = ("pt_data_worker", "pt_data_pin")
+
+DATALOADER_ATTRIBUTION_SQL = """
+-- Blocking time inside PyTorch DataLoader worker / pin-memory threads.
+SELECT names.value AS thread_name,
+       COUNT(*) AS call_count,
+       SUM(osrt.end - osrt.start) / 1e6 AS blocked_ms
+FROM OSRT_API AS osrt
+JOIN ThreadNames AS names ON names.globalTid = osrt.globalTid
+WHERE names.value LIKE 'pt_data_%'
+GROUP BY names.value
+ORDER BY blocked_ms DESC;
+""".strip()
+
+
+def check_dataloader_attribution(
+    thread_names: Iterable[str] = (),
+    *,
+    gpu_idle_ms: Optional[float] = None,
+    dataloader_blocked_ms: Optional[float] = None,
+) -> List[QualityIssue]:
+    """Say whether a GPU gap can be blamed on the dataloader, or only guessed at.
+
+    Deliberately carries no prior about how often input pipelines are the cause.
+    Figures of that kind circulate widely, but the ones this repo went looking
+    for could not be traced to a source that was actually read, so none are
+    encoded here. The check demands per-trace evidence instead: without worker
+    threads in the trace, the dataloader-bound verdict is refused rather than
+    assigned a default likelihood.
+    """
+    names = [str(n) for n in (thread_names or ())]
+    have_worker_threads = any(
+        n.startswith(DATALOADER_THREAD_PREFIXES) for n in names
+    )
+
+    if not have_worker_threads:
+        if gpu_idle_ms and gpu_idle_ms > 0:
+            return [QualityIssue(
+                key="dataloader_unattributable",
+                title="GPU idle time cannot be attributed to the dataloader",
+                detail=(
+                    "No PyTorch DataLoader worker threads were found in the trace, so "
+                    "worker-side blocking is unmeasured. Attributing idle time to input "
+                    "pipeline here would be a guess."
+                ),
+                invalidates=("dataloader_bound",),
+                blocks=True,
+                severity="medium",
+                evidence={"gpu_idle_ms": gpu_idle_ms},
+                remedy=(
+                    "Collect with --trace=osrt so worker threads appear, then join "
+                    "ThreadNames.value LIKE 'pt_data_%' to OSRT_API by globalTid. "
+                    "torch.profiler cannot see into worker processes; nsys can."
+                ),
+            )]
+        return []
+
+    if (
+        gpu_idle_ms and dataloader_blocked_ms is not None
+        and gpu_idle_ms > 0 and dataloader_blocked_ms < 0.25 * gpu_idle_ms
+    ):
+        return [QualityIssue(
+            key="dataloader_not_the_cause",
+            title="Dataloader threads are present but are not explaining the idle time",
+            detail=(
+                f"Worker threads blocked for {dataloader_blocked_ms:.0f} ms against "
+                f"{gpu_idle_ms:.0f} ms of GPU idle. The input pipeline accounts for a "
+                "minority of the gap; look elsewhere."
+            ),
+            invalidates=("dataloader_bound",),
+            blocks=True,
+            severity="medium",
+            evidence={
+                "gpu_idle_ms": gpu_idle_ms,
+                "dataloader_blocked_ms": dataloader_blocked_ms,
+            },
+            remedy="Check host-side Python work, blocking syncs, and launch overhead instead.",
+        )]
+    return []
