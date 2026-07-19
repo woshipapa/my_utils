@@ -1775,6 +1775,104 @@ def diagnose_ncu_report(
     }
 
 
+def diagnose_result_to_markdown(payload: Dict[str, object]) -> str:
+    """Render :func:`diagnose_ncu_report` output as a readable report."""
+    if not isinstance(payload, dict):
+        return "# NCU Diagnosis\n\n(no payload)\n"
+
+    lines: List[str] = ["# NCU Kernel Diagnosis", ""]
+    gpu = str(payload.get("gpu") or "")
+    lines.append(f"- report: `{payload.get('report_path', '')}`")
+    lines.append(f"- kernels analyzed: {payload.get('kernels_analyzed', 0)}")
+    lines.append(f"- gpu: {gpu or '(not supplied - roofline ceilings unavailable)'}")
+    lines.append("")
+
+    verdicts = payload.get("verdict_counts", {})
+    if isinstance(verdicts, dict) and verdicts:
+        lines.append("## Bottleneck classes")
+        lines.append("")
+        lines.append("| verdict | kernels |")
+        lines.append("|---|---|")
+        for name, count in verdicts.items():
+            lines.append(f"| {name} | {count} |")
+        lines.append("")
+
+    finding_counts = payload.get("finding_counts", {})
+    if isinstance(finding_counts, dict) and finding_counts:
+        lines.append("## Most frequent findings")
+        lines.append("")
+        lines.append("| finding | kernels |")
+        lines.append("|---|---|")
+        for name, count in list(finding_counts.items())[:15]:
+            lines.append(f"| {name} | {count} |")
+        lines.append("")
+
+    kernels = payload.get("kernels", [])
+    if isinstance(kernels, list):
+        for index, kernel in enumerate(kernels, start=1):
+            if not isinstance(kernel, dict):
+                continue
+            name = str(kernel.get("kernel_name") or "(unnamed)")
+            duration_ns = kernel.get("duration_ns")
+            duration = f" - {float(duration_ns) / 1000.0:.1f} us" if duration_ns else ""
+            lines.append(f"## {index}. {name}{duration}")
+            lines.append("")
+            category = kernel.get("kernel_category") or "?"
+            framework = kernel.get("kernel_framework") or "-"
+            arch = kernel.get("architecture", {})
+            arch_alias = arch.get("alias", "?") if isinstance(arch, dict) else "?"
+            lines.append(f"- category: `{category}` | framework: `{framework}` | arch: `{arch_alias}`")
+            lines.append(f"- **verdict: {kernel.get('verdict', 'unknown')}**")
+
+            sections = kernel.get("sections", {})
+            bottleneck = sections.get("bottleneck", {}) if isinstance(sections, dict) else {}
+            if isinstance(bottleneck, dict) and bottleneck.get("explanation"):
+                lines.append(f"- {bottleneck['explanation']}")
+                if bottleneck.get("next_section"):
+                    lines.append(f"- read next: `{bottleneck['next_section']}`")
+
+            roofline = sections.get("roofline", {}) if isinstance(sections, dict) else {}
+            if isinstance(roofline, dict) and roofline.get("arithmetic_intensity"):
+                pieces = [f"AI = {roofline['arithmetic_intensity']:.1f} FLOP/byte"]
+                if roofline.get("achieved_tflops"):
+                    pieces.append(f"achieved {roofline['achieved_tflops']:.1f} TFLOP/s")
+                if roofline.get("attainable_tflops"):
+                    pieces.append(f"ceiling {roofline['attainable_tflops']:.1f} TFLOP/s")
+                if roofline.get("roofline_side") not in (None, "unknown"):
+                    pieces.append(str(roofline["roofline_side"]))
+                lines.append(f"- roofline: {', '.join(pieces)}")
+                if roofline.get("flops_undercounted"):
+                    lines.append(f"  - NOTE: {roofline.get('flops_undercount_reason', '')}")
+
+            stalls = sections.get("stalls", {}) if isinstance(sections, dict) else {}
+            if isinstance(stalls, dict) and stalls.get("dominant_bucket"):
+                lines.append(f"- dominant stall bucket: `{stalls['dominant_bucket']}`")
+            lines.append("")
+
+            findings = kernel.get("findings", [])
+            if isinstance(findings, list) and findings:
+                lines.append("### Findings")
+                lines.append("")
+                for finding in findings:
+                    if not isinstance(finding, dict):
+                        continue
+                    ceiling = finding.get("speedup_ceiling")
+                    ceiling_text = f" _(up to {float(ceiling):.2f}x)_" if ceiling else ""
+                    lines.append(
+                        f"- **[{finding.get('severity', 'info')}]** {finding.get('title', '')}{ceiling_text}"
+                    )
+                    lines.append(f"  - {finding.get('summary', '')}")
+                    for action in finding.get("actions", []) or []:
+                        lines.append(f"  - fix: {action}")
+                lines.append("")
+            else:
+                lines.append("_No findings: this kernel looks healthy, or the report lacks the "
+                             "metrics needed to judge it._")
+                lines.append("")
+
+    return "\n".join(lines)
+
+
 def load_ncu_report_rule_rows(
     report_path: str,
     *,

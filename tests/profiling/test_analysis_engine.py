@@ -11,28 +11,54 @@ from __future__ import annotations
 
 import importlib.util
 import sys
+import types
 from pathlib import Path
 
 import pytest
 
 _ROOT = Path(__file__).resolve().parents[2] / "my_utils" / "profiling"
+_PKG = "_prof"
 
 
-def _load(module_name: str, relative_path: str):
-    """Import one profiling module without importing the my_utils package."""
-    if module_name in sys.modules:
-        return sys.modules[module_name]
-    spec = importlib.util.spec_from_file_location(module_name, _ROOT / relative_path)
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[module_name] = module
-    spec.loader.exec_module(module)
+def _package(name: str) -> types.ModuleType:
+    """Create (once) a synthetic package so relative imports resolve."""
+    if name in sys.modules:
+        return sys.modules[name]
+    module = types.ModuleType(name)
+    module.__path__ = []          # marks it as a package
+    sys.modules[name] = module
+    if "." in name:
+        parent, _, child = name.rpartition(".")
+        setattr(_package(parent), child, module)
     return module
 
 
-gpu_specs = _load("_prof_gpu_specs", "hardware/gpu_specs.py")
-kernel_taxonomy = _load("_prof_kernel_taxonomy", "sources/kernel_taxonomy.py")
-metric_catalog = _load("_prof_metric_catalog", "ncu/metric_catalog.py")
-triage = _load("_prof_triage", "analyzers/triage.py")
+def _load(dotted: str, relative_path: str):
+    """Import one profiling module under a synthetic package root.
+
+    The modules use relative imports (``from .metric_catalog import ...``), so
+    they cannot be loaded as standalone files - they need a parent package. We
+    build that package tree by hand rather than importing ``my_utils``, whose
+    ``__init__`` pulls in torch.
+    """
+    full = f"{_PKG}.{dotted}"
+    if full in sys.modules:
+        return sys.modules[full]
+    parent, _, leaf = full.rpartition(".")
+    _package(parent)
+    spec = importlib.util.spec_from_file_location(full, _ROOT / relative_path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[full] = module
+    spec.loader.exec_module(module)
+    setattr(sys.modules[parent], leaf, module)
+    return module
+
+
+gpu_specs = _load("hardware.gpu_specs", "hardware/gpu_specs.py")
+kernel_taxonomy = _load("sources.kernel_taxonomy", "sources/kernel_taxonomy.py")
+metric_catalog = _load("ncu.metric_catalog", "ncu/metric_catalog.py")
+triage = _load("analyzers.triage", "analyzers/triage.py")
+ncu_diagnostics = _load("ncu.ncu_diagnostics", "ncu/ncu_diagnostics.py")
 
 
 # ---------------------------------------------------------------------------
@@ -433,3 +459,102 @@ def test_empty_trace_degrades_to_low_confidence_rather_than_crashing():
     verdict = triage.triage_step(wall_ns=0)
     assert verdict.verdict
     assert verdict.confidence == "low"
+
+
+# ---------------------------------------------------------------------------
+# Correctness hardening: refusing to draw wrong conclusions
+# ---------------------------------------------------------------------------
+
+
+def _h100():
+    return gpu_specs.lookup_gpu_spec("H100 SXM5")
+
+
+def test_measurement_above_hardware_peak_is_rejected():
+    """A number above the physical ceiling is a measurement bug, not a result.
+
+    Publicised "100x speedup" claims have failed exactly here - the figure
+    exceeded what the hardware can do and nobody checked the arithmetic.
+    """
+    result = ncu_diagnostics.diagnose_kernel(
+        {
+            "gpu__time_duration.sum": 100_000,
+            "dram__bytes.sum": 1_000_000,
+            # 500e9 FMA instructions in 100 us => ~10 PFLOP/s, ~10x above peak.
+            "smsp__sass_thread_inst_executed_op_hfma_pred_on.sum": 500_000_000_000,
+            "sm__throughput.avg.pct_of_peak_sustained_elapsed": 50.0,
+            "gpu__compute_memory_throughput.avg.pct_of_peak_sustained_elapsed": 30.0,
+        },
+        kernel_name="void suspicious_kernel()",
+        gpu_spec=_h100(),
+    )
+    assert result["sections"]["roofline"]["sanity_violations"]
+    assert result["findings"][0]["category"] == "measurement_above_physical_limit"
+    # And it must not go on to report a roofline percentage built on that number.
+    assert not any(f["category"] == "below_roofline" for f in result["findings"])
+
+
+SATURATED_LOW_OCCUPANCY = {
+    "sm__throughput.avg.pct_of_peak_sustained_elapsed": 87.0,
+    "gpu__compute_memory_throughput.avg.pct_of_peak_sustained_elapsed": 30.0,
+    "sm__maximum_warps_per_active_cycle_pct": 25.0,
+    "sm__warps_active.avg.pct_of_peak_sustained_active": 24.0,
+    "launch__occupancy_limit_registers": 12,
+    "launch__occupancy_limit_warps": 64,
+    "launch__occupancy_limit_blocks": 64,
+    "launch__occupancy_limit_shared_mem": 64,
+    "smsp__issue_active.avg.per_cycle_active": 0.85,
+}
+
+
+def test_low_occupancy_on_a_saturated_kernel_is_not_a_finding():
+    """CUTLASS-class GEMMs run at low occupancy by design and still hit peak."""
+    result = ncu_diagnostics.diagnose_kernel(
+        SATURATED_LOW_OCCUPANCY, kernel_name="cutlass3x_sm90_gemm", gpu_spec=_h100())
+    assert not [f for f in result["findings"] if "occupancy" in f["category"]]
+
+
+def test_low_occupancy_is_a_finding_when_schedulers_are_starving():
+    starved = dict(SATURATED_LOW_OCCUPANCY, **{
+        "sm__throughput.avg.pct_of_peak_sustained_elapsed": 20.0,
+        "gpu__compute_memory_throughput.avg.pct_of_peak_sustained_elapsed": 18.0,
+        "smsp__issue_active.avg.per_cycle_active": 0.15,
+    })
+    result = ncu_diagnostics.diagnose_kernel(
+        starved, kernel_name="void my_kernel()", gpu_spec=_h100())
+    assert [f for f in result["findings"] if "occupancy" in f["category"]]
+
+
+def test_warp_specialized_kernels_are_excluded_from_the_occupancy_model():
+    """setmaxnreg makes registers-per-thread a weighted artifact."""
+    metrics = dict(SATURATED_LOW_OCCUPANCY, **{
+        "sm__throughput.avg.pct_of_peak_sustained_elapsed": 20.0,
+        "gpu__compute_memory_throughput.avg.pct_of_peak_sustained_elapsed": 18.0,
+        "smsp__issue_active.avg.per_cycle_active": 0.15,
+        "sm__inst_executed_pipe_tensor_op_gmma.avg.pct_of_peak_sustained_active": 60.0,
+        "launch__registers_per_thread": 168,
+    })
+    section = ncu_diagnostics.diagnose_kernel(
+        metrics, kernel_name="void flash_fwd_ws()", gpu_spec=_h100())["sections"]["occupancy"]
+    assert section["warp_specialized"] is True
+    assert section["occupancy_model_applicable"] is False
+    assert not section["findings"]
+
+
+def test_green_context_grid_is_judged_against_the_partition():
+    """A green context owns a subset of SMs; the device total is the wrong denominator."""
+    result = ncu_diagnostics.diagnose_kernel(
+        {
+            "sm__throughput.avg.pct_of_peak_sustained_elapsed": 30.0,
+            "gpu__compute_memory_throughput.avg.pct_of_peak_sustained_elapsed": 25.0,
+            "launch__grid_size": 20,
+            "launch__block_size": 256,
+            "launch__sm_count": 16,                              # the partition
+            "device__attribute_multiprocessor_count": 132,       # the whole GPU
+            "launch__uses_green_context": 1,
+        },
+        kernel_name="void partitioned()",
+        gpu_spec=_h100(),
+    )
+    # 20 blocks genuinely fills a 16-SM partition, so this must not be flagged.
+    assert not [f for f in result["findings"] if f["category"] == "small_grid"]

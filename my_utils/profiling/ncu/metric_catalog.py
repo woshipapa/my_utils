@@ -182,7 +182,15 @@ _CATALOG_LIST: List[MetricSpec] = [
        description="Grid size in units of a full GPU. Fractional tails below 1 wave leave SMs idle."),
     _m("sm_count", ["launch__sm_count", "device__attribute_multiprocessor_count"], "LaunchStats", "launch", unit="SM"),
     _m("cluster_size", ["launch__cluster_size"], "LaunchStats", "launch", unit="block", notes="Hopper+ thread-block clusters."),
-    _m("uses_green_context", ["launch__uses_green_context"], "LaunchStats", "launch"),
+    _m("uses_green_context", ["launch__uses_green_context"], "LaunchStats", "launch",
+       description=(
+           "1 when the launch ran inside a green context, which owns only a subset of the "
+           "device's SMs. Every SM-count-normalised metric must then use the partition size, "
+           "not the device total."
+       )),
+    _m("green_context_id", ["launch__green_context_id"], "LaunchStats", "launch"),
+    _m("uses_mps", ["launch__uses_mps"], "LaunchStats", "launch",
+       description="1 under Multi-Process Service, where SM availability may also be partitioned."),
 
     # -- Scheduler / issue ------------------------------------------------
     _m("issue_active", ["smsp__issue_active.avg.per_cycle_active"],

@@ -4,6 +4,10 @@
 
 ## 30秒定位
 
+0. **我要系统学会用 my_utils 做性能分析（采集全部指标 + 得到优化建议）**  
+看 **`PERFORMANCE_ANALYSIS_HANDBOOK.md`** —— 端到端权威手册，涵盖采集命令、分析 API、
+判读阈值（附出处）、硬件天花板、以及会让数据说谎的陷阱。人和 agent 都从这里开始。
+
 1. 我只想马上跑起来  
 看 `UNIFIED_PROFILING_QUICKSTART.md`
 

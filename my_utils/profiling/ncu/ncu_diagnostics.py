@@ -479,6 +479,33 @@ def compute_roofline(view: MetricView, gpu_spec: Any = None) -> Dict[str, Any]:
     if gpu_spec is None:
         return result
 
+    # Physical-limit sanity check. A measurement above hardware peak is always a
+    # measurement bug - wrong GPU spec, wrong FLOP model, a kernel that did not
+    # do the work it claimed - and reporting it as a result is worse than
+    # reporting nothing. Publicised "100x speedup" results have failed exactly
+    # here: the number exceeded the hardware ceiling and nobody checked.
+    sanity: List[str] = []
+    achieved_tflops = result.get("achieved_tflops")
+    achieved_gbps = result.get("achieved_dram_gbps")
+
+    best_peak = max(
+        (p for p in (gpu_spec.peak_tflops(d) for d in ("fp8", "fp16", "bf16", "tf32", "fp32"))
+         if p is not None),
+        default=None,
+    )
+    if achieved_tflops and best_peak and achieved_tflops > best_peak * 1.05:
+        sanity.append(
+            f"Measured {achieved_tflops:.1f} TFLOP/s exceeds the {gpu_spec.name} peak of "
+            f"{best_peak:.1f} TFLOP/s. The FLOP model or the GPU identification is wrong."
+        )
+    if achieved_gbps and gpu_spec.hbm_bandwidth_gbps and achieved_gbps > gpu_spec.hbm_bandwidth_gbps * 1.05:
+        sanity.append(
+            f"Measured {achieved_gbps:.0f} GB/s exceeds the {gpu_spec.name} HBM peak of "
+            f"{gpu_spec.hbm_bandwidth_gbps:.0f} GB/s. Traffic served from cache is not DRAM "
+            "traffic - check which counter produced this."
+        )
+    result["sanity_violations"] = sanity
+
     dtype = "fp16" if (fp16_flops or tensor_present) else "fp32"
     ridge = gpu_spec.ridge_point(dtype)
     result["ridge_point"] = ridge
@@ -507,6 +534,30 @@ def compute_roofline(view: MetricView, gpu_spec: Any = None) -> Dict[str, Any]:
         )
 
     findings: List[Finding] = []
+    if sanity:
+        findings.append(Finding(
+            category="measurement_above_physical_limit",
+            title="Measurement exceeds hardware limits - do not trust this number",
+            summary=(
+                " ".join(sanity)
+                + " Every downstream conclusion drawn from this measurement is suspect until "
+                "the discrepancy is explained."
+            ),
+            severity="high",
+            confidence="high",
+            evidence={"achieved_tflops": achieved_tflops, "achieved_dram_gbps": achieved_gbps,
+                      "gpu": gpu_spec.name, "peak_tflops": best_peak,
+                      "hbm_peak_gbps": gpu_spec.hbm_bandwidth_gbps},
+            actions=(
+                "Confirm the GPU identification matches the machine that produced the report.",
+                "Check the FLOP model: tensor-core work is not visible to the CUDA-core counters.",
+                "For bandwidth, confirm the counter measures DRAM rather than cache traffic.",
+            ),
+        ))
+        # Refuse to draw roofline conclusions on top of an impossible measurement.
+        result["findings"] = findings
+        return result
+
     pct = result.get("pct_of_attainable")
     compute_sol = view.get("compute_sol")
     memory_sol = view.get("memory_sol")
@@ -587,6 +638,50 @@ _LIMITER_ADVICE = {
 }
 
 
+def _latency_hiding_is_failing(view: MetricView) -> Optional[bool]:
+    """Whether low occupancy is actually costing this kernel anything.
+
+    Low occupancy is only a problem when the schedulers are running out of work.
+    CUTLASS-class GEMMs deliberately run at 1-2 CTAs per SM with deep software
+    pipelines and hit peak anyway, and Volkov's measurements showed CUBLAS
+    getting *faster* while occupancy dropped from 67% to 33%. So an occupancy
+    finding is gated on two independent signals:
+
+    * the schedulers are failing to issue (``issue_active`` below its gate), and
+    * no throughput unit is already saturated.
+
+    Returns ``None`` when neither signal was collected, in which case the caller
+    should stay quiet rather than guess.
+    """
+    issue_active = view.get("issue_active")
+    compute_sol = view.get("compute_sol")
+    memory_sol = view.get("memory_sol")
+
+    sols = [v for v in (compute_sol, memory_sol) if v is not None]
+    if sols and max(sols) >= SOL_THRESHOLDS["latency_bound"]:
+        # A unit is already near its ceiling; more warps cannot help.
+        return False
+    if issue_active is not None:
+        return issue_active < SOL_THRESHOLDS["issue_active_low"]
+    if sols:
+        return True  # nothing saturated, but we cannot see issue activity
+    return None
+
+
+def _is_warp_specialized(view: MetricView) -> bool:
+    """Detect a kernel that reallocates registers between warpgroups.
+
+    Hopper/Blackwell warp-specialized kernels call ``setmaxnreg`` so the producer
+    and consumer warpgroups hold very different register counts (FlashAttention-3
+    uses 24-56 for producers and 160-256 for consumers). The single
+    ``launch__registers_per_thread`` a profiler reports is a weighted artifact of
+    those, so the standard occupancy model does not apply.
+    """
+    if view.get("inst_pipe_gmma") or view.get("pipe_tma_util"):
+        return True
+    return False
+
+
 def analyze_occupancy(view: MetricView) -> Dict[str, Any]:
     """Identify the binding occupancy limiter and the achieved/theoretical gap."""
     achieved = view.get("achieved_occupancy")
@@ -605,17 +700,47 @@ def analyze_occupancy(view: MetricView) -> Dict[str, Any]:
     findings: List[Finding] = []
     t = SOL_THRESHOLDS
 
-    if theoretical is not None and theoretical < t["theoretical_occupancy_low"] and binding:
+    latency_failing = _latency_hiding_is_failing(view)
+    warp_specialized = _is_warp_specialized(view)
+
+    if warp_specialized:
+        # setmaxnreg makes registers-per-thread a weighted average across
+        # warpgroups, so neither the occupancy model nor register advice holds.
+        return {
+            "achieved_occupancy_pct": achieved,
+            "theoretical_occupancy_pct": theoretical,
+            "limiters": present,
+            "binding_limiter": binding,
+            "warp_specialized": True,
+            "occupancy_model_applicable": False,
+            "note": (
+                "Warp-specialized kernel: producer and consumer warpgroups reallocate registers "
+                "with setmaxnreg, so the reported registers-per-thread is a weighted artifact and "
+                "the occupancy model does not apply. Judge this kernel on pipe utilisation instead."
+            ),
+            "findings": [],
+        }
+
+    if (
+        theoretical is not None
+        and theoretical < t["theoretical_occupancy_low"]
+        and binding
+        and latency_failing is not False
+    ):
         title, actions = _LIMITER_ADVICE.get(binding, ("Occupancy is limited.", ()))
+        hedge = "" if latency_failing else (
+            " Note that no scheduler-starvation signal was collected, so this may be a deliberate "
+            "design point rather than a defect."
+        )
         findings.append(Finding(
             category=f"occupancy_limited_{binding}",
             title=f"Theoretical occupancy capped at {theoretical:.0f}% by {binding}",
             summary=(
                 f"{title} The launch configuration alone caps occupancy at {theoretical:.0f}%; "
-                f"the binding resource allows {present[binding]:.0f} warps."
+                f"the binding resource allows {present[binding]:.0f} warps.{hedge}"
             ),
             severity="medium" if theoretical < 50 else "low",
-            confidence="high",
+            confidence="high" if latency_failing else "low",
             evidence={
                 "theoretical_occupancy_pct": theoretical,
                 "achieved_occupancy_pct": achieved,
@@ -674,9 +799,21 @@ def analyze_launch_config(view: MetricView, *, gemm_shape: Any = None) -> Dict[s
     grid = view.get("grid_size")
     block = view.get("block_size")
     waves = view.get("waves_per_sm")
-    sm_count = view.get("sm_count") or view.get("device_sm_count")
     achieved = view.get("achieved_occupancy")
     theoretical = view.get("theoretical_occupancy")
+
+    # A green context owns only a subset of the device's SMs, so comparing the
+    # grid against the *device* SM count would understate how full the machine
+    # is by the partition ratio. launch__sm_count is the launch's own view and is
+    # therefore preferred over the device attribute.
+    launch_sm_count = view.raw("launch__sm_count")
+    device_sm_count = view.get("device_sm_count")
+    sm_count = launch_sm_count if launch_sm_count else device_sm_count
+    in_green_context = bool(view.get("uses_green_context"))
+    partitioned = bool(
+        in_green_context
+        or (launch_sm_count and device_sm_count and launch_sm_count < device_sm_count)
+    )
 
     findings: List[Finding] = []
     t = SOL_THRESHOLDS
@@ -697,16 +834,22 @@ def analyze_launch_config(view: MetricView, *, gemm_shape: Any = None) -> Dict[s
         ))
 
     if grid is not None and sm_count and grid < sm_count:
+        scope = (
+            f"its green-context partition of {int(sm_count)} SMs"
+            if partitioned else f"a {int(sm_count)}-SM GPU"
+        )
         findings.append(Finding(
             category="small_grid",
             title=f"Grid of {int(grid)} blocks cannot fill {int(sm_count)} SMs",
             summary=(
-                f"With {int(grid)} blocks on a {int(sm_count)}-SM GPU, at least "
+                f"With {int(grid)} blocks on {scope}, at least "
                 f"{int(sm_count - grid)} SMs are idle for the entire kernel."
             ),
             severity="high",
             confidence="high",
-            evidence={"grid_size": grid, "sm_count": sm_count, "waves_per_sm": waves},
+            evidence={"grid_size": grid, "sm_count": sm_count, "waves_per_sm": waves,
+                      "sm_count_source": "launch" if launch_sm_count else "device",
+                      "green_context": in_green_context},
             actions=(
                 "Expose more parallelism (larger batch, split reductions, persistent kernels).",
                 "Fuse with neighbouring kernels so one launch covers more work.",

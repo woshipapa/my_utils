@@ -6,6 +6,9 @@
 - 运行时追踪与 Hook（NVTX / module hooks）
 - 分布式辅助（时钟同步 / etcd barrier / sequence parallel padding）
 - 内存诊断（snapshot / OOM flag / GPU tracker）
+
+**性能分析从这里开始**：[`my_utils/profiling/docs/PERFORMANCE_ANALYSIS_HANDBOOK.md`](my_utils/profiling/docs/PERFORMANCE_ANALYSIS_HANDBOOK.md)
+（采集 → 分析 → 判读的端到端手册）。给 agent 的接手说明见 [`AGENTS.md`](AGENTS.md)。
 - 产物落盘与离线分析（dump / CSV）
 
 ## 30秒定位

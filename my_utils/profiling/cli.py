@@ -35,6 +35,8 @@ from .ncu.ncu_csv_tools import (
     skill_result_to_json,
 )
 from .ncu.ncu_report_tools import (
+    diagnose_ncu_report,
+    diagnose_result_to_markdown,
     NcuReportSkillEngine,
     analyze_ncu_report,
     analyze_ncu_report_to_markdown,
@@ -1076,6 +1078,28 @@ def cmd_ncu_report_analyze(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_ncu_diagnose(args: argparse.Namespace) -> int:
+    payload = diagnose_ncu_report(
+        args.report,
+        kernel_like=str(args.kernel_like or "%"),
+        top_kernels=int(args.top_kernels),
+        findings_per_kernel=int(args.findings_per_kernel),
+        gpu_name=str(args.gpu or ""),
+    )
+    if str(args.format).lower() in {"md", "markdown"}:
+        text = diagnose_result_to_markdown(payload)
+    else:
+        text = report_result_to_json(payload, pretty=bool(args.pretty))
+    if args.output:
+        path = Path(args.output)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+        print(f"[ncu-diagnose] wrote: {path}")
+    else:
+        print(text)
+    return 0
+
+
 def cmd_nccl_inspector_skill(args: argparse.Namespace) -> int:
     engine = NcclInspectorSkillEngine(args.input, prometheus_path=str(args.prometheus_path or ""))
     if args.list_skills:
@@ -1578,6 +1602,24 @@ def build_parser() -> argparse.ArgumentParser:
     ncu_report_skill.add_argument("--output", default="", help="optional json output path")
     ncu_report_skill.add_argument("--pretty", action="store_true", help="pretty-print json output")
     ncu_report_skill.set_defaults(func=cmd_ncu_report_skill)
+
+    ncu_diagnose = sub.add_parser(
+        "ncu-diagnose",
+        help="diagnose every kernel in a .ncu-rep: bottleneck class, stalls, roofline, fixes",
+    )
+    ncu_diagnose.add_argument("--report", required=True, help="ncu report path (.ncu-rep)")
+    ncu_diagnose.add_argument("--kernel-like", default="%", help="kernel LIKE pattern (%/_/*)")
+    ncu_diagnose.add_argument("--top-kernels", type=int, default=10,
+                              help="how many kernels to report, ranked by duration")
+    ncu_diagnose.add_argument("--findings-per-kernel", type=int, default=8)
+    ncu_diagnose.add_argument(
+        "--gpu", default="",
+        help="GPU name (e.g. 'H100 SXM5') to unlock absolute roofline ceilings",
+    )
+    ncu_diagnose.add_argument("--format", default="md", choices=["json", "md", "markdown"])
+    ncu_diagnose.add_argument("--output", default="")
+    ncu_diagnose.add_argument("--pretty", action="store_true")
+    ncu_diagnose.set_defaults(func=cmd_ncu_diagnose)
 
     ncu_report_analyze = sub.add_parser(
         "ncu-report-analyze",
@@ -2254,6 +2296,10 @@ def entry_ncu_report_skill() -> int:
 
 def entry_ncu_report_analyze() -> int:
     return _run_nsys_alias("ncu-report-analyze")
+
+
+def entry_ncu_diagnose() -> int:
+    return _run_nsys_alias("ncu-diagnose")
 
 
 def entry_nccl_inspector_skill() -> int:

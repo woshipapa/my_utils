@@ -1,5 +1,8 @@
 # Profiling Quick Guide
 
+> **完整手册**：[`docs/PERFORMANCE_ANALYSIS_HANDBOOK.md`](docs/PERFORMANCE_ANALYSIS_HANDBOOK.md)
+> —— 教你用最新版 my_utils 采集全部 nsys/ncu 指标并得到性能优化指引。本页是速查，手册是权威。
+
 你只需要先回答一个问题：你现在要看“整段训练行为”还是“单个 kernel 细节”。
 
 - `nsys`：看训练全局时间线、通信/计算重叠、迭代耗时、跨版本对比。
