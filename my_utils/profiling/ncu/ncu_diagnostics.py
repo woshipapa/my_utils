@@ -988,7 +988,17 @@ def analyze_coalescing(view: MetricView) -> Dict[str, Any]:
 
     l1_hit = view.get("l1_hit_rate")
     l2_hit = view.get("l2_hit_rate")
-    if l1_hit is not None and l2_hit is not None and l1_hit < 50.0 and l2_hit < 50.0:
+    # TMA moves data from global straight into shared memory, bypassing L1. A
+    # correctly TMA-driven kernel therefore reads 0% L1 hit rate, and a real
+    # CUTLASS Hopper GEMM does exactly that - so the cache-locality finding has
+    # to be suppressed when the TMA pipe was active, or it fires on the
+    # best-tuned kernels in the trace.
+    tma_active = view.get("pipe_tma_util") or 0.0
+    if (
+        l1_hit is not None and l2_hit is not None
+        and l1_hit < 50.0 and l2_hit < 50.0
+        and tma_active <= 0.0
+    ):
         findings.append(Finding(
             category="poor_cache_locality",
             title="Both L1 and L2 hit rates are low",

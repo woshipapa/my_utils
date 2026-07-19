@@ -100,8 +100,12 @@ _CATALOG_LIST: List[MetricSpec] = [
        "MemoryWorkloadAnalysis", "memory", unit="byte"),
     _m("dram_bytes_per_sec", ["dram__bytes.sum.per_second"], "MemoryWorkloadAnalysis", "memory", unit="byte/s"),
     _m("l1_hit_rate", ["l1tex__t_sector_hit_rate.pct"], "MemoryWorkloadAnalysis", "memory",
-       unit="%", higher_is_better=True, warn_below=80.0,
-       description="L1/TEX sector hit rate. NVIDIA's guidance treats >80% as good."),
+       unit="%", higher_is_better=True,
+       description=(
+           "L1/TEX sector hit rate. No bare threshold, because TMA bypasses L1 entirely: "
+           "a correctly TMA-driven Hopper GEMM measures 0% here while running at 85% of "
+           "peak. Judge it only when the TMA pipe was idle."
+       )),
     _m("l2_hit_rate", ["lts__t_sector_hit_rate.pct"], "MemoryWorkloadAnalysis", "memory",
        unit="%", higher_is_better=True, warn_below=80.0),
     _m("l2_read_hit_rate", ["lts__t_sector_op_read_hit_rate.pct"], "MemoryWorkloadAnalysis_Tables", "memory", unit="%"),
@@ -157,16 +161,26 @@ _CATALOG_LIST: List[MetricSpec] = [
        "SourceCounters", "shared_memory", unit="wavefront", higher_is_better=False, ideal=0.0),
     _m("shared_conflicts_nway", ["derived__memory_l1_conflicts_shared_nway"],
        "SourceCounters", "shared_memory", unit="way", higher_is_better=False, ideal=1.0),
-    _m("shared_pipe_util", ["sm__pipe_shared_cycles_active.avg.pct_of_peak_sustained_active"],
+    _m("shared_pipe_util", ["sm__pipe_shared_cycles_active.avg.pct_of_peak_sustained_active",
+     "sm__pipe_shared_cycles_active.avg.pct_of_peak_sustained_elapsed"],
        "ComputeWorkloadAnalysis", "shared_memory", unit="%"),
 
     # -- Occupancy --------------------------------------------------------
     _m("achieved_occupancy", ["sm__warps_active.avg.pct_of_peak_sustained_active"],
-       "Occupancy", "occupancy", unit="%", higher_is_better=True, warn_below=35.0,
-       description="Actually resident warps vs hardware maximum."),
+       "Occupancy", "occupancy", unit="%", higher_is_better=True,
+       description=(
+           "Actually resident warps vs hardware maximum. Deliberately carries no "
+           "warn threshold: a measured CUTLASS Hopper pingpong GEMM runs at 13% "
+           "achieved occupancy at 85% of peak, so a bare threshold flags the best "
+           "kernels. The occupancy rule gates on latency hiding actually failing."
+       )),
     _m("theoretical_occupancy", ["sm__maximum_warps_per_active_cycle_pct"],
-       "Occupancy", "occupancy", unit="%", higher_is_better=True, warn_below=80.0,
-       description="Ceiling implied by launch config alone. NVIDIA flags <80% of hardware max."),
+       "Occupancy", "occupancy", unit="%", higher_is_better=True,
+       description=(
+           "Ceiling implied by the launch config alone. NVIDIA's rule flags <80%, but a "
+           "warp-specialized GEMM sits at ~19% by design, so this is judged in "
+           "analyze_occupancy() alongside a starvation signal rather than by threshold."
+       )),
     _m("occupancy_limit_blocks", ["launch__occupancy_limit_blocks"], "Occupancy", "occupancy", unit="warp"),
     _m("occupancy_limit_registers", ["launch__occupancy_limit_registers"], "Occupancy", "occupancy", unit="warp"),
     _m("occupancy_limit_shared_mem", ["launch__occupancy_limit_shared_mem"], "Occupancy", "occupancy", unit="warp"),
@@ -178,7 +192,11 @@ _CATALOG_LIST: List[MetricSpec] = [
     _m("grid_size", ["launch__grid_size"], "LaunchStats", "launch", unit="block"),
     _m("block_size", ["launch__block_size"], "LaunchStats", "launch", unit="thread"),
     _m("registers_per_thread", ["launch__registers_per_thread"], "LaunchStats", "launch", unit="register",
-       warn_above=64.0, description="Above ~64 registers/thread occupancy usually becomes register limited."),
+       description=(
+           "High counts trade occupancy for register blocking, which is often the right "
+           "trade - a measured CUTLASS GEMM uses 168. Only actionable alongside actual "
+           "spilling, so no bare threshold."
+       )),
     _m("shared_mem_per_block", ["launch__shared_mem_per_block"], "LaunchStats", "launch", unit="byte"),
     _m("waves_per_sm", ["launch__waves_per_multiprocessor"], "LaunchStats", "launch", unit="wave",
        description="Grid size in units of a full GPU. Fractional tails below 1 wave leave SMs idle."),
@@ -196,8 +214,13 @@ _CATALOG_LIST: List[MetricSpec] = [
 
     # -- Scheduler / issue ------------------------------------------------
     _m("issue_active", ["smsp__issue_active.avg.per_cycle_active"],
-       "SchedulerStats", "scheduler", unit="inst/cycle", higher_is_better=True, ideal=1.0, warn_below=0.6,
-       description="Instructions issued per scheduler per active cycle. NVIDIA's IssueSlotUtilization rule fires below 0.6."),
+       "SchedulerStats", "scheduler", unit="inst/cycle", higher_is_better=True, ideal=1.0,
+       description=(
+           "Instructions issued per scheduler per active cycle. NVIDIA's "
+           "IssueSlotUtilization rule fires below 0.6, but a warp-specialized kernel "
+           "measured 0.14 while hitting 85% of peak - its producer warps park in wait "
+           "loops by design. Used as a gate, not as a standalone finding."
+       )),
     _m("issue_slot_util", ["smsp__issue_active.avg.pct_of_peak_sustained_active"],
        "SchedulerStats", "scheduler", unit="%", higher_is_better=True),
     _m("no_eligible_pct", ["smsp__issue_inst0.avg.pct_of_peak_sustained_active"],
@@ -206,7 +229,8 @@ _CATALOG_LIST: List[MetricSpec] = [
     _m("warps_active_per_scheduler", ["smsp__warps_active.avg.per_cycle_active"],
        "SchedulerStats", "scheduler", unit="warp", higher_is_better=True),
     _m("warps_eligible_per_scheduler", ["smsp__warps_eligible.avg.per_cycle_active"],
-       "SchedulerStats", "scheduler", unit="warp", higher_is_better=True, warn_below=1.0),
+       "SchedulerStats", "scheduler", unit="warp", higher_is_better=True,
+       notes="No threshold: measured 0.16 on a well-tuned warp-specialized GEMM."),
     _m("max_warps_per_scheduler", ["smsp__maximum_warps_avg_per_active_cycle"],
        "SchedulerStats", "scheduler", unit="warp"),
     _m("warp_cycles_per_issued_inst", ["smsp__average_warp_latency_per_inst_issued.ratio"],
@@ -233,11 +257,14 @@ _CATALOG_LIST: List[MetricSpec] = [
        "SourceCounters", "divergence", higher_is_better=False, ideal=0.0),
 
     # -- Pipe utilisation --------------------------------------------------
-    _m("pipe_alu_util", ["sm__pipe_alu_cycles_active.avg.pct_of_peak_sustained_active"],
+    _m("pipe_alu_util", ["sm__pipe_alu_cycles_active.avg.pct_of_peak_sustained_active",
+     "sm__pipe_alu_cycles_active.avg.pct_of_peak_sustained_elapsed"],
        "ComputeWorkloadAnalysis", "pipes", unit="%"),
-    _m("pipe_fma_util", ["sm__pipe_fma_cycles_active.avg.pct_of_peak_sustained_active"],
+    _m("pipe_fma_util", ["sm__pipe_fma_cycles_active.avg.pct_of_peak_sustained_active",
+     "sm__pipe_fma_cycles_active.avg.pct_of_peak_sustained_elapsed"],
        "ComputeWorkloadAnalysis", "pipes", unit="%"),
-    _m("pipe_fp64_util", ["sm__pipe_fp64_cycles_active.avg.pct_of_peak_sustained_active"],
+    _m("pipe_fp64_util", ["sm__pipe_fp64_cycles_active.avg.pct_of_peak_sustained_active",
+     "sm__pipe_fp64_cycles_active.avg.pct_of_peak_sustained_elapsed"],
        "ComputeWorkloadAnalysis", "pipes", unit="%", warn_above=15.0,
        description="FP64 activity in a model that should be FP32/BF16 usually means stray double literals."),
     _m("pipe_tensor_util",
@@ -245,11 +272,13 @@ _CATALOG_LIST: List[MetricSpec] = [
        # name that folds every MMA variant together; the generic spelling exists
        # too but is not what a real sm_90 report leads with. Ada appends _v2.
        ["sm__pipe_tensor_cycles_active.avg.pct_of_peak_sustained_active",
+        "sm__pipe_tensor_cycles_active.avg.pct_of_peak_sustained_elapsed",
         "sm__pipe_tensor_type_hmma_hgmma_qgmma_imma_igmma_bmma_bgmma_cycles_active"
         ".avg.pct_of_peak_sustained_active",
         "sm__pipe_tensor_type_hmma_hgmma_qgmma_imma_igmma_bmma_bgmma_cycles_active"
         ".avg.pct_of_peak_sustained_elapsed",
-        "sm__pipe_tensor_cycles_active_v2.avg.pct_of_peak_sustained_active"],
+        "sm__pipe_tensor_cycles_active_v2.avg.pct_of_peak_sustained_active",
+         "sm__pipe_tensor_cycles_active_v2.avg.pct_of_peak_sustained_elapsed"],
        "ComputeWorkloadAnalysis", "pipes", unit="%", higher_is_better=True,
        notes="Hopper uses the type-qualified spelling; Ada (CC 8.9) uses _v2."),
     _m("registers_per_thread_allocated", ["launch__registers_per_thread_allocated"],
@@ -259,17 +288,23 @@ _CATALOG_LIST: List[MetricSpec] = [
            "per-thread count. Both are static: neither reflects setmaxnreg's runtime "
            "redistribution between producer and consumer warpgroups."
        )),
-    _m("pipe_tensor_hmma_util", ["sm__pipe_tensor_op_hmma_cycles_active.avg.pct_of_peak_sustained_active"],
+    _m("pipe_tensor_hmma_util", ["sm__pipe_tensor_op_hmma_cycles_active.avg.pct_of_peak_sustained_active",
+     "sm__pipe_tensor_op_hmma_cycles_active.avg.pct_of_peak_sustained_elapsed"],
        "ComputeWorkloadAnalysis", "pipes", unit="%"),
-    _m("pipe_tensor_imma_util", ["sm__pipe_tensor_op_imma_cycles_active.avg.pct_of_peak_sustained_active"],
+    _m("pipe_tensor_imma_util", ["sm__pipe_tensor_op_imma_cycles_active.avg.pct_of_peak_sustained_active",
+     "sm__pipe_tensor_op_imma_cycles_active.avg.pct_of_peak_sustained_elapsed"],
        "ComputeWorkloadAnalysis", "pipes", unit="%"),
-    _m("pipe_tma_util", ["sm__pipe_tma_cycles_active.avg.pct_of_peak_sustained_active"],
+    _m("pipe_tma_util", ["sm__pipe_tma_cycles_active.avg.pct_of_peak_sustained_active",
+     "sm__pipe_tma_cycles_active.avg.pct_of_peak_sustained_elapsed"],
        "ComputeWorkloadAnalysis", "pipes", unit="%", notes="Hopper+ Tensor Memory Accelerator."),
-    _m("pipe_tc_util", ["sm__pipe_tc_cycles_active.avg.pct_of_peak_sustained_active"],
+    _m("pipe_tc_util", ["sm__pipe_tc_cycles_active.avg.pct_of_peak_sustained_active",
+     "sm__pipe_tc_cycles_active.avg.pct_of_peak_sustained_elapsed"],
        "ComputeWorkloadAnalysis", "pipes", unit="%", notes="Blackwell tcgen05 pipe."),
-    _m("pipe_lsu_util", ["sm__inst_executed_pipe_lsu.avg.pct_of_peak_sustained_active"],
+    _m("pipe_lsu_util", ["sm__inst_executed_pipe_lsu.avg.pct_of_peak_sustained_active",
+     "sm__inst_executed_pipe_lsu.avg.pct_of_peak_sustained_elapsed"],
        "ComputeWorkloadAnalysis", "pipes", unit="%"),
-    _m("inst_pipe_gmma", ["sm__inst_executed_pipe_tensor_op_gmma.avg.pct_of_peak_sustained_active"],
+    _m("inst_pipe_gmma", ["sm__inst_executed_pipe_tensor_op_gmma.avg.pct_of_peak_sustained_active",
+     "sm__inst_executed_pipe_tensor_op_gmma.avg.pct_of_peak_sustained_elapsed"],
        "ComputeWorkloadAnalysis", "pipes", unit="%", notes="Hopper warpgroup MMA (wgmma)."),
 
     # -- FLOP counters (roofline inputs) -----------------------------------
@@ -365,33 +400,47 @@ _CATALOG_LIST: List[MetricSpec] = [
     # -- Remaining execution pipes ----------------------------------------
     # Without the full set, "which pipe is the limiter" can only ever name the
     # handful that happened to be catalogued.
-    _m("inst_pipe_adu", ["sm__inst_executed_pipe_adu.avg.pct_of_peak_sustained_active"],
+    _m("inst_pipe_adu", ["sm__inst_executed_pipe_adu.avg.pct_of_peak_sustained_active",
+     "sm__inst_executed_pipe_adu.avg.pct_of_peak_sustained_elapsed"],
        "ComputeWorkloadAnalysis", "pipes", unit="%", notes="Address divergence unit."),
-    _m("inst_pipe_alu", ["sm__inst_executed_pipe_alu.avg.pct_of_peak_sustained_active"],
+    _m("inst_pipe_alu", ["sm__inst_executed_pipe_alu.avg.pct_of_peak_sustained_active",
+     "sm__inst_executed_pipe_alu.avg.pct_of_peak_sustained_elapsed"],
        "ComputeWorkloadAnalysis", "pipes", unit="%"),
-    _m("inst_pipe_cbu", ["sm__inst_executed_pipe_cbu.avg.pct_of_peak_sustained_active"],
+    _m("inst_pipe_cbu", ["sm__inst_executed_pipe_cbu.avg.pct_of_peak_sustained_active",
+     "sm__inst_executed_pipe_cbu.avg.pct_of_peak_sustained_elapsed"],
        "ComputeWorkloadAnalysis", "pipes", unit="%", notes="Convergence barrier unit - high means heavy control flow."),
-    _m("inst_pipe_fma", ["sm__inst_executed_pipe_fma.avg.pct_of_peak_sustained_active"],
+    _m("inst_pipe_fma", ["sm__inst_executed_pipe_fma.avg.pct_of_peak_sustained_active",
+     "sm__inst_executed_pipe_fma.avg.pct_of_peak_sustained_elapsed"],
        "ComputeWorkloadAnalysis", "pipes", unit="%"),
     _m("inst_pipe_fp16", ["sm__inst_executed_pipe_fma_type_fp16.avg.pct_of_peak_sustained_active",
-                          "sm__inst_executed_pipe_fp16.avg.pct_of_peak_sustained_active"],
+     "sm__inst_executed_pipe_fma_type_fp16.avg.pct_of_peak_sustained_elapsed",
+                          "sm__inst_executed_pipe_fp16.avg.pct_of_peak_sustained_active",
+                           "sm__inst_executed_pipe_fp16.avg.pct_of_peak_sustained_elapsed"],
        "ComputeWorkloadAnalysis", "pipes", unit="%", notes="CC>=8.6 uses the fma_type_fp16 spelling."),
-    _m("inst_pipe_fp64", ["sm__inst_executed_pipe_fp64.avg.pct_of_peak_sustained_active"],
+    _m("inst_pipe_fp64", ["sm__inst_executed_pipe_fp64.avg.pct_of_peak_sustained_active",
+     "sm__inst_executed_pipe_fp64.avg.pct_of_peak_sustained_elapsed"],
        "ComputeWorkloadAnalysis", "pipes", unit="%"),
-    _m("inst_pipe_lsu", ["sm__inst_executed_pipe_lsu.avg.pct_of_peak_sustained_active"],
+    _m("inst_pipe_lsu", ["sm__inst_executed_pipe_lsu.avg.pct_of_peak_sustained_active",
+     "sm__inst_executed_pipe_lsu.avg.pct_of_peak_sustained_elapsed"],
        "ComputeWorkloadAnalysis", "pipes", unit="%"),
-    _m("inst_pipe_tex", ["sm__inst_executed_pipe_tex.avg.pct_of_peak_sustained_active"],
+    _m("inst_pipe_tex", ["sm__inst_executed_pipe_tex.avg.pct_of_peak_sustained_active",
+     "sm__inst_executed_pipe_tex.avg.pct_of_peak_sustained_elapsed"],
        "ComputeWorkloadAnalysis", "pipes", unit="%"),
-    _m("inst_pipe_uniform", ["sm__inst_executed_pipe_uniform.avg.pct_of_peak_sustained_active"],
+    _m("inst_pipe_uniform", ["sm__inst_executed_pipe_uniform.avg.pct_of_peak_sustained_active",
+     "sm__inst_executed_pipe_uniform.avg.pct_of_peak_sustained_elapsed"],
        "ComputeWorkloadAnalysis", "pipes", unit="%", notes="CC>=7.5."),
-    _m("inst_pipe_xu", ["sm__inst_executed_pipe_xu.avg.pct_of_peak_sustained_active"],
+    _m("inst_pipe_xu", ["sm__inst_executed_pipe_xu.avg.pct_of_peak_sustained_active",
+     "sm__inst_executed_pipe_xu.avg.pct_of_peak_sustained_elapsed"],
        "ComputeWorkloadAnalysis", "pipes", unit="%",
        description="Transcendental/special-function unit - the exp in softmax lands here."),
-    _m("inst_pipe_tensor_dmma", ["sm__inst_executed_pipe_tensor_op_dmma.avg.pct_of_peak_sustained_active"],
+    _m("inst_pipe_tensor_dmma", ["sm__inst_executed_pipe_tensor_op_dmma.avg.pct_of_peak_sustained_active",
+     "sm__inst_executed_pipe_tensor_op_dmma.avg.pct_of_peak_sustained_elapsed"],
        "ComputeWorkloadAnalysis", "pipes", unit="%"),
-    _m("inst_pipe_tmem", ["sm__inst_executed_pipe_tmem.avg.pct_of_peak_sustained_active"],
+    _m("inst_pipe_tmem", ["sm__inst_executed_pipe_tmem.avg.pct_of_peak_sustained_active",
+     "sm__inst_executed_pipe_tmem.avg.pct_of_peak_sustained_elapsed"],
        "ComputeWorkloadAnalysis", "pipes", unit="%", notes="Blackwell tensor memory."),
-    _m("pipe_tensor_dmma_util", ["sm__pipe_tensor_op_dmma_cycles_active.avg.pct_of_peak_sustained_active"],
+    _m("pipe_tensor_dmma_util", ["sm__pipe_tensor_op_dmma_cycles_active.avg.pct_of_peak_sustained_active",
+     "sm__pipe_tensor_op_dmma_cycles_active.avg.pct_of_peak_sustained_elapsed"],
        "ComputeWorkloadAnalysis", "pipes", unit="%"),
     _m("sm_cycles_elapsed", ["sm__cycles_elapsed.avg"], "SpeedOfLight", "timing", unit="cycles"),
     _m("smsp_cycles_active", ["smsp__cycles_active.avg"], "SchedulerStats", "timing", unit="cycles"),
@@ -582,7 +631,10 @@ _STALL_LIST: List[StallReason] = [
         ("Shorten very long unrolled bodies that thrash the instruction cache.",
          "Avoid large jumps in the instruction stream.",
          "For sub-one-wave kernels this is expected; fuse or batch instead."),
-        "instruction"),
+        "instruction",
+        # PC sampling spells this plural while PM sampling keeps the singular.
+        # Verified against a real report: the singular pcsamp name does not exist.
+        pcsamp_key="no_instructions"),
     StallReason(
         "branch_resolving", "Branch Resolving",
         "Waiting for a branch target to be resolved.",

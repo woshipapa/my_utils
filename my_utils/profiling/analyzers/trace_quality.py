@@ -459,3 +459,171 @@ def assess_trace_quality(
         "blocked_conclusions": sorted(blocked),
         "issues": [i.to_dict() for i in issues],
     }
+
+
+# ---------------------------------------------------------------------------
+# Guards that only a trace can supply - a kernel name never reveals these
+# ---------------------------------------------------------------------------
+
+# Nsight Systems aligns reports from different hosts using UTC captured around
+# collection start, and documents the error as "on the scale of one to tens of
+# milliseconds" because it inherits NTP's precision. A typical AllReduce runs
+# 0.1-5 ms, so the alignment error exceeds the thing being measured. TSC
+# alignment (nanosecond precision) is selected automatically, but only for
+# reports from the same target host.
+UTC_ALIGNMENT_FLOOR_MS = 10.0
+
+
+def check_clock_alignment(
+    alignment_source: str = "",
+    *,
+    report_count: int = 1,
+    claim_magnitude_ms: Optional[float] = None,
+) -> List[QualityIssue]:
+    """Refuse cross-node timing claims finer than the clock alignment supports.
+
+    ``alignment_source`` is the ``Report alignment source`` property from the
+    Analysis Summary tab: ``"TSC"`` (same host, nanosecond precision) or
+    ``"UTC"`` (cross host, NTP precision).
+    """
+    if report_count < 2:
+        return []
+    source = str(alignment_source or "").strip().upper()
+    if source.startswith("TSC"):
+        return []
+
+    detail = (
+        "Reports are aligned by UTC wall-clock captured at collection start, whose "
+        f"error is 1-10 ms. Claims finer than ~{UTC_ALIGNMENT_FLOOR_MS:.0f} ms across "
+        "ranks are indistinguishable from clock skew."
+    )
+    blocks = claim_magnitude_ms is not None and claim_magnitude_ms < UTC_ALIGNMENT_FLOOR_MS
+    if blocks:
+        detail += (
+            f" The pending claim is {claim_magnitude_ms:.2f} ms, which is below that floor: "
+            "it is noise, not an observation."
+        )
+    return [QualityIssue(
+        key="cross_node_clock_skew",
+        title="Cross-node timestamps are NTP-aligned, not synchronised",
+        detail=detail,
+        invalidates=("straggler_rank", "arrival_skew", "cross_rank_latency"),
+        blocks=blocks,
+        severity="high" if blocks else "medium",
+        evidence={
+            "alignment_source": source or "unknown",
+            "report_count": report_count,
+            "floor_ms": UTC_ALIGNMENT_FLOOR_MS,
+            "claim_ms": claim_magnitude_ms,
+        },
+        remedy=(
+            "Anchor on a collective that is simultaneous by construction (match one "
+            "AllReduce instance across ranks), derive per-rank offsets, and apply them "
+            "with 'nsys export --ts-shift'. Otherwise keep conclusions within a rank. "
+            "PTP gives sub-microsecond alignment; NTP does not."
+        ),
+    )]
+
+
+def check_nvlink_utilization_validity(
+    nvlink_util_pct: Optional[float],
+    *,
+    links_active: Optional[bool] = None,
+    nvlink_bytes: Optional[float] = None,
+) -> List[QualityIssue]:
+    """Reject the NVLink-saturated verdict when the links may simply be idle.
+
+    NVIDIA documents this directly: "If metric sets with NVLink are used but the
+    links are not active, they may appear as fully utilized." So the most obvious
+    heuristic - high nvlrx/nvltx percent means communication-bound - inverts on
+    exactly the machines where NVLink is absent or disabled.
+    """
+    if nvlink_util_pct is None or nvlink_util_pct < 90.0:
+        return []
+    moved_bytes = nvlink_bytes is not None and nvlink_bytes > 0
+    if links_active is True or moved_bytes:
+        return []
+    return [QualityIssue(
+        key="nvlink_util_ambiguous",
+        title="NVLink reads ~100% but may be inactive rather than saturated",
+        detail=(
+            f"NVLink utilisation is {nvlink_util_pct:.1f}%, but inactive links report as "
+            "fully utilised in Nsight Systems GPU metrics. Without a nonzero byte count "
+            "or a topology check, saturated and absent are indistinguishable here."
+        ),
+        invalidates=("nvlink_saturated", "communication_bound"),
+        blocks=True,
+        severity="high",
+        evidence={"nvlink_util_pct": nvlink_util_pct, "nvlink_bytes": nvlink_bytes},
+        remedy=(
+            "Confirm the links carry traffic before concluding saturation: check "
+            "'nvidia-smi topo -p2p p' or 'nvidia-smi nvlink -s', or read the nvlink_sum "
+            "recipe, which reports bytes rather than a percentage."
+        ),
+    )]
+
+
+def check_diagnostic_events(
+    events: Iterable[Mapping[str, Any]] = (),
+    *,
+    log_text: str = "",
+) -> List[QualityIssue]:
+    """Gate every conclusion on the report's own diagnostics.
+
+    Nsight Systems records collection-time problems in the ``DIAGNOSTIC_EVENT``
+    table and surfaces them on the Diagnostics Summary page. A report that hit a
+    buffer limit or dropped samples still loads and still looks complete, so this
+    has to be read before the timeline, not after a result looks surprising.
+    """
+    issues: List[QualityIssue] = []
+    serious = [
+        row for row in (events or ())
+        if isinstance(row, Mapping)
+        and str(row.get("severity", "")).lower() in ("warning", "error", "fatal")
+    ]
+
+    # The literal strings the collector emits when it drops data.
+    text = str(log_text or "")
+    lost_markers = [
+        marker for marker in (
+            "were lost",
+            "Reached the size limit on recording trace events",
+            "throttled the collection of sampling data",
+            "Buffer overflow",
+        ) if marker in text
+    ]
+
+    if serious:
+        issues.append(QualityIssue(
+            key="diagnostic_events",
+            title=f"Report carries {len(serious)} collection diagnostic(s) at warning or above",
+            detail=(
+                "The profiler recorded problems during collection. Timeline data may be "
+                "incomplete in ways that are not visually obvious: "
+                + "; ".join(str(r.get("text") or r.get("message") or "?")[:90] for r in serious[:3])
+            ),
+            invalidates=("any_timeline_conclusion",),
+            blocks=True,
+            severity="high",
+            evidence={"count": len(serious)},
+            remedy="Resolve the diagnostics and re-collect before drawing conclusions.",
+        ))
+
+    if lost_markers:
+        issues.append(QualityIssue(
+            key="dropped_events",
+            title="Collector reported dropped events",
+            detail=(
+                "The collection log contains " + ", ".join(repr(m) for m in lost_markers)
+                + ". Any count, sum, or rate derived from this trace is a lower bound."
+            ),
+            invalidates=("kernel_counts", "api_counts", "utilization"),
+            blocks=False,
+            severity="high",
+            evidence={"markers": lost_markers},
+            remedy=(
+                "Reduce the sampling rate, narrow --trace, or shorten the capture window. "
+                "Captures beyond ~5 minutes are not officially supported."
+            ),
+        ))
+    return issues

@@ -190,6 +190,20 @@ _FRAMEWORK_PATTERNS: Tuple[Tuple[str, re.Pattern], ...] = (
         r"|\bmoe_(?:grouped|gather_(?:rs|ar)_grouped)_gemm"
         r"|\bkernel_(?:intra_rank_|inter_rank_)?gqa_fwd_batch_decode"
     )),
+    # ByteDance FLUX: fused comm-overlap GEMM built on CUTLASS. Two symbol
+    # families - templated CUTLASS kernels carrying the bytedance::flux
+    # namespace, and hand-written helpers with distinctive names.
+    ("flux", re.compile(
+        r"bytedance::flux"
+        r"|GemmV[23](?:AGKernel|ReduceScatter|CommNone|Pre?AttnAllToAllTranspose)"
+        r"|AGKernel(?:TileScheduler|StreamKScheduler)"
+        r"|\bCudaIpcBarrierAll(?:RingMode)?Kernel\b"
+        r"|\btopk_(?:gather_rs|reduce)(?:_v2)?_kernel\b"
+        r"|\bep_topk_(?:gather_rs|reduce)_kernel\b"
+        r"|\bbsr2dense_reduce_kernel\b|\bpacked_ring_reduction\b"
+        r"|\bdis_scatter_(?:forward_flatten|backward)_kernel\b"
+        r"|\b(?:pre|post)_attn_all2all(?:_transpose|_dyn_seq)?_kernel\b"
+    )),
     ("triton", re.compile(r"^triton_|triton_poi_|triton_red_|triton_per_|triton_tem_")),
     ("cutlass", re.compile(r"cutlass|sm90_|sm100_|sm103_|nvjet|cute::|tcgen05")),
     ("cublas", re.compile(r"cublas|ampere_|turing_|volta_|^sm\d+_xmma")),
@@ -449,6 +463,32 @@ class NcclCollective:
     dtype: str = ""
     algorithm: str = ""
     protocol: str = ""
+    # False when the name is one of NCCL's launch stubs, whose algo/proto tokens
+    # are hard-coded and say nothing about what actually ran. See
+    # :meth:`algorithm_caveat`.
+    algorithm_is_authoritative: bool = True
+
+    def algorithm_caveat(self) -> str:
+        """Why the algorithm/protocol in a ``ncclDevKernel_`` name cannot be trusted.
+
+        NCCL's ``generate.py::best_kernel()`` collapses all 670-odd device
+        functions onto ~40 specialised launch stubs, hard-coding the algo/proto
+        tokens to ``RING``/``TREE`` and ``LL``. ``enqueue.cc`` launches that stub
+        and the kernel then dispatches at runtime through ``ncclDevFuncTable``.
+        So a ReduceScatter genuinely running NVLS+Simple still appears in a trace
+        as ``ncclDevKernel_ReduceScatter_Sum_bf16_RING_LL``. You will never see
+        ``_SIMPLE``, ``_LL128``, ``_NVLS`` or ``_PAT`` on a kernel symbol from a
+        stock build - those tokens only exist on ``ncclDevFunc_`` device
+        functions, which are not kernels and never appear as trace rows.
+        """
+        if self.algorithm_is_authoritative:
+            return ""
+        return (
+            "NCCL kernel names are launch stubs: the algorithm and protocol tokens are "
+            "hard-coded to RING/TREE + LL regardless of what actually ran. Recover the "
+            "real algorithm from NCCL_DEBUG=INFO output or the profiler plugin, not from "
+            "the kernel name."
+        )
 
     def busbw_factor(self, num_ranks: int) -> Optional[float]:
         """Multiplier converting algorithmic bandwidth into bus bandwidth.
@@ -519,6 +559,12 @@ def parse_nccl_kernel(kernel_name: str) -> Optional[NcclCollective]:
             protocol = candidate
             break
 
+    # ncclDevKernel_ symbols are launch stubs with hard-coded algo/proto tokens;
+    # ncclDevFunc_ symbols carry the real ones (but are device functions, so they
+    # only turn up in a trace on dev builds). Symmetric-memory kernels
+    # (ncclSymkDevKernel_) encode the true algorithm in their name.
+    authoritative = not low.startswith("nccldevkernel_")
+
     if not any((collective, algorithm, protocol)):
         return NcclCollective()
     return NcclCollective(
@@ -527,6 +573,7 @@ def parse_nccl_kernel(kernel_name: str) -> Optional[NcclCollective]:
         dtype=dtype,
         algorithm=algorithm,
         protocol=protocol,
+        algorithm_is_authoritative=authoritative,
     )
 
 
