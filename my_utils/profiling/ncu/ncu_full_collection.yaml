@@ -9,9 +9,39 @@
 ##     --config my_utils/profiling/ncu/ncu_full_collection.yaml -- \
 ##     torchrun --nproc_per_node=8 pretrain_gpt.py --config cfg.yaml
 ##
+## COMPLETENESS CONTRACT
+## ---------------------
+## This preset is what `my_utils.profiling.ncu.ncu_diagnostics` assumes when it
+## says a dimension is "missing metrics". `--set full` already covers every
+## section the rule engine reads; the explicit `section:` list below is a
+## belt-and-braces guard so the preset stays correct if NVIDIA moves a section
+## between sets again (SchedulerStats and WarpStateStats moved out of `detailed`
+## in a recent release, which silently removed stall analysis for anyone
+## relying on `--set detailed`).
+##
+## What each section unlocks in the analysis:
+##   SpeedOfLight ................. compute/memory bound classification
+##   SpeedOfLight_RooflineChart ... roofline placement
+##   ComputeWorkloadAnalysis ...... pipe utilisation, tensor-core engagement, IPC
+##   MemoryWorkloadAnalysis ....... DRAM/L1/L2 traffic and hit rates
+##   MemoryWorkloadAnalysis_Tables  per-space hit rates, bank conflicts, coalescing ratios
+##   SchedulerStats ............... issue-slot utilisation, eligible warps
+##   WarpStateStats ............... the 19 warp-stall reasons (latency attribution)
+##   Occupancy .................... achieved vs theoretical, and the binding limiter
+##   LaunchStats .................. grid/block/registers/waves, tail-effect input
+##   InstructionStats ............. FLOP counters (roofline), instruction mix, spilling
+##   SourceCounters ............... per-line coalescing/divergence (needs -lineinfo)
+##   WorkloadDistribution ......... SM/L2/DRAM load imbalance
+##
 ## Notes:
 ## - Keep `target_processes=all` for torchrun/deepspeed/mpirun style launchers.
-## - This preset is for bottleneck diagnosis quality (not minimal overhead).
+## - This preset optimises for diagnosis quality, not overhead. `--set full`
+##   replays each kernel many times; scope it with launch_count/nvtx/kernel filters.
+## - Build with `-lineinfo` (nvcc) or `--generate-line-info` to make SourceCounters
+##   attributable to source lines rather than SASS addresses only.
+## - PM sampling contends for the same counter hardware as full-section
+##   collection. Collect it in a SEPARATE run (see ncu_pmsampling.yaml usage note
+##   at the bottom) rather than adding it here.
 
 output_dir: ./logs/ncu
 output_prefix: ncu_full_collection
@@ -29,13 +59,30 @@ ncu:
   set: full
   section:
     - SpeedOfLight
+    - SpeedOfLight_RooflineChart
     - ComputeWorkloadAnalysis
     - MemoryWorkloadAnalysis
-    - Occupancy
+    - MemoryWorkloadAnalysis_Chart
+    - MemoryWorkloadAnalysis_Tables
     - SchedulerStats
     - WarpStateStats
+    - Occupancy
     - LaunchStats
-  metrics: []
+    - InstructionStats
+    - SourceCounters
+    - WorkloadDistribution
+
+  # Metric groups the rule engine reads that are cheap to request explicitly.
+  # Regex/group forms survive per-architecture renames (Ada appends _v2 to the
+  # tensor pipe metrics; Blackwell renames dram__bytes_read to dram__bytes_op_read).
+  metrics:
+    - "regex:smsp__average_warps_issue_stalled_.*_per_issue_active"
+    - "regex:sm__pipe_.*_cycles_active.avg.pct_of_peak_sustained_active"
+    - "regex:smsp__sass_thread_inst_executed_op_[dhf](add|mul|fma)_pred_on.sum"
+    - "regex:launch__occupancy_limit_.*"
+    - "breakdown:sm__throughput.avg.pct_of_peak_sustained_elapsed"
+    - "breakdown:gpu__compute_memory_throughput.avg.pct_of_peak_sustained_elapsed"
+
   rule: []
   apply_rules: "on"
 
@@ -66,6 +113,9 @@ ncu:
     "print-rule-details": "on"
     "print-units": auto
     "print-kernel-base": demangled
+    # Embed source so SourceCounters findings can point at real lines. Requires
+    # the binary to have been built with line info.
+    "import-source": "yes"
 
   extra_args: []
 
@@ -80,3 +130,15 @@ command:
   - train.py
   - --config
   - configs/train.yaml
+
+## Intra-kernel timelines (separate run)
+## -------------------------------------
+## PM sampling answers "what did utilisation look like *over time inside* the
+## kernel" - flat-low, long tail, or sawtooth - which section metrics cannot show
+## because they are whole-kernel aggregates. It needs its own session:
+##
+##   ncu --set pmsampling --pm-sampling-interval 100000 -o pmsample ./app
+##
+## This matters most for persistent/megakernel designs (ThunderKittens
+## interpreter, Triton-distributed mega_kernel, CUDA graphs), where one launch
+## covers the whole step and per-kernel attribution stops being meaningful.

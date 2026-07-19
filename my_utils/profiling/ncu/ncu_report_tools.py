@@ -1694,6 +1694,87 @@ def load_ncu_report_records(
     return out
 
 
+def diagnose_ncu_report(
+    report_path: str,
+    *,
+    kernel_like: str = "%",
+    top_kernels: int = 10,
+    findings_per_kernel: int = 8,
+    gpu_name: str = "",
+    ncu_report_module: Any = None,
+) -> Dict[str, object]:
+    """Run the full rule engine over every profiled kernel in a report.
+
+    Unlike :func:`analyze_ncu_report`, which summarises metrics, this walks each
+    kernel launch and produces a ranked, evidence-carrying diagnosis: bottleneck
+    class, stall attribution, roofline placement, occupancy limiter, coalescing,
+    bank conflicts, divergence, spilling and launch geometry.
+
+    ``gpu_name`` unlocks the absolute roofline. When empty, the GPU is inferred
+    from the report's device attributes where possible; failing that the
+    analysis still runs but reports arithmetic intensity without a ceiling.
+    """
+    from ..hardware.gpu_specs import lookup_gpu_spec
+    from .ncu_diagnostics import diagnose_kernel
+
+    records = load_ncu_report_records(
+        report_path,
+        metric_like="%",
+        kernel_like=kernel_like,
+        ncu_report_module=ncu_report_module,
+    )
+
+    # Group metrics per kernel launch: (range, action) identifies one launch.
+    launches: Dict[Tuple[int, int], Dict[str, object]] = {}
+    for record in records:
+        key = (record.range_index, record.action_index)
+        slot = launches.setdefault(key, {"kernel_name": record.kernel_name, "metrics": {}})
+        if record.numeric_value is not None:
+            slot["metrics"][record.metric_name] = record.numeric_value  # type: ignore[index]
+
+    gpu_spec = lookup_gpu_spec(gpu_name) if gpu_name else None
+
+    diagnoses: List[Dict[str, object]] = []
+    for (range_idx, action_idx), slot in launches.items():
+        metrics = slot["metrics"]
+        if not isinstance(metrics, dict) or not metrics:
+            continue
+        diagnosis = diagnose_kernel(
+            metrics,
+            kernel_name=str(slot.get("kernel_name") or ""),
+            gpu_spec=gpu_spec,
+            top_k=int(findings_per_kernel),
+        )
+        diagnosis["range_index"] = range_idx
+        diagnosis["action_index"] = action_idx
+        duration = diagnosis.get("sections", {}).get("bottleneck", {})
+        diagnosis["duration_ns"] = (
+            metrics.get("gpu__time_duration.sum") if isinstance(metrics, dict) else None
+        )
+        diagnoses.append(diagnosis)
+
+    # Rank by duration so the hottest kernels lead; unknown durations sort last.
+    diagnoses.sort(key=lambda d: -(d.get("duration_ns") or 0.0))
+
+    verdict_counts: Dict[str, int] = {}
+    finding_counts: Dict[str, int] = {}
+    for diagnosis in diagnoses:
+        verdict = str(diagnosis.get("verdict") or "unknown")
+        verdict_counts[verdict] = verdict_counts.get(verdict, 0) + 1
+        for finding in diagnosis.get("findings", []) or []:
+            category = str(finding.get("category") or "")
+            finding_counts[category] = finding_counts.get(category, 0) + 1
+
+    return {
+        "report_path": str(report_path),
+        "gpu": gpu_spec.name if gpu_spec else "",
+        "kernels_analyzed": len(diagnoses),
+        "verdict_counts": dict(sorted(verdict_counts.items(), key=lambda kv: -kv[1])),
+        "finding_counts": dict(sorted(finding_counts.items(), key=lambda kv: -kv[1])),
+        "kernels": diagnoses[: int(top_kernels)],
+    }
+
+
 def load_ncu_report_rule_rows(
     report_path: str,
     *,

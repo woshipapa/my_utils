@@ -13,3 +13,4 @@ __pycache__/
 build/
 dist/
 my_utils.egg-info/*
+.DS_Store

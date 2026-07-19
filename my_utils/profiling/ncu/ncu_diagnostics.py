@@ -1,0 +1,1272 @@
+"""Rule engine mapping Nsight Compute metrics onto named performance problems.
+
+The rules below mirror the ones Nsight Compute ships (``SOLBottleneck``,
+``CPIStall``, ``LaunchConfiguration``, ``UncoalescedGlobalAccess``, ...) using
+their exact thresholds, and add the analyses NVIDIA does not ship: roofline
+placement computed from FLOP counters, tile/wave-quantisation checks driven by
+kernel names, and per-workload expectations (a GEMM that misses tensor cores is
+a finding; an elementwise kernel that does is not).
+
+Two design choices worth knowing:
+
+* **Every finding carries its evidence.** ``Finding.evidence`` holds the metric
+  values that produced it, so a report can always show its work rather than
+  asserting a conclusion.
+* **Speedup estimates are stall-share based**, following GPA (CGO 2021): for a
+  stall-elimination fix the ceiling is ``T/(T-M)`` where ``M`` is the matched
+  stall time; for a latency-hiding fix the ceiling is capped at 2x because you
+  can only fill issue slots you already have. Estimates are labelled as ceilings,
+  never as predictions.
+"""
+
+from __future__ import annotations
+
+import math
+from dataclasses import dataclass, field
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
+
+from .metric_catalog import (
+    BENIGN_STALL_KEYS,
+    METRIC_CATALOG,
+    STALL_REASONS,
+    describe_arch,
+)
+
+__all__ = [
+    "Finding",
+    "MetricView",
+    "build_metric_view",
+    "classify_bottleneck",
+    "analyze_stalls",
+    "compute_roofline",
+    "analyze_occupancy",
+    "analyze_launch_config",
+    "analyze_coalescing",
+    "analyze_shared_memory",
+    "analyze_divergence",
+    "analyze_spilling",
+    "analyze_pipes",
+    "analyze_imbalance",
+    "diagnose_kernel",
+    "SOL_THRESHOLDS",
+]
+
+
+# NVIDIA's own constants, from the shipped rule sources (Nsight Compute 2026.1.1).
+SOL_THRESHOLDS = {
+    "balanced_delta": 10.0,      # |compute - memory| below this => balanced
+    "latency_bound": 60.0,       # both SOL below this => latency issue
+    "saturated": 80.0,           # either SOL at/above this => genuinely bound
+    "waves_small_grid": 1.0,     # below one wave => small grid
+    # NVIDIA's guided-analysis routing table (compute-bound >60/<40 etc.)
+    "compute_bound_compute": 60.0,
+    "compute_bound_memory": 40.0,
+    # CPIStall
+    "issue_active_stall_gate": 0.8,
+    "stall_share_gate": 0.3,
+    # IssueSlotUtilization
+    "issue_active_low": 0.6,
+    "warp_ratio_gate": 0.8,
+    # Occupancy
+    "achieved_vs_theoretical_gap_pp": 10.0,
+    "theoretical_occupancy_low": 80.0,
+    # LaunchConfiguration
+    "tail_effect_min_speedup": 0.2,
+    # SharedMemoryConflicts
+    "bank_conflict_share": 0.10,
+    # ThreadDivergence
+    "threads_per_inst_low": 24.0,
+    # LocalMemoryUsage
+    "local_inst_share": 0.10,
+    "local_hit_rate_low": 80.0,
+    # WorkloadImbalance
+    "imbalance_min_speedup": 0.05,
+    # Short-kernel / launch-overhead gate (microseconds)
+    "short_kernel_us": 10.0,
+    # FP64 pipe activity that is suspicious in a BF16/FP16 model
+    "fp64_warn": 15.0,
+}
+
+
+@dataclass
+class Finding:
+    """One diagnosed problem, its evidence, and what to do about it."""
+
+    category: str
+    title: str
+    summary: str
+    severity: str = "info"           # info | low | medium | high
+    confidence: str = "medium"       # low | medium | high
+    evidence: Dict[str, Any] = field(default_factory=dict)
+    actions: Tuple[str, ...] = ()
+    # Upper bound on the win, as a multiplier (1.25 == "up to 25% faster").
+    speedup_ceiling: Optional[float] = None
+    source: str = "heuristic"        # heuristic | ncu_rule | expectation
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "category": self.category,
+            "title": self.title,
+            "summary": self.summary,
+            "severity": self.severity,
+            "confidence": self.confidence,
+            "evidence": self.evidence,
+            "actions": list(self.actions),
+            "speedup_ceiling": self.speedup_ceiling,
+            "source": self.source,
+        }
+
+
+# ---------------------------------------------------------------------------
+# Metric access
+# ---------------------------------------------------------------------------
+
+class MetricView:
+    """Read-only view over one kernel's metrics, resolving catalog keys to values.
+
+    Nsight Compute renames metrics across architectures (``_v2`` suffixes on Ada,
+    ``dram__bytes_op_read`` on Blackwell), so lookups go through the catalog's
+    candidate list rather than a single hard-coded string.
+    """
+
+    def __init__(self, metrics: Mapping[str, float]):
+        # Normalise once: strip whitespace, keep the raw spelling as the key.
+        self._raw: Dict[str, float] = {}
+        for name, value in metrics.items():
+            if value is None:
+                continue
+            try:
+                self._raw[str(name).strip()] = float(value)
+            except (TypeError, ValueError):
+                continue
+        self._lower = {k.lower(): v for k, v in self._raw.items()}
+
+    def __contains__(self, key: str) -> bool:
+        return self.get(key) is not None
+
+    def raw(self, metric_name: str) -> Optional[float]:
+        """Value of an exact ncu metric name."""
+        if metric_name in self._raw:
+            return self._raw[metric_name]
+        return self._lower.get(metric_name.lower())
+
+    def get(self, key: str, default: Optional[float] = None) -> Optional[float]:
+        """Value for a catalog key, trying each candidate spelling in order."""
+        spec = METRIC_CATALOG.get(key)
+        if spec is None:
+            value = self.raw(key)
+            return default if value is None else value
+        for name in spec.names:
+            value = self.raw(name)
+            if value is not None:
+                return value
+        return default
+
+    def stall(self, reason_key: str) -> Optional[float]:
+        """Warp-cycles-per-issued-instruction attributable to one stall reason."""
+        reason = STALL_REASONS.get(reason_key)
+        if reason is None:
+            return None
+        return self.raw(reason.metric_name)
+
+    def present_keys(self) -> List[str]:
+        """Catalog keys that this report actually carries a value for."""
+        return [key for key in METRIC_CATALOG if self.get(key) is not None]
+
+    def metric_names(self) -> List[str]:
+        return list(self._raw)
+
+
+def build_metric_view(metric_stats: Iterable[Mapping[str, Any]], *, stat: str = "avg") -> MetricView:
+    """Build a :class:`MetricView` from ``ncu_report_tools`` metric-stat rows.
+
+    Rows look like ``{"metric_name": ..., "avg": ..., "max": ...}``; ``value`` is
+    accepted as a fallback for single-valued rows.
+    """
+    flat: Dict[str, float] = {}
+    for row in metric_stats or ():
+        if not isinstance(row, Mapping):
+            continue
+        name = str(row.get("metric_name") or "").strip()
+        if not name:
+            continue
+        for candidate in (stat, "value", "avg", "sum", "max"):
+            if candidate in row and row[candidate] is not None:
+                try:
+                    flat[name] = float(row[candidate])
+                except (TypeError, ValueError):
+                    continue
+                break
+    return MetricView(flat)
+
+
+def _pct(value: Optional[float]) -> Optional[float]:
+    return None if value is None else float(value)
+
+
+# ---------------------------------------------------------------------------
+# Bottleneck classification
+# ---------------------------------------------------------------------------
+
+def classify_bottleneck(view: MetricView) -> Dict[str, Any]:
+    """Four-way roofline classification following NVIDIA's SOLBottleneck rule.
+
+    Returns a verdict plus the routing hint for which section to read next.
+    """
+    compute = _pct(view.get("compute_sol"))
+    memory = _pct(view.get("memory_sol"))
+    waves = view.get("waves_per_sm")
+    occupancy = view.get("achieved_occupancy")
+    duration_ns = view.get("duration_ns")
+
+    result: Dict[str, Any] = {
+        "compute_sol_pct": compute,
+        "memory_sol_pct": memory,
+        "waves_per_sm": waves,
+        "verdict": "unknown",
+        "explanation": "",
+        "next_section": "",
+        "grade": "",
+    }
+
+    if compute is None or memory is None:
+        result["explanation"] = (
+            "Speed-of-light metrics missing; collect the SpeedOfLight section "
+            "(it is in every ncu set, including --set basic)."
+        )
+        return result
+
+    best = max(compute, memory)
+    result["grade"] = (
+        "excellent" if best >= 80 else
+        "good" if best >= 60 else
+        "fair" if best >= 40 else
+        "poor"
+    )
+
+    t = SOL_THRESHOLDS
+    if best >= t["saturated"]:
+        if compute >= memory:
+            result.update(
+                verdict="compute_bound",
+                explanation=f"SM throughput {compute:.1f}% of peak - the SM pipelines are saturated.",
+                next_section="ComputeWorkloadAnalysis",
+            )
+        else:
+            result.update(
+                verdict="memory_bound",
+                explanation=f"Memory throughput {memory:.1f}% of peak - the memory system is saturated.",
+                next_section="MemoryWorkloadAnalysis",
+            )
+        return result
+
+    if compute < t["latency_bound"] and memory < t["latency_bound"]:
+        if waves is not None and waves < t["waves_small_grid"]:
+            result.update(
+                verdict="small_grid",
+                explanation=(
+                    f"Only {waves:.2f} waves per SM: the grid cannot fill the GPU, so neither "
+                    "compute nor memory can approach peak."
+                ),
+                next_section="LaunchStats",
+            )
+            return result
+        if duration_ns is not None and duration_ns < t["short_kernel_us"] * 1000.0:
+            result.update(
+                verdict="launch_bound",
+                explanation=(
+                    f"Kernel runs for {duration_ns / 1000.0:.1f} us with both throughputs below "
+                    f"{t['latency_bound']:.0f}%. At this duration launch overhead dominates; "
+                    "diagnose in Nsight Systems, not here."
+                ),
+                next_section="LaunchStats",
+            )
+            return result
+        detail = ""
+        if occupancy is not None and occupancy >= 50.0:
+            detail = (
+                f" Occupancy is {occupancy:.0f}%, so this is not a warp-supply problem - "
+                "look at dependency chains and instruction mix."
+            )
+        result.update(
+            verdict="latency_bound",
+            explanation=(
+                f"Compute {compute:.1f}% and memory {memory:.1f}% are both below "
+                f"{t['latency_bound']:.0f}% of peak: the kernel is waiting, not working.{detail}"
+            ),
+            next_section="WarpStateStats",
+        )
+        return result
+
+    if abs(compute - memory) >= t["balanced_delta"]:
+        if compute > memory:
+            result.update(
+                verdict="compute_leaning",
+                explanation=f"Compute {compute:.1f}% leads memory {memory:.1f}% but neither is saturated.",
+                next_section="ComputeWorkloadAnalysis",
+            )
+        else:
+            result.update(
+                verdict="memory_leaning",
+                explanation=f"Memory {memory:.1f}% leads compute {compute:.1f}% but neither is saturated.",
+                next_section="MemoryWorkloadAnalysis",
+            )
+        return result
+
+    result.update(
+        verdict="balanced",
+        explanation=(
+            f"Compute {compute:.1f}% and memory {memory:.1f}% are within "
+            f"{t['balanced_delta']:.0f} points of each other; both must come down to go faster."
+        ),
+        next_section="SpeedOfLight_RooflineChart",
+    )
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Warp stalls
+# ---------------------------------------------------------------------------
+
+def analyze_stalls(view: MetricView, *, top_k: int = 6) -> Dict[str, Any]:
+    """Rank warp-stall reasons and turn the dominant ones into findings.
+
+    Mirrors NVIDIA's CPIStall rule: a reason is reported when issue activity is
+    below 0.8 and the reason accounts for more than 30% of the warp cycles spent
+    per issued instruction.
+    """
+    total_latency = view.get("warp_cycles_per_issued_inst")
+    issue_active = view.get("issue_active")
+
+    rows: List[Dict[str, Any]] = []
+    for key, reason in STALL_REASONS.items():
+        value = view.stall(key)
+        if value is None:
+            continue
+        share = (value / total_latency) if total_latency else None
+        rows.append({
+            "key": key,
+            "display": reason.display,
+            "bucket": reason.bucket,
+            "cycles_per_issued_inst": value,
+            "share_of_warp_latency": share,
+            "meaning": reason.meaning,
+            "fixes": list(reason.fixes),
+            "benign": key in BENIGN_STALL_KEYS,
+        })
+    rows.sort(key=lambda r: r["cycles_per_issued_inst"], reverse=True)
+
+    actionable = [r for r in rows if not r["benign"]]
+    findings: List[Finding] = []
+
+    gate_issue = SOL_THRESHOLDS["issue_active_stall_gate"]
+    gate_share = SOL_THRESHOLDS["stall_share_gate"]
+    issue_gate_open = issue_active is None or issue_active < gate_issue
+
+    for row in actionable[:top_k]:
+        share = row["share_of_warp_latency"]
+        if share is None or not issue_gate_open or share <= gate_share:
+            continue
+        # Stall-elimination ceiling: removing a stall that occupies `share` of
+        # warp latency can at best speed the kernel by 1/(1-share).
+        ceiling = 1.0 / (1.0 - share) if share < 0.95 else None
+        findings.append(Finding(
+            category=f"stall_{row['key']}",
+            title=f"Warp stalls dominated by {row['display']}",
+            summary=(
+                f"{row['display']} accounts for {share * 100:.0f}% of warp cycles per issued "
+                f"instruction ({row['cycles_per_issued_inst']:.2f} cycles). {row['meaning']}"
+            ),
+            severity="high" if share > 0.5 else "medium",
+            confidence="high",
+            evidence={
+                "stall_metric": STALL_REASONS[row["key"]].metric_name,
+                "cycles_per_issued_inst": row["cycles_per_issued_inst"],
+                "share_of_warp_latency": share,
+                "warp_cycles_per_issued_inst": total_latency,
+                "issue_active": issue_active,
+            },
+            actions=tuple(row["fixes"]),
+            speedup_ceiling=ceiling,
+            source="ncu_rule",
+        ))
+
+    # Bucket rollup gives the DrGPU-style top-down view.
+    buckets: Dict[str, float] = {}
+    for row in actionable:
+        buckets[row["bucket"]] = buckets.get(row["bucket"], 0.0) + row["cycles_per_issued_inst"]
+
+    return {
+        "warp_cycles_per_issued_inst": total_latency,
+        "issue_active": issue_active,
+        "stalls": rows[:top_k],
+        "all_stalls": rows,
+        "buckets": dict(sorted(buckets.items(), key=lambda kv: kv[1], reverse=True)),
+        "dominant_bucket": max(buckets, key=buckets.get) if buckets else "",
+        "findings": findings,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Roofline
+# ---------------------------------------------------------------------------
+
+def compute_roofline(view: MetricView, gpu_spec: Any = None) -> Dict[str, Any]:
+    """Derive achieved FLOPs, arithmetic intensity and roofline placement.
+
+    FLOP counting follows the weights Nsight Compute's own roofline sections use:
+    ``add + mul + 2*fma`` per precision.  ``gpu_spec`` is an optional
+    :class:`~my_utils.profiling.hardware.gpu_specs.GpuSpec`; without it the
+    absolute ceilings are unknown and only arithmetic intensity is reported.
+    """
+    duration_ns = view.get("duration_ns")
+    dram_bytes = view.get("dram_bytes")
+    if dram_bytes is None:
+        read = view.get("dram_bytes_read")
+        write = view.get("dram_bytes_write")
+        if read is not None or write is not None:
+            dram_bytes = (read or 0.0) + (write or 0.0)
+
+    def _flops(prefix: str) -> Optional[float]:
+        add = view.get(f"flop_{prefix}add")
+        mul = view.get(f"flop_{prefix}mul")
+        fma = view.get(f"flop_{prefix}fma")
+        if add is None and mul is None and fma is None:
+            return None
+        return (add or 0.0) + (mul or 0.0) + 2.0 * (fma or 0.0)
+
+    fp32_flops = _flops("f")
+    fp16_flops = _flops("h")
+    fp64_flops = _flops("d")
+
+    tensor_ops = 0.0
+    tensor_present = False
+    for key in ("tensor_ops_fp16", "tensor_ops_bf16", "tensor_ops_fp8"):
+        value = view.get(key)
+        if value is not None:
+            tensor_ops += value
+            tensor_present = True
+
+    components = [v for v in (fp32_flops, fp16_flops, fp64_flops) if v is not None]
+    total_flops: Optional[float] = None
+    if components or tensor_present:
+        total_flops = sum(components) + (tensor_ops if tensor_present else 0.0)
+
+    result: Dict[str, Any] = {
+        "duration_ns": duration_ns,
+        "dram_bytes": dram_bytes,
+        "flops_fp32": fp32_flops,
+        "flops_fp16": fp16_flops,
+        "flops_fp64": fp64_flops,
+        "tensor_ops": tensor_ops if tensor_present else None,
+        "total_flops": total_flops,
+        "arithmetic_intensity": None,
+        "achieved_tflops": None,
+        "achieved_dram_gbps": None,
+        "ridge_point": None,
+        "roofline_side": "unknown",
+        "pct_of_attainable": None,
+        "findings": [],
+    }
+
+    if total_flops is not None and dram_bytes:
+        result["arithmetic_intensity"] = total_flops / dram_bytes
+    if total_flops is not None and duration_ns:
+        result["achieved_tflops"] = total_flops / (duration_ns * 1e-9) / 1e12
+    if dram_bytes and duration_ns:
+        result["achieved_dram_gbps"] = dram_bytes / (duration_ns * 1e-9) / 1e9
+
+    if gpu_spec is None:
+        return result
+
+    dtype = "fp16" if (fp16_flops or tensor_present) else "fp32"
+    ridge = gpu_spec.ridge_point(dtype)
+    result["ridge_point"] = ridge
+    result["dtype_basis"] = dtype
+
+    ai = result["arithmetic_intensity"]
+    if ai is not None and ridge is not None:
+        result["roofline_side"] = "compute_bound" if ai > ridge else "memory_bound"
+        attainable = gpu_spec.attainable_tflops(ai, dtype)
+        result["attainable_tflops"] = attainable
+        achieved = result["achieved_tflops"]
+        if attainable and achieved:
+            result["pct_of_attainable"] = 100.0 * achieved / attainable
+
+    # The FLOP counters above are CUDA-core (SASS) counters. A tensor-core kernel
+    # does almost all of its math through the MMA pipes, which these do not see,
+    # so the FLOP total is a floor rather than the truth whenever the tensor pipe
+    # was busy but no sm__ops_path_tensor_* metric was collected.
+    tensor_util = view.get("pipe_tensor_util")
+    flops_undercounted = bool(tensor_util and tensor_util > 1.0 and not tensor_present)
+    result["flops_undercounted"] = flops_undercounted
+    if flops_undercounted:
+        result["flops_undercount_reason"] = (
+            f"Tensor pipe was {tensor_util:.0f}% active but no sm__ops_path_tensor_* metric was "
+            "collected, so the FLOP total counts only CUDA-core instructions and is a lower bound."
+        )
+
+    findings: List[Finding] = []
+    pct = result.get("pct_of_attainable")
+    compute_sol = view.get("compute_sol")
+    memory_sol = view.get("memory_sol")
+    # Never claim a kernel is far below its ceiling when speed-of-light already
+    # says a unit is saturated - in that case the FLOP model is what is wrong,
+    # not the kernel.
+    sol_says_saturated = max(
+        [v for v in (compute_sol, memory_sol) if v is not None], default=0.0
+    ) >= SOL_THRESHOLDS["latency_bound"]
+
+    if pct is not None and pct < 50.0 and not flops_undercounted and not sol_says_saturated:
+        findings.append(Finding(
+            category="below_roofline",
+            title="Kernel sits well below its roofline ceiling",
+            summary=(
+                f"Achieved {result['achieved_tflops']:.1f} TFLOP/s against an attainable "
+                f"{result['attainable_tflops']:.1f} TFLOP/s at arithmetic intensity "
+                f"{ai:.1f} FLOP/byte ({pct:.0f}% of ceiling). Being far below *both* roofs "
+                "points at latency or occupancy rather than bandwidth or math."
+            ),
+            severity="medium",
+            confidence="medium",
+            evidence={k: result[k] for k in
+                      ("achieved_tflops", "attainable_tflops", "arithmetic_intensity", "ridge_point")},
+            actions=(
+                "Check warp stalls and occupancy before optimising math or memory layout.",
+                "Confirm the kernel is large enough to fill the GPU (waves per SM >= 1).",
+            ),
+        ))
+    elif pct is not None and pct < 50.0 and flops_undercounted:
+        findings.append(Finding(
+            category="roofline_needs_tensor_counters",
+            title="Roofline is unreliable: tensor-core FLOPs were not collected",
+            summary=(
+                f"The measured {result['achieved_tflops']:.1f} TFLOP/s counts only CUDA-core "
+                f"instructions while the tensor pipe ran at {tensor_util:.0f}%. Collect "
+                "sm__ops_path_tensor_* (the SpeedOfLight_HierarchicalTensorRooflineChart section) "
+                "before drawing any roofline conclusion for this kernel."
+            ),
+            severity="info",
+            confidence="high",
+            evidence={"achieved_tflops_cuda_core_only": result["achieved_tflops"],
+                      "pipe_tensor_util_pct": tensor_util},
+            actions=("Re-profile with --set full or add the hierarchical tensor roofline section.",),
+        ))
+    result["findings"] = findings
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Occupancy and launch configuration
+# ---------------------------------------------------------------------------
+
+_LIMITER_ADVICE = {
+    "registers": (
+        "Occupancy is register limited.",
+        ("Add __launch_bounds__ or -maxrregcount to cap register usage.",
+         "Shorten live ranges; recompute cheap values instead of holding them.",
+         "Watch for spilling after capping registers - trading spills for occupancy usually loses."),
+    ),
+    "shared_mem": (
+        "Occupancy is shared-memory limited.",
+        ("Shrink the tile, or reuse one shared buffer for multiple phases.",
+         "Check the carveout: cudaFuncAttributePreferredSharedMemoryCarveout."),
+    ),
+    "blocks": (
+        "Occupancy is limited by the blocks-per-SM hardware cap.",
+        ("Use larger blocks so fewer of them fill the SM.",),
+    ),
+    "warps": (
+        "Occupancy is limited by block size (warp slots).",
+        ("Raise threads per block; 128-256 is the usual sweet spot.",),
+    ),
+    "barriers": (
+        "Occupancy is limited by barrier resources.",
+        ("Reduce the number of distinct barriers or cooperating groups per block.",),
+    ),
+}
+
+
+def analyze_occupancy(view: MetricView) -> Dict[str, Any]:
+    """Identify the binding occupancy limiter and the achieved/theoretical gap."""
+    achieved = view.get("achieved_occupancy")
+    theoretical = view.get("theoretical_occupancy")
+
+    limiters = {
+        "blocks": view.get("occupancy_limit_blocks"),
+        "registers": view.get("occupancy_limit_registers"),
+        "shared_mem": view.get("occupancy_limit_shared_mem"),
+        "warps": view.get("occupancy_limit_warps"),
+        "barriers": view.get("occupancy_limit_barriers"),
+    }
+    present = {k: v for k, v in limiters.items() if v is not None and v > 0}
+    binding = min(present, key=present.get) if present else ""
+
+    findings: List[Finding] = []
+    t = SOL_THRESHOLDS
+
+    if theoretical is not None and theoretical < t["theoretical_occupancy_low"] and binding:
+        title, actions = _LIMITER_ADVICE.get(binding, ("Occupancy is limited.", ()))
+        findings.append(Finding(
+            category=f"occupancy_limited_{binding}",
+            title=f"Theoretical occupancy capped at {theoretical:.0f}% by {binding}",
+            summary=(
+                f"{title} The launch configuration alone caps occupancy at {theoretical:.0f}%; "
+                f"the binding resource allows {present[binding]:.0f} warps."
+            ),
+            severity="medium" if theoretical < 50 else "low",
+            confidence="high",
+            evidence={
+                "theoretical_occupancy_pct": theoretical,
+                "achieved_occupancy_pct": achieved,
+                "limiters": present,
+                "binding_limiter": binding,
+                "registers_per_thread": view.get("registers_per_thread"),
+                "shared_mem_per_block": view.get("shared_mem_per_block"),
+                "block_size": view.get("block_size"),
+            },
+            actions=actions,
+            source="ncu_rule",
+        ))
+
+    if achieved is not None and theoretical is not None:
+        gap = theoretical - achieved
+        if gap > t["achieved_vs_theoretical_gap_pp"]:
+            findings.append(Finding(
+                category="occupancy_achieved_gap",
+                title="Achieved occupancy trails theoretical occupancy",
+                summary=(
+                    f"Achieved {achieved:.0f}% against a theoretical {theoretical:.0f}% "
+                    f"({gap:.0f} points short). The launch config is not the constraint - "
+                    "this is scheduling overhead, a tail wave, or imbalance between warps."
+                ),
+                severity="medium",
+                confidence="high",
+                evidence={"achieved_occupancy_pct": achieved,
+                          "theoretical_occupancy_pct": theoretical,
+                          "gap_pp": gap,
+                          "waves_per_sm": view.get("waves_per_sm")},
+                actions=(
+                    "Check waves per SM for a partial tail wave.",
+                    "Look for per-block work imbalance (variable-length sequences, ragged batches).",
+                ),
+                speedup_ceiling=(theoretical / achieved) if achieved > 0 else None,
+                source="ncu_rule",
+            ))
+
+    return {
+        "achieved_occupancy_pct": achieved,
+        "theoretical_occupancy_pct": theoretical,
+        "limiters": present,
+        "binding_limiter": binding,
+        "findings": findings,
+    }
+
+
+def analyze_launch_config(view: MetricView, *, gemm_shape: Any = None) -> Dict[str, Any]:
+    """Block-size, small-grid, tail-effect and tile-quantisation checks.
+
+    ``gemm_shape`` is an optional
+    :class:`~my_utils.profiling.sources.kernel_taxonomy.GemmShape`; when present
+    the tile dimensions enable tile-quantisation reasoning that grid size alone
+    cannot support.
+    """
+    grid = view.get("grid_size")
+    block = view.get("block_size")
+    waves = view.get("waves_per_sm")
+    sm_count = view.get("sm_count") or view.get("device_sm_count")
+    achieved = view.get("achieved_occupancy")
+    theoretical = view.get("theoretical_occupancy")
+
+    findings: List[Finding] = []
+    t = SOL_THRESHOLDS
+
+    if block is not None and block % 32 != 0:
+        findings.append(Finding(
+            category="block_size_not_warp_multiple",
+            title=f"Block size {int(block)} is not a multiple of 32",
+            summary=(
+                f"A block of {int(block)} threads leaves {32 - int(block) % 32} lanes of the last "
+                "warp masked off for the whole kernel."
+            ),
+            severity="medium",
+            confidence="high",
+            evidence={"block_size": block},
+            actions=("Round the block size to a multiple of 32; 128-256 threads is the usual range.",),
+            source="ncu_rule",
+        ))
+
+    if grid is not None and sm_count and grid < sm_count:
+        findings.append(Finding(
+            category="small_grid",
+            title=f"Grid of {int(grid)} blocks cannot fill {int(sm_count)} SMs",
+            summary=(
+                f"With {int(grid)} blocks on a {int(sm_count)}-SM GPU, at least "
+                f"{int(sm_count - grid)} SMs are idle for the entire kernel."
+            ),
+            severity="high",
+            confidence="high",
+            evidence={"grid_size": grid, "sm_count": sm_count, "waves_per_sm": waves},
+            actions=(
+                "Expose more parallelism (larger batch, split reductions, persistent kernels).",
+                "Fuse with neighbouring kernels so one launch covers more work.",
+            ),
+            speedup_ceiling=(sm_count / grid) if grid else None,
+            source="ncu_rule",
+        ))
+
+    # Tail effect: a partial final wave costs a whole wave of time.
+    if waves is not None and waves >= 1.0:
+        whole = math.floor(waves)
+        frac = waves - whole
+        if frac > 0:
+            potential = 1.0 / (whole + 1.0)
+            occupancy_confirms = (
+                achieved is not None and theoretical is not None and achieved < 0.8 * theoretical
+            )
+            if potential >= t["tail_effect_min_speedup"]:
+                findings.append(Finding(
+                    category="tail_wave_quantization",
+                    title=f"Partial tail wave after {whole} full wave(s)",
+                    summary=(
+                        f"The grid is {waves:.2f} waves: {whole} full plus a {frac:.2f} tail. "
+                        f"The tail occupies a whole wave of time while using only {frac * 100:.0f}% "
+                        f"of the machine, so up to {potential * 100:.0f}% of the runtime is wasted."
+                        + ("" if occupancy_confirms else
+                           " (Achieved occupancy does not clearly confirm this - treat as a hypothesis.)")
+                    ),
+                    severity="medium" if potential >= 0.25 else "low",
+                    confidence="high" if occupancy_confirms else "medium",
+                    evidence={"waves_per_sm": waves, "full_waves": whole, "tail_fraction": frac,
+                              "achieved_occupancy_pct": achieved,
+                              "theoretical_occupancy_pct": theoretical},
+                    actions=(
+                        "Size the grid to a whole number of waves.",
+                        "Shrink the tile so more, smaller blocks divide evenly across SMs.",
+                        "Consider a persistent kernel with a grid of exactly one wave.",
+                    ),
+                    speedup_ceiling=1.0 / (1.0 - potential),
+                    source="ncu_rule",
+                ))
+
+    result: Dict[str, Any] = {
+        "grid_size": grid,
+        "block_size": block,
+        "waves_per_sm": waves,
+        "sm_count": sm_count,
+        "findings": findings,
+    }
+
+    # Tile quantisation needs the GEMM tile shape from the kernel name.
+    if gemm_shape is not None and getattr(gemm_shape, "tile_m", None) and getattr(gemm_shape, "tile_n", None):
+        result["tile_m"] = gemm_shape.tile_m
+        result["tile_n"] = gemm_shape.tile_n
+        if grid and sm_count:
+            tiles = float(grid)
+            waves_from_tiles = tiles / float(sm_count)
+            result["tiles"] = tiles
+            result["waves_from_tiles"] = waves_from_tiles
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Memory access patterns
+# ---------------------------------------------------------------------------
+
+def analyze_coalescing(view: MetricView) -> Dict[str, Any]:
+    """Global-access coalescing: sectors per request, bytes per sector, excess sectors."""
+    findings: List[Finding] = []
+
+    excessive = view.get("l2_sectors_global_excessive")
+    actual = view.get("l2_sectors_global_actual")
+    ideal = view.get("l2_sectors_global_ideal")
+    if excessive is not None and excessive > 0:
+        share = (excessive / actual) if actual else None
+        findings.append(Finding(
+            category="uncoalesced_global_access",
+            title="Uncoalesced global accesses",
+            summary=(
+                f"{excessive:,.0f} sectors above the ideal"
+                + (f" ({share * 100:.0f}% of all global sectors)" if share else "")
+                + ". Each excess sector is bandwidth spent moving bytes the warp never uses."
+            ),
+            severity="high" if (share or 0) > 0.3 else "medium",
+            confidence="high",
+            evidence={"sectors_actual": actual, "sectors_ideal": ideal, "sectors_excessive": excessive},
+            actions=(
+                "Make consecutive threads read consecutive addresses.",
+                "Change the data layout (AoS to SoA) or transpose during a shared-memory staging step.",
+                "Vectorise to 128-bit accesses once the pattern is contiguous.",
+            ),
+            speedup_ceiling=(1.0 / (1.0 - share)) if share and share < 0.95 else None,
+            source="ncu_rule",
+        ))
+
+    for key, label in (("global_ld_sectors_per_request", "load"),
+                       ("global_st_sectors_per_request", "store")):
+        value = view.get(key)
+        if value is None:
+            continue
+        spec = METRIC_CATALOG[key]
+        if spec.warn_above is not None and value > spec.warn_above:
+            findings.append(Finding(
+                category=f"uncoalesced_global_{label}",
+                title=f"Global {label}s touch {value:.1f} sectors per request",
+                summary=(
+                    f"A fully coalesced fp32 warp {label} touches {spec.ideal:.0f} sectors; this kernel "
+                    f"touches {value:.1f}, i.e. {value / (spec.ideal or 1):.1f}x the necessary traffic."
+                ),
+                severity="high" if value > 16 else "medium",
+                confidence="high",
+                evidence={"metric": spec.names[0], "sectors_per_request": value, "ideal": spec.ideal},
+                actions=("Rework the lane-to-address mapping so a warp covers contiguous 128-byte lines.",),
+            ))
+
+    for key, label in (("global_ld_bytes_per_sector", "load"),
+                       ("global_st_bytes_per_sector", "store")):
+        value = view.get(key)
+        if value is None:
+            continue
+        spec = METRIC_CATALOG[key]
+        if spec.warn_below is not None and 0 < value < spec.warn_below:
+            waste = 1.0 - value / 32.0
+            findings.append(Finding(
+                category=f"sparse_global_{label}",
+                title=f"Only {value:.1f} of 32 bytes per {label} sector are used",
+                summary=(
+                    f"{waste * 100:.0f}% of the bandwidth spent on global {label}s moves bytes the "
+                    "kernel never reads. Typical of strided or predicated access."
+                ),
+                severity="medium",
+                confidence="high",
+                evidence={"metric": spec.names[0], "bytes_per_sector": value, "wasted_fraction": waste},
+                actions=("Coalesce or compact the access; consider gathering into shared memory first.",),
+            ))
+
+    l1_hit = view.get("l1_hit_rate")
+    l2_hit = view.get("l2_hit_rate")
+    if l1_hit is not None and l2_hit is not None and l1_hit < 50.0 and l2_hit < 50.0:
+        findings.append(Finding(
+            category="poor_cache_locality",
+            title="Both L1 and L2 hit rates are low",
+            summary=(
+                f"L1 {l1_hit:.0f}% / L2 {l2_hit:.0f}%: nearly every access reaches DRAM. "
+                "Either the working set genuinely exceeds cache, or the traversal order destroys locality."
+            ),
+            severity="medium",
+            confidence="medium",
+            evidence={"l1_hit_rate_pct": l1_hit, "l2_hit_rate_pct": l2_hit},
+            actions=("Tile the computation so the working set fits L2.",
+                     "Reorder loops/blocks for locality (threadblock swizzle for GEMM-like kernels)."),
+        ))
+
+    return {
+        "sectors_per_ld_request": view.get("global_ld_sectors_per_request"),
+        "bytes_per_ld_sector": view.get("global_ld_bytes_per_sector"),
+        "l1_hit_rate_pct": l1_hit,
+        "l2_hit_rate_pct": l2_hit,
+        "excessive_sectors": excessive,
+        "findings": findings,
+    }
+
+
+def analyze_shared_memory(view: MetricView) -> Dict[str, Any]:
+    """Shared-memory bank conflicts, using NVIDIA's 10%-of-wavefronts gate."""
+    findings: List[Finding] = []
+    details: Dict[str, Any] = {}
+
+    for op in ("ld", "st"):
+        conflicts = view.get(f"shared_bank_conflicts_{op}")
+        wavefronts = view.get(f"shared_wavefronts_{op}")
+        if conflicts is None or not wavefronts:
+            continue
+        share = conflicts / wavefronts
+        details[f"{op}_conflicts"] = conflicts
+        details[f"{op}_wavefronts"] = wavefronts
+        details[f"{op}_conflict_share"] = share
+        if share >= SOL_THRESHOLDS["bank_conflict_share"]:
+            findings.append(Finding(
+                category=f"shared_bank_conflicts_{op}",
+                title=f"Shared-memory {op} bank conflicts on {share * 100:.0f}% of wavefronts",
+                summary=(
+                    f"{conflicts:,.0f} conflicts across {wavefronts:,.0f} {op} wavefronts. Conflicting "
+                    "lanes serialise, so the shared-memory pipe delivers a fraction of its bandwidth."
+                ),
+                severity="medium",
+                confidence="high",
+                evidence={f"bank_conflicts_{op}": conflicts, f"wavefronts_{op}": wavefronts,
+                          "conflict_share": share},
+                actions=(
+                    "Pad the shared array's leading dimension (classic +1 element padding).",
+                    "Swizzle the shared layout so a warp's lanes hit distinct banks.",
+                    "For tensor-core tiles, use the CUTLASS-style XOR swizzle instead of padding.",
+                ),
+                speedup_ceiling=1.0 / (1.0 - min(share, 0.9)),
+                source="ncu_rule",
+            ))
+
+    nway = view.get("shared_conflicts_nway")
+    if nway is not None and nway > 1.5:
+        details["nway"] = nway
+
+    details["findings"] = findings
+    return details
+
+
+def analyze_divergence(view: MetricView) -> Dict[str, Any]:
+    """Thread divergence and predication, using NVIDIA's 24-of-32 gate."""
+    findings: List[Finding] = []
+    threads_per_inst = view.get("warp_exec_efficiency")
+    pred_on = view.get("warp_exec_efficiency_pred_on")
+    branch_eff = view.get("branch_efficiency")
+
+    gate = SOL_THRESHOLDS["threads_per_inst_low"]
+    worst = min([v for v in (threads_per_inst, pred_on) if v is not None], default=None)
+    if worst is not None and worst < gate:
+        findings.append(Finding(
+            category="thread_divergence",
+            title=f"Only {worst:.1f} of 32 threads active per instruction",
+            summary=(
+                f"Warps execute with {worst:.1f}/32 lanes active on average "
+                f"({worst / 32 * 100:.0f}% efficiency). Divergent branches or predication are "
+                "wasting most of each warp's width."
+            ),
+            severity="high" if worst < 16 else "medium",
+            confidence="high",
+            evidence={"threads_per_inst": threads_per_inst,
+                      "threads_per_inst_pred_on": pred_on,
+                      "branch_efficiency_pct": branch_eff},
+            actions=(
+                "Group data so threads in a warp take the same path (sort/bucket by branch condition).",
+                "Replace short divergent branches with predicated arithmetic or select().",
+                "Move the branch up to block granularity where possible.",
+            ),
+            speedup_ceiling=32.0 / worst if worst > 0 else None,
+            source="ncu_rule",
+        ))
+
+    return {
+        "threads_per_inst": threads_per_inst,
+        "threads_per_inst_pred_on": pred_on,
+        "branch_efficiency_pct": branch_eff,
+        "findings": findings,
+    }
+
+
+def analyze_spilling(view: MetricView) -> Dict[str, Any]:
+    """Register spilling to local memory."""
+    findings: List[Finding] = []
+    local_ld = view.get("local_ld_inst") or 0.0
+    local_st = view.get("local_st_inst") or 0.0
+    total_inst = view.get("inst_executed")
+    regs = view.get("registers_per_thread")
+    local_hit = view.get("local_ld_hit_rate")
+
+    local_total = local_ld + local_st
+    share = (local_total / total_inst) if total_inst else None
+
+    if local_total > 0:
+        severity = "medium"
+        extra = ""
+        if share is not None and share >= SOL_THRESHOLDS["local_inst_share"]:
+            severity = "high"
+            extra = f" Local traffic is {share * 100:.0f}% of all executed instructions."
+        if local_hit is not None and local_hit < SOL_THRESHOLDS["local_hit_rate_low"]:
+            severity = "high"
+            extra += (
+                f" Worse, only {local_hit:.0f}% of local loads hit L1, so spills are reaching "
+                "L2 or DRAM."
+            )
+        findings.append(Finding(
+            category="register_spilling",
+            title="Register spilling to local memory",
+            summary=(
+                f"{local_ld:,.0f} local loads and {local_st:,.0f} local stores with "
+                f"{regs:.0f} registers/thread." if regs else
+                f"{local_ld:,.0f} local loads and {local_st:,.0f} local stores."
+            ) + extra,
+            severity=severity,
+            confidence="high",
+            evidence={"local_ld_inst": local_ld, "local_st_inst": local_st,
+                      "local_share_of_inst": share, "registers_per_thread": regs,
+                      "local_ld_hit_rate_pct": local_hit},
+            actions=(
+                "Shorten live ranges or recompute values instead of keeping them alive.",
+                "Reduce the per-thread tile so the working set fits in registers.",
+                "If __launch_bounds__ is capping registers, weigh the spills against the occupancy gained.",
+                "Check for dynamically indexed local arrays - those always spill.",
+            ),
+            source="ncu_rule",
+        ))
+
+    return {"local_ld_inst": local_ld, "local_st_inst": local_st,
+            "local_share_of_inst": share, "registers_per_thread": regs,
+            "findings": findings}
+
+
+def analyze_pipes(view: MetricView) -> Dict[str, Any]:
+    """Which execution pipe is busiest, plus FP64-in-a-BF16-model detection."""
+    pipes = {
+        "alu": view.get("pipe_alu_util"),
+        "fma": view.get("pipe_fma_util"),
+        "fp64": view.get("pipe_fp64_util"),
+        "tensor": view.get("pipe_tensor_util"),
+        "shared": view.get("shared_pipe_util"),
+        "lsu": view.get("pipe_lsu_util"),
+        "tma": view.get("pipe_tma_util"),
+        "tc": view.get("pipe_tc_util"),
+    }
+    present = {k: v for k, v in pipes.items() if v is not None}
+    findings: List[Finding] = []
+    busiest = max(present, key=present.get) if present else ""
+
+    fp64 = pipes.get("fp64")
+    if fp64 is not None and fp64 > SOL_THRESHOLDS.get("fp64_warn", 15.0):
+        findings.append(Finding(
+            category="unexpected_fp64",
+            title=f"FP64 pipe is {fp64:.0f}% utilised",
+            summary=(
+                "Significant FP64 activity. In a BF16/FP16 training kernel this usually comes from "
+                "stray double literals, math functions without the f suffix, or an accidental "
+                "float64 tensor - and FP64 runs at a small fraction of the FP32 rate on data-centre parts."
+            ),
+            severity="medium",
+            confidence="medium",
+            evidence={"pipe_fp64_util_pct": fp64, "pipe_fma_util_pct": pipes.get("fma")},
+            actions=("Audit floating-point literals (1.0 vs 1.0f) and math calls (exp vs expf).",
+                     "Check for a float64 tensor sneaking in from numpy or a Python scalar."),
+        ))
+
+    if present and busiest and present[busiest] >= 80.0:
+        findings.append(Finding(
+            category="pipe_saturated",
+            title=f"{busiest.upper()} pipe is saturated at {present[busiest]:.0f}%",
+            summary=f"The {busiest} pipeline is the throughput limiter for this kernel.",
+            severity="info",
+            confidence="high",
+            evidence={"pipes": present},
+            actions=(f"Move work off the {busiest} pipe or reduce the instruction count it sees.",),
+        ))
+
+    return {"pipes": present, "busiest": busiest, "findings": findings}
+
+
+def analyze_imbalance(view: MetricView) -> Dict[str, Any]:
+    """SM / L2-slice / DRAM-partition load imbalance (NVIDIA's WorkloadImbalance rule)."""
+    findings: List[Finding] = []
+    details: Dict[str, Any] = {}
+
+    for unit, avg_key, max_key in (
+        ("sm", "sm_cycles_active", "sm_cycles_active_max"),
+        ("l2", "l2_cycles_active_avg", "l2_cycles_active_max"),
+        ("dram", "dram_cycles_active_avg", "dram_cycles_active_max"),
+    ):
+        avg = view.get(avg_key)
+        peak = view.get(max_key)
+        if avg is None or peak is None or peak <= 0:
+            continue
+        imbalance = 1.0 - (avg / peak)
+        details[f"{unit}_imbalance"] = imbalance
+        if imbalance >= SOL_THRESHOLDS["imbalance_min_speedup"]:
+            findings.append(Finding(
+                category=f"{unit}_load_imbalance",
+                title=f"{unit.upper()} load imbalance of {imbalance * 100:.0f}%",
+                summary=(
+                    f"The busiest {unit} unit is active for {peak:,.0f} cycles against an average of "
+                    f"{avg:,.0f}. Work is unevenly spread, so the kernel waits on its slowest unit."
+                ),
+                severity="medium" if imbalance > 0.2 else "low",
+                confidence="medium",
+                evidence={f"{unit}_cycles_avg": avg, f"{unit}_cycles_max": peak, "imbalance": imbalance},
+                actions=(
+                    "Use grid-stride loops so blocks self-balance."
+                    if unit == "sm" else
+                    "Check for hot spots in the address pattern (bank/partition camping).",
+                ),
+                speedup_ceiling=1.0 / (1.0 - imbalance) if imbalance < 0.95 else None,
+                source="ncu_rule",
+            ))
+
+    details["findings"] = findings
+    return details
+
+
+# ---------------------------------------------------------------------------
+# Workload expectations
+# ---------------------------------------------------------------------------
+
+def _article(word: str) -> str:
+    """Pick "a" or "an" so generated sentences read naturally."""
+    return "an" if str(word)[:1].lower() in "aeiou" else "a"
+
+
+def _expectation_findings(view: MetricView, kernel_info: Any) -> List[Finding]:
+    """Compare a kernel against what its *category* should achieve."""
+    from ..sources.kernel_taxonomy import CATEGORY_EXPECTATIONS  # local import: avoid cycle
+
+    if kernel_info is None:
+        return []
+    expectation = CATEGORY_EXPECTATIONS.get(getattr(kernel_info, "category", ""), {})
+    if not expectation:
+        return []
+
+    findings: List[Finding] = []
+    category = kernel_info.category
+
+    want_tc = expectation.get("expect_tensor_cores")
+    tensor_util = view.get("pipe_tensor_util")
+    if want_tc is True and tensor_util is not None and tensor_util < 1.0:
+        findings.append(Finding(
+            category="tensor_cores_idle",
+            title=f"{category} kernel is not using tensor cores",
+            summary=(
+                f"The tensor pipe is {tensor_util:.1f}% utilised on a {category} kernel that should be "
+                "running MMA instructions. Check dtype (fp32 instead of bf16/fp16), operand alignment, "
+                "and whether a fallback path was selected."
+            ),
+            severity="high",
+            confidence="medium",
+            evidence={"pipe_tensor_util_pct": tensor_util,
+                      "pipe_fma_util_pct": view.get("pipe_fma_util"),
+                      "kernel_category": category,
+                      "kernel_name": getattr(kernel_info, "name", "")},
+            actions=(
+                "Enable AMP / cast to bf16 or fp16.",
+                "Align M/N/K: multiples of 8 for fp16, 16 for int8, 4 for tf32 (64/128/32 for best A100 rates).",
+                "Confirm the library picked a tensor-core kernel - a *simt* or sgemm name means it did not.",
+            ),
+            source="expectation",
+        ))
+
+    dram_floor = expectation.get("dram_sol_pct")
+    dram_sol = view.get("dram_sol")
+    if isinstance(dram_floor, (int, float)) and dram_sol is not None and dram_sol < dram_floor:
+        duration_ns = view.get("duration_ns")
+        waves = view.get("waves_per_sm")
+        reason = ""
+        if duration_ns is not None and duration_ns < SOL_THRESHOLDS["short_kernel_us"] * 1000:
+            reason = " The kernel is very short, so launch and ramp-up dominate."
+        elif waves is not None and waves < 1:
+            reason = " The grid is under one wave, so most SMs never participate."
+        findings.append(Finding(
+            category="memory_bound_kernel_below_expectation",
+            title=f"{category} kernel reaches only {dram_sol:.0f}% of DRAM peak",
+            summary=(
+                f"{_article(category).capitalize()} {category} kernel is bandwidth bound by nature and should approach "
+                f"{dram_floor:.0f}%+ of DRAM speed-of-light.{reason} "
+                + str(expectation.get("advice") or "")
+            ),
+            severity="medium",
+            confidence="medium",
+            evidence={"dram_sol_pct": dram_sol, "expected_min_pct": dram_floor,
+                      "duration_ns": duration_ns, "waves_per_sm": waves,
+                      "kernel_category": category},
+            actions=(
+                "Fuse with neighbouring elementwise work to amortise the traffic.",
+                "Check coalescing and vectorisation of the access pattern.",
+            ),
+            source="expectation",
+        ))
+
+    compute_floor = expectation.get("compute_sol_pct")
+    compute_sol = view.get("compute_sol")
+    if isinstance(compute_floor, (int, float)) and compute_sol is not None and compute_sol < compute_floor:
+        findings.append(Finding(
+            category="compute_bound_kernel_below_expectation",
+            title=f"{category} kernel reaches only {compute_sol:.0f}% of compute peak",
+            summary=(
+                f"{_article(category).capitalize()} {category} kernel should be compute bound and clear {compute_floor:.0f}% SM "
+                f"throughput. " + str(expectation.get("advice") or "")
+            ),
+            severity="medium",
+            confidence="medium",
+            evidence={"compute_sol_pct": compute_sol, "expected_min_pct": compute_floor,
+                      "kernel_category": category},
+            actions=("Check tile/wave quantisation and tensor-core engagement first.",),
+            source="expectation",
+        ))
+
+    return findings
+
+
+# ---------------------------------------------------------------------------
+# Top-level entry point
+# ---------------------------------------------------------------------------
+
+_SEVERITY_ORDER = {"high": 0, "medium": 1, "low": 2, "info": 3}
+
+
+def diagnose_kernel(
+    metrics: Mapping[str, float],
+    *,
+    kernel_name: str = "",
+    gpu_spec: Any = None,
+    top_k: int = 10,
+) -> Dict[str, Any]:
+    """Run every rule over one kernel's metrics and return a ranked diagnosis.
+
+    ``metrics`` maps exact ncu metric names to values.  ``gpu_spec`` unlocks the
+    absolute roofline; without it the analysis still works but reports
+    arithmetic intensity without a ceiling.
+    """
+    from ..sources.kernel_taxonomy import classify_kernel, parse_gemm_kernel  # local import
+
+    view = metrics if isinstance(metrics, MetricView) else MetricView(metrics)
+
+    kernel_info = classify_kernel(kernel_name) if kernel_name else None
+    gemm_shape = parse_gemm_kernel(kernel_name) if kernel_name else None
+
+    arch = describe_arch(
+        view.get("cc_major"),
+        view.get("cc_minor"),
+        view.get("sm_count") or view.get("device_sm_count"),
+    )
+
+    bottleneck = classify_bottleneck(view)
+    stalls = analyze_stalls(view)
+    roofline = compute_roofline(view, gpu_spec)
+    occupancy = analyze_occupancy(view)
+    launch = analyze_launch_config(view, gemm_shape=gemm_shape)
+    coalescing = analyze_coalescing(view)
+    shared = analyze_shared_memory(view)
+    divergence = analyze_divergence(view)
+    spilling = analyze_spilling(view)
+    pipes = analyze_pipes(view)
+    imbalance = analyze_imbalance(view)
+
+    sections = {
+        "bottleneck": bottleneck,
+        "stalls": stalls,
+        "roofline": roofline,
+        "occupancy": occupancy,
+        "launch": launch,
+        "coalescing": coalescing,
+        "shared_memory": shared,
+        "divergence": divergence,
+        "spilling": spilling,
+        "pipes": pipes,
+        "imbalance": imbalance,
+    }
+
+    findings: List[Finding] = []
+    for section in sections.values():
+        findings.extend(section.get("findings", []) if isinstance(section, dict) else [])
+    findings.extend(_expectation_findings(view, kernel_info))
+
+    findings.sort(key=lambda f: (
+        _SEVERITY_ORDER.get(f.severity, 9),
+        -(f.speedup_ceiling or 1.0),
+    ))
+
+    return {
+        "kernel_name": kernel_name,
+        "kernel_category": getattr(kernel_info, "category", "") if kernel_info else "",
+        "kernel_framework": getattr(kernel_info, "framework", "") if kernel_info else "",
+        "architecture": arch,
+        "gpu": getattr(gpu_spec, "name", "") if gpu_spec else "",
+        "verdict": bottleneck.get("verdict"),
+        "sections": sections,
+        "findings": [f.to_dict() for f in findings[:top_k]],
+        "finding_count": len(findings),
+        "metrics_present": len(view.present_keys()),
+    }
