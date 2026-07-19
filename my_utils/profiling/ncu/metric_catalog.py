@@ -82,8 +82,30 @@ _CATALOG_LIST: List[MetricSpec] = [
                     "dram__throughput.avg.pct_of_peak_sustained_elapsed"],
        "SpeedOfLight", "speed_of_light", unit="%", higher_is_better=True,
        description="DRAM bandwidth vs peak. A healthy streaming kernel reaches 80-95%."),
-    _m("l1_sol", ["l1tex__throughput.avg.pct_of_peak_sustained_active"],
-       "SpeedOfLight", "speed_of_light", unit="%", higher_is_better=True),
+    # Deliberately prefers the _elapsed rollup, which is NOT what the ncu
+    # SpeedOfLight header shows. The header renders "L1/TEX Cache Throughput"
+    # from the _active rollup while the four values beside it (Compute, Memory,
+    # L2, DRAM) all use _elapsed. Since _active >= _elapsed always, reading the
+    # five side by side systematically over-ranks L1, and "L1 is the most
+    # utilised level" is the conclusion that falls out. Ranking is the whole
+    # point of an SOL comparison, so this entry is made comparable and the
+    # header's own spelling is kept as a fallback for reports that carry only it.
+    _m("l1_sol", ["l1tex__throughput.avg.pct_of_peak_sustained_elapsed",
+                  "l1tex__throughput.avg.pct_of_peak_sustained_active"],
+       "SpeedOfLight", "speed_of_light", unit="%", higher_is_better=True,
+       description=(
+           "L1/TEX throughput vs peak, over elapsed cycles so it is comparable with "
+           "the other SOL values. The ncu SOL header shows the _active rollup for "
+           "this one metric only; do not rank cache levels using the header numbers "
+           "as displayed."
+       )),
+    _m("l1_efficiency_active", ["l1tex__throughput.avg.pct_of_peak_sustained_active"],
+       "SpeedOfLight", "speed_of_light", unit="%", higher_is_better=True,
+       description=(
+           "L1/TEX efficiency over ACTIVE cycles only - how hard L1 worked when it "
+           "was working, independent of how often it was idle. Answers a different "
+           "question from l1_sol and must never be compared against an _elapsed value."
+       )),
     _m("l2_sol", ["lts__throughput.avg.pct_of_peak_sustained_elapsed"],
        "SpeedOfLight", "speed_of_light", unit="%", higher_is_better=True),
     _m("duration_ns", ["gpu__time_duration.sum"], "SpeedOfLight", "timing", unit="ns"),

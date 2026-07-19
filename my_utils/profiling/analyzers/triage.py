@@ -314,6 +314,31 @@ def triage_step(
         )
 
     # ---- the ordered decision tree -------------------------------------
+    # An absent GPU timeline and a genuinely idle GPU are indistinguishable from
+    # the arithmetic alone: both leave gpu_active_ns at zero, and the idle-share
+    # signals then cross every threshold. Reaching "host_bound" from that is the
+    # exact failure this module exists to prevent, so the whole idle-driven
+    # branch is gated on having actually measured GPU activity.
+    measured_gpu_activity = gpu_active_ns > 0
+    if len(host_crossed) >= t.host_bound_signals_required and not measured_gpu_activity:
+        return TriageVerdict(
+            verdict="undetermined",
+            confidence="low",
+            summary=(
+                "No GPU activity intervals were supplied, so GPU idle time could not be "
+                "measured. The host-side signals that fired are derived from that missing "
+                "measurement and would read identically for a fully busy GPU, so no verdict "
+                "is issued."
+            ),
+            signals=signals,
+            next_steps=(
+                "Supply kernel and memcpy (start_ns, end_ns) intervals - from the nsys "
+                "CUPTI_ACTIVITY_KIND_KERNEL and _MEMCPY tables rather than the summary "
+                "rollups, which carry totals only.",
+            ),
+            breakdown=breakdown,
+        )
+
     if len(host_crossed) >= t.host_bound_signals_required:
         crossed_names = ", ".join(s.label for s in host_crossed)
         sync_hint = ""

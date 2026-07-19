@@ -59,6 +59,7 @@ kernel_taxonomy = _load("sources.kernel_taxonomy", "sources/kernel_taxonomy.py")
 metric_catalog = _load("ncu.metric_catalog", "ncu/metric_catalog.py")
 triage = _load("analyzers.triage", "analyzers/triage.py")
 ncu_diagnostics = _load("ncu.ncu_diagnostics", "ncu/ncu_diagnostics.py")
+evidence = _load("analyzers.evidence", "analyzers/evidence.py")
 
 
 # ---------------------------------------------------------------------------
@@ -659,3 +660,69 @@ def test_section_index_covers_the_full_set():
     # The units a user asks about are all represented.
     for unit in ("l1tex", "lts", "dram", "sm", "smsp", "launch"):
         assert index.by_unit(unit), f"no metrics indexed for {unit}"
+
+
+# ---------------------------------------------------------------------------
+# Evidence fusion
+# ---------------------------------------------------------------------------
+
+class TestEvidenceFusion:
+    """A conclusion must never outrank the evidence it rests on."""
+
+    def test_counter_beats_name(self):
+        """A name saying matmul loses to a tensor pipe that never activated."""
+        ev = evidence
+        fused, warnings = ev.attribute_kernel(
+            "ampere_sgemm_128x64_nn",
+            metrics={"sm__pipe_tensor_cycles_active.avg.pct_of_peak_sustained_elapsed": 0.0},
+        )
+        assert fused["uses_tensor_cores"].value is False
+        assert fused["uses_tensor_cores"].provenance == ev.Provenance.HW_COUNTER
+        assert any("tensor pipe never activated" in w for w in warnings)
+
+    def test_nccl_stub_algorithm_is_never_authoritative(self):
+        """The RING/LL tokens are hard-coded, so they must not read as measured."""
+        ev = evidence
+        fused, _ = ev.attribute_kernel("ncclDevKernel_ReduceScatter_Sum_bf16_RING_LL")
+        algo = fused["nccl_algorithm"]
+        assert algo.confidence == "low"
+        assert algo.supporting[0].advisory
+
+    def test_nvtx_outranks_a_launch_stub_name(self):
+        """Where the name is a stub, the framework's own annotation wins."""
+        ev = evidence
+        fused, _ = ev.attribute_kernel(
+            "ncclDevKernel_AllReduce_Sum_bf16_RING_LL",
+            nvtx_payloads={"Collective name": "reducescatter"},
+        )
+        assert fused["collective"].value == "reducescatter"
+        assert fused["collective"].provenance == ev.Provenance.NVTX
+
+    def test_unlabeled_cute_dsl_kernel_is_flagged(self):
+        """FlashAttention-4 ships with exactly this naming."""
+        ev = evidence
+        fused, warnings = ev.attribute_kernel("kernel_kernel_128_64_0")
+        assert fused["name_is_informative"].value is False
+        assert any("no shape or dtype" in w for w in warnings)
+
+
+class TestTriageRefusesMissingData:
+    """Absent GPU intervals and an idle GPU are indistinguishable; say so."""
+
+    def test_no_intervals_yields_no_verdict(self):
+        tri = triage
+        verdict = tri.triage_step(
+            wall_ns=1e9, launch_api_ns=8e8, sync_api_ns=5e8,
+            kernel_durations_ns=[4e3] * 50,
+        )
+        assert verdict.verdict == "undetermined"
+        assert verdict.confidence == "low"
+        assert "could not be measured" in verdict.summary
+
+    def test_real_intervals_still_reach_host_bound(self):
+        tri = triage
+        verdict = tri.triage_step(
+            wall_ns=1e9, compute_intervals=[(0, 5e7)], launch_api_ns=8e8,
+            sync_api_ns=5e8, kernel_durations_ns=[4e3] * 50,
+        )
+        assert verdict.verdict == "host_bound"

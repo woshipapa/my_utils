@@ -31,7 +31,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, Iterable, List, Mapping, Optional, Tuple
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1288,6 +1288,118 @@ def generate_recommendations(
 # Main orchestrator
 # ─────────────────────────────────────────────────────────────────────────────
 
+def analyze_kernel_attribution(aggregate_kernels: List[Dict]) -> Dict:
+    """Fuse per-kernel evidence and surface the places a name cannot be trusted.
+
+    This exists because a kernel symbol is the weakest evidence a profiler has,
+    and in named cases it is wrong rather than merely vague: NCCL launch stubs
+    hard-code the algorithm, CuTe DSL emits ``kernel_kernel_<args>_0`` with no
+    shape or dtype, and a ``cutlass3x_*`` symbol may have come from cuBLASLt
+    rather than from user code. The useful output here is ``caveats`` - the
+    kernels whose names would mislead a reader who took them at face value.
+    """
+    from ..analyzers.evidence import attribute_kernel
+
+    caveats: List[Dict] = []
+    unlabeled = 0
+    stub_named = 0
+
+    for row in aggregate_kernels or ():
+        if not isinstance(row, Mapping):
+            continue
+        name = str(row.get("name") or row.get("kernel_name") or "").strip()
+        if not name:
+            continue
+        fused, warnings = attribute_kernel(name)
+
+        informative = fused.get("name_is_informative")
+        if informative is not None and informative.value is False:
+            unlabeled += 1
+        algo = fused.get("nccl_algorithm")
+        if algo is not None and algo.confidence == "low":
+            stub_named += 1
+
+        if warnings:
+            caveats.append({
+                "kernel": name[:120],
+                "total_ms": _f(row.get("total_ms") or row.get("total_time_ms")),
+                "warnings": warnings,
+            })
+
+    caveats.sort(key=lambda c: c["total_ms"], reverse=True)
+    notes: List[str] = []
+    if unlabeled:
+        notes.append(
+            f"{unlabeled} kernel name(s) carry no shape or dtype information "
+            "(CuTe DSL default naming). Call set_name_prefix() at the launch site "
+            "to make these traces attributable."
+        )
+    if stub_named:
+        notes.append(
+            f"{stub_named} NCCL kernel(s) are launch stubs whose algorithm and protocol "
+            "tokens are hard-coded. Read the real algorithm from NCCL_DEBUG=INFO, not "
+            "from the kernel name."
+        )
+    return {"caveats": caveats[:20], "caveat_count": len(caveats), "notes": notes}
+
+
+def _triage_from_tables(
+    summary: Dict,
+    aggregate_kernels: List[Dict],
+    nccl_breakdown: List[Dict],
+    memcpy_bandwidth: List[Dict],
+    sync_breakdown: List[Dict],
+    cpu_launch_gap: List[Dict],
+    kernel_duration_stats: List[Dict],
+) -> Optional[Dict]:
+    """Lead with a single verdict rather than a wall of per-dimension scores.
+
+    Falls back to ``None`` when the trace lacks the timing needed to attribute a
+    cause, which is the honest outcome - a verdict assembled from missing
+    evidence reads exactly like one built from real evidence.
+    """
+    from ..analyzers.triage import triage_step
+
+    timing = (summary or {}).get("timing") or {}
+    wall_ns = _f(timing.get("span_ms")) * 1e6
+    if wall_ns <= 0:
+        return None
+
+    def _total_ns(rows: Iterable[Mapping], *keys: str) -> float:
+        out = 0.0
+        for row in rows or ():
+            if not isinstance(row, Mapping):
+                continue
+            for key in keys:
+                if row.get(key) is not None:
+                    out += _f(row[key])
+                    break
+        return out * 1e6
+
+    # The nsys summary tables give totals, not intervals, so the union-based
+    # overlap accounting in triage_step cannot run. Feed it the durations it can
+    # use and let it report reduced confidence rather than inventing intervals.
+    durations = [
+        _f(r.get("avg_ms") or r.get("mean_ms")) * 1e6
+        for r in (kernel_duration_stats or ())
+        if isinstance(r, Mapping)
+    ]
+    delays = [
+        _f(r.get("gap_us") or r.get("avg_gap_us")) * 1e3
+        for r in (cpu_launch_gap or ())
+        if isinstance(r, Mapping)
+    ]
+
+    verdict = triage_step(
+        wall_ns=wall_ns,
+        launch_api_ns=_total_ns(cpu_launch_gap, "launch_ms", "total_ms") or None,
+        sync_api_ns=_total_ns(sync_breakdown, "total_ms", "duration_ms") or None,
+        kernel_durations_ns=[d for d in durations if d > 0],
+        launch_delays_ns=[d for d in delays if d > 0],
+    )
+    return verdict.to_dict() if hasattr(verdict, "to_dict") else None
+
+
 def build_comprehensive_analysis(
     gpu_name: str,
     summary: Dict,
@@ -1338,7 +1450,17 @@ def build_comprehensive_analysis(
         util_pct, short_kernels, kernel_duration_stats,
     )
 
+    # The verdict leads. A reader who stops after one line should still get the
+    # dominant cause rather than having to rank nine dimension scores themselves.
+    triage = _triage_from_tables(
+        summary, aggregate_kernels, nccl_breakdown, memcpy_bandwidth,
+        sync_breakdown, cpu_launch_gap, kernel_duration_stats,
+    )
+    attribution = analyze_kernel_attribution(aggregate_kernels)
+
     return {
+        "triage": triage,
+        "kernel_attribution": attribution,
         "hardware": {
             "gpu_name": gpu_name,
             "specs": {
@@ -1398,6 +1520,50 @@ def comprehensive_to_markdown(analysis: Dict) -> str:
 
     def h3(t: str) -> None:
         lines.extend(["", f"### {t}", ""])
+
+    # Verdict first. Everything below it is supporting detail.
+    triage = a.get("triage") or {}
+    if triage.get("verdict"):
+        h2("Verdict")
+        conf = triage.get("confidence") or "unknown"
+        lines.append(f"**{triage['verdict']}**  (confidence: {conf})")
+        if triage.get("summary"):
+            lines.extend(["", str(triage["summary"])])
+        evidence = triage.get("evidence") or {}
+        if evidence:
+            lines.append("")
+            for key, value in list(evidence.items())[:8]:
+                if value is None:
+                    continue
+                shown = f"{value:.3g}" if isinstance(value, (int, float)) else str(value)
+                lines.append(f"- {key}: {shown}")
+        if conf in ("low", "unknown"):
+            lines.extend([
+                "",
+                "> Confidence is limited by what this trace carries. The nsys summary "
+                "tables give totals rather than intervals, so overlap between "
+                "communication and compute could not be measured directly.",
+            ])
+
+    attribution = a.get("kernel_attribution") or {}
+    if attribution.get("notes") or attribution.get("caveats"):
+        h2("Kernel name caveats")
+        lines.append(
+            "Kernel symbols are the weakest evidence in a trace. These names would "
+            "mislead a reader who took them at face value."
+        )
+        for note in attribution.get("notes") or ():
+            lines.extend(["", f"- {note}"])
+        caveats = attribution.get("caveats") or []
+        if caveats:
+            lines.append("")
+            for item in caveats[:8]:
+                lines.append(f"- `{item['kernel']}` ({item['total_ms']:.1f} ms)")
+                for warning in item.get("warnings", [])[:2]:
+                    lines.append(f"    - {warning}")
+        total = attribution.get("caveat_count") or 0
+        if total > len(caveats):
+            lines.extend(["", f"_{total - len(caveats)} further kernel(s) not shown._"])
 
     def tbl_row(*cells: str) -> str:
         return "| " + " | ".join(str(c) for c in cells) + " |"
