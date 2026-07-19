@@ -6,7 +6,8 @@ already done and what remains.
 
 Started 2026-07-18. Last updated 2026-07-19.
 
-**Status: 85 tests passing. Phases 1-4 done, Phase 3 complete, Phase 5b done. NCU metric coverage measured at 40% of `--set full` core metrics (was 21%); run `verify_catalog_coverage()` for the live number.**
+**Status: 96 tests passing. Phases 1-4 done, Phase 3 complete, Phase 5b done.**
+**NCU metric coverage: 913 metrics indexed, 880 of them in `--set full` — complete, because the index is generated from the installed Nsight Compute rather than hand-written.**
 
 ---
 
@@ -99,6 +100,24 @@ These prevent *wrong conclusions*, which is worse than no conclusion.
       construction. Now scored `None` (not assessable).
 - [x] ~~Unmeasured dimensions could win the bottleneck ranking~~ — the ranking
       and the weighted average now skip dimensions that were never measured.
+
+## Phase 6 — Complete metric coverage ✅
+
+Hand-curation cannot reach 100% and cannot stay current, so coverage is now
+generated instead of written.
+
+- [x] ~~`ncu/section_index.py`~~ — parses the `.section` files of the installed
+      Nsight Compute and indexes **every** metric they request (913 total, 880 in
+      `--set full`), carrying NVIDIA's own `Label` for each.
+- [x] ~~Name-grammar decoder~~ — splits any metric into unit / quantity / rollup /
+      submetric and explains each part, including the
+      `pct_of_peak_sustained_active` vs `_elapsed` denominator trap.
+- [x] ~~`explain_metric()`~~ — merges the two layers: the curated catalog answers
+      "is this value bad and what do I do", the index answers "what am I even
+      looking at", so no metric is ever unexplainable.
+- [x] ~~`ncu-metrics` CLI~~ — `--metric` to explain one (with `--value` for a
+      verdict), `--search` over names and labels, `--coverage` to measure the
+      curated layer against the install.
 
 ## Phase 5 — Remaining work 📋
 

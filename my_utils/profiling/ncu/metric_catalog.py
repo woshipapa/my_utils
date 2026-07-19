@@ -40,6 +40,7 @@ __all__ = [
     "metrics_for_category",
     "describe_arch",
     "verify_catalog_coverage",
+    "explain_metric",
 ]
 
 
@@ -848,3 +849,101 @@ def describe_arch(
         }
     return {"family": "unknown", "alias": "unknown", "compute_capability": "",
             "sm_count": None, "source": "none"}
+
+
+# ---------------------------------------------------------------------------
+# Unified metric explanation
+# ---------------------------------------------------------------------------
+
+def explain_metric(metric_name: str, value: Optional[float] = None) -> Dict[str, object]:
+    """Explain any ncu metric, whether or not a rule knows how to judge it.
+
+    Two layers answer two different questions and this merges them:
+
+    * :data:`METRIC_CATALOG` knows *is this value bad and what do I do* for the
+      metrics the diagnosis rules reason about.
+    * :mod:`section_index` knows *what am I even looking at* for every metric the
+      installed Nsight Compute can collect - name grammar, NVIDIA's own Label,
+      and which sections request it.
+
+    Passing ``value`` adds a verdict when the catalog carries a threshold. The
+    verdict is deliberately absent rather than guessed when it does not.
+    """
+    result: Dict[str, object] = {"metric": metric_name, "value": value}
+
+    # -- catalog layer: interpretation -----------------------------------
+    spec: Optional[MetricSpec] = None
+    for candidate in METRIC_CATALOG.values():
+        if metric_name in candidate.names or metric_name == candidate.key:
+            spec = candidate
+            break
+    if spec is None:
+        base = metric_name.split(".")[0]
+        for candidate in METRIC_CATALOG.values():
+            if any(n.split(".")[0] == base for n in candidate.names):
+                spec = candidate
+                break
+
+    if spec is not None:
+        result.update({
+            "catalog_key": spec.key,
+            "category": spec.category,
+            "section": spec.section,
+            "unit_of_measure": spec.unit,
+            "interpretation": spec.description,
+            "ideal": spec.ideal,
+            "higher_is_better": spec.higher_is_better,
+            "warn_below": spec.warn_below,
+            "warn_above": spec.warn_above,
+            "notes": spec.notes,
+            "has_rule": True,
+        })
+        if value is not None:
+            verdict, why = None, ""
+            if spec.warn_above is not None and value > spec.warn_above:
+                verdict, why = "bad", f"above the {spec.warn_above:g} threshold"
+            elif spec.warn_below is not None and value < spec.warn_below:
+                verdict, why = "bad", f"below the {spec.warn_below:g} threshold"
+            elif spec.warn_above is not None or spec.warn_below is not None:
+                verdict, why = "ok", "within the expected range"
+            if verdict:
+                result["verdict"] = verdict
+                result["verdict_reason"] = why
+            if spec.ideal is not None and value is not None:
+                result["distance_from_ideal"] = value - spec.ideal
+    else:
+        result["has_rule"] = False
+
+    # -- index layer: what the metric is ---------------------------------
+    try:
+        from .section_index import build_section_index, decode_metric_name
+    except Exception:  # pragma: no cover - package layout change only
+        build_section_index = None  # type: ignore[assignment]
+        decode_metric_name = None   # type: ignore[assignment]
+
+    if build_section_index is not None:
+        index = build_section_index()
+        if index is not None:
+            entry = index.explain(metric_name)
+            if entry is not None:
+                result.update({
+                    "nvidia_label": entry.label,
+                    "collected_by_sections": list(entry.sections),
+                    "in_sets": list(entry.sets),
+                    "hardware_unit": entry.unit,
+                    "hardware_unit_meaning": entry.unit_meaning,
+                    "rollup": entry.rollup,
+                    "rollup_meaning": entry.rollup_meaning,
+                    "submetric": entry.submetric,
+                    "submetric_meaning": entry.submetric_meaning,
+                    "description": entry.describe(),
+                })
+                return result
+        if decode_metric_name is not None:
+            # No installation to consult; still decode what the name itself says.
+            result.update(decode_metric_name(metric_name))
+            result["description"] = (
+                "No Nsight Compute installation found to look this metric up in; "
+                "the fields above are decoded from the metric name alone."
+            )
+    return result

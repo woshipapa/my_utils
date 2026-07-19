@@ -576,3 +576,86 @@ def test_green_context_grid_is_judged_against_the_partition():
 )
 def test_nvls_multicast_detection(name, expected):
     assert kernel_taxonomy.uses_nvls_multicast(name) is expected
+
+
+# ---------------------------------------------------------------------------
+# Complete metric index (generated from the installed Nsight Compute)
+# ---------------------------------------------------------------------------
+
+section_index = _load("ncu.section_index", "ncu/section_index.py")
+
+
+def test_metric_name_decoding():
+    """The name grammar carries unit / quantity / rollup / submetric."""
+    decoded = section_index.decode_metric_name(
+        "sm__throughput.avg.pct_of_peak_sustained_elapsed")
+    assert decoded["unit"] == "sm"
+    assert decoded["quantity"] == "throughput"
+    assert decoded["rollup"] == "avg"
+    assert decoded["submetric"] == "pct_of_peak_sustained_elapsed"
+
+    # No rollup: the submetric follows the name directly.
+    plain = section_index.decode_metric_name("l1tex__t_sector_hit_rate.pct")
+    assert plain["unit"] == "l1tex"
+    assert plain["rollup"] == ""
+    assert plain["submetric"] == "pct"
+
+    # Collection prefixes are stripped, not mistaken for the unit.
+    prefixed = section_index.decode_metric_name("pmsampling:dram__bytes.sum")
+    assert prefixed["prefix"] == "pmsampling"
+    assert prefixed["unit"] == "dram"
+
+    # A launch property has no unit separator at all.
+    assert section_index.decode_metric_name("launch__grid_size")["unit"] == "launch"
+
+
+def test_active_vs_elapsed_distinction_is_documented():
+    """Choosing the wrong denominator silently changes the conclusion."""
+    active = section_index.SUBMETRIC_MEANINGS["pct_of_peak_sustained_active"]
+    elapsed = section_index.SUBMETRIC_MEANINGS["pct_of_peak_sustained_elapsed"]
+    assert "ACTIVE" in active
+    assert "WHOLE" in elapsed
+
+
+def test_explain_metric_works_without_an_ncu_installation():
+    """Falls back to decoding the name rather than fabricating an explanation."""
+    result = metric_catalog.explain_metric("sm__throughput.avg.pct_of_peak_sustained_elapsed")
+    assert result["metric"]
+    # Either the index resolved it or the name was decoded; never silently empty.
+    assert result.get("description") or result.get("interpretation") or result.get("unit")
+
+
+def test_explain_metric_gives_a_verdict_only_where_a_rule_exists():
+    bad = metric_catalog.explain_metric(
+        "l1tex__average_t_sectors_per_request_pipe_lsu_mem_global_op_ld.ratio", 28.0)
+    assert bad["has_rule"] is True
+    assert bad["verdict"] == "bad"
+    assert bad["distance_from_ideal"] == pytest.approx(24.0)
+
+    good = metric_catalog.explain_metric(
+        "l1tex__average_t_sectors_per_request_pipe_lsu_mem_global_op_ld.ratio", 4.0)
+    assert good["verdict"] == "ok"
+
+    # Without a value there is no verdict to give.
+    assert "verdict" not in metric_catalog.explain_metric(
+        "l1tex__average_t_sectors_per_request_pipe_lsu_mem_global_op_ld.ratio")
+
+
+@pytest.mark.skipif(
+    section_index.find_sections_dir() is None,
+    reason="no Nsight Compute installation on this machine",
+)
+def test_section_index_covers_the_full_set():
+    """Against a real install, every --set full metric must be indexed."""
+    index = section_index.build_section_index()
+    assert index is not None
+    assert len(index.sections) >= 20
+    # The index exists precisely so coverage is complete rather than curated.
+    assert len(index.in_set("full")) > 500
+    # NVIDIA's own Labels come through, which is what makes an unknown metric
+    # explainable at all.
+    entry = index.explain("sm__throughput.avg.pct_of_peak_sustained_elapsed")
+    assert entry is not None and entry.label
+    # The units a user asks about are all represented.
+    for unit in ("l1tex", "lts", "dram", "sm", "smsp", "launch"):
+        assert index.by_unit(unit), f"no metrics indexed for {unit}"

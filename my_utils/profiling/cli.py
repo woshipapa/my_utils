@@ -1100,6 +1100,47 @@ def cmd_ncu_diagnose(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_ncu_metrics(args: argparse.Namespace) -> int:
+    from .ncu.metric_catalog import explain_metric, verify_catalog_coverage
+    from .ncu.section_index import build_section_index
+
+    if args.coverage:
+        payload = verify_catalog_coverage(str(args.sections_dir or ""))
+        print(report_result_to_json(payload, pretty=True))
+        return 0
+
+    index = build_section_index(str(args.sections_dir or ""))
+    if args.search:
+        if index is None:
+            print("[ncu-metrics] no Nsight Compute installation found; pass --sections-dir")
+            return 1
+        hits = index.search(args.search)
+        print(f"# {len(hits)} metric(s) matching {args.search!r}\n")
+        for entry in sorted(hits, key=lambda e: e.name)[: int(args.limit)]:
+            label = f"  [{entry.label}]" if entry.label else ""
+            print(f"{entry.name}{label}")
+            if args.verbose:
+                print(f"    {entry.describe()}")
+        return 0
+
+    if args.metric:
+        payload = explain_metric(args.metric, args.value)
+        print(report_result_to_json(payload, pretty=True))
+        return 0
+
+    if index is None:
+        print("[ncu-metrics] no Nsight Compute installation found; pass --sections-dir")
+        return 1
+    print(f"# Nsight Compute metric index\n")
+    print(f"sections dir : {index.sections_dir}")
+    print(f"sections     : {len(index.sections)}")
+    print(f"metrics      : {len(index.metrics)}  ({len(index.in_set('full'))} in --set full)\n")
+    print("metrics per hardware unit:")
+    for unit, count in index.unit_summary().items():
+        print(f"  {unit or '(none)':12s} {count:4d}")
+    return 0
+
+
 def cmd_nccl_inspector_skill(args: argparse.Namespace) -> int:
     engine = NcclInspectorSkillEngine(args.input, prometheus_path=str(args.prometheus_path or ""))
     if args.list_skills:
@@ -1602,6 +1643,22 @@ def build_parser() -> argparse.ArgumentParser:
     ncu_report_skill.add_argument("--output", default="", help="optional json output path")
     ncu_report_skill.add_argument("--pretty", action="store_true", help="pretty-print json output")
     ncu_report_skill.set_defaults(func=cmd_ncu_report_skill)
+
+    ncu_metrics = sub.add_parser(
+        "ncu-metrics",
+        help="explain any ncu metric, search the index, or report catalog coverage",
+    )
+    ncu_metrics.add_argument("--metric", default="", help="explain one metric by name")
+    ncu_metrics.add_argument("--value", type=float, default=None,
+                             help="a measured value, to get a verdict where a rule exists")
+    ncu_metrics.add_argument("--search", default="", help="regex over metric names and labels")
+    ncu_metrics.add_argument("--coverage", action="store_true",
+                             help="report how much of --set full the curated catalog covers")
+    ncu_metrics.add_argument("--sections-dir", default="",
+                             help="Nsight Compute sections directory (auto-detected by default)")
+    ncu_metrics.add_argument("--limit", type=int, default=60)
+    ncu_metrics.add_argument("--verbose", action="store_true")
+    ncu_metrics.set_defaults(func=cmd_ncu_metrics)
 
     ncu_diagnose = sub.add_parser(
         "ncu-diagnose",
@@ -2296,6 +2353,10 @@ def entry_ncu_report_skill() -> int:
 
 def entry_ncu_report_analyze() -> int:
     return _run_nsys_alias("ncu-report-analyze")
+
+
+def entry_ncu_metrics() -> int:
+    return _run_nsys_alias("ncu-metrics")
 
 
 def entry_ncu_diagnose() -> int:
