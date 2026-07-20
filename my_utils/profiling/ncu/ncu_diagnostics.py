@@ -47,6 +47,8 @@ __all__ = [
     "analyze_spilling",
     "analyze_pipes",
     "analyze_imbalance",
+    "analyze_memory_hierarchy",
+    "analyze_issue_efficiency",
     "diagnose_kernel",
     "analysis_coverage",
     "SOL_THRESHOLDS",
@@ -818,7 +820,10 @@ def analyze_occupancy(view: MetricView) -> Dict[str, Any]:
     }
 
 
-def analyze_launch_config(view: MetricView, *, gemm_shape: Any = None) -> Dict[str, Any]:
+def analyze_launch_config(
+    view: MetricView, *, gemm_shape: Any = None,
+    problem_shape: Optional[Mapping[str, int]] = None,
+) -> Dict[str, Any]:
     """Block-size, small-grid, tail-effect and tile-quantisation checks.
 
     ``gemm_shape`` is an optional
@@ -939,6 +944,74 @@ def analyze_launch_config(view: MetricView, *, gemm_shape: Any = None) -> Dict[s
             waves_from_tiles = tiles / float(sm_count)
             result["tiles"] = tiles
             result["waves_from_tiles"] = waves_from_tiles
+
+        # Tile quantisation: the problem shape does not divide evenly by the
+        # tile shape, so the boundary tiles compute mostly padding. This is
+        # distinct from wave quantisation (which is about tiles vs SMs) and it
+        # is why a GEMM's throughput is not monotonic in its size -- growing M
+        # from 4096 to 4097 adds a whole row of tiles doing 1/128th of a tile's
+        # useful work.
+        #
+        # The kernel symbol carries the TILE shape and never the PROBLEM shape,
+        # so this cannot be computed from the name alone. `problem_shape` has to
+        # come from NVTX, from the framework, or from the caller. Without it we
+        # say what is missing rather than quietly skipping the check.
+        if not problem_shape:
+            findings.append(Finding(
+                category="tile_quantization",
+                title="Tile quantisation could not be checked",
+                summary=(
+                    f"The symbol gives a {gemm_shape.tile_m}x{gemm_shape.tile_n} tile but "
+                    "carries no problem shape, and no problem shape was supplied. Whether "
+                    "the boundary tiles are computing padding is therefore unknown -- this "
+                    "is an unasked question, not a clean result."
+                ),
+                severity="info",
+                confidence="high",
+                evidence={"tile_m": gemm_shape.tile_m, "tile_n": gemm_shape.tile_n,
+                          "problem_shape": None},
+                actions=(
+                    "Pass problem_shape={'m': M, 'n': N, 'k': K}, or wrap the call in an "
+                    "NVTX range carrying the shape, to enable this check.",
+                ),
+                source="heuristic",
+            ))
+        for dim, tile in (("m", gemm_shape.tile_m), ("n", gemm_shape.tile_n)):
+            problem = (problem_shape or {}).get(dim)
+            if not problem or not tile:
+                continue
+            tiles_needed = math.ceil(float(problem) / float(tile))
+            covered = tiles_needed * float(tile)
+            waste = (covered - float(problem)) / covered if covered else 0.0
+            result[f"tile_{dim}_waste"] = waste
+            # One-eighth wasted is roughly where the padding costs more than the
+            # simplest fix (padding the problem up to a tile multiple) saves.
+            if waste > 0.125:
+                findings.append(Finding(
+                    category="tile_quantization",
+                    title=f"Problem dimension {dim.upper()} does not fill its tiles",
+                    summary=(
+                        f"{dim.upper()}={int(problem)} against a tile of {int(tile)} needs "
+                        f"{tiles_needed} tiles covering {int(covered)}, so "
+                        f"{waste * 100:.0f}% of the work in that dimension is padding. "
+                        "Throughput is not monotonic in problem size when this happens."
+                    ),
+                    severity="medium" if waste > 0.25 else "low",
+                    confidence="medium",
+                    evidence={
+                        f"{dim}": problem, f"tile_{dim}": tile,
+                        "tiles_needed": tiles_needed, "covered": covered,
+                        "waste_fraction": round(waste, 4),
+                        "shape_source": "parsed from the kernel symbol",
+                    },
+                    actions=(
+                        f"Pad {dim.upper()} up to a multiple of {int(tile)}, or pick a "
+                        f"kernel whose tile divides {int(problem)} evenly.",
+                    ),
+                    # The ceiling is the padding you stop computing.
+                    speedup_ceiling=round(1.0 / (1.0 - waste), 3) if waste < 0.9 else None,
+                    source="heuristic",
+                ))
     return result
 
 
@@ -1234,6 +1307,211 @@ def analyze_pipes(view: MetricView) -> Dict[str, Any]:
     return {"pipes": present, "busiest": busiest, "findings": findings}
 
 
+def analyze_memory_hierarchy(view: MetricView) -> Dict[str, Any]:
+    """Where in the hierarchy the traffic actually lands, and whether it should.
+
+    `classify_bottleneck` says "memory bound" from the SpeedOfLight rollup, and
+    `analyze_coalescing` says whether requests are shaped well. Neither says
+    which level is saturated, whether reads and writes are balanced, or whether
+    traffic is leaving the device entirely. Those are separate questions with
+    separate fixes, and the counters for all of them were being collected and
+    read by nothing.
+    """
+    findings: List[Finding] = []
+    caveats: List[str] = []
+    result: Dict[str, Any] = {"findings": findings, "caveats": caveats}
+
+    l2_sol = view.get("l2_sol")
+    l1_sol = view.get("l1_sol")
+    dram_sol = view.get("dram_sol")
+    for label, value in (("L2", l2_sol), ("L1/TEX", l1_sol), ("DRAM", dram_sol)):
+        if value is not None:
+            result[f"{label.split('/')[0].lower()}_sol"] = value
+
+    # Which level is the tightest. Only _elapsed percentages are comparable, and
+    # every SOL key above resolves to an _elapsed spelling for exactly that
+    # reason -- mixing in an _active figure would rank the idlest unit first.
+    levels = [(n, v) for n, v in (("L2", l2_sol), ("DRAM", dram_sol), ("L1/TEX", l1_sol))
+              if v is not None]
+    if levels:
+        tightest, tightest_val = max(levels, key=lambda kv: kv[1])
+        result["tightest_level"] = tightest
+        result["tightest_level_pct"] = tightest_val
+        if tightest_val >= 70.0 and tightest != "DRAM":
+            findings.append(Finding(
+                category="memory",
+                title=f"{tightest} is the saturated level, not DRAM",
+                summary=(
+                    f"{tightest} runs at {tightest_val:.0f}% of peak while DRAM is at "
+                    f"{dram_sol:.0f}%. " if dram_sol is not None else
+                    f"{tightest} runs at {tightest_val:.0f}% of peak. "
+                ) + (
+                    "Adding DRAM bandwidth will not help; the fix is to cut requests "
+                    "at this level -- larger tiles, better reuse, or vectorised access."
+                ),
+                severity="medium",
+                confidence="high",
+                evidence={n: v for n, v in levels},
+                actions=(
+                    f"Reduce {tightest} traffic rather than DRAM traffic: increase reuse "
+                    "per byte fetched, or widen each access so fewer requests move the "
+                    "same bytes.",
+                ),
+                source="heuristic",
+            ))
+
+    # Read/write asymmetry. A write-heavy kernel behaves differently from a
+    # read-heavy one at the same total bandwidth: writes cannot be prefetched,
+    # and read-modify-write of partial sectors doubles the traffic.
+    rd = view.get("dram_bytes_read")
+    wr = view.get("dram_bytes_write")
+    if rd is not None and wr is not None and (rd + wr) > 0:
+        write_share = wr / (rd + wr)
+        result["dram_read_bytes"] = rd
+        result["dram_write_bytes"] = wr
+        result["dram_write_share"] = write_share
+        if write_share > 0.6:
+            findings.append(Finding(
+                category="memory",
+                title="DRAM traffic is write-dominated",
+                summary=(
+                    f"{write_share * 100:.0f}% of device-memory traffic is writes "
+                    f"({wr / 1e6:.1f} MB written against {rd / 1e6:.1f} MB read). Writes "
+                    "cannot be prefetched, and a partially-written sector costs a read "
+                    "as well, so write-heavy kernels reach a lower fraction of peak "
+                    "bandwidth than read-heavy ones."
+                ),
+                severity="low",
+                confidence="high",
+                evidence={"dram_bytes_read": rd, "dram_bytes_write": wr,
+                          "write_share": round(write_share, 3)},
+                actions=(
+                    "Write whole sectors: make the store pattern contiguous and aligned "
+                    "so no sector is partially written.",
+                ),
+                source="heuristic",
+            ))
+
+    # Read vs write hit rate. One low half is invisible in the aggregate.
+    rd_hit = view.get("l2_read_hit_rate")
+    wr_hit = view.get("l2_write_hit_rate")
+    if rd_hit is not None and wr_hit is not None:
+        result["l2_read_hit_rate"] = rd_hit
+        result["l2_write_hit_rate"] = wr_hit
+        if abs(rd_hit - wr_hit) > 30.0:
+            low, high = ("read", "write") if rd_hit < wr_hit else ("write", "read")
+            findings.append(Finding(
+                category="poor_cache_locality",
+                title=f"L2 {low} hit rate is far below the {high} hit rate",
+                summary=(
+                    f"L2 hits {rd_hit:.0f}% of reads and {wr_hit:.0f}% of writes. The "
+                    f"aggregate hit rate hides this: the {low} path is missing to DRAM "
+                    "while the other is served from cache."
+                ),
+                severity="medium",
+                confidence="high",
+                evidence={"l2_read_hit_rate": rd_hit, "l2_write_hit_rate": wr_hit},
+                actions=(
+                    f"Look at the {low} access pattern specifically -- the aggregate "
+                    "hit rate will not show the improvement or the regression.",
+                ),
+                source="heuristic",
+            ))
+
+    # Traffic leaving the device. This is the one that turns a "slow kernel"
+    # into "this kernel is touching host or peer memory", which is a different
+    # problem by two orders of magnitude.
+    sysmem = view.get("l2_aperture_sysmem_miss")
+    peer = view.get("l2_aperture_peer_miss")
+    for label, value, detail in (
+        ("system", sysmem, "host memory over PCIe or NVLink-C2C"),
+        ("peer", peer, "another GPU's memory over NVLink or PCIe"),
+    ):
+        if value is None or value <= 0:
+            continue
+        result[f"{label}_aperture_sectors"] = value
+        findings.append(Finding(
+            category="memory",
+            title=f"Kernel is reaching {label} memory, not just device memory",
+            summary=(
+                f"{value:,.0f} L2 sectors missed to the {label} aperture, meaning the "
+                f"kernel accessed {detail}. That path is roughly an order of magnitude "
+                "slower than HBM, so a small number of these accesses can dominate the "
+                "kernel's time while barely showing up in DRAM throughput."
+            ),
+            severity="high",
+            confidence="high",
+            evidence={f"l2_aperture_{label}_miss_sectors": value},
+            actions=(
+                "Check for unified/managed memory that has not migrated, or a pointer "
+                "that should have been a device allocation. cudaMemPrefetchAsync or an "
+                "explicit device copy usually removes this entirely.",
+            ),
+            source="heuristic",
+        ))
+
+    # No caveat when the counters are absent: `analysis_coverage` already
+    # reports memory_hierarchy as skipped, and saying it twice turns a real
+    # signal into noise.
+    return result
+
+
+def analyze_issue_efficiency(view: MetricView) -> Dict[str, Any]:
+    """Whether the schedulers had anything to issue, and why not.
+
+    Occupancy says how many warps are resident. This says how many were
+    *eligible* -- the number that matters. High occupancy with no eligible warps
+    means every resident warp is stalled, and adding more warps will not help;
+    that distinction decides whether the fix is occupancy or latency.
+    """
+    findings: List[Finding] = []
+    result: Dict[str, Any] = {"findings": findings}
+
+    issue = view.get("issue_slot_util")
+    eligible = view.get("warps_eligible_per_scheduler")
+    active = view.get("warps_active_per_scheduler")
+    for key, value in (("issue_slot_util", issue),
+                       ("warps_eligible_per_scheduler", eligible),
+                       ("warps_active_per_scheduler", active)):
+        if value is not None:
+            result[key] = value
+
+    # NVIDIA's own SchedulerStats guidance: below roughly one eligible warp per
+    # scheduler per cycle, the scheduler idles whenever the chosen warp stalls.
+    if eligible is not None and eligible < 1.0:
+        detail = ""
+        if active is not None and active > 4.0:
+            detail = (
+                f" {active:.1f} warps were resident, so the problem is not occupancy: "
+                "the resident warps are stalled rather than absent. Raising occupancy "
+                "would add more stalled warps."
+            )
+        findings.append(Finding(
+            category="occupancy",
+            title="Schedulers had less than one eligible warp per cycle",
+            summary=(
+                f"{eligible:.2f} warps were eligible to issue per scheduler per active "
+                f"cycle. Below 1.0 the scheduler has nothing to switch to the moment "
+                f"the selected warp stalls, so stall latency is exposed directly."
+                + detail
+            ),
+            severity="medium",
+            confidence="high",
+            evidence={"warps_eligible_per_scheduler": eligible,
+                      "warps_active_per_scheduler": active,
+                      "issue_slot_util_pct": issue},
+            actions=(
+                "Read the stall breakdown before changing occupancy: it names what the "
+                "resident warps are waiting on."
+                if (active or 0) > 4.0 else
+                "Increase occupancy so the scheduler has warps to switch to, or shorten "
+                "the dependency chains that make each warp ineligible.",
+            ),
+            source="ncu_rule",
+        ))
+    return result
+
+
 def analyze_imbalance(view: MetricView) -> Dict[str, Any]:
     """SM / L2-slice / DRAM-partition load imbalance (NVIDIA's WorkloadImbalance rule)."""
     findings: List[Finding] = []
@@ -1448,6 +1726,10 @@ _ANALYSIS_REQUIREMENTS: Dict[str, Tuple[Tuple[str, ...], str]] = {
                       "SourceCounters + LaunchStats"),
     "pipes":         (("pipe_tensor_util", "pipe_fma_util"), "ComputeWorkloadAnalysis"),
     "imbalance":     (("sm_cycles_active", "sm_cycles_active_max"), "WorkloadDistribution"),
+    "memory_hierarchy": (("l2_sol", "l1_sol", "dram_bytes_read", "l2_read_hit_rate"),
+                         "MemoryWorkloadAnalysis"),
+    "issue_efficiency": (("warps_eligible_per_scheduler", "issue_slot_util"),
+                         "SchedulerStats"),
 }
 
 
@@ -1498,12 +1780,18 @@ def diagnose_kernel(
     top_k: int = 10,
     shipped_rules: Optional[Iterable[Any]] = None,
     throttling: Optional[Mapping[str, Any]] = None,
+    problem_shape: Optional[Mapping[str, int]] = None,
 ) -> Dict[str, Any]:
     """Run every rule over one kernel's metrics and return a ranked diagnosis.
 
     ``metrics`` maps exact ncu metric names to values.  ``gpu_spec`` unlocks the
     absolute roofline; without it the analysis still works but reports
     arithmetic intensity without a ceiling.
+
+    ``problem_shape`` is the GEMM's logical shape (``{"m": M, "n": N, "k": K}``).
+    The kernel symbol encodes the TILE shape and never the problem shape, so
+    tile quantisation cannot be checked without it; when it is absent the check
+    reports itself as unasked rather than passing silently.
 
     ``throttling`` accepts the keyword arguments of
     :func:`~my_utils.profiling.hardware.analyze_throttling` -- a clock-event
@@ -1540,13 +1828,15 @@ def diagnose_kernel(
     stalls = analyze_stalls(view)
     roofline = compute_roofline(view, gpu_spec)
     occupancy = analyze_occupancy(view)
-    launch = analyze_launch_config(view, gemm_shape=gemm_shape)
+    launch = analyze_launch_config(view, gemm_shape=gemm_shape, problem_shape=problem_shape)
     coalescing = analyze_coalescing(view)
     shared = analyze_shared_memory(view)
     divergence = analyze_divergence(view)
     spilling = analyze_spilling(view)
     pipes = analyze_pipes(view)
     imbalance = analyze_imbalance(view)
+    hierarchy = analyze_memory_hierarchy(view)
+    issue = analyze_issue_efficiency(view)
 
     sections = {
         "bottleneck": bottleneck,
@@ -1560,6 +1850,8 @@ def diagnose_kernel(
         "spilling": spilling,
         "pipes": pipes,
         "imbalance": imbalance,
+        "memory_hierarchy": hierarchy,
+        "issue_efficiency": issue,
     }
 
     findings: List[Finding] = []

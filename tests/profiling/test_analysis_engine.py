@@ -1317,3 +1317,113 @@ class TestThrottlingIsWiredIn:
             throttling={"clock_event_mask": 0x1 | 0x2},
         )
         assert not [f for f in result["findings"] if f["category"] == "throttling"]
+
+
+class TestTileQuantization:
+    """The symbol carries the tile shape and never the problem shape."""
+
+    _KERNEL = "ampere_bf16_s16816gemm_bf16_128x128_ldg8_f2f_stages_64x3_nn"
+
+    def test_missing_problem_shape_is_reported_as_unasked(self):
+        result = ncu_diagnostics.diagnose_kernel(
+            {"launch__grid_size": 512, "launch__block_size": 256},
+            kernel_name=self._KERNEL,
+        )
+        unasked = [f for f in result["findings"]
+                   if f["category"] == "tile_quantization"
+                   and "could not be checked" in f["title"]]
+        assert unasked, "an unaskable question must not read as a clean result"
+        assert unasked[0]["severity"] == "info"
+
+    def test_ragged_problem_shape_is_flagged_with_a_ceiling(self):
+        """M=257 against a 128 tile needs 3 tiles covering 384: 33% padding."""
+        result = ncu_diagnostics.diagnose_kernel(
+            {"launch__grid_size": 512, "launch__block_size": 256},
+            kernel_name=self._KERNEL,
+            problem_shape={"m": 257, "n": 4096},
+        )
+        flagged = [f for f in result["findings"]
+                   if f["category"] == "tile_quantization" and "M" in f["title"]]
+        assert flagged, "257 against a 128 tile computes a third padding"
+        assert flagged[0]["evidence"]["waste_fraction"] == pytest.approx(0.331, abs=0.01)
+        assert flagged[0]["speedup_ceiling"] == pytest.approx(1.494, abs=0.01)
+
+    def test_large_ragged_dimension_is_not_flagged(self):
+        """M=4097 wastes only 3%: real, but not worth an action."""
+        result = ncu_diagnostics.diagnose_kernel(
+            {"launch__grid_size": 512, "launch__block_size": 256},
+            kernel_name=self._KERNEL,
+            problem_shape={"m": 4097, "n": 4096},
+        )
+        assert not [f for f in result["findings"]
+                    if f["category"] == "tile_quantization" and "M" in f["title"]]
+
+    def test_evenly_divided_shape_is_not_flagged(self):
+        result = ncu_diagnostics.diagnose_kernel(
+            {"launch__grid_size": 512, "launch__block_size": 256},
+            kernel_name=self._KERNEL,
+            problem_shape={"m": 4096, "n": 4096},
+        )
+        assert not [f for f in result["findings"]
+                    if f["category"] == "tile_quantization"]
+
+
+class TestMemoryHierarchy:
+    def test_saturated_l2_is_distinguished_from_dram(self):
+        result = ncu_diagnostics.analyze_memory_hierarchy(ncu_diagnostics.MetricView({
+            "lts__throughput.avg.pct_of_peak_sustained_elapsed": 88.0,
+            "gpu__dram_throughput.avg.pct_of_peak_sustained_elapsed": 25.0,
+        }))
+        assert result["tightest_level"] == "L2"
+        finding = next(f for f in result["findings"] if "saturated level" in f.title)
+        assert "not DRAM" in finding.title
+
+    def test_sysmem_aperture_access_is_high_severity(self):
+        result = ncu_diagnostics.analyze_memory_hierarchy(ncu_diagnostics.MetricView({
+            "lts__t_sectors_srcunit_tex_aperture_sysmem_lookup_miss.sum": 50000.0,
+        }))
+        finding = next(f for f in result["findings"] if "system memory" in f.title)
+        assert finding.severity == "high"
+
+    def test_asymmetric_l2_hit_rate_is_flagged(self):
+        result = ncu_diagnostics.analyze_memory_hierarchy(ncu_diagnostics.MetricView({
+            "lts__t_sector_op_read_hit_rate.pct": 15.0,
+            "lts__t_sector_op_write_hit_rate.pct": 90.0,
+        }))
+        assert any(f.category == "poor_cache_locality" for f in result["findings"])
+
+    def test_write_dominated_traffic_is_reported(self):
+        result = ncu_diagnostics.analyze_memory_hierarchy(ncu_diagnostics.MetricView({
+            "dram__bytes_read.sum": 1e6, "dram__bytes_write.sum": 9e6,
+        }))
+        assert result["dram_write_share"] == pytest.approx(0.9)
+        assert any("write-dominated" in f.title for f in result["findings"])
+
+    def test_silent_when_no_memory_counters(self):
+        result = ncu_diagnostics.analyze_memory_hierarchy(ncu_diagnostics.MetricView({}))
+        assert result["findings"] == []
+
+
+class TestIssueEfficiency:
+    def test_stalled_resident_warps_are_not_an_occupancy_problem(self):
+        """High occupancy + no eligible warps means latency, not occupancy."""
+        result = ncu_diagnostics.analyze_issue_efficiency(ncu_diagnostics.MetricView({
+            "smsp__warps_eligible.avg.per_cycle_active": 0.3,
+            "smsp__warps_active.avg.per_cycle_active": 12.0,
+        }))
+        finding = result["findings"][0]
+        assert "not occupancy" in finding.summary
+        assert "stall breakdown" in finding.actions[0]
+
+    def test_low_occupancy_gets_the_occupancy_advice(self):
+        result = ncu_diagnostics.analyze_issue_efficiency(ncu_diagnostics.MetricView({
+            "smsp__warps_eligible.avg.per_cycle_active": 0.4,
+            "smsp__warps_active.avg.per_cycle_active": 2.0,
+        }))
+        assert "Increase occupancy" in result["findings"][0].actions[0]
+
+    def test_healthy_scheduler_is_silent(self):
+        result = ncu_diagnostics.analyze_issue_efficiency(ncu_diagnostics.MetricView({
+            "smsp__warps_eligible.avg.per_cycle_active": 3.5,
+        }))
+        assert result["findings"] == []
