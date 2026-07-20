@@ -1180,7 +1180,12 @@ Pass `--no-source` to skip it; it re-reads the report for PC samples.
 
 ### The pipeline `ncu-diagnose` runs
 
-One command, three stages, each feeding the next:
+One command, one pass over the report, three stages:
+
+`walk_report_once` opens the report once and visits each kernel launch a single
+time, gathering its metrics, NVIDIA's shipped rule results, the action object
+and its source attribution together. (It was four separate loaders, each doing
+its own full traversal.) The three stages then run per launch:
 
 1. **Collect** — every metric in the report, not the catalogued subset.
    `metric_inventory` accounts for all of them.

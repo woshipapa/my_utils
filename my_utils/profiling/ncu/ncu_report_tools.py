@@ -1896,6 +1896,213 @@ def load_ncu_report_records(
     return out
 
 
+def _metric_reader(action: Any):
+    """Return a `(key) -> Optional[float]` reader for one action.
+
+    `_maybe_call` takes no call arguments and `metric_by_name` needs one, so the
+    attribute is read directly.
+    """
+    def read(key: str) -> Optional[float]:
+        getter = getattr(action, "metric_by_name", None)
+        if getter is None:
+            return None
+        try:
+            metric = getter(key)
+        except Exception:
+            return None
+        if metric is None:
+            return None
+        value = _maybe_call(metric, "as_double", None)
+        if value is None:
+            value = _maybe_call(metric, "as_uint64", None)
+        try:
+            return float(value) if value is not None else None
+        except (TypeError, ValueError):
+            return None
+
+    return read
+
+
+def _rule_rows_for_action(
+    action: Any, *, range_idx: int, action_idx: int, kernel_name: str,
+) -> List[Dict[str, object]]:
+    """Normalise one action's shipped rule results into flat rows."""
+    raw_rules = _maybe_call(action, "rule_results_as_dicts", None)
+    if raw_rules is None:
+        raw_rules = _maybe_call(action, "rule_results", None)
+    if raw_rules is None:
+        return []
+    if not isinstance(raw_rules, list):
+        try:
+            raw_rules = list(raw_rules)
+        except Exception:
+            return []
+
+    rows: List[Dict[str, object]] = []
+    for rule_idx, rule_item in enumerate(raw_rules):
+        item = dict(rule_item) if isinstance(rule_item, dict) else {}
+        rule_message = item.get("rule_message", {})
+        if not isinstance(rule_message, dict):
+            rule_message = {}
+        speedup = item.get("speedup_estimation", {})
+        if not isinstance(speedup, dict):
+            speedup = {}
+        message_type = rule_message.get("message_type", rule_message.get("type", ""))
+        rows.append({
+            "range_index": range_idx,
+            "action_index": action_idx,
+            "kernel_name": kernel_name,
+            "rule_index": rule_idx,
+            "rule_identifier": str(item.get("rule_identifier", "") or ""),
+            "rule_name": str(item.get("name", "") or ""),
+            "section_identifier": str(item.get("section_identifier", "") or ""),
+            "parent_weights": item.get("parent_weights", {}),
+            "rule_message_title": str(rule_message.get("title", "") or ""),
+            "rule_message_type": _enum_to_text(message_type),
+            "rule_message": str(rule_message.get("message", "") or ""),
+            "speedup_type": _enum_to_text(speedup.get("type", "")),
+            "speedup": _to_number(speedup.get("speedup")),
+            "focus_metrics": _focus_metrics_summary(item.get("focus_metrics", []), top_k=20),
+        })
+    return rows
+
+
+def _metrics_for_action(action: Any, *, metric_like: str = "%") -> Dict[str, float]:
+    """Every metric this action carries, as {name: numeric value}.
+
+    No curated filter: `metric_names()` is whatever ncu recorded, which for a
+    --set full collection is thousands of entries. Non-numeric metrics are
+    dropped here because the rule engine consumes numbers; they remain visible
+    through the record-level API.
+    """
+    try:
+        names = list(action.metric_names())
+    except Exception:
+        return {}
+    out: Dict[str, float] = {}
+    for raw in names:
+        name = str(raw)
+        if not _like_match(name, metric_like):
+            continue
+        try:
+            metric = action.metric_by_name(name)
+        except Exception:
+            continue
+        number = _to_number(_metric_value(metric))
+        if number is not None:
+            out[name] = number
+    return out
+
+
+def _source_for_action(action: Any, *, top_k: int = 8) -> Dict[str, object]:
+    """Source attribution for one action, gated on sampling validity."""
+    from .sampling_validity import check_pc_sampling_validity, check_pm_sampling_validity
+    from .source_correlation import (
+        attribute_stalls_to_source,
+        pc_sampling_timeline,
+        source_availability,
+    )
+
+    read = _metric_reader(action)
+    validity = check_pc_sampling_validity(
+        sample_count=read("smsp__pcsamp_sample_count"),
+        interval_cycles=read("smsp__pcsamp_interval_cycles"),
+        kernel_duration_cycles=read("gpc__cycles_elapsed.max"),
+        dropped_bytes=read("smsp__pcsamp_dropped_bytes"),
+        buffer_overflow=read("smsp__pcsamp_buffer_overflow"),
+        buffer_size_bytes=read("smsp__pcsamp_buffer_size_bytes"),
+    )
+    blocked = set(validity.get("blocked_conclusions") or ())
+
+    entry: Dict[str, object] = {
+        "availability": source_availability(action),
+        "sampling_validity": validity,
+        "pm_sampling_validity": check_pm_sampling_validity(
+            cc_major=read("device__attribute_compute_capability_major"),
+            cc_minor=read("device__attribute_compute_capability_minor"),
+            interval=(read("profiler__pmsampler_interval_time")
+                      or read("profiler__pmsampler_interval_cycles")),
+            duration=(read("gpu__time_duration.sum")
+                      or read("gpc__cycles_elapsed.max")),
+            pass_groups=read("profiler__pmsampler_pass_groups"),
+        ),
+    }
+    if blocked & {"hot_line_ranking", "stall_attribution"}:
+        entry["stall_attribution"] = {
+            "available": False,
+            "withheld_because": sorted(blocked),
+            "reason": (
+                "Source-line ranking withheld: the PC samples in this report "
+                "cannot support it. See sampling_validity."
+            ),
+        }
+    else:
+        entry["stall_attribution"] = attribute_stalls_to_source(action, top_k=top_k)
+    if "pc_sampling_timeline" not in blocked:
+        entry["timeline"] = pc_sampling_timeline(action)
+    return entry
+
+
+@dataclass
+class _LaunchBundle:
+    """Everything one kernel launch contributes, gathered in a single visit."""
+
+    kernel_name: str
+    action: Any
+    metrics: Dict[str, float]
+    rules: List[Dict[str, object]]
+    source: Optional[Dict[str, object]] = None
+
+
+def walk_report_once(
+    report_path: str,
+    *,
+    kernel_like: str = "%",
+    include_source: bool = True,
+    source_top_k: int = 8,
+    ncu_report_module: Any = None,
+) -> Dict[Tuple[int, int], _LaunchBundle]:
+    """Read the report once and return everything the diagnosis needs.
+
+    `diagnose_ncu_report` previously called four separate loaders, each of which
+    opened the report and walked every range and action: one for metrics, one
+    for shipped rules, one for source attribution, one to keep the action
+    objects. Four full traversals of a --set full report, three of them
+    redundant. This visits each action exactly once and gathers all four.
+    """
+    path = Path(report_path)
+    if not path.exists():
+        raise FileNotFoundError(f"report not found: {report_path}")
+
+    mod = _load_ncu_report_module(ncu_report_module)
+    ctx = mod.load_report(str(path))
+
+    bundles: Dict[Tuple[int, int], _LaunchBundle] = {}
+    for range_idx, range_obj in enumerate(_iter_ranges(ctx)):
+        for action_idx, action in enumerate(_iter_actions(range_obj)):
+            kernel_name = str(_maybe_call(action, "name", "") or "")
+            if not _like_match(kernel_name, kernel_like):
+                continue
+            source: Optional[Dict[str, object]] = None
+            if include_source:
+                try:
+                    source = _source_for_action(action, top_k=source_top_k)
+                except Exception:
+                    # Source data is optional and often absent. Its failure must
+                    # not cost us the metrics and rules already gathered here.
+                    source = None
+            bundles[(range_idx, action_idx)] = _LaunchBundle(
+                kernel_name=kernel_name,
+                action=action,
+                metrics=_metrics_for_action(action),
+                rules=_rule_rows_for_action(
+                    action, range_idx=range_idx, action_idx=action_idx,
+                    kernel_name=kernel_name),
+                source=source,
+            )
+    return bundles
+
+
 def _collect_source_attribution(
     report_path: str,
     *,
@@ -1905,85 +2112,14 @@ def _collect_source_attribution(
 ) -> Dict[Tuple[int, int], Dict[str, object]]:
     """Per-launch source attribution, gated on PC-sampling validity.
 
-    Returns a dict keyed by (range_index, action_index). Every entry says
-    whether attribution was possible and, when it was not, which of the three
-    causes applies -- a `basic` collection with no SourceCounters, a build
-    without -lineinfo, or samples too biased to rank.
+    Kept for callers that want only this. `diagnose_ncu_report` gets the same
+    data from :func:`walk_report_once` without a second traversal.
     """
-    from .sampling_validity import check_pc_sampling_validity, check_pm_sampling_validity
-    from .source_correlation import (
-        attribute_stalls_to_source,
-        pc_sampling_timeline,
-        source_availability,
+    bundles = walk_report_once(
+        report_path, kernel_like=kernel_like, include_source=True,
+        source_top_k=top_k, ncu_report_module=ncu_report_module,
     )
-
-    mod = _load_ncu_report_module(ncu_report_module)
-    ctx = mod.load_report(str(report_path))
-    out: Dict[Tuple[int, int], Dict[str, object]] = {}
-
-    for range_idx, range_obj in enumerate(_iter_ranges(ctx)):
-        for action_idx, action in enumerate(_iter_actions(range_obj)):
-            if not _like_match(str(_maybe_call(action, "name", "") or ""), kernel_like):
-                continue
-
-            def _metric(key: str, _a: object = action) -> Optional[float]:
-                getter = getattr(_a, "metric_by_name", None)
-                if getter is None:
-                    return None
-                try:
-                    metric = getter(key)
-                except Exception:
-                    return None
-                if metric is None:
-                    return None
-                value = _maybe_call(metric, "as_double", None)
-                if value is None:
-                    value = _maybe_call(metric, "as_uint64", None)
-                try:
-                    return float(value) if value is not None else None
-                except (TypeError, ValueError):
-                    return None
-
-            validity = check_pc_sampling_validity(
-                sample_count=_metric("smsp__pcsamp_sample_count"),
-                interval_cycles=_metric("smsp__pcsamp_interval_cycles"),
-                kernel_duration_cycles=_metric("gpc__cycles_elapsed.max"),
-                dropped_bytes=_metric("smsp__pcsamp_dropped_bytes"),
-                buffer_overflow=_metric("smsp__pcsamp_buffer_overflow"),
-                buffer_size_bytes=_metric("smsp__pcsamp_buffer_size_bytes"),
-            )
-            blocked = set(validity.get("blocked_conclusions") or ())
-            availability = source_availability(action)
-
-            entry: Dict[str, object] = {
-                "availability": availability,
-                "sampling_validity": validity,
-                "pm_sampling_validity": check_pm_sampling_validity(
-                    cc_major=_metric("device__attribute_compute_capability_major"),
-                    cc_minor=_metric("device__attribute_compute_capability_minor"),
-                    interval=(_metric("profiler__pmsampler_interval_time")
-                              or _metric("profiler__pmsampler_interval_cycles")),
-                    duration=(_metric("gpu__time_duration.sum")
-                              or _metric("gpc__cycles_elapsed.max")),
-                    pass_groups=_metric("profiler__pmsampler_pass_groups"),
-                ),
-            }
-            if blocked & {"hot_line_ranking", "stall_attribution"}:
-                entry["stall_attribution"] = {
-                    "available": False,
-                    "withheld_because": sorted(blocked),
-                    "reason": (
-                        "Source-line ranking withheld: the PC samples in this report "
-                        "cannot support it. See sampling_validity."
-                    ),
-                }
-            else:
-                entry["stall_attribution"] = attribute_stalls_to_source(action, top_k=top_k)
-            if "pc_sampling_timeline" not in blocked:
-                entry["timeline"] = pc_sampling_timeline(action)
-            out[(range_idx, action_idx)] = entry
-    return out
-
+    return {key: b.source for key, b in bundles.items() if b.source is not None}
 
 def diagnose_ncu_report(
     report_path: str,
@@ -2009,95 +2145,44 @@ def diagnose_ncu_report(
     from ..hardware.gpu_specs import lookup_gpu_spec
     from .ncu_diagnostics import diagnose_kernel
 
-    records = load_ncu_report_records(
+    gpu_spec = lookup_gpu_spec(gpu_name) if gpu_name else None
+
+    # One traversal. This used to be four separate loaders, each opening the
+    # report and walking every action: metrics, shipped rules, source
+    # attribution, and the action objects themselves.
+    bundles = walk_report_once(
         report_path,
-        metric_like="%",
         kernel_like=kernel_like,
+        include_source=include_source,
+        source_top_k=int(findings_per_kernel),
         ncu_report_module=ncu_report_module,
     )
 
-    # Index source attribution by launch. This lives here rather than only in a
-    # separate skill because "which line stalls" is part of diagnosing a kernel,
-    # not a different question -- for a fused kernel it is usually the only
-    # actionable part, and requiring a second command to get it meant most
-    # callers never saw it.
-    # Keep the action objects: the linkage step needs them, and re-walking the
-    # report a third time to find them again would be wasteful.
-    action_by_launch: Dict[Tuple[int, int], Any] = {}
-    if include_source:
-        try:
-            _mod = _load_ncu_report_module(ncu_report_module)
-            _ctx = _mod.load_report(str(report_path))
-            for _ri, _rng in enumerate(_iter_ranges(_ctx)):
-                for _ai, _act in enumerate(_iter_actions(_rng)):
-                    action_by_launch[(_ri, _ai)] = _act
-        except Exception:
-            action_by_launch = {}
-
-    source_by_launch: Dict[Tuple[int, int], Dict[str, object]] = {}
-    if include_source:
-        try:
-            source_by_launch = _collect_source_attribution(
-                report_path, kernel_like=kernel_like,
-                top_k=int(findings_per_kernel),
-                ncu_report_module=ncu_report_module,
-            )
-        except Exception:
-            # Source data is optional and frequently absent (basic set, no
-            # -lineinfo). Its absence must not take down the diagnosis.
-            source_by_launch = {}
-
-    # Index NVIDIA's shipped rule results by launch, so each kernel's diagnosis
-    # can be cross-checked against the rules ncu itself ran on that same launch.
-    rules_by_launch: Dict[Tuple[int, int], List[Dict[str, object]]] = {}
-    try:
-        for row in load_ncu_report_rule_rows(
-            report_path, kernel_like=kernel_like, ncu_report_module=ncu_report_module,
-        ):
-            key = (int(row.get("range_index", -1)), int(row.get("action_index", -1)))
-            rules_by_launch.setdefault(key, []).append(row)
-    except Exception:
-        # A report without rule results is normal (--apply-rules off, or a
-        # section whose rule did not run). Corroboration then reports itself as
-        # unavailable, which is the honest outcome.
-        rules_by_launch = {}
-
-    # Group metrics per kernel launch: (range, action) identifies one launch.
-    launches: Dict[Tuple[int, int], Dict[str, object]] = {}
-    for record in records:
-        key = (record.range_index, record.action_index)
-        slot = launches.setdefault(key, {"kernel_name": record.kernel_name, "metrics": {}})
-        if record.numeric_value is not None:
-            slot["metrics"][record.metric_name] = record.numeric_value  # type: ignore[index]
-
-    gpu_spec = lookup_gpu_spec(gpu_name) if gpu_name else None
-
     diagnoses: List[Dict[str, object]] = []
-    for (range_idx, action_idx), slot in launches.items():
-        metrics = slot["metrics"]
-        if not isinstance(metrics, dict) or not metrics:
+    for (range_idx, action_idx), bundle in sorted(bundles.items()):
+        metrics = bundle.metrics
+        if not metrics:
             continue
+
         diagnosis = diagnose_kernel(
             metrics,
-            kernel_name=str(slot.get("kernel_name") or ""),
+            kernel_name=bundle.kernel_name,
             gpu_spec=gpu_spec,
             top_k=int(findings_per_kernel),
-            # NVIDIA's own rule output is in the report; cross-check against it.
-            # Without this the corroboration section reported "no shipped rules"
-            # on every real report, because nothing passed them through.
-            shipped_rules=rules_by_launch.get((range_idx, action_idx), ()),
+            # NVIDIA's own rule output for this same launch.
+            shipped_rules=bundle.rules,
         )
         diagnosis["range_index"] = range_idx
         diagnosis["action_index"] = action_idx
+        diagnosis["duration_ns"] = metrics.get("gpu__time_duration.sum")
+
         # Reason over every metric the report carried, not only the curated
         # ones. The curated rules know fixes; this finds anomalies in the
-        # thousands of counters no rule was written for.
+        # counters no rule was written for.
         from .signal_scan import scan_all_signals
 
         scan = scan_all_signals(metrics)
-        diagnosis["signal_scan"] = {
-            k: v for k, v in scan.items() if k != "findings"
-        }
+        diagnosis["signal_scan"] = {k: v for k, v in scan.items() if k != "findings"}
         if scan["findings"]:
             merged = list(diagnosis.get("findings") or [])
             merged.extend(f.to_dict() for f in scan["findings"])
@@ -2107,29 +2192,23 @@ def diagnose_ncu_report(
             ))
             diagnosis["findings"] = merged[: int(findings_per_kernel)]
 
-        source = source_by_launch.get((range_idx, action_idx))
-        if source is not None:
-            diagnosis["source_attribution"] = source
-            # The join: each finding, against the lines whose sampled stalls
+        if bundle.source is not None:
+            diagnosis["source_attribution"] = bundle.source
+            # The join: each finding against the lines whose sampled stalls
             # explain it. This is what makes the pipeline end-to-end rather
             # than two analyses printed next to each other.
-            attribution = source.get("stall_attribution")
+            attribution = bundle.source.get("stall_attribution")
             if isinstance(attribution, dict) and attribution.get("available"):
                 from .source_correlation import link_findings_to_source
 
                 diagnosis["signal_to_source"] = link_findings_to_source(
                     diagnosis.get("findings") or [],
-                    action_by_launch.get((range_idx, action_idx)),
+                    bundle.action,
                     attribution=attribution,
                 )
-        duration = diagnosis.get("sections", {}).get("bottleneck", {})
-        diagnosis["duration_ns"] = (
-            metrics.get("gpu__time_duration.sum") if isinstance(metrics, dict) else None
-        )
         diagnoses.append(diagnosis)
 
-    # Rank by duration so the hottest kernels lead; unknown durations sort last.
-    diagnoses.sort(key=lambda d: -(d.get("duration_ns") or 0.0))
+    diagnoses.sort(key=lambda d: -(float(d.get("duration_ns") or 0.0)))
 
     verdict_counts: Dict[str, int] = {}
     finding_counts: Dict[str, int] = {}

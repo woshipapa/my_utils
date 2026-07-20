@@ -2482,3 +2482,96 @@ class TestNcuReportModuleDiscovery:
         assert "PYTHONPATH" in block
         assert "not on PyPI" in block or "nothing to" in block
         assert "find /" in block, "must tell the user how to locate it"
+
+
+class TestReportIsReadOnce:
+    """Four full traversals of a --set full report was three too many.
+
+    `diagnose_ncu_report` called four loaders -- metrics, shipped rules, source
+    attribution, and one just to retain the action objects -- each of which
+    opened the report and walked every range and action. `walk_report_once`
+    visits each action a single time and gathers all four.
+    """
+
+    def _counting_module(self):
+        opens = {"n": 0}
+
+        class Stall:
+            def __init__(self, n): self.name = n
+
+        class M:
+            def __init__(self, v): self.v = v
+            def value(self): return self.v
+            def as_double(self): return self.v
+            def as_uint64(self): return int(self.v)
+            def unit(self): return ""
+            def has_correlation_ids(self): return False
+
+        vals = {
+            "sm__throughput.avg.pct_of_peak_sustained_elapsed": 34.0,
+            "gpu__compute_memory_throughput.avg.pct_of_peak_sustained_elapsed": 72.0,
+            "smsp__pcsamp_sample_count": 8000.0,
+            "smsp__pcsamp_interval_cycles": 1000.0,
+            "gpu__time_duration.sum": 410000.0,
+        }
+
+        class Action:
+            def name(self): return "k"
+            def metric_names(self): return list(vals)
+            def metric_by_name(self, k): return M(vals[k]) if k in vals else None
+            def rule_results_as_dicts(self):
+                return [{"rule_identifier": "SOLBottleneck",
+                         "rule_message": {"title": "t", "message": "m",
+                                          "message_type": "optimization"},
+                         "speedup_estimation": {"type": "GLOBAL", "speedup": 20.0}}]
+            def source_files(self): return {"k.cu": "a\nb\n"}
+            def source_info(self, a):
+                if a != 0x10:
+                    return None
+
+                class I:
+                    def file_name(self): return "k.cu"
+                    def line(self): return 1
+                return I()
+            def sass_by_pc(self, a): return ""
+            def ptx_by_pc(self, a): return ""
+            def timed_warp_samples(self):
+                return [{"timestamp": i, "pc": 0x10,
+                         "stall_reason": Stall("LONG_SCOREBOARD"), "not_issued": True}
+                        for i in range(400)]
+
+        class Rng:
+            num_actions = 1
+            def action_by_idx(self, i): return Action()
+
+        class Ctx:
+            num_ranges = 1
+            def range_by_idx(self, i): return Rng()
+
+        def loader(path):
+            opens["n"] += 1
+            return Ctx()
+
+        return types.SimpleNamespace(load_report=loader), opens
+
+    def test_report_is_opened_exactly_once(self):
+        module, opens = self._counting_module()
+        ncu_report_tools.diagnose_ncu_report("/dev/null", ncu_report_module=module)
+        assert opens["n"] == 1, f"report opened {opens['n']} times; expected 1"
+
+    def test_single_pass_still_produces_every_section(self):
+        module, _ = self._counting_module()
+        kernel = ncu_report_tools.diagnose_ncu_report(
+            "/dev/null", ncu_report_module=module)["kernels"][0]
+        for key in ("verdict", "coverage", "axes", "metric_inventory",
+                    "corroboration", "signal_scan", "source_attribution",
+                    "duration_ns"):
+            assert key in kernel, f"single-pass rewrite dropped `{key}`"
+        assert kernel["corroboration"]["shipped_rules_available"] is True
+        assert kernel["source_attribution"]["stall_attribution"]["available"] is True
+
+    def test_no_source_still_reads_once(self):
+        module, opens = self._counting_module()
+        ncu_report_tools.diagnose_ncu_report(
+            "/dev/null", include_source=False, ncu_report_module=module)
+        assert opens["n"] == 1
