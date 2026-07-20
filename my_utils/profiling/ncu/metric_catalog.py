@@ -352,6 +352,19 @@ _CATALOG_LIST: List[MetricSpec] = [
        "InstructionStats", "flops", unit="inst", description="FP32 multiplies; weight 1 FLOP."),
     _m("flop_ffma", ["smsp__sass_thread_inst_executed_op_ffma_pred_on.sum"],
        "InstructionStats", "flops", unit="inst", description="FP32 fused multiply-adds; weight 2 FLOPs."),
+    # Blackwell (CC 10.0 and 10.3) packs two FP32 ops per instruction. NVIDIA's
+    # own SOLFPRoofline rule adds these on top of the scalar counters; omitting
+    # them undercounts FP32 by up to 2x on GB100/GB300 and makes a well-tuned
+    # kernel look half as fast as it is.
+    _m("flop_fadd2", ["smsp__sass_thread_inst_executed_op_fadd2_pred_on.sum"],
+       "InstructionStats", "flops", unit="inst",
+       description="Packed FP32 add (2 ops/inst). CC 10.0 and 10.3 only."),
+    _m("flop_fmul2", ["smsp__sass_thread_inst_executed_op_fmul2_pred_on.sum"],
+       "InstructionStats", "flops", unit="inst",
+       description="Packed FP32 multiply (2 ops/inst). CC 10.0 and 10.3 only."),
+    _m("flop_ffma2", ["smsp__sass_thread_inst_executed_op_ffma2_pred_on.sum"],
+       "InstructionStats", "flops", unit="inst",
+       description="Packed FP32 FMA (4 ops/inst). CC 10.0 and 10.3 only."),
     _m("flop_hadd", ["smsp__sass_thread_inst_executed_op_hadd_pred_on.sum"], "InstructionStats", "flops", unit="inst"),
     _m("flop_hmul", ["smsp__sass_thread_inst_executed_op_hmul_pred_on.sum"], "InstructionStats", "flops", unit="inst"),
     _m("flop_hfma", ["smsp__sass_thread_inst_executed_op_hfma_pred_on.sum"], "InstructionStats", "flops", unit="inst"),

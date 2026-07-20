@@ -22,7 +22,7 @@ people hunting a bottleneck that is not there.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 __all__ = [
     "InterconnectCeiling",
@@ -33,6 +33,8 @@ __all__ = [
     "detect_straggler",
     "INTERCONNECT_CEILINGS",
     "PROTOCOL_NOTES",
+    "arrivals_from_flight_recorder",
+    "detect_straggler_from_traces",
 ]
 
 
@@ -358,4 +360,97 @@ def detect_straggler(
         "Cross-rank timestamps carry host clock offset. Under NTP that offset (100 us - 10 ms) "
         "can exceed the skew being measured; only trust this on a PTP-synchronised cluster."
     )
+    return result
+
+
+# ---------------------------------------------------------------------------
+# PyTorch Flight Recorder
+# ---------------------------------------------------------------------------
+
+def arrivals_from_flight_recorder(
+    entries: Iterable[Mapping[str, Any]],
+    *,
+    collective_seq_id: Optional[int] = None,
+    process_group: Optional[str] = None,
+) -> Dict[int, float]:
+    """Extract per-rank collective *entry* times from Flight Recorder records.
+
+    Entry time is the discriminator that duration cannot provide. In a
+    synchronous collective the slow rank shows a long compute phase and a *short*
+    wait, while every fast rank waits inside NCCL - so ranking by "time in NCCL"
+    names the victims and never the culprit. ``time_created_ns`` is when the
+    collective was enqueued, which is what actually differs.
+
+    Enable collection with ``TORCH_NCCL_TRACE_BUFFER_SIZE=2000``; dump with
+    ``TORCH_NCCL_DUMP_ON_TIMEOUT``. One file per rank.
+    """
+    arrivals: Dict[int, float] = {}
+    for entry in entries or ():
+        if not isinstance(entry, Mapping):
+            continue
+        if collective_seq_id is not None and entry.get("collective_seq_id") != collective_seq_id:
+            continue
+        if process_group is not None and str(entry.get("pg_id", "")) != str(process_group):
+            continue
+        rank = entry.get("rank")
+        created = entry.get("time_created_ns")
+        if rank is None or created is None:
+            continue
+        try:
+            arrivals[int(rank)] = float(created)
+        except (TypeError, ValueError):
+            continue
+    return arrivals
+
+
+def detect_straggler_from_traces(
+    entries: Iterable[Mapping[str, Any]],
+    *,
+    collective_seq_id: Optional[int] = None,
+    clock_alignment: str = "",
+    same_host: bool = False,
+) -> Dict[str, Any]:
+    """Straggler attribution from Flight Recorder data, gated on clock validity.
+
+    Refuses a cross-rank conclusion the clocks cannot support. Nsight Systems
+    aligns reports from different hosts by UTC captured at collection start,
+    whose error NVIDIA documents as one to tens of milliseconds - while a typical
+    collective runs 0.1-5 ms. Under that alignment the error exceeds the effect,
+    so "rank 3 arrived 4 ms late" is indistinguishable from clock skew.
+    """
+    arrivals = arrivals_from_flight_recorder(entries, collective_seq_id=collective_seq_id)
+    if len(arrivals) < 2:
+        return {"conclusive": False, "reason": "need entry timestamps from at least two ranks"}
+
+    spread_ms = (max(arrivals.values()) - min(arrivals.values())) / 1e6
+
+    aligned_by_tsc = same_host or str(clock_alignment).upper().startswith("TSC")
+    if not aligned_by_tsc and spread_ms < 10.0:
+        return {
+            "conclusive": False,
+            "reason": (
+                f"Arrival spread is {spread_ms:.2f} ms, below the ~10 ms floor that UTC/NTP "
+                "cross-host alignment supports. This is indistinguishable from clock skew."
+            ),
+            "arrival_spread_ms": spread_ms,
+            "remedy": (
+                "Use same-host reports (aligned by TSC, nanosecond precision), verify PTP, or "
+                "anchor on a collective that is simultaneous by construction and apply the "
+                "derived offsets with 'nsys export --ts-shift'."
+            ),
+        }
+
+    result = detect_straggler(arrivals)
+    result["arrival_spread_ms"] = spread_ms
+    result["clock_alignment"] = "TSC/same-host" if aligned_by_tsc else str(clock_alignment or "unknown")
+
+    # Compare against the median, not the mean: the straggler poisons the mean it
+    # is being compared against, which shrinks its own apparent lateness.
+    values = sorted(arrivals.values())
+    mid = len(values) // 2
+    median = values[mid] if len(values) % 2 else 0.5 * (values[mid - 1] + values[mid])
+    worst_rank = max(arrivals, key=arrivals.get)
+    result["median_arrival_ns"] = median
+    result["worst_vs_median_ms"] = (arrivals[worst_rank] - median) / 1e6
+    result["worst_rank"] = worst_rank
     return result

@@ -1580,7 +1580,11 @@ def comprehensive_to_markdown(analysis: Dict) -> str:
     lines.append(tbl_row("Dimension", "Score", "Visual", "Status"))
     lines.append(tbl_row("---", "---", "---", "---"))
     dim_labels = {
-        "gpu_utilisation": "GPU Utilisation",
+        # Deliberately not "GPU Utilisation". This is the share of wall time
+        # during which *some* kernel was resident - the same quantity nvidia-smi
+        # reports - and a single-block kernel occupying one SM scores 100%. It
+        # says whether the GPU was occupied, never how hard it worked.
+        "gpu_utilisation": "GPU Busy-Time",
         "memory_efficiency": "Memory Efficiency",
         "stream_parallelism": "Stream Parallelism",
         "communication": "Comm Efficiency",
@@ -1589,6 +1593,14 @@ def comprehensive_to_markdown(analysis: Dict) -> str:
     for key, label in dim_labels.items():
         s = _f(scores.get(key))
         lines.append(tbl_row(label, f"{s:.0f}", _bar(s), _score_emoji(s)))
+
+    lines.append("")
+    lines.append(
+        "> **GPU Busy-Time** is the share of wall time during which some kernel was "
+        "resident, which is what `nvidia-smi` reports. A kernel occupying a single SM "
+        "scores 100%. It answers *was the GPU occupied*, never *how hard did it work* - "
+        "for that read SM Active, tensor-pipe activity and DRAM throughput."
+    )
 
     # ── Hardware ─────────────────────────────────────────────────────────────
     hw = a.get("hardware", {})

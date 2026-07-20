@@ -59,6 +59,8 @@ kernel_taxonomy = _load("sources.kernel_taxonomy", "sources/kernel_taxonomy.py")
 metric_catalog = _load("ncu.metric_catalog", "ncu/metric_catalog.py")
 triage = _load("analyzers.triage", "analyzers/triage.py")
 evidence = _load("analyzers.evidence", "analyzers/evidence.py")
+nccl_bandwidth = _load("analyzers.nccl_bandwidth", "analyzers/nccl_bandwidth.py")
+trace_quality = _load("analyzers.trace_quality", "analyzers/trace_quality.py")
 ncu_diagnostics = _load("ncu.ncu_diagnostics", "ncu/ncu_diagnostics.py")
 
 
@@ -817,3 +819,110 @@ class TestEveryFindingCarriesEvidence:
         for f in findings:
             assert f.get("evidence"), f"finding {f['title']!r} carries no evidence"
             assert f.get("summary"), f"finding {f['title']!r} carries no explanation"
+
+
+class TestPackedFp32Correction:
+    """Blackwell packs two FP32 ops per instruction; missing it halves the answer."""
+
+    BASE = {
+        "gpu__time_duration.sum": 1e6,
+        "dram__bytes.sum": 1e8,
+        "smsp__sass_thread_inst_executed_op_ffma_pred_on.sum": 1e9,
+    }
+
+    def test_applied_on_cc10(self):
+        m = dict(self.BASE, **{
+            "device__attribute_compute_capability_major": 10,
+            "device__attribute_compute_capability_minor": 0,
+            "smsp__sass_thread_inst_executed_op_ffma2_pred_on.sum": 1e9,
+        })
+        r = ncu_diagnostics.compute_roofline(ncu_diagnostics.MetricView(m))
+        assert r["packed_fp32_applied"] is True
+        base = ncu_diagnostics.compute_roofline(ncu_diagnostics.MetricView(self.BASE))
+        assert r["achieved_tflops"] > base["achieved_tflops"]
+
+    def test_not_applied_off_cc10(self):
+        r = ncu_diagnostics.compute_roofline(ncu_diagnostics.MetricView(self.BASE))
+        assert r["packed_fp32_applied"] is False
+        assert not r.get("caveats")
+
+    def test_absent_counters_on_cc10_are_flagged(self):
+        m = dict(self.BASE, **{
+            "device__attribute_compute_capability_major": 10,
+            "device__attribute_compute_capability_minor": 0,
+        })
+        r = ncu_diagnostics.compute_roofline(ncu_diagnostics.MetricView(m))
+        assert r["packed_fp32_applied"] is False
+        assert any("undercounted by up to 2x" in c for c in r["caveats"])
+
+
+class TestStragglerNeedsUsableClocks:
+    """Naming a straggler across hosts requires clocks that can support it."""
+
+    def _entries(self, late_ns):
+        return [
+            {"rank": r, "collective_seq_id": 7,
+             "time_created_ns": 1_000_000_000 + (late_ns if r == 5 else 0)}
+            for r in range(8)
+        ]
+
+    def test_large_spread_names_the_rank(self):
+        r = nccl_bandwidth.detect_straggler_from_traces(
+            self._entries(40_000_000), collective_seq_id=7, clock_alignment="UTC")
+        assert r["conclusive"] is True
+        assert r["worst_rank"] == 5
+
+    def test_small_spread_refused_under_utc(self):
+        r = nccl_bandwidth.detect_straggler_from_traces(
+            self._entries(2_000_000), collective_seq_id=7, clock_alignment="UTC")
+        assert r["conclusive"] is False
+        assert "clock skew" in r["reason"]
+
+    def test_small_spread_allowed_on_same_host(self):
+        r = nccl_bandwidth.detect_straggler_from_traces(
+            self._entries(2_000_000), collective_seq_id=7, same_host=True)
+        assert r["conclusive"] is True
+        assert r["worst_rank"] == 5
+
+
+class TestDerivedMetricInvariants:
+    """A violated identity means a wrong denominator, not a finding."""
+
+    def test_above_peak_blocks(self):
+        issues = trace_quality.check_derived_metric_invariants(mfu=520.0, dtype="bf16")
+        assert any(i.key == "mfu_above_peak" and i.blocks for i in issues)
+
+    def test_hfu_below_mfu_blocks(self):
+        issues = trace_quality.check_derived_metric_invariants(mfu=45.0, hfu=38.0, dtype="bf16")
+        assert any(i.key == "hfu_below_mfu" and i.blocks for i in issues)
+
+    def test_unknown_dtype_blocks(self):
+        issues = trace_quality.check_derived_metric_invariants(mfu=41.0)
+        assert any(i.key == "unknown_dtype_denominator" and i.blocks for i in issues)
+
+    def test_healthy_is_clean(self):
+        assert not trace_quality.check_derived_metric_invariants(
+            mfu=45.0, hfu=52.0, dtype="bf16")
+
+
+class TestShapeKeyedGrouping:
+    """One kernel name covers genuinely different work."""
+
+    def test_shapes_are_not_merged(self):
+        launches = (
+            [{"kernel_name": "k", "grid_size": 128, "duration_ns": 10_000}] * 8
+            + [{"kernel_name": "k", "grid_size": 512, "duration_ns": 40_000}] * 8
+        )
+        g = trace_quality.group_kernels_by_shape(launches)
+        assert g["group_count"] == 2
+        assert g["distinct_names"] == 1
+        assert "would have merged them" in g["note"]
+
+    def test_dispersed_group_is_flagged(self):
+        launches = (
+            [{"kernel_name": "k", "grid_size": 512, "duration_ns": 40_000}] * 8
+            + [{"kernel_name": "k", "grid_size": 512, "duration_ns": 900_000}]
+        )
+        g = trace_quality.group_kernels_by_shape(launches)
+        assert g["non_stationary"]
+        assert "single" in g["warning"]

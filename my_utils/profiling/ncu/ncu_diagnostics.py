@@ -437,6 +437,23 @@ def compute_roofline(view: MetricView, gpu_spec: Any = None) -> Dict[str, Any]:
         return (add or 0.0) + (mul or 0.0) + 2.0 * (fma or 0.0)
 
     fp32_flops = _flops("f")
+
+    # Blackwell packed-FP32 correction, following NVIDIA's SOLFPRoofline rule.
+    # Gated on compute capability because the counters exist only on CC 10.0 and
+    # 10.3; adding them elsewhere would double-count nothing, but reading them as
+    # present on other architectures would misreport why FP32 looks the way it does.
+    cc_major = view.get("cc_major")
+    cc_minor = view.get("cc_minor")
+    packed_fp32_applied = False
+    if cc_major is not None and int(cc_major) == 10 and (cc_minor is None or int(cc_minor) in (0, 3)):
+        fadd2 = view.get("flop_fadd2")
+        fmul2 = view.get("flop_fmul2")
+        ffma2 = view.get("flop_ffma2")
+        if fadd2 is not None or fmul2 is not None or ffma2 is not None:
+            packed = 2.0 * (fadd2 or 0.0) + 2.0 * (fmul2 or 0.0) + 4.0 * (ffma2 or 0.0)
+            if packed > 0:
+                fp32_flops = (fp32_flops or 0.0) + packed
+                packed_fp32_applied = True
     fp16_flops = _flops("h")
     fp64_flops = _flops("d")
 
@@ -467,8 +484,20 @@ def compute_roofline(view: MetricView, gpu_spec: Any = None) -> Dict[str, Any]:
         "ridge_point": None,
         "roofline_side": "unknown",
         "pct_of_attainable": None,
+        # Whether the Blackwell packed-FP32 counters were folded in. Without
+        # this a reader cannot distinguish a correct FP32 figure from one that
+        # is silently half of what the hardware actually did.
+        "packed_fp32_applied": packed_fp32_applied,
+        "caveats": [],
         "findings": [],
     }
+
+    if cc_major is not None and int(cc_major) == 10 and not packed_fp32_applied and fp32_flops:
+        result["caveats"].append(
+            "Compute capability 10.x packs two FP32 ops per instruction, but the packed "
+            "counters (fadd2/fmul2/ffma2) are absent from this report, so FP32 FLOPs may be "
+            "undercounted by up to 2x. Collect them explicitly with --metrics to close this."
+        )
 
     if total_flops is not None and dram_bytes:
         result["arithmetic_intensity"] = total_flops / dram_bytes

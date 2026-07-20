@@ -40,6 +40,14 @@ __all__ = [
     "check_gpu_metric_gaps",
     "check_profiler_overhead",
     "assess_trace_quality",
+    "check_multi_tenancy",
+    "check_dataloader_attribution",
+    "check_clock_alignment",
+    "check_nvlink_utilization_validity",
+    "check_diagnostic_events",
+    "group_kernels_by_shape",
+    "check_derived_metric_invariants",
+    "DATALOADER_ATTRIBUTION_SQL",
 ]
 
 
@@ -846,3 +854,195 @@ def check_dataloader_attribution(
             remedy="Check host-side Python work, blocking syncs, and launch overhead instead.",
         )]
     return []
+
+
+# ---------------------------------------------------------------------------
+# Kernel grouping and derived-metric invariants
+# ---------------------------------------------------------------------------
+
+def group_kernels_by_shape(
+    launches: Iterable[Mapping[str, Any]],
+    *,
+    name_key: str = "kernel_name",
+    shape_keys: Sequence[str] = ("grid_size", "block_size", "shared_mem", "dtype"),
+    duration_key: str = "duration_ns",
+) -> Dict[str, Any]:
+    """Group launches by (name, shape, dtype) instead of by name alone.
+
+    One kernel name covers genuinely different work. Grouping by name alone
+    averages across shapes whose durations are not even monotonic in size: tile
+    and wave quantisation mean a slightly larger N can take twice as long, so the
+    mean describes no real configuration. Reports median, p10/p90 and min per
+    group, and flags any group too dispersed to summarise with one number at all.
+    """
+    groups: Dict[Tuple, List[float]] = {}
+    for launch in launches or ():
+        if not isinstance(launch, Mapping):
+            continue
+        name = str(launch.get(name_key) or "")
+        if not name:
+            continue
+        duration = launch.get(duration_key)
+        if duration is None:
+            continue
+        try:
+            duration = float(duration)
+        except (TypeError, ValueError):
+            continue
+        key = (name,) + tuple(launch.get(k) for k in shape_keys)
+        groups.setdefault(key, []).append(duration)
+
+    def _pct(values: List[float], q: float) -> float:
+        if not values:
+            return 0.0
+        idx = min(len(values) - 1, max(0, int(round(q * (len(values) - 1)))))
+        return values[idx]
+
+    summaries: List[Dict[str, Any]] = []
+    non_stationary: List[str] = []
+    for key, values in groups.items():
+        values.sort()
+        n = len(values)
+        median = values[n // 2] if n % 2 else 0.5 * (values[n // 2 - 1] + values[n // 2])
+        mean = sum(values) / n
+        # Coefficient of variation over ~20%, or a max more than 3x the median,
+        # means the group is not one population - reporting a single number for
+        # it would be an average over unlike things.
+        var = sum((v - mean) ** 2 for v in values) / n
+        cv = (var ** 0.5 / mean) if mean else 0.0
+        dispersed = n >= 3 and (cv > 0.20 or (median and values[-1] > 3 * median))
+        summary = {
+            "kernel": key[0][:120],
+            "shape": dict(zip(shape_keys, key[1:])),
+            "count": n,
+            "median_ns": median,
+            "min_ns": values[0],
+            "p10_ns": _pct(values, 0.10),
+            "p90_ns": _pct(values, 0.90),
+            "max_ns": values[-1],
+            "cv": round(cv, 3),
+            "non_stationary": dispersed,
+        }
+        summaries.append(summary)
+        if dispersed:
+            non_stationary.append(key[0][:80])
+
+    summaries.sort(key=lambda s: s["median_ns"] * s["count"], reverse=True)
+    distinct_names = len({k[0] for k in groups})
+    return {
+        "groups": summaries,
+        "group_count": len(groups),
+        "distinct_names": distinct_names,
+        "non_stationary": non_stationary,
+        "note": (
+            f"{len(groups)} (name, shape) groups across {distinct_names} distinct names. "
+            "Grouping by name alone would have merged them."
+            if len(groups) > distinct_names else ""
+        ),
+        "warning": (
+            f"{len(non_stationary)} group(s) are too dispersed to summarise with a single "
+            "number; use the median with p10/p90, or treat min as the achievable figure."
+            if non_stationary else ""
+        ),
+    }
+
+
+def check_derived_metric_invariants(
+    *,
+    mfu: Optional[float] = None,
+    hfu: Optional[float] = None,
+    efficiency_pct: Optional[float] = None,
+    dtype: str = "",
+    peak_is_sparse: Optional[bool] = None,
+    activation_checkpointing: Optional[bool] = None,
+) -> List[QualityIssue]:
+    """Hard-fail the arithmetic identities a correct MFU/HFU computation obeys.
+
+    A violated invariant means a wrong denominator, not an interesting result.
+    The usual culprits each move the answer by a clean factor: a sparsity-inflated
+    peak halves it, the wrong dtype's peak can quarter it, counting an FMA as one
+    FLOP halves it again - and two such errors can cancel into a plausible number
+    that is wrong twice.
+    """
+    issues: List[QualityIssue] = []
+
+    for label, value in (("MFU", mfu), ("HFU", hfu), ("efficiency", efficiency_pct)):
+        if value is not None and value > 100.0:
+            issues.append(QualityIssue(
+                key=f"{label.lower()}_above_peak",
+                title=f"{label} exceeds 100% of peak",
+                detail=(
+                    f"{label} computed as {value:.1f}%, which the hardware cannot do. This is a "
+                    "denominator or FLOP-model error, not a result: check for a sparsity-inflated "
+                    "peak, the wrong dtype's peak, or an FMA counted as one FLOP instead of two."
+                ),
+                invalidates=(label.lower(), "throughput_comparison"),
+                blocks=True,
+                severity="high",
+                evidence={label.lower(): value, "dtype": dtype},
+                remedy="Recompute against the dense peak for the dtype the kernel actually ran.",
+            ))
+
+    if mfu is not None and hfu is not None and hfu < mfu - 1e-6:
+        issues.append(QualityIssue(
+            key="hfu_below_mfu",
+            title="HFU is below MFU, which is impossible",
+            detail=(
+                f"HFU {hfu:.1f}% < MFU {mfu:.1f}%. Hardware FLOPs include every operation the "
+                "implementation performed, model FLOPs only those the model requires, so HFU is "
+                "always at least MFU. The two are being computed from different denominators."
+            ),
+            invalidates=("mfu", "hfu"),
+            blocks=True,
+            severity="high",
+            evidence={"mfu": mfu, "hfu": hfu},
+            remedy="Use one peak value and one FLOP convention for both.",
+        ))
+
+    if peak_is_sparse:
+        issues.append(QualityIssue(
+            key="sparse_peak_denominator",
+            title="Efficiency computed against a sparsity-inflated peak",
+            detail=(
+                "The denominator is the 2:4-sparse peak, which is double the dense figure and is "
+                "essentially never reached in production LLM work. Every efficiency number here "
+                "is half what it should be."
+            ),
+            invalidates=("mfu", "hfu", "pct_of_peak"),
+            blocks=True,
+            severity="high",
+            evidence={"dtype": dtype},
+            remedy="Use the dense peak. NVIDIA's spec tables print the sparse figure by default.",
+        ))
+
+    if activation_checkpointing and mfu is not None and hfu is None:
+        issues.append(QualityIssue(
+            key="mfu_without_recompute_model",
+            title="MFU reported with activation checkpointing but no HFU",
+            detail=(
+                "Recomputation performs extra forward passes that model FLOPs deliberately "
+                "exclude, so MFU alone hides real work the hardware did. Report HFU alongside it "
+                "or the two are not comparable across configurations."
+            ),
+            invalidates=("mfu",),
+            blocks=False,
+            severity="medium",
+            evidence={"activation_checkpointing": True},
+            remedy="Report HFU as a separate labelled field, with the recompute factor used.",
+        ))
+
+    if not dtype and (mfu is not None or efficiency_pct is not None):
+        issues.append(QualityIssue(
+            key="unknown_dtype_denominator",
+            title="Efficiency computed without a known dtype",
+            detail=(
+                "Peak FLOPs differ by up to 8x across bf16, fp8 and fp4, so an efficiency figure "
+                "without a stated dtype is not interpretable."
+            ),
+            invalidates=("mfu", "hfu", "pct_of_peak"),
+            blocks=True,
+            severity="high",
+            evidence={},
+            remedy="Determine the dominant dtype from the kernel mix, not from config.",
+        ))
+    return issues
