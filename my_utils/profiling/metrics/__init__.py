@@ -6,7 +6,6 @@ from .metrics_providers import (
     MyTimerMetricsProvider,
     NcclLogMetricsProvider,
     NcuCsvMetricsProvider,
-    NsysSqliteMetricsProvider,
     PerfStatTextProvider,
     RasJsonMetricsProvider,
     TableCsvMetricsProvider,
@@ -53,6 +52,7 @@ __all__ = [
     "TableCsvMetricsProvider",
     "NcuCsvMetricsProvider",
     "NsysSqliteMetricsProvider",
+    "NsysSqliteGlobMetricsProvider",
     "CProfileStatsProvider",
     "PerfStatTextProvider",
     "DcgmCsvMetricsProvider",
@@ -63,3 +63,22 @@ __all__ = [
     "register_builtin_providers",
     "DEFAULT_PROVIDER_REGISTRY",
 ]
+
+
+# The two nsys SQLite providers live in ..sources, which imports back into this
+# package. Importing them eagerly here closes that cycle and makes
+# `import my_utils.profiling.sources` fail in a fresh interpreter. Resolved on
+# first attribute access instead (PEP 562), so both import orders work.
+_LAZY_PROVIDERS = {"NsysSqliteMetricsProvider", "NsysSqliteGlobMetricsProvider"}
+
+
+def __getattr__(name: str):
+    if name in _LAZY_PROVIDERS:
+        from ..sources import nsys_sqlite_provider
+
+        return getattr(nsys_sqlite_provider, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def __dir__():
+    return sorted(set(globals()) | _LAZY_PROVIDERS)

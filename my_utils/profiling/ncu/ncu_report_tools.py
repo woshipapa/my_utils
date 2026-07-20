@@ -1528,7 +1528,10 @@ class NcuReportSkillEngine:
         buffer overflows bias the distribution toward whatever ran early, so a
         ranking built on them is confidently wrong rather than merely noisy.
         """
-        from .sampling_validity import check_pc_sampling_validity
+        from .sampling_validity import (
+            check_pc_sampling_validity,
+            check_pm_sampling_validity,
+        )
         from .source_correlation import (
             attribute_stalls_to_source,
             correlate_metric_to_source,
@@ -1579,10 +1582,24 @@ class NcuReportSkillEngine:
                 )
                 blocked = set(validity.get("blocked_conclusions") or ())
 
+                # PM sampling is a separate instrument with its own validity
+                # rules (architecture floor, interval vs duration). Reporting
+                # only PC-sampling validity would leave a PM timeline unchecked.
+                pm_validity = check_pm_sampling_validity(
+                    cc_major=_metric("device__attribute_compute_capability_major"),
+                    cc_minor=_metric("device__attribute_compute_capability_minor"),
+                    interval=(_metric("profiler__pmsampler_interval_time")
+                              or _metric("profiler__pmsampler_interval_cycles")),
+                    duration=(_metric("gpu__time_duration.sum")
+                              or _metric("gpc__cycles_elapsed.max")),
+                    pass_groups=_metric("profiler__pmsampler_pass_groups"),
+                )
+
                 entry: Dict[str, object] = {
                     "kernel_name": name,
                     "availability": availability,
                     "sampling_validity": validity,
+                    "pm_sampling_validity": pm_validity,
                     "warp_sample_summary": summarize_warp_samples(action),
                 }
 

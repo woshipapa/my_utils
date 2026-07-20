@@ -744,11 +744,32 @@ class _LegacyNsysSqliteMetricsProvider(BaseMetricsProvider):
             conn.close()
 
 
-# Use the schema-adaptive parser implementation.
-from ..sources.nsys_sqlite_provider import (  # noqa: E402
-    NsysSqliteGlobMetricsProvider as NsysSqliteGlobMetricsProvider,
-)
-from ..sources.nsys_sqlite_provider import NsysSqliteMetricsProvider as NsysSqliteMetricsProvider  # noqa: E402
+# Backwards-compatible re-exports of the schema-adaptive parser.
+#
+# Resolved lazily (PEP 562) rather than imported here, because importing them at
+# module load closes a cycle: sources.nsys_sqlite_provider imports
+# ..metrics.metrics_provider, which runs metrics/__init__, which runs this
+# module, which imports sources.nsys_sqlite_provider while it is still
+# initialising. `import my_utils.profiling.sources` in a fresh interpreter
+# raised ImportError because of it. Normal use never hit this, because
+# profiling/__init__ happens to import .metrics before .sources -- which made
+# that import order load-bearing and undocumented.
+_LAZY_REEXPORTS = {
+    "NsysSqliteMetricsProvider",
+    "NsysSqliteGlobMetricsProvider",
+}
+
+
+def __getattr__(name: str):
+    if name in _LAZY_REEXPORTS:
+        from ..sources import nsys_sqlite_provider
+
+        return getattr(nsys_sqlite_provider, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def __dir__():
+    return sorted(set(globals()) | _LAZY_REEXPORTS)
 
 
 class CProfileStatsProvider(BaseMetricsProvider):

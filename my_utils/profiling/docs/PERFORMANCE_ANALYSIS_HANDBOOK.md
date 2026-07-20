@@ -1404,13 +1404,13 @@ my_utils/profiling/
 │                                    merge_intervals, interval_overlap_ns
 ├── sources/nsys_analyze.py          analyze_nsys_sqlite
 ├── sources/nsys_auto_analysis.py    build_comprehensive_analysis
-└── sources/nsys_sql_skills.py       NsysSqlSkillEngine (30 SQL skills)
+└── sources/nsys_sql_skills.py       NsysSqlSkillEngine (29 SQL skills)
 ```
 
 These modules are **pure analysis** — no torch, no CUDA. They import and run on a
 laptop with nothing installed, which is what makes them testable.
 
-`tests/profiling/test_analysis_engine.py` (219 tests) is the executable spec.
+`tests/profiling/test_analysis_engine.py` (226 tests) is the executable spec.
 Several tests exist specifically to stop this handbook drifting from the code:
 `TestHandbookExamplesAreReal` checks every documented import resolves,
 `TestCoverageKeysAreReal` pins coverage tables to the metric catalog, and

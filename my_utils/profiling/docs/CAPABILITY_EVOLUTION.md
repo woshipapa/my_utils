@@ -43,7 +43,7 @@ traces; reading them was manual.
 
 | Capability | Source | Why |
 |---|---|---|
-| `nsys_sqlite_provider`, `nsys_sql_skills` (30 SQL skills) | nsys SQLite schema, VERIFIED FROM SOURCE | The `.nsys-rep` export schema changes between versions; hard-coded queries broke. |
+| `nsys_sqlite_provider`, `nsys_sql_skills` (29 SQL skills) | nsys SQLite schema, VERIFIED FROM SOURCE | The `.nsys-rep` export schema changes between versions; hard-coded queries broke. |
 | `nsys_schema_adapter` | Same | Column names differ across nsys releases; resolve them at runtime instead of pinning a version. |
 | `nsys_module_kernel_compare`, `nsys_diff` | — | "Did my change help?" needs two traces compared, not one read. |
 | `nsys_timeline_html`, visualization layer | — | A table of kernels does not show gaps; a timeline does. |
@@ -233,4 +233,4 @@ Each of these exists because its absence produced a specific wrong answer.
 
 - `PERFORMANCE_ANALYSIS_HANDBOOK.md` — how to use all of this
 - `docs/research/01`–`07` — the research record, with VERIFIED/UNVERIFIED tags
-- `tests/profiling/test_analysis_engine.py` — 219 tests; the executable spec
+- `tests/profiling/test_analysis_engine.py` — 226 tests; the executable spec

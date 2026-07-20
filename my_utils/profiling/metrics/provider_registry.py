@@ -75,8 +75,6 @@ def register_builtin_providers(registry: MetricsProviderRegistry) -> MetricsProv
         MyTimerMetricsProvider,
         NcclLogMetricsProvider,
         NcuCsvMetricsProvider,
-        NsysSqliteGlobMetricsProvider,
-        NsysSqliteMetricsProvider,
         PerfStatTextProvider,
         RasJsonMetricsProvider,
         TableCsvMetricsProvider,
@@ -123,7 +121,11 @@ def register_builtin_providers(registry: MetricsProviderRegistry) -> MetricsProv
             if not sqlite_glob:
                 payload["sqlite_glob"] = sqlite_path
                 payload.pop("sqlite_path", None)
+            from ..sources.nsys_sqlite_provider import NsysSqliteGlobMetricsProvider
+
             return NsysSqliteGlobMetricsProvider(**payload)
+        from ..sources.nsys_sqlite_provider import NsysSqliteMetricsProvider
+
         return NsysSqliteMetricsProvider(**payload)
 
     def make_cprofile(provider_id: str, params: Mapping[str, Any], context: Mapping[str, Any]) -> MetricsProvider:

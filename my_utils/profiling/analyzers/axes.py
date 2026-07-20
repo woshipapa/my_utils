@@ -260,6 +260,31 @@ AXES: Tuple[Axis, ...] = (
 
 AXIS_IDS: Tuple[str, ...] = tuple(a.axis_id for a in AXES)
 
+# Categories built with an f-string at the emit site, e.g.
+# `category=f"stall_{row['key']}"`. There are 33 such values across seven sites,
+# and none of them can be found by reading the source for literal strings -- the
+# check that was supposed to guarantee this table's completeness regexed for
+# `category="..."` and saw none of them.
+#
+# Prefix matching is explicit rather than left to the substring fallback below,
+# which got 16 of the 19 stall categories wrong. The three it appeared to handle
+# matched by accident: `stall_selected` normalises to `stallselected`, which
+# contains the literal `stalls` only because "selected" begins with an s.
+_CATEGORY_PREFIX_TO_AXIS: Tuple[Tuple[str, str], ...] = (
+    ("stall_", "stall"),
+    ("occupancy_limited_", "scheduler"),
+    ("uncoalesced_", "memory_bandwidth"),
+    ("sparse_global_", "memory_bandwidth"),
+    ("shared_bank_conflicts_", "shared_memory"),
+    ("pipe_", "compute"),
+)
+
+# Suffixes, for categories built as f"{unit}_load_imbalance".
+_CATEGORY_SUFFIX_TO_AXIS: Tuple[Tuple[str, str], ...] = (
+    ("_load_imbalance", "scheduler"),
+    ("_imbalance", "scheduler"),
+)
+
 _CATEGORY_TO_AXIS: Dict[str, str] = {}
 for _axis in AXES:
     for _cat in _axis.categories:
@@ -281,13 +306,27 @@ def axis_for_category(category: str) -> str:
     key = str(category or "").strip()
     if key in _CATEGORY_TO_AXIS:
         return _CATEGORY_TO_AXIS[key]
+
+    low = key.lower()
+    for prefix, axis_id in _CATEGORY_PREFIX_TO_AXIS:
+        if low.startswith(prefix):
+            return axis_id
+    for suffix, axis_id in _CATEGORY_SUFFIX_TO_AXIS:
+        if low.endswith(suffix):
+            return axis_id
+
     blob = _norm(key)
     if not blob:
         return ""
+    # Whole-token equality only. The previous version accepted a substring match
+    # in either direction, which is how `stall_selected` resolved via `stalls`.
+    # A wrong axis is worse than none: it makes an unexamined axis look covered.
+    tokens = set(low.split("_"))
     for axis in AXES:
         for cat in axis.categories:
-            normalized = _norm(cat)
-            if normalized and (normalized in blob or blob in normalized):
+            if _norm(cat) == blob:
+                return axis.axis_id
+            if cat in tokens:
                 return axis.axis_id
     return ""
 

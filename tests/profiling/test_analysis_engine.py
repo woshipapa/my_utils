@@ -1102,12 +1102,76 @@ class TestCoverageKeysAreReal:
         assert not bad, f"axes.AXES references non-catalog keys: {bad}"
 
     def test_every_emitted_category_maps_to_an_axis(self):
-        """A finding whose category maps to no axis vanishes from coverage."""
+        """A finding whose category maps to no axis vanishes from coverage.
+
+        Literal `category="..."` only. See the f-string test below for why that
+        is not sufficient on its own.
+        """
         import re
         source = (Path(ncu_diagnostics.__file__)).read_text()
         emitted = set(re.findall(r'category="([a-z0-9_]+)"', source))
         unmapped = sorted(c for c in emitted if not axes.axis_for_category(c))
         assert not unmapped, f"finding categories with no axis: {unmapped}"
+
+    def test_fstring_categories_map_to_an_axis(self):
+        """Categories built with an f-string are invisible to a literal grep.
+
+        This is how 20 of 33 categories -- including 16 of the 19 stall reasons,
+        which is most of what a latency-bound kernel reports -- were unmapped
+        while the literal-string test above passed. An unmapped category is
+        dropped from `by_axis`, so a kernel whose headline finding is
+        `stall_long_scoreboard` reported the stall axis with finding_count=0 and
+        a "collect WarpStateStats" remedy for an axis that had just fired.
+
+        Every f-string site in ncu_diagnostics.py is expanded here by hand,
+        because the interpolated values come from runtime data a static reader
+        cannot see. `test_fstring_category_sites_are_all_covered` fails if a new
+        site appears.
+        """
+        emitted = (
+            [f"stall_{key}" for key in metric_catalog.STALL_REASONS]
+            + [f"occupancy_limited_{b}" for b in
+               ("registers", "shared_mem", "blocks", "warps", "barriers")]
+            + [f"uncoalesced_global_{op}" for op in ("ld", "st")]
+            + [f"sparse_global_{op}" for op in ("ld", "st")]
+            + [f"shared_bank_conflicts_{op}" for op in ("ld", "st")]
+            + [f"{unit}_load_imbalance" for unit in ("sm", "l2", "dram")]
+        )
+        unmapped = sorted(c for c in emitted if not axes.axis_for_category(c))
+        assert not unmapped, f"f-string categories with no axis: {unmapped}"
+
+    def test_fstring_category_sites_are_all_covered(self):
+        """Fail when a new f-string category site is added upstream."""
+        import re
+        source = (Path(ncu_diagnostics.__file__)).read_text()
+        sites = set(re.findall(r'category=f"([^"]+)"', source))
+        known = {
+            'stall_{row[\'key\']}',
+            "occupancy_limited_{binding}",
+            "uncoalesced_global_{label}",
+            "sparse_global_{label}",
+            "shared_bank_conflicts_{op}",
+            "{unit}_load_imbalance",
+        }
+        new = sorted(sites - known)
+        assert not new, (
+            "new f-string category site(s) not expanded in "
+            f"test_fstring_categories_map_to_an_axis: {new}"
+        )
+
+    def test_axis_lookup_does_not_match_by_accident(self):
+        """A wrong axis is worse than none: it makes a gap look covered.
+
+        The substring fallback used to accept a match in either direction, so
+        `stall_selected` resolved via `stalls` purely because "selected" starts
+        with an s -- and `stall_long_scoreboard`, which does not, resolved to
+        nothing at all.
+        """
+        assert axes.axis_for_category("stall_long_scoreboard") == "stall"
+        assert axes.axis_for_category("stall_selected") == "stall"
+        # A category that genuinely belongs nowhere must still return "".
+        assert axes.axis_for_category("zzz_unrelated_thing") == ""
+        assert axes.axis_for_category("") == ''
 
 
 class TestAxisCoverage:
@@ -2082,3 +2146,43 @@ class TestNoOrphanedAnalysisModules:
             "analysis modules with no caller in any entry point "
             f"(exported and tested is not reachable): {orphans}"
         )
+
+
+class TestSubpackagesImportInAnyOrder:
+    """`import my_utils.profiling.sources` used to fail in a fresh interpreter.
+
+    sources.nsys_sqlite_provider imported ..metrics, whose __init__ imported
+    metrics_providers, which imported back into sources while it was still
+    initialising. Normal use never hit it because profiling/__init__ happens to
+    import .metrics before .sources -- which made that ordering load-bearing and
+    undocumented. The re-exports are now resolved lazily.
+    """
+
+    def test_every_subpackage_imports_first(self):
+        import importlib
+        import importlib.util as iu
+
+        root = Path(__file__).resolve().parents[2] / "my_utils" / "profiling"
+        failures = []
+        for first in ("sources", "metrics", "analyzers", "ncu", "hardware"):
+            for mod in [m for m in sys.modules if m.startswith("my_utils")]:
+                del sys.modules[mod]
+            pkg = types.ModuleType("my_utils")
+            pkg.__path__ = [str(root.parent)]
+            sys.modules["my_utils"] = pkg
+            spec = iu.spec_from_file_location(
+                "my_utils.profiling", root / "__init__.py",
+                submodule_search_locations=[str(root)])
+            prof = iu.module_from_spec(spec)
+            sys.modules["my_utils.profiling"] = prof
+            pkg.profiling = prof
+            try:
+                importlib.import_module(f"my_utils.profiling.{first}")
+                metrics = importlib.import_module("my_utils.profiling.metrics")
+                assert metrics.NsysSqliteMetricsProvider is not None
+            except Exception as exc:
+                failures.append(f"{first} first: {type(exc).__name__}: {exc}")
+            finally:
+                for mod in [m for m in sys.modules if m.startswith("my_utils")]:
+                    del sys.modules[mod]
+        assert not failures, "subpackage import order is load-bearing: " + "; ".join(failures)
