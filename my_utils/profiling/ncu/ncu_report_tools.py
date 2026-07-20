@@ -2417,8 +2417,9 @@ def diagnose_result_to_markdown(payload: Dict[str, object]) -> str:
                         lines.append("| source | samples | dominant stall | line |")
                         lines.append("|---|---|---|---|")
                         for row in rows[:8]:
+                            short_path = str(row.get("file_name") or "?").split("/")[-1]
                             lines.append(
-                                f"| `{row.get('file_name','?')}:{row.get('line','?')}` "
+                                f"| `{short_path}:{row.get('line','?')}` "
                                 f"| {row.get('samples', 0)} "
                                 f"| {row.get('dominant_stall_reason','')} "
                                 f"| `{(row.get('source_text') or '')[:60]}` |"
@@ -2432,16 +2433,108 @@ def diagnose_result_to_markdown(payload: Dict[str, object]) -> str:
                     lines.append(f"- source attribution unavailable: {attribution['reason']}")
                     lines.append("")
                     # Only when attribution actually failed. `source_availability`
-                    # reports on source-correlated *metrics*, while stall
-                    # attribution runs off timed warp samples and needs neither
-                    # -- printing its reasons after a successful table said "no
-                    # source data" directly beneath the source data.
+                    # reports on source-correlated *metrics*; stall attribution
+                    # can succeed without them. Printing its reasons after a
+                    # successful table said "no source data" directly beneath the
+                    # source data.
                     availability = source.get("availability", {})
                     if isinstance(availability, dict):
                         for reason in (availability.get("reasons_unavailable") or [])[:2]:
                             lines.append(f"  - {reason}")
                         if availability.get("reasons_unavailable"):
                             lines.append("")
+
+                # --- PC sampling: which instruction, and is the data sound ----
+                validity = source.get("sampling_validity", {})
+                if isinstance(validity, dict) and validity.get("checked"):
+                    state = ("usable" if validity.get("usable") else
+                             "NOT usable -- see blocked conclusions")
+                    lines.append(f"### PC sampling ({state})")
+                    lines.append("")
+                    lines.append(
+                        f"- {validity.get('sample_count') or 0:,.0f} samples at a "
+                        f"{validity.get('interval_cycles') or 0:,.0f}-cycle interval"
+                    )
+                    for issue in (validity.get("issues") or [])[:3]:
+                        lines.append(
+                            f"- **{issue.get('title','')}** -- {issue.get('remedy','')}")
+                    if validity.get("blocked_conclusions"):
+                        lines.append(
+                            "- blocked: `"
+                            + "`, `".join(validity["blocked_conclusions"]) + "`")
+                    lines.append("")
+
+                instructions = source.get("top_instructions", {})
+                if isinstance(instructions, dict) and instructions.get("available"):
+                    rows = instructions.get("instructions") or []
+                    if rows:
+                        lines.append("#### Stalling instructions")
+                        lines.append("")
+                        lines.append(
+                            "One source line compiles to many instructions and they do "
+                            "not stall for the same reason, so this is a level finer "
+                            "than the table above."
+                        )
+                        lines.append("")
+                        lines.append("| samples | stall | SASS | source |")
+                        lines.append("|---|---|---|---|")
+                        for row in rows[:10]:
+                            where = (
+                                f"{str(row.get('file_name') or '?').split('/')[-1]}"
+                                f":{row.get('line', '?')}"
+                            )
+                            lines.append(
+                                f"| {row.get('samples', 0)} "
+                                f"({float(row.get('share') or 0) * 100:.1f}%) "
+                                f"| {row.get('dominant_stall_reason','')} "
+                                f"| `{(row.get('sass') or '')[:44]}` "
+                                f"| `{where}` |"
+                            )
+                        lines.append("")
+                        lines.append(f"_{instructions.get('note','')}_")
+                        lines.append("")
+
+                # --- PM sampling: when, not where -----------------------------
+                pm = source.get("pm_sampling", {})
+                if isinstance(pm, dict) and pm.get("available"):
+                    interval = pm.get("bucket_interval_ns")
+                    lines.append("### PM sampling (utilisation over time)")
+                    lines.append("")
+                    lines.append(
+                        f"- {pm.get('bucket_count', 0)} time buckets"
+                        + (f" at {interval:.0f} ns" if interval else "")
+                        + (f", spanning {pm.get('sampled_span_ns', 0) / 1000.0:.1f} us"
+                           if pm.get("sampled_span_ns") else "")
+                    )
+                    if pm.get("span_note"):
+                        lines.append(f"- _{pm['span_note']}_")
+                    lines.append("")
+                    lines.append("| metric | peak | kernel average | non-zero buckets |")
+                    lines.append("|---|---|---|---|")
+                    for entry in (pm.get("series") or [])[:8]:
+                        unit = "%" if entry.get("is_percentage") else ""
+                        lines.append(
+                            f"| `{entry.get('metric','')[:52]}` "
+                            f"| {entry.get('peak', 0):.1f}{unit} "
+                            f"| {entry.get('mean_overall', 0):.1f}{unit} "
+                            f"| {float(entry.get('duty_cycle') or 0) * 100:.0f}% |"
+                        )
+                    lines.append("")
+                    if pm.get("bursty"):
+                        lines.append(f"**{pm.get('note','')}**")
+                        lines.append("")
+                        lines.append(
+                            "_A unit that peaks high and averages low is not "
+                            "inefficient; it is idle most of the time. The fix is to "
+                            "keep it busy, not to make it faster._"
+                        )
+                        lines.append("")
+                    if not all(e.get("is_percentage") for e in (pm.get("series") or [])):
+                        lines.append(f"_{pm.get('counts_note','')}_")
+                        lines.append("")
+                elif isinstance(pm, dict) and pm.get("reason"):
+                    lines.append(f"- PM sampling unavailable: {pm['reason']}")
+                    lines.append("")
 
             link = kernel.get("signal_to_source", {})
             linked = link.get("linked", []) if isinstance(link, dict) else []

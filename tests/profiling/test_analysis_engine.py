@@ -2898,3 +2898,72 @@ class TestInstructionAndPmSampling:
         out = source_correlation.analyze_pm_sampling(_Bare())
         assert out["available"] is False
         assert "pmsampling" in out["reason"]
+
+
+class TestSamplingAppearsInTheReport:
+    """PC and PM sampling must reach the rendered report, not just the payload."""
+
+    def _module(self):
+        A = TestInstructionAndPmSampling._Action
+
+        class Action(A):
+            def name(self): return "k"
+            def rule_results_as_dicts(self): return []
+            def metric_names(self):
+                return A.metric_names(self) + [
+                    "sm__throughput.avg.pct_of_peak_sustained_elapsed",
+                    "smsp__pcsamp_sample_count", "smsp__pcsamp_interval_cycles"]
+
+            def metric_by_name(self, n):
+                simple = {"sm__throughput.avg.pct_of_peak_sustained_elapsed": 33.7,
+                          "smsp__pcsamp_sample_count": 9244.0,
+                          "smsp__pcsamp_interval_cycles": 2048.0}
+                if n in simple:
+                    class _M:
+                        def __init__(self, v): self.v = v
+                        def value(self): return self.v
+                        def as_double(self): return self.v
+                        def as_uint64(self): return int(self.v)
+                        def unit(self): return ""
+                        def has_correlation_ids(self): return False
+                    return _M(simple[n])
+                return A.metric_by_name(self, n)
+
+        class Rng:
+            num_actions = 1
+            def action_by_idx(self, i): return Action()
+
+        class Ctx:
+            num_ranges = 1
+            def range_by_idx(self, i): return Rng()
+
+        return types.SimpleNamespace(load_report=lambda p: Ctx())
+
+    def _markdown(self):
+        return ncu_report_tools.diagnose_result_to_markdown(
+            ncu_report_tools.diagnose_ncu_report(
+                "/dev/null", ncu_report_module=self._module()))
+
+    def test_pc_sampling_section_is_rendered(self):
+        text = self._markdown()
+        assert "### PC sampling" in text
+        assert "9,244 samples" in text and "2,048-cycle" in text
+
+    def test_stalling_instructions_are_rendered_with_sass(self):
+        text = self._markdown()
+        assert "#### Stalling instructions" in text
+        assert "PRMT R19, R8, 0x7732, RZ" in text
+
+    def test_pm_sampling_section_is_rendered(self):
+        text = self._markdown()
+        assert "### PM sampling" in text
+        assert "time buckets" in text
+
+    def test_pm_span_is_explained_as_covering_replays(self):
+        """316us of samples for an 81us kernel is replay, not a long kernel."""
+        text = self._markdown()
+        assert "several executions" in text
+
+    def test_raw_counts_carry_no_percent_sign_in_the_table(self):
+        text = self._markdown()
+        assert "2964.0%" not in text and "2965%" not in text

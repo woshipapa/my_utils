@@ -915,6 +915,12 @@ def analyze_pm_sampling(action: Any, *, top_k: int = 8) -> Dict[str, Any]:
         "metric_count": len(series),
         "bucket_count": series[0]["buckets"],
         "sampled_span_ns": duration_ns,
+        # The sampler runs across the whole profiling session, which under
+        # kernel replay covers several executions of the same kernel. A span
+        # several times the kernel's duration is expected and does not mean the
+        # kernel ran that long; the caller is given both so the difference is
+        # visible rather than silently misread as one execution.
+        "span_covers_replays": True,
         "bucket_interval_ns": (duration_ns / (series[0]["buckets"] - 1)
                                if duration_ns and series[0]["buckets"] > 1 else None),
         "series": series[: int(top_k)],
@@ -936,6 +942,11 @@ def analyze_pm_sampling(action: Any, *, top_k: int = 8) -> Dict[str, Any]:
             )
             or "No percentage-valued unit shows a large gap between its peak and "
                "its kernel average."
+        ),
+        "span_note": (
+            "The sampled span covers the whole profiling session. Under kernel "
+            "replay that is several executions of this kernel, so a span larger "
+            "than the kernel duration is expected."
         ),
         "counts_note": (
             "Series marked `unit: count` are raw per-bucket counts, not "
