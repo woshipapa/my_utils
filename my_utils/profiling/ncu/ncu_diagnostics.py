@@ -1468,6 +1468,17 @@ def _registers_are_deliberate(view: MetricView) -> Optional[Dict[str, Any]]:
             "registers_used": used,
             "register_file": _REGISTER_FILE_PER_SM,
             "ceiling_per_thread": ceiling,
+            # Stated as a field, not only in prose, so a consumer cannot use
+            # this result to claim something it does not establish.
+            "does_not_identify_the_pressured_warpgroup": (
+                "Kernel-level figure. Warp-specialized kernels reallocate "
+                "registers between warpgroups at runtime (warpgroup_reg_dealloc "
+                "/ warpgroup_reg_alloc), so no warpgroup holds this number, and "
+                "the one that is spilling is usually the producer, whose "
+                "post-dealloc budget is much smaller. Read "
+                "LoadRegisterRequirement / MmaRegisterRequirement in the source "
+                "for the actual per-warpgroup budgets."
+            ),
             "reason": (
                 f"{registers:.0f} registers x {block:.0f} threads = {used:,.0f} of the "
                 f"{_REGISTER_FILE_PER_SM:,} available, and {_REGISTER_FILE_PER_SM:,}/"
@@ -1512,7 +1523,11 @@ def analyze_spilling(view: MetricView) -> Dict[str, Any]:
             severity = "low" if severity == "medium" else "medium"
             extra += (
                 " " + deliberate["reason"] + " The spilling is the cost of that "
-                "choice; whether it is worth paying is a design question, not a defect."
+                "choice; whether it is worth paying is a design question, not a "
+                "defect. Note the register figure is kernel-level: on a "
+                "warp-specialized kernel the warpgroup actually spilling is "
+                "usually the producer, whose budget after warpgroup_reg_dealloc "
+                "is far smaller than the number above, and only the source shows it."
             )
         findings.append(Finding(
             category="register_spilling",

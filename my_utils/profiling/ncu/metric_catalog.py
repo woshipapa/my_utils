@@ -241,6 +241,9 @@ _CATALOG_LIST: List[MetricSpec] = [
     _m("block_size", ["launch__block_size"], "LaunchStats", "launch", unit="thread"),
     _m("registers_per_thread", ["launch__registers_per_thread"], "LaunchStats", "launch", unit="register",
        description=(
+           "KERNEL-LEVEL figure: warp-specialized kernels reallocate registers between "
+           "warpgroups at runtime (warpgroup_reg_dealloc / warpgroup_reg_alloc), so no "
+           "warpgroup holds this number and it cannot say which one is under pressure. "
            "High counts trade occupancy for register blocking, which is often the right "
            "trade - a measured CUTLASS GEMM uses 168. Only actionable alongside actual "
            "spilling, so no bare threshold."

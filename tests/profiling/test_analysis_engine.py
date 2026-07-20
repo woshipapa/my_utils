@@ -3559,3 +3559,41 @@ class TestVerificationRegressions:
                        if "sum to more than" in f.title)
         assert "cannot exceed their own total" in finding.summary
         assert out["residual_cycles_per_issued_inst"] < 0
+
+
+class TestRegisterFigureIsKernelLevel:
+    """`launch__registers_per_thread` cannot name the pressured warpgroup.
+
+    Warp-specialized kernels reallocate registers at runtime, so no warpgroup
+    holds the reported number. On the CUTLASS kernel that prompted this, the
+    source carries a comment about one added register write "pushing the
+    producer warp past its post-reg_dealloc budget" -- against a reported 168.
+    The mechanism the tool describes is right; the number does not describe the
+    warpgroup that is spilling.
+    """
+
+    _WS = {"sm__inst_executed_pipe_tensor_op_gmma.avg.pct_of_peak_sustained_active": 30.0}
+
+    def test_result_states_what_it_cannot_identify(self):
+        out = ncu_diagnostics._registers_are_deliberate(ncu_diagnostics.MetricView(
+            {"launch__registers_per_thread": 168.0, "launch__block_size": 384.0,
+             **self._WS}))
+        note = out["does_not_identify_the_pressured_warpgroup"]
+        assert "warpgroup_reg_dealloc" in note
+        assert "LoadRegisterRequirement" in note, "must say where the real budget lives"
+
+    def test_spilling_summary_carries_the_caveat(self):
+        out = ncu_diagnostics.analyze_spilling(ncu_diagnostics.MetricView({
+            "smsp__inst_executed_op_local_ld.sum": 70000.0,
+            "smsp__inst_executed_op_local_st.sum": 20000.0,
+            "smsp__inst_executed.sum": 500000.0,
+            "launch__registers_per_thread": 168.0, "launch__block_size": 384.0,
+            **self._WS}))
+        summary = out["findings"][0].summary
+        assert "kernel-level" in summary
+        assert "post-dealloc" in summary or "warpgroup_reg_dealloc" in summary
+
+    def test_catalog_entry_warns_before_the_metric_is_used(self):
+        spec = metric_catalog.METRIC_CATALOG["registers_per_thread"]
+        assert "KERNEL-LEVEL" in spec.description
+        assert "warpgroup" in spec.description
