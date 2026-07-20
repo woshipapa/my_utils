@@ -1058,3 +1058,156 @@ class TestHandbookExamplesAreReal:
             except SyntaxError as exc:
                 bad.append(f"block {i}: {exc.msg}")
         assert not bad, f"handbook python blocks do not parse: {bad}"
+
+
+# ---------------------------------------------------------------------------
+# Axis vocabulary and coverage
+# ---------------------------------------------------------------------------
+
+axes = _load("analyzers.axes", "analyzers/axes.py")
+shipped_rules = _load("ncu.shipped_rules", "ncu/shipped_rules.py")
+
+
+class TestCoverageKeysAreReal:
+    """Coverage tables must reference catalog keys that exist.
+
+    `MetricView.get` falls through to a raw ncu-metric lookup for an unknown
+    key and returns None, so a typo does not raise - it silently reports the
+    analysis as "skipped, metrics absent" on every report forever. Seven keys in
+    `_ANALYSIS_REQUIREMENTS` were wrong this way, which made stalls, coalescing,
+    divergence and spilling permanently look uncollected even on --set full.
+    """
+
+    def test_analysis_requirements_keys_exist(self):
+        catalog = set(metric_catalog.METRIC_CATALOG)
+        bad = [
+            (analysis, key)
+            for analysis, (keys, _section) in ncu_diagnostics._ANALYSIS_REQUIREMENTS.items()
+            for key in keys
+            if key not in catalog
+        ]
+        assert not bad, f"_ANALYSIS_REQUIREMENTS references non-catalog keys: {bad}"
+
+    def test_axis_metric_groups_keys_exist(self):
+        catalog = set(metric_catalog.METRIC_CATALOG)
+        bad = [
+            (axis.axis_id, key)
+            for axis in axes.AXES
+            for group in axis.metric_groups
+            for key in group
+            if key not in catalog
+        ]
+        assert not bad, f"axes.AXES references non-catalog keys: {bad}"
+
+    def test_every_emitted_category_maps_to_an_axis(self):
+        """A finding whose category maps to no axis vanishes from coverage."""
+        import re
+        source = (Path(ncu_diagnostics.__file__)).read_text()
+        emitted = set(re.findall(r'category="([a-z0-9_]+)"', source))
+        unmapped = sorted(c for c in emitted if not axes.axis_for_category(c))
+        assert not unmapped, f"finding categories with no axis: {unmapped}"
+
+
+class TestAxisCoverage:
+    def test_unexamined_axis_is_not_reported_as_clean(self):
+        result = axes.axis_coverage([], metric_present=lambda key: False)
+        stall = next(a for a in result["axes"] if a["axis"] == "stall")
+        assert stall["examined"] is False
+        assert stall["reason_not_examined"]
+        assert stall["remedy"], "an unexamined axis must say how to examine it"
+
+    def test_findings_mark_their_axis_examined(self):
+        result = axes.axis_coverage(
+            [{"category": "uncoalesced_global_access"}], metric_present=lambda key: False,
+        )
+        mem = next(a for a in result["axes"] if a["axis"] == "memory_bandwidth")
+        assert mem["examined"] is True and mem["finding_count"] == 1
+
+    def test_present_metrics_mark_axis_examined_without_findings(self):
+        """A clean axis and an unchecked axis must be distinguishable."""
+        present = {"achieved_occupancy", "theoretical_occupancy"}
+        result = axes.axis_coverage([], metric_present=present)
+        sched = next(a for a in result["axes"] if a["axis"] == "scheduler")
+        assert sched["examined"] is True and sched["finding_count"] == 0
+
+    def test_unmapped_categories_are_surfaced_not_dropped(self):
+        result = axes.axis_coverage([{"category": "zzz_not_a_real_category"}])
+        assert "zzz_not_a_real_category" in result["unmapped_categories"]
+
+
+class TestShippedRuleReconciliation:
+    def _rule(self, ident, msg, mtype="warning", stype="", speedup=None):
+        return {
+            "rule_identifier": ident,
+            "rule_message": {"message": msg, "title": msg, "message_type": mtype},
+            "speedup_estimation": {"type": stype, "speedup": speedup},
+        }
+
+    def test_local_speedup_is_not_promoted_to_kernel_level(self):
+        rules = shipped_rules.normalize_shipped_rules(
+            [self._rule("UncoalescedGlobalAccess", "excess sectors", stype="LOCAL", speedup=45.0)]
+        )
+        assert rules[0].speedup_ceiling is None
+        findings = shipped_rules.shipped_rules_to_findings(rules)
+        assert any("LOCAL" in a for a in findings[0].actions)
+
+    def test_global_speedup_converts_to_a_ceiling(self):
+        rules = shipped_rules.normalize_shipped_rules(
+            [self._rule("SOLBottleneck", "memory bound", stype="GLOBAL", speedup=50.0)]
+        )
+        assert rules[0].speedup_ceiling == pytest.approx(2.0)
+
+    def test_ok_messages_are_not_raised_as_problems(self):
+        rules = shipped_rules.normalize_shipped_rules(
+            [self._rule("Occupancy", "no issues", mtype="ok")]
+        )
+        assert rules[0].is_actionable is False
+        assert shipped_rules.shipped_rules_to_findings(rules) == []
+
+    def test_bottleneck_disagreement_is_reported(self):
+        rules = shipped_rules.normalize_shipped_rules(
+            [self._rule("SOLBottleneck", "This kernel is memory bound.")]
+        )
+        out = shipped_rules.reconcile_with_shipped_rules([], rules, our_verdict="compute_bound")
+        assert out["conflicts"], "compute-vs-memory disagreement must be raised"
+        assert any(f.category == "evidence_conflict" for f in out["findings"])
+
+    def test_agreement_promotes_confidence_and_names_the_rule(self):
+        rules = shipped_rules.normalize_shipped_rules(
+            [self._rule("UncoalescedGlobalAccess", "excess sectors")]
+        )
+        ours = [ncu_diagnostics.Finding(
+            category="uncoalesced_global_access", title="t", summary="s", confidence="medium",
+        )]
+        out = shipped_rules.reconcile_with_shipped_rules(ours, rules)
+        promoted = next(f for f in out["findings"] if f.category == "uncoalesced_global_access")
+        assert promoted.confidence == "high"
+        assert "corroborated_by_ncu_rule" in promoted.evidence
+
+    def test_absent_shipped_rules_do_not_weaken_findings(self):
+        ours = [ncu_diagnostics.Finding(category="uncoalesced_global_access", title="t", summary="s")]
+        out = shipped_rules.reconcile_with_shipped_rules(ours, [])
+        assert out["shipped_rules_available"] is False
+        assert out["findings"] == ours
+
+    def test_ncu_only_rules_are_not_dropped(self):
+        rules = shipped_rules.normalize_shipped_rules(
+            [self._rule("SharedMemoryConflicts", "bank conflicts detected")]
+        )
+        out = shipped_rules.reconcile_with_shipped_rules([], rules)
+        assert any(f.source == "ncu_rule" for f in out["findings"])
+
+    def test_malformed_rule_blocks_do_not_raise(self):
+        assert shipped_rules.normalize_shipped_rules([None, 42, "x", {}]) != []
+
+
+class TestDiagnoseKernelReportsAxes:
+    def test_axes_present_and_gaps_named(self):
+        result = ncu_diagnostics.diagnose_kernel(
+            {"sm__throughput.avg.pct_of_peak_sustained_elapsed": 80.0,
+             "gpu__compute_memory_throughput.avg.pct_of_peak_sustained_elapsed": 20.0},
+            kernel_name="fused_kernel",
+        )
+        assert result["axes"]["axis_count"] == len(axes.AXES)
+        assert "power_clock" in result["axes"]["not_examined"]
+        assert result["corroboration"]["shipped_rules_available"] is False

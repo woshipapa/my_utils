@@ -1423,20 +1423,31 @@ _SEVERITY_ORDER = {"high": 0, "medium": 1, "low": 2, "info": 3}
 # Which catalog metric each analysis needs before it can say anything at all.
 # Used to report what was *not* checked: an analysis that silently skips looks
 # identical to one that ran and found nothing, and those mean opposite things.
+# The keys here MUST be ones the corresponding rule actually reads. Seven of
+# them once were not - `warp_cycles_per_issue` instead of
+# `warp_cycles_per_issued_inst`, `threads_per_inst` instead of
+# `warp_exec_efficiency`, and so on. `MetricView.get` falls through to a raw
+# lookup for an unknown key and returns None, so those analyses were reported as
+# "skipped, metrics absent" on every report, including full ones where the rule
+# had run and emitted findings. A coverage report that lies is worse than none,
+# so `test_coverage_keys_exist_in_catalog` now pins every key to the catalog.
 _ANALYSIS_REQUIREMENTS: Dict[str, Tuple[Tuple[str, ...], str]] = {
     "bottleneck":    (("compute_sol", "memory_sol"), "SpeedOfLight"),
     "roofline":      (("dram_bytes", "duration_ns"), "SpeedOfLight + MemoryWorkloadAnalysis"),
-    "stalls":        (("warp_cycles_per_issue",), "WarpStateStats"),
+    "stalls":        (("warp_cycles_per_issued_inst", "issue_active"), "WarpStateStats"),
     "occupancy":     (("achieved_occupancy", "theoretical_occupancy"), "Occupancy"),
     "launch":        (("grid_size", "block_size"), "LaunchStats"),
-    "coalescing":    (("l1_sectors_per_request", "bytes_per_sector_global_ld"),
+    "coalescing":    (("global_ld_sectors_per_request", "global_ld_bytes_per_sector",
+                       "l2_sectors_global_excessive"),
                       "MemoryWorkloadAnalysis_Tables"),
     "shared_memory": (("shared_bank_conflicts_ld", "shared_bank_conflicts_st"),
                       "MemoryWorkloadAnalysis_Tables"),
-    "divergence":    (("threads_per_inst",), "WarpStateStats / SourceCounters"),
-    "spilling":      (("local_load_sectors", "local_store_sectors"), "SourceCounters"),
+    "divergence":    (("warp_exec_efficiency", "branch_efficiency"),
+                      "InstructionStats / SourceCounters"),
+    "spilling":      (("local_ld_inst", "local_st_inst", "registers_per_thread"),
+                      "SourceCounters + LaunchStats"),
     "pipes":         (("pipe_tensor_util", "pipe_fma_util"), "ComputeWorkloadAnalysis"),
-    "imbalance":     (("sm_cycles_active_avg", "sm_cycles_active_max"), "WorkloadDistribution"),
+    "imbalance":     (("sm_cycles_active", "sm_cycles_active_max"), "WorkloadDistribution"),
 }
 
 
@@ -1485,12 +1496,22 @@ def diagnose_kernel(
     kernel_name: str = "",
     gpu_spec: Any = None,
     top_k: int = 10,
+    shipped_rules: Optional[Iterable[Any]] = None,
 ) -> Dict[str, Any]:
     """Run every rule over one kernel's metrics and return a ranked diagnosis.
 
     ``metrics`` maps exact ncu metric names to values.  ``gpu_spec`` unlocks the
     absolute roofline; without it the analysis still works but reports
     arithmetic intensity without a ceiling.
+
+    ``shipped_rules`` accepts the rule results Nsight Compute stored in the
+    report (``rule_results_as_dicts()``, or the flattened rows from
+    :func:`~my_utils.profiling.ncu.ncu_report_tools.collect_rule_results`).
+    Passing them cross-checks our engine against NVIDIA's: agreeing categories
+    are promoted to high confidence with the corroborating rule named,
+    disagreements on the bottleneck verdict are raised as their own high-severity
+    finding, and rules NVIDIA fired that we have no analysis for are added rather
+    than dropped.  Omitting them changes nothing except that the findings say so.
     """
     from ..analyzers.evidence import attribute_kernel  # local import: avoid cycle
     from ..sources.kernel_taxonomy import classify_kernel, parse_gemm_kernel  # local import
@@ -1586,6 +1607,18 @@ def diagnose_kernel(
             source="evidence",
         ))
 
+    # Cross-check against the rules Nsight Compute ran itself. This must happen
+    # before the sort, because it both adds findings and rewrites confidence.
+    from .shipped_rules import (  # local import: avoid a cycle at module load
+        normalize_shipped_rules,
+        reconcile_with_shipped_rules,
+    )
+    normalized_shipped = normalize_shipped_rules(shipped_rules or ())
+    reconciliation = reconcile_with_shipped_rules(
+        findings, normalized_shipped, our_verdict=str(bottleneck.get("verdict") or ""),
+    )
+    findings = list(reconciliation["findings"])
+
     findings.sort(key=lambda f: (
         _SEVERITY_ORDER.get(f.severity, 9),
         -(f.speedup_ceiling or 1.0),
@@ -1593,9 +1626,29 @@ def diagnose_kernel(
 
     coverage = analysis_coverage(view)
 
+    # Per-axis coverage: a report must be able to say which dimensions of
+    # performance it examined, not only which ones produced findings. An axis we
+    # never looked at and an axis that came back clean are indistinguishable in a
+    # findings list, and they mean opposite things.
+    from ..analyzers.axes import axis_coverage  # local import: avoid a cycle
+
+    axes = axis_coverage(
+        findings,
+        metric_present=view,
+        shipped_rule_axes=[r.axis for r in normalized_shipped if r.axis],
+        # These ran against this kernel's metrics whether or not they spoke up.
+        axes_examined=[a for a in ("measurement",)],
+    )
+
     return {
         "kernel_name": kernel_name,
         "coverage": coverage,
+        "axes": axes,
+        "corroboration": {
+            key: reconciliation[key]
+            for key in ("shipped_rules_available", "corroborated", "uncorroborated",
+                        "ncu_only", "conflicts", "note")
+        },
         "kernel_category": getattr(kernel_info, "category", "") if kernel_info else "",
         "kernel_framework": getattr(kernel_info, "framework", "") if kernel_info else "",
         "architecture": arch,
