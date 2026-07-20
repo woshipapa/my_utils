@@ -755,8 +755,10 @@ def check_multi_tenancy(
 # ---------------------------------------------------------------------------
 
 # PyTorch names its DataLoader worker and pin-memory threads at the OS level.
-# VERIFIED in PyTorch main at torch/utils/data/_utils/worker.py:271 and
-# torch/utils/data/_utils/pin_memory.py:23.
+# Confirmed by reading the installed source, not by report:
+#   worker.py     torch.multiprocessing._set_thread_name("pt_data_worker")
+#   pin_memory.py torch.multiprocessing._set_thread_name("pt_data_pin")
+# Line numbers move between releases, so match on the literal names.
 #
 # UNVERIFIED, and load-bearing for the SQL below: that nsys actually records
 # these names in its ThreadNames table. The join is plausible - nsys does
