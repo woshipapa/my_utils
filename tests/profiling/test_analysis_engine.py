@@ -2875,13 +2875,34 @@ class TestInstructionAndPmSampling:
         assert out["distinct_instructions"] == 2
         assert "finer than the line view" in out["note"]
 
-    def test_pm_sampling_reports_peak_against_kernel_average(self):
+    def test_pm_sampling_reports_peak_against_the_active_window(self):
+        """The denominator must be the window the kernel ran in.
+
+        Averaging over the sampler's whole session divides by a lot of time the
+        kernel was not running. On a real report that turned an 81us kernel into
+        a 216us "active window" and reported the tensor pipe at 8.7% when the
+        figure over the kernel's own window is 32.3% -- which matches the
+        whole-kernel counter, as it should.
+        """
         out = source_correlation.analyze_pm_sampling(self._Action())
         assert out["available"] is True
         tensor = next(e for e in out["series"] if "tensor" in e["metric"])
         assert tensor["peak"] == pytest.approx(94.0)
-        assert tensor["mean_overall"] < 35.0, "average hides the burst"
-        assert out["bursty"], "a 94% peak at a 31% average is the point of a timeline"
+        assert tensor["mean_in_active_window"] > tensor["mean_all_buckets"], (
+            "the window average must exceed the whole-session average")
+        assert out["window_source"] == "sm__cycles_active"
+
+    def test_duty_cycle_is_counted_inside_the_window(self):
+        """Counting non-zero buckets series-wide over a window denominator
+        produced shares above 100% for DRAM, which is active either side of the
+        launch."""
+        out = source_correlation.analyze_pm_sampling(self._Action())
+        assert all(0.0 <= e["duty_cycle"] <= 1.0 for e in out["series"])
+
+    def test_denominators_are_named_in_the_output(self):
+        out = source_correlation.analyze_pm_sampling(self._Action())
+        assert "mean_all_buckets" in out["denominator_note"]
+        assert "not for comparison" in out["denominator_note"]
 
     def test_raw_counts_are_not_rendered_as_percentages(self):
         """`sm__cycles_active.avg` is a count; "2964%" is nonsense."""

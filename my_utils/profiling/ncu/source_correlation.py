@@ -852,7 +852,12 @@ def analyze_pm_sampling(action: Any, *, top_k: int = 8) -> Dict[str, Any]:
                     "`pmsampling` sets; a `basic` or `detailed` run has none."),
                 "series": []}
 
-    series: List[Dict[str, Any]] = []
+    # The sampler runs across the whole profiling session; the kernel occupies
+    # part of it. Averaging a series over every bucket therefore divides by a
+    # lot of time the kernel was not running, which understates every unit and
+    # is not a "kernel average" in any useful sense. The active window is found
+    # first, from the union of all series, and used as the denominator.
+    raw_series: List[Tuple[str, List[float]]] = []
     timestamps: List[int] = []
     for name in names:
         metric = _maybe(action, "metric_by_name", name)
@@ -861,13 +866,45 @@ def analyze_pm_sampling(action: Any, *, top_k: int = 8) -> Dict[str, Any]:
         count = int(_maybe(metric, "num_instances") or 0)
         if count <= 0:
             continue
-        values = [float(_maybe(metric, "as_double", i) or 0.0) for i in range(count)]
+        raw_series.append((name, [float(_maybe(metric, "as_double", i) or 0.0)
+                                  for i in range(count)]))
         if not timestamps:
             correlation = _maybe(metric, "correlation_ids")
             if correlation is not None:
                 timestamps = [int(_maybe(correlation, "as_uint64", i) or 0)
                               for i in range(count)]
 
+    if not raw_series:
+        return {"available": False,
+                "reason": "`pmsampling:` metrics are present but carry no samples",
+                "series": []}
+
+    bucket_count = max(len(values) for _n, values in raw_series)
+
+    # Prefer `sm__cycles_active` to bound the window: the SM being active *is*
+    # the kernel running. Taking the union of every series instead picks up
+    # isolated DRAM blips from before and after the launch, which on the test
+    # report stretched a 81.4us kernel into a 216us "active window" and diluted
+    # every average by a factor of two and a half.
+    anchor = next(
+        (values for name, values in raw_series if "sm__cycles_active" in name), None)
+    window_source = "sm__cycles_active"
+    if anchor is None:
+        anchor = [max((v[i] if i < len(v) else 0.0) for _n, v in raw_series)
+                  for i in range(bucket_count)]
+        window_source = "union of all series (sm__cycles_active not collected)"
+
+    busy = [i for i, value in enumerate(anchor) if value > 0.0]
+    window_lo, window_hi = (min(busy), max(busy)) if busy else (0, bucket_count - 1)
+    window_len = window_hi - window_lo + 1
+
+    series: List[Dict[str, Any]] = []
+    for name, values in raw_series:
+        window = values[window_lo:window_hi + 1]
+        # Non-zero buckets counted *inside the window*. Counting them across the
+        # whole series while dividing by the window length produced shares above
+        # 100% for DRAM, which is active before and after the launch.
+        active_in_window = [v for v in window if v > 0.0]
         active = [v for v in values if v > 0.0]
         peak = max(values) if values else 0.0
         short = name[len(PM_SAMPLING_PREFIX):]
@@ -879,17 +916,25 @@ def analyze_pm_sampling(action: Any, *, top_k: int = 8) -> Dict[str, Any]:
             "metric": short,
             "is_percentage": is_pct,
             "unit": "%" if is_pct else "count",
-            "buckets": count,
-            "active_buckets": len(active),
-            "duty_cycle": len(active) / count if count else 0.0,
+            "buckets": len(values),
+            "active_buckets": len(active_in_window),
+            "active_buckets_whole_series": len(active),
+            "duty_cycle": (len(active_in_window) / len(window)) if window else 0.0,
             "peak": peak,
-            "mean_overall": (sum(values) / count) if count else 0.0,
-            "mean_while_active": (sum(active) / len(active)) if active else 0.0,
+            # The headline average: over the window in which the kernel was
+            # actually running, not over the sampler's whole session.
+            "mean_in_active_window": (sum(window) / len(window)) if window else 0.0,
+            # Kept, and named for what it is, because it is what you get if you
+            # average the raw series and it is much lower for a reason that has
+            # nothing to do with the kernel.
+            "mean_all_buckets": (sum(values) / len(values)) if values else 0.0,
+            # Mean over only the buckets where this unit did anything at all.
+            "mean_while_nonzero": (sum(active) / len(active)) if active else 0.0,
         }
         # The gap between "peak while running" and "average over the kernel" is
         # the whole point of having a timeline.
-        if peak > 0 and entry["mean_overall"] > 0:
-            entry["peak_to_mean"] = peak / entry["mean_overall"]
+        if peak > 0 and entry["mean_in_active_window"] > 0:
+            entry["peak_to_mean"] = peak / entry["mean_in_active_window"]
         series.append(entry)
 
     if not series:
@@ -913,7 +958,22 @@ def analyze_pm_sampling(action: Any, *, top_k: int = 8) -> Dict[str, Any]:
     return {
         "available": True,
         "metric_count": len(series),
-        "bucket_count": series[0]["buckets"],
+        "bucket_count": bucket_count,
+        "active_window_buckets": [window_lo, window_hi],
+        "active_window_length": window_len,
+        "active_window_ns": (
+            (timestamps[window_hi] - timestamps[window_lo])
+            if len(timestamps) > window_hi else None
+        ),
+        "window_source": window_source,
+        "denominator_note": (
+            "`mean_in_active_window` divides by the buckets in which the kernel "
+            f"was running, bounded by {window_source} ({window_len} of "
+            f"{bucket_count} buckets). "
+            "`mean_all_buckets` divides by the sampler's whole session, most of "
+            "which the kernel was not running in -- it is reported for "
+            "transparency, not for comparison."
+        ),
         "sampled_span_ns": duration_ns,
         # The sampler runs across the whole profiling session, which under
         # kernel replay covers several executions of the same kernel. A span
@@ -926,7 +986,7 @@ def analyze_pm_sampling(action: Any, *, top_k: int = 8) -> Dict[str, Any]:
         "series": series[: int(top_k)],
         "bursty": [
             {"metric": e["metric"], "peak": e["peak"],
-             "mean_overall": e["mean_overall"],
+             "mean_in_active_window": e["mean_in_active_window"],
              "active_share": e["duty_cycle"],
              # Carried so a consumer can tell a percentage from a count without
              # re-deriving it from the metric name.
@@ -935,9 +995,9 @@ def analyze_pm_sampling(action: Any, *, top_k: int = 8) -> Dict[str, Any]:
         ],
         "note": (
             "; ".join(
-                f"{e['metric'].split('.')[0]} peaks at {e['peak']:.0f}% but averages "
-                f"{e['mean_overall']:.0f}% across the kernel (non-zero in "
-                f"{e['duty_cycle'] * 100:.0f}% of time buckets)"
+                f"{e['metric'].split('.')[0]} peaks at {e['peak']:.0f}% and averages "
+                f"{e['mean_in_active_window']:.0f}% across the kernel's active "
+                f"window (non-zero in {e['duty_cycle'] * 100:.0f}% of that window)"
                 for e in bursty[:3]
             )
             or "No percentage-valued unit shows a large gap between its peak and "

@@ -2506,20 +2506,37 @@ def diagnose_result_to_markdown(payload: Dict[str, object]) -> str:
                         + (f", spanning {pm.get('sampled_span_ns', 0) / 1000.0:.1f} us"
                            if pm.get("sampled_span_ns") else "")
                     )
+                    window = pm.get("active_window_ns")
+                    if window:
+                        lines.append(
+                            f"- kernel active window: {pm.get('active_window_length')} "
+                            f"buckets = {window / 1000.0:.1f} us"
+                        )
+                    lines.append(
+                        "- each bucket value is the counter **accumulated over that "
+                        "window**, not an instantaneous reading; `.avg` is the average "
+                        "across SM instances, not across time"
+                    )
                     if pm.get("span_note"):
                         lines.append(f"- _{pm['span_note']}_")
                     lines.append("")
-                    lines.append("| metric | peak | kernel average | non-zero buckets |")
-                    lines.append("|---|---|---|---|")
+                    lines.append(
+                        "| metric | peak (1 bucket) | mean over active window "
+                        "| non-zero share | mean over whole session |")
+                    lines.append("|---|---|---|---|---|")
                     for entry in (pm.get("series") or [])[:8]:
                         unit = "%" if entry.get("is_percentage") else ""
                         lines.append(
-                            f"| `{entry.get('metric','')[:52]}` "
+                            f"| `{entry.get('metric','')[:48]}` "
                             f"| {entry.get('peak', 0):.1f}{unit} "
-                            f"| {entry.get('mean_overall', 0):.1f}{unit} "
-                            f"| {float(entry.get('duty_cycle') or 0) * 100:.0f}% |"
+                            f"| {entry.get('mean_in_active_window', 0):.1f}{unit} "
+                            f"| {float(entry.get('duty_cycle') or 0) * 100:.0f}% "
+                            f"| {entry.get('mean_all_buckets', 0):.1f}{unit} |"
                         )
                     lines.append("")
+                    if pm.get("denominator_note"):
+                        lines.append(f"_{pm['denominator_note']}_")
+                        lines.append("")
                     if pm.get("bursty"):
                         lines.append(f"**{pm.get('note','')}**")
                         lines.append("")
