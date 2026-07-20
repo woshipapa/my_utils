@@ -49,6 +49,7 @@ __all__ = [
     "InstructionAttribution",
     "correlate_metric_to_source",
     "attribute_stalls_to_source",
+    "attribute_stalls_via_metrics",
     "pc_sampling_timeline",
     "summarize_warp_samples",
     "source_availability",
@@ -179,7 +180,7 @@ _STALL_CATEGORY_PREFIX = "stall_"
 # anyway would attach a real source line to an invented mechanism, which reads
 # as evidence and is not.
 _UNLINKABLE = frozenset({
-    "unit_saturated", "unit_duty_cycle",       # generic scan: unit unknown
+    "unit_saturated", "unit_duty_cycle", "unit_hit_rate",   # generic scan
     "small_grid", "tail_wave_quantization", "block_size_not_warp_multiple",
     "tile_quantization", "wave_quantization",
     "measurement_caveat", "measurement_above_physical_limit",
@@ -225,6 +226,8 @@ def link_findings_to_source(
     totals = attribution.get("stall_reasons") or {}
 
     linked: List[Dict[str, Any]] = []
+    seen_signatures: Dict[Any, str] = {}
+    duplicates: List[Dict[str, Any]] = []
     for finding in findings:
         category = (finding.get("category") if isinstance(finding, Mapping)
                     else getattr(finding, "category", "")) or ""
@@ -268,6 +271,18 @@ def link_findings_to_source(
 
         title = (finding.get("title") if isinstance(finding, Mapping)
                  else getattr(finding, "title", "")) or ""
+
+        # Two findings that resolve to the same lines via the same reasons are
+        # one piece of evidence, not two. Repeating it under a second heading
+        # makes a single observation look corroborated.
+        signature = (tuple(reasons),
+                     tuple((h["file_name"], h["line"]) for h in top))
+        if signature in seen_signatures:
+            duplicates.append({"category": category, "finding_title": title,
+                               "same_lines_as": seen_signatures[signature]})
+            continue
+        seen_signatures[signature] = title
+
         linked.append({
             "category": category,
             "finding_title": title,
@@ -289,12 +304,41 @@ def link_findings_to_source(
         "available": True,
         "linked": linked,
         "linked_count": len(linked),
+        "duplicate_links": duplicates,
+        "duplicate_note": (
+            f"{len(duplicates)} finding(s) resolved to lines already shown under "
+            "another heading and were folded away; repeating one observation "
+            "makes it look like two." if duplicates else ""
+        ),
         "unlinkable_note": (
             "Findings absent from this list have no stall reason that would "
             "localise them -- launch geometry, occupancy limits and measurement "
             "caveats are properties of the kernel, not of any one line."
         ),
     }
+
+
+def _as_dict(value: Any) -> Dict[str, str]:
+    """Coerce ncu_report's SWIG map into a real dict.
+
+    `IAction.source_files()` returns a `map_string_string`, which supports
+    `keys()`/`__getitem__` but is **not** a `collections.abc.Mapping` subclass.
+    An `isinstance(..., Mapping)` guard therefore discarded all 64 source files
+    on a real report and reported "the kernel was built without -lineinfo" for a
+    kernel that had full source. Duck-typing is the only safe test here.
+    """
+    if value is None:
+        return {}
+    if isinstance(value, dict):
+        return {str(k): str(v) for k, v in value.items()}
+    try:
+        return {str(k): str(value[k]) for k in value.keys()}
+    except Exception:
+        pass
+    try:
+        return {str(k): str(v) for k, v in value.items()}
+    except Exception:
+        return {}
 
 
 def _maybe(obj: Any, name: str, *args: Any) -> Any:
@@ -338,9 +382,7 @@ def source_availability(action: Any) -> Dict[str, Any]:
     The three causes are independent and have different fixes, so they are
     distinguished rather than collapsed into "no source data".
     """
-    files = _maybe(action, "source_files") or {}
-    if not isinstance(files, Mapping):
-        files = {}
+    files = _as_dict(_maybe(action, "source_files"))
 
     metric_names = list(_maybe(action, "metric_names") or ())
     source_metrics = [
@@ -476,7 +518,7 @@ def correlate_metric_to_source(
 
     # Roll up to source lines. Many instructions map to one line, and the line
     # is what a reader can act on.
-    files = _maybe(action, "source_files") or {}
+    files = _as_dict(_maybe(action, "source_files"))
     by_line: Dict[Tuple[str, int], SourceLineAttribution] = {}
     for entry in attributions:
         if not entry.located:
@@ -492,7 +534,7 @@ def correlate_metric_to_source(
             rolled.sass_samples = rolled.sass_samples + (entry.sass,)
 
     for (file_name, line), rolled in by_line.items():
-        content = files.get(file_name) if isinstance(files, Mapping) else None
+        content = files.get(file_name)
         if content:
             lines = content.splitlines()
             if 0 < line <= len(lines):
@@ -521,6 +563,142 @@ def correlate_metric_to_source(
     }
 
 
+# The per-instruction PC-sampling stall metrics. Verified present on a real
+# --set full Hopper report: 578 instances each, all carrying correlation IDs.
+PCSAMP_STALL_PREFIX = "smsp__pcsamp_warps_issue_stalled_"
+
+
+def attribute_stalls_via_metrics(
+    action: Any,
+    *,
+    top_k: int = 15,
+) -> Dict[str, Any]:
+    """Rank source lines by stalls, using the aggregated per-instruction metrics.
+
+    This is the path a normal ``--set full`` report supports, and it is the one
+    that matters: ``timed_warp_samples()`` returns the raw sample records, which
+    a standard collection does not retain. What it retains instead is one
+    ``smsp__pcsamp_warps_issue_stalled_<reason>`` metric per stall reason, each
+    carrying a value per instruction plus correlation IDs mapping those values
+    to addresses.
+
+    Discovered by running against a real report where every stall metric was
+    present with 578 correlated instances and `timed_warp_samples()` returned
+    nothing -- the analysis reported "no PC sampling in this report" while
+    sitting on a complete per-instruction breakdown.
+    """
+    names = [str(n) for n in (_maybe(action, "metric_names") or ())
+             if str(n).startswith(PCSAMP_STALL_PREFIX)]
+    if not names:
+        return {"available": False,
+                "reason": (
+                    "No per-instruction PC-sampling stall metrics "
+                    f"(`{PCSAMP_STALL_PREFIX}*`). Collect --section SourceCounters "
+                    "or --set full."),
+                "source_lines": [], "stall_reasons": {}}
+
+    files = _as_dict(_maybe(action, "source_files"))
+    by_line: Dict[Tuple[str, int], Dict[str, Any]] = {}
+    reason_totals: Counter = Counter()
+    unlocated = 0.0
+    address_cache: Dict[int, Optional[Tuple[str, int]]] = {}
+
+    for metric_name in names:
+        # `..._not_issued` counts the same stall on cycles no warp issued at
+        # all; folding both in would double-count the same instruction.
+        if metric_name.endswith("_not_issued"):
+            continue
+        reason = metric_name[len(PCSAMP_STALL_PREFIX):].upper()
+        metric = _maybe(action, "metric_by_name", metric_name)
+        if metric is None or not _maybe(metric, "has_correlation_ids"):
+            continue
+        correlation = _maybe(metric, "correlation_ids")
+        if correlation is None:
+            continue
+
+        count = int(_maybe(metric, "num_instances") or 0)
+        for index in range(count):
+            value = _maybe(metric, "as_double", index)
+            if not value or value <= 0:
+                continue
+            reason_totals[reason] += value
+
+            raw_address = _maybe(correlation, "as_uint64", index)
+            if raw_address is None:
+                unlocated += value
+                continue
+            address = int(raw_address)
+            if address not in address_cache:
+                info = _maybe(action, "source_info", address)
+                located: Optional[Tuple[str, int]] = None
+                if info is not None:
+                    file_name = str(_maybe(info, "file_name") or "")
+                    line = _maybe(info, "line")
+                    if file_name and line is not None:
+                        located = (file_name, int(line))
+                address_cache[address] = located
+            located = address_cache[address]
+            if located is None:
+                unlocated += value
+                continue
+
+            entry = by_line.setdefault(located, {
+                "file_name": located[0], "line": located[1],
+                "samples": 0.0, "stall_reasons": Counter(), "sass_samples": [],
+            })
+            entry["samples"] += value
+            entry["stall_reasons"][reason] += value
+            if len(entry["sass_samples"]) < 3:
+                sass = str(_maybe(action, "sass_by_pc", address) or "")
+                if sass:
+                    entry["sass_samples"].append(sass)
+
+    total = sum(reason_totals.values())
+    if total <= 0:
+        return {"available": False,
+                "reason": "PC-sampling stall metrics are present but all zero",
+                "source_lines": [], "stall_reasons": {}}
+
+    ranked: List[Dict[str, Any]] = []
+    for (file_name, line_no), entry in by_line.items():
+        text = ""
+        content = files.get(file_name)
+        if content:
+            lines = content.splitlines()
+            if 0 < line_no <= len(lines):
+                text = lines[line_no - 1].strip()
+        dominant = entry["stall_reasons"].most_common(1)
+        ranked.append({
+            "file_name": file_name,
+            "line": line_no,
+            "samples": int(entry["samples"]),
+            "share_of_samples": entry["samples"] / total,
+            "dominant_stall_reason": dominant[0][0] if dominant else "",
+            "stall_reasons": {k: int(v) for k, v in entry["stall_reasons"].most_common()},
+            "sass_samples": entry["sass_samples"],
+            "source_text": text,
+        })
+    ranked.sort(key=lambda row: row["samples"], reverse=True)
+
+    return {
+        "available": True,
+        "source": "correlated pcsamp metrics",
+        "total_samples": int(total),
+        "stall_reasons": {k: int(v) for k, v in reason_totals.most_common()},
+        "source_lines": ranked[: int(top_k)],
+        "unlocated_samples": int(unlocated),
+        "unlocated_share": unlocated / total,
+        "confidence_note": (
+            f"{int(total)} sampled stall cycles attributed across "
+            f"{len(ranked)} source lines. PC sampling is statistical: a difference "
+            "of a few samples between lines is noise."
+            + (f" {unlocated / total * 100:.0f}% could not be tied to a source line, "
+               "usually inlined or compiler-generated code."
+               if unlocated else "")
+        ),
+    }
+
+
 def attribute_stalls_to_source(
     action: Any,
     *,
@@ -537,13 +715,21 @@ def attribute_stalls_to_source(
     worse than one with two, and the result reports the sample total so a reader
     can judge whether the ranking is supported.
     """
+    # Correlated metrics first: that is what a standard --set full collection
+    # retains. Raw sample records are the exception, not the rule.
+    via_metrics = attribute_stalls_via_metrics(action, top_k=top_k)
+    if via_metrics.get("available"):
+        return via_metrics
+
     samples = _maybe(action, "timed_warp_samples")
     if not samples:
         return {
             "available": False,
             "reason": (
-                "No timed warp samples in this report. PC sampling is collected by "
-                "the SourceCounters/`full` path; a `basic` run has none."
+                "Neither per-instruction PC-sampling stall metrics nor raw warp "
+                "samples are in this report. Collect --section SourceCounters or "
+                "--set full. ("
+                + str(via_metrics.get("reason", "")) + ")"
             ),
             "source_lines": [], "stall_reasons": {},
         }
@@ -570,7 +756,7 @@ def attribute_stalls_to_source(
     total_samples = sum(reason_totals.values()) or 1
 
     # Roll up PCs to source lines.
-    files = _maybe(action, "source_files") or {}
+    files = _as_dict(_maybe(action, "source_files"))
     by_line: Dict[Tuple[str, int], Dict[str, Any]] = {}
     unlocated_samples = 0
 
@@ -596,7 +782,7 @@ def attribute_stalls_to_source(
 
     ranked: List[Dict[str, Any]] = []
     for (file_name, line_no), entry in by_line.items():
-        content = files.get(file_name) if isinstance(files, Mapping) else None
+        content = files.get(file_name)
         text = ""
         if content:
             lines = content.splitlines()

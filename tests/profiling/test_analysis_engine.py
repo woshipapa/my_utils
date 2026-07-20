@@ -1935,7 +1935,8 @@ class TestStallAttribution:
 
     def test_missing_samples_are_explained(self):
         out = source_correlation.attribute_stalls_to_source(_FakeAction())
-        assert out["available"] is False and "basic" in out["reason"]
+        assert out["available"] is False
+        assert "SourceCounters" in out["reason"] or "set full" in out["reason"]
 
 
 class TestPcSamplingTimeline:
@@ -2575,3 +2576,169 @@ class TestReportIsReadOnce:
         ncu_report_tools.diagnose_ncu_report(
             "/dev/null", include_source=False, ncu_report_module=module)
         assert opens["n"] == 1
+
+
+class TestRealReportRegressions:
+    """Three bugs a real H100 report exposed that no fixture had.
+
+    Each survived because my fixtures happened to use the shape my code
+    assumed: raw warp samples where a real report has aggregated metrics, and a
+    plain dict where ncu_report hands back a SWIG map.
+    """
+
+    class _SwigLikeMap:
+        """Supports keys()/__getitem__ but is NOT a collections.abc.Mapping.
+
+        This is what `IAction.source_files()` actually returns. An
+        `isinstance(..., Mapping)` guard discarded all 64 source files on a real
+        report and then reported the kernel as built without -lineinfo.
+        """
+
+        def __init__(self, data):
+            self._data = dict(data)
+
+        def keys(self):
+            return self._data.keys()
+
+        def __getitem__(self, key):
+            return self._data[key]
+
+    def test_swig_map_is_not_discarded(self):
+        files = source_correlation._as_dict(
+            self._SwigLikeMap({"k.cu": "line one\nline two\n"}))
+        assert files == {"k.cu": "line one\nline two\n"}
+        assert not isinstance(self._SwigLikeMap({}), __import__("collections.abc",
+                              fromlist=["Mapping"]).Mapping), "guard premise"
+
+    class _CorrelatedAction:
+        """A report with aggregated pcsamp metrics and no raw warp samples.
+
+        This is the normal `--set full` shape: `timed_warp_samples()` empty,
+        `smsp__pcsamp_warps_issue_stalled_*` present with correlation IDs.
+        """
+
+        _PREFIX = "smsp__pcsamp_warps_issue_stalled_"
+
+        class _Metric:
+            def __init__(self, values, correlation=None):
+                self._values = values
+                self._correlation = correlation
+
+            def num_instances(self): return len(self._values)
+            def as_double(self, i): return float(self._values[i])
+            def as_uint64(self, i): return int(self._values[i])
+            def has_correlation_ids(self): return self._correlation is not None
+
+            def correlation_ids(self):
+                if self._correlation is None:
+                    return None
+                return TestRealReportRegressions._CorrelatedAction._Metric(
+                    self._correlation)
+
+        def metric_names(self):
+            return [self._PREFIX + "long_scoreboard",
+                    self._PREFIX + "long_scoreboard_not_issued",
+                    self._PREFIX + "barrier"]
+
+        def metric_by_name(self, name):
+            M = TestRealReportRegressions._CorrelatedAction._Metric
+            if name.endswith("_not_issued"):
+                return M([999.0], correlation=[0x10])   # must be ignored
+            if name.endswith("long_scoreboard"):
+                return M([100.0, 20.0], correlation=[0x10, 0x20])
+            if name.endswith("barrier"):
+                return M([50.0], correlation=[0x20])
+            return None
+
+        def source_files(self):
+            return TestRealReportRegressions._SwigLikeMap(
+                {"k.cu": "load line\ncompute line\n"})
+
+        def source_info(self, address):
+            table = {0x10: ("k.cu", 1), 0x20: ("k.cu", 2)}
+            if address not in table:
+                return None
+            name, line = table[address]
+
+            class _Info:
+                def file_name(self): return name
+                def line(self): return line
+            return _Info()
+
+        def sass_by_pc(self, address): return "LDG.E"
+        def ptx_by_pc(self, address): return ""
+        def timed_warp_samples(self): return []
+
+    def test_attribution_works_without_raw_warp_samples(self):
+        out = source_correlation.attribute_stalls_to_source(self._CorrelatedAction())
+        assert out["available"] is True
+        assert out["source"] == "correlated pcsamp metrics"
+        top = out["source_lines"][0]
+        assert top["line"] == 1 and top["dominant_stall_reason"] == "LONG_SCOREBOARD"
+        assert top["source_text"] == "load line"
+
+    def test_not_issued_variants_are_not_double_counted(self):
+        out = source_correlation.attribute_stalls_to_source(self._CorrelatedAction())
+        # 100 + 20 long_scoreboard + 50 barrier == 170; the 999 _not_issued
+        # counts the same stalls again and must be excluded.
+        assert out["total_samples"] == 170
+
+    def test_hit_rate_with_no_traffic_is_suppressed(self):
+        """0% hit rate over 0 requests is not a result."""
+        out = signal_scan.scan_all_signals({
+            "l1tex__t_sector_pipe_lsu_mem_global_op_red_hit_rate.pct": 0.0,
+            "l1tex__t_requests_pipe_lsu_mem_global_op_red.sum": 0.0,
+        })
+        assert not [f for f in out["findings"] if f.category == "unit_hit_rate"]
+        assert out["hit_rates_skipped_no_traffic"] == 1
+
+    def test_hit_rate_with_traffic_is_reported_with_its_volume(self):
+        out = signal_scan.scan_all_signals({
+            "l1tex__t_sector_pipe_lsu_mem_global_op_st_hit_rate.pct": 0.0,
+            "l1tex__t_requests_pipe_lsu_mem_global_op_st.sum": 49152.0,
+        })
+        finding = next(f for f in out["findings"] if f.category == "unit_hit_rate")
+        assert finding.evidence["requests_behind_it"] == 49152.0
+        assert "more than 100%" not in finding.summary, "100 - 0 rendered as prose"
+        assert "100% of the 49,152 requests" in finding.summary
+
+    def test_scan_hit_rate_findings_are_not_linked_to_source(self):
+        """The scan knows a path missed, not which lines use that path."""
+        out = source_correlation.link_findings_to_source(
+            [{"category": "unit_hit_rate", "title": "t"}], None,
+            attribution={"available": True, "stall_reasons": {"LONG_SCOREBOARD": 100},
+                         "source_lines": [{"file_name": "k.cu", "line": 1,
+                                           "samples": 100,
+                                           "stall_reasons": {"LONG_SCOREBOARD": 100}}]})
+        assert out["linked"] == []
+
+    def test_identical_linkages_are_folded(self):
+        attribution = {
+            "available": True, "stall_reasons": {"LONG_SCOREBOARD": 100},
+            "source_lines": [{"file_name": "k.cu", "line": 1, "samples": 100,
+                              "stall_reasons": {"LONG_SCOREBOARD": 100}}],
+        }
+        # Both resolve to exactly ("LONG_SCOREBOARD",), so same reasons AND
+        # same lines. Findings whose reasons differ are NOT folded, because the
+        # same line stalling for a second reason is a second fact.
+        out = source_correlation.link_findings_to_source(
+            [{"category": "poor_cache_locality", "title": "first"},
+             {"category": "l2_load_imbalance", "title": "second"}],
+            None, attribution=attribution)
+        assert len(out["linked"]) == 1
+        assert out["duplicate_links"] and out["duplicate_note"]
+
+    def test_different_reasons_on_the_same_lines_are_kept(self):
+        attribution = {
+            "available": True,
+            "stall_reasons": {"LONG_SCOREBOARD": 100, "LG_THROTTLE": 10},
+            "source_lines": [{"file_name": "k.cu", "line": 1, "samples": 110,
+                              "stall_reasons": {"LONG_SCOREBOARD": 100,
+                                                "LG_THROTTLE": 10}}],
+        }
+        out = source_correlation.link_findings_to_source(
+            [{"category": "poor_cache_locality", "title": "locality"},
+             {"category": "register_spilling", "title": "spilling"}],
+            None, attribution=attribution)
+        assert len(out["linked"]) == 2, (
+            "same lines but different mechanisms is two findings, not one")

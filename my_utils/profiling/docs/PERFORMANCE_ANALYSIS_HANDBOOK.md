@@ -1231,7 +1231,17 @@ not from documentation:
 | `IAction.sass_by_pc(addr)` | SASS text, `""` when unavailable |
 | `IAction.ptx_by_pc(addr)` | PTX text |
 | `IAction.source_files()` | `{filename: content}`, empty content when not imported |
-| `IAction.timed_warp_samples()` | PC-sampling series: timestamp, pc, stall_reason, not_issued |
+| `IAction.timed_warp_samples()` | raw PC-sample records -- often empty; see below |
+
+**Two attribution paths, and the fallback is the one to expect.** A standard
+`--set full` collection does *not* retain raw sample records: `timed_warp_samples()`
+comes back empty. What it does retain is one
+`smsp__pcsamp_warps_issue_stalled_<reason>` metric per stall reason, each with a
+value per instruction and correlation IDs mapping those values to addresses.
+`attribute_stalls_to_source` tries that path first and falls back to raw samples.
+
+The `_not_issued` variants of those metrics count the same stalls on cycles
+where no warp issued at all; folding both in double-counts every instruction.
 
 ### Three reasons it returns nothing, with three different fixes
 

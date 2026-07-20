@@ -85,6 +85,27 @@ def _unit_label(unit: str) -> str:
     return text.split(" - ")[0].split(".")[0] if text else unit
 
 
+def _traffic_behind(hit_rate_metric: str, traffic: Mapping[str, float]) -> Optional[float]:
+    """Requests or sectors behind a hit-rate metric, or None if undeterminable.
+
+    `l1tex__t_sector_pipe_lsu_mem_global_op_st_hit_rate.pct` pairs with
+    `l1tex__t_requests_pipe_lsu_mem_global_op_st.sum`. The names are derived
+    rather than tabulated, and None is returned when no companion is present --
+    a hit rate whose volume is unknown cannot be judged, and guessing that it
+    matters is how a scan over thousands of metrics turns into noise.
+    """
+    stem = hit_rate_metric[: -len("_hit_rate.pct")] if hit_rate_metric.endswith(
+        "_hit_rate.pct") else None
+    if not stem:
+        return None
+    for counter in ("t_requests", "t_sectors"):
+        for source in ("t_sector", "t_sectors", "t_requests"):
+            candidate = stem.replace(source, counter, 1) + ".sum"
+            if candidate in traffic:
+                return traffic[candidate]
+    return None
+
+
 def scan_all_signals(
     metrics: Mapping[str, float],
     *,
@@ -104,6 +125,7 @@ def scan_all_signals(
     elapsed: Dict[str, Tuple[str, float]] = {}   # counter -> (raw name, value)
     active: Dict[str, Tuple[str, float]] = {}
     hit_rates: List[Tuple[str, str, float]] = []
+    traffic: Dict[str, float] = {}
     impossible: List[Tuple[str, float]] = []
 
     for raw, value in (metrics or {}).items():
@@ -129,6 +151,10 @@ def scan_all_signals(
 
         if "hit_rate" in low and low.endswith(".pct"):
             hit_rates.append((name, unit, number))
+        # Traffic counters, so a hit rate can be weighed by whether anything
+        # actually went through that path.
+        if low.endswith(".sum") and ("t_sectors" in low or "t_requests" in low):
+            traffic[name] = number
 
         # A percentage above 100 is a measurement fault wherever it appears.
         if (name.endswith(_PCT_ELAPSED) or name.endswith(_PCT_ACTIVE)
@@ -205,26 +231,54 @@ def scan_all_signals(
             source="heuristic",
         ))
 
-    # ---- low hit rates at any level ---------------------------------------
-    for name, unit, value in sorted(hit_rates, key=lambda item: item[2])[:4]:
+    # ---- low hit rates, weighed by whether that path carried traffic -------
+    #
+    # A hit rate is a ratio, and a ratio over zero requests is not a result. On
+    # a real H100 report this rule fired four times at "0%" -- one of them for
+    # reduction operations the kernel never issued (0 requests), and the text
+    # said "more than 100% of requests miss", which is arithmetic nonsense from
+    # rendering 100 - 0. Three of the four crowded out genuine findings.
+    no_traffic = 0
+    unknown_traffic = 0
+    reported_units: set = set()
+    for name, unit, value in sorted(hit_rates, key=lambda item: item[2]):
         if value >= LOW_HIT_RATE_PCT:
             continue
+        volume = _traffic_behind(name, traffic)
+        if volume is not None and volume <= 0.0:
+            no_traffic += 1
+            continue
+        if volume is None:
+            unknown_traffic += 1
+            continue
+        # One finding per unit: four spellings of "L1TEX misses" are one fact.
+        if unit in reported_units:
+            continue
+        reported_units.add(unit)
         findings.append(Finding(
-            category="poor_cache_locality",
+            # Not `poor_cache_locality`: that category is linked to source lines
+            # via memory stall reasons, and this finding is about one specific
+            # path (atomics, stores, surface ops) whose lines the scan cannot
+            # identify. Linking it reproduced the top LONG_SCOREBOARD lines
+            # verbatim under a different heading -- duplication wearing the
+            # costume of a second piece of evidence.
+            category="unit_hit_rate",
             title=f"{_unit_label(unit)} hit rate is {value:.0f}%",
             summary=(
-                f"`{name}` reads {value:.1f}%, so more than "
-                f"{100.0 - value:.0f}% of requests at this level miss and go further "
-                "out. Whether that matters depends on the traffic volume behind it."
+                f"`{name}` reads {value:.1f}%, so {100.0 - value:.0f}% of the "
+                f"{volume:,.0f} requests on this path miss and go further out."
             ),
             severity="medium" if value < 15.0 else "low",
             confidence="medium",
             evidence={"metric": name, "hit_rate_pct": value,
+                      "requests_behind_it": volume,
                       "threshold": LOW_HIT_RATE_PCT, "threshold_source": "ours"},
-            actions=("Check the request count for this level before acting: a low hit "
-                     "rate on a small number of requests costs nothing.",),
+            actions=("Compare this against the traffic volume: a low hit rate on a "
+                     "small number of requests costs little.",),
             source="heuristic",
         ))
+        if len(reported_units) >= 3:
+            break
 
     # ---- internal contradictions ------------------------------------------
     for name, value in impossible[:5]:
@@ -271,8 +325,14 @@ def scan_all_signals(
             {"metric": n, "pct_of_peak_elapsed": v} for _k, n, v in saturated
         ],
         "bursty_units": bursty,
+        "hit_rates_skipped_no_traffic": no_traffic,
+        "hit_rates_skipped_unknown_traffic": unknown_traffic,
         "note": (
-            f"Scanned {len(metrics or {})} metrics by name grammar. Thresholds here "
+            (f"{no_traffic} low hit rate(s) were skipped because nothing went "
+             "through that path, and "
+             f"{unknown_traffic} because their traffic volume could not be "
+             "established. " if (no_traffic or unknown_traffic) else "")
+            + f"Scanned {len(metrics or {})} metrics by name grammar. Thresholds here "
             "are ours, not NVIDIA's, and deliberately conservative: a rule applied to "
             "thousands of metrics produces noise unless it is nearly always right. "
             "These findings point at a section to read; the curated rules are what "
