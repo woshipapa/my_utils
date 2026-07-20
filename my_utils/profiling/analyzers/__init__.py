@@ -14,7 +14,33 @@ from .analysis_rules import (
     RooflineGapRule,
 )
 from .distributed_alignment import align_stage_latency, analyze_rank_skew
+from .evidence import (
+    Claim,
+    FusedAttribute,
+    Provenance,
+    attribute_kernel,
+    claims_from_counters,
+    claims_from_kernel_name,
+    claims_from_launch_config,
+    claims_from_nvtx,
+    fuse_claims,
+)
 from .metrics_analyzer import MetricsAnalyzer
+from .nccl_bandwidth import analyze_collective, detect_straggler
+from .trace_quality import (
+    QualityIssue,
+    assess_trace_quality,
+    check_autotuning,
+    check_clock_alignment,
+    check_cuda_graphs,
+    check_dataloader_attribution,
+    check_diagnostic_events,
+    check_multi_tenancy,
+    check_nvlink_utilization_validity,
+    check_rank_completeness,
+    check_warmup,
+)
+from .triage import TriageThresholds, TriageVerdict, triage_step
 from .workload_profiles import (
     WORKLOAD_PROFILES,
     WorkloadProfile,
@@ -39,6 +65,35 @@ __all__ = [
     "CrossLayerConsistencyRule",
     "align_stage_latency",
     "analyze_rank_skew",
+    # Evidence fusion: conclusions carry where they came from.
+    "Provenance",
+    "Claim",
+    "FusedAttribute",
+    "fuse_claims",
+    "attribute_kernel",
+    "claims_from_kernel_name",
+    "claims_from_launch_config",
+    "claims_from_counters",
+    "claims_from_nvtx",
+    # Top-down triage.
+    "triage_step",
+    "TriageVerdict",
+    "TriageThresholds",
+    # Trace validity: refuse before analysing.
+    "QualityIssue",
+    "assess_trace_quality",
+    "check_warmup",
+    "check_autotuning",
+    "check_cuda_graphs",
+    "check_rank_completeness",
+    "check_clock_alignment",
+    "check_nvlink_utilization_validity",
+    "check_diagnostic_events",
+    "check_multi_tenancy",
+    "check_dataloader_attribution",
+    # Collective bandwidth.
+    "analyze_collective",
+    "detect_straggler",
     "MetricsAnalyzer",
     "WORKLOAD_PROFILES",
     "WorkloadProfile",
