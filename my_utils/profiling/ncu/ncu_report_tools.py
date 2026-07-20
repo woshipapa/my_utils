@@ -1870,6 +1870,21 @@ def diagnose_ncu_report(
         ncu_report_module=ncu_report_module,
     )
 
+    # Index NVIDIA's shipped rule results by launch, so each kernel's diagnosis
+    # can be cross-checked against the rules ncu itself ran on that same launch.
+    rules_by_launch: Dict[Tuple[int, int], List[Dict[str, object]]] = {}
+    try:
+        for row in load_ncu_report_rule_rows(
+            report_path, kernel_like=kernel_like, ncu_report_module=ncu_report_module,
+        ):
+            key = (int(row.get("range_index", -1)), int(row.get("action_index", -1)))
+            rules_by_launch.setdefault(key, []).append(row)
+    except Exception:
+        # A report without rule results is normal (--apply-rules off, or a
+        # section whose rule did not run). Corroboration then reports itself as
+        # unavailable, which is the honest outcome.
+        rules_by_launch = {}
+
     # Group metrics per kernel launch: (range, action) identifies one launch.
     launches: Dict[Tuple[int, int], Dict[str, object]] = {}
     for record in records:
@@ -1890,6 +1905,10 @@ def diagnose_ncu_report(
             kernel_name=str(slot.get("kernel_name") or ""),
             gpu_spec=gpu_spec,
             top_k=int(findings_per_kernel),
+            # NVIDIA's own rule output is in the report; cross-check against it.
+            # Without this the corroboration section reported "no shipped rules"
+            # on every real report, because nothing passed them through.
+            shipped_rules=rules_by_launch.get((range_idx, action_idx), ()),
         )
         diagnosis["range_index"] = range_idx
         diagnosis["action_index"] = action_idx

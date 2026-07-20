@@ -1068,6 +1068,7 @@ class TestHandbookExamplesAreReal:
 
 axes = _load("analyzers.axes", "analyzers/axes.py")
 shipped_rules = _load("ncu.shipped_rules", "ncu/shipped_rules.py")
+ncu_report_tools = _load("ncu.ncu_report_tools", "ncu/ncu_report_tools.py")
 
 
 class TestCoverageKeysAreReal:
@@ -2186,3 +2187,71 @@ class TestSubpackagesImportInAnyOrder:
                 for mod in [m for m in sys.modules if m.startswith("my_utils")]:
                     del sys.modules[mod]
         assert not failures, "subpackage import order is load-bearing: " + "; ".join(failures)
+
+
+class TestReportDiagnosisUsesShippedRules:
+    """The CLI path must cross-check against NVIDIA's rules, not just the API.
+
+    `diagnose_kernel` accepted `shipped_rules=` from the start, but
+    `diagnose_ncu_report` -- what `mp ncu-diagnose` actually runs -- never
+    passed them, so corroboration reported "no shipped rules" on every real
+    report. A feature reachable only from a hand-written call is not reachable.
+    """
+
+    def _fake_module(self, with_rules=True):
+        class M:
+            def __init__(self, v): self.v = v
+            def value(self): return self.v
+            def as_double(self): return self.v
+            def as_uint64(self): return int(self.v)
+            def unit(self): return ""
+            def has_correlation_ids(self): return False
+
+        values = {
+            "sm__throughput.avg.pct_of_peak_sustained_elapsed": 85.0,
+            "gpu__compute_memory_throughput.avg.pct_of_peak_sustained_elapsed": 30.0,
+        }
+
+        class Action:
+            def name(self): return "gemm_kernel"
+            def metric_names(self): return list(values)
+            def metric_by_name(self, k): return M(values.get(k, 0.0))
+            def rule_results_as_dicts(self):
+                if not with_rules:
+                    return []
+                return [{
+                    "rule_identifier": "SOLBottleneck",
+                    "section_identifier": "SpeedOfLight",
+                    "rule_message": {"title": "Memory more utilized",
+                                     "message": "This kernel is memory bound.",
+                                     "message_type": "warning"},
+                    "speedup_estimation": {"type": "GLOBAL", "speedup": 25.0},
+                }]
+
+        class Rng:
+            num_actions = 1
+            def action_by_idx(self, i): return Action()
+
+        class Ctx:
+            num_ranges = 1
+            def range_by_idx(self, i): return Rng()
+
+        return types.SimpleNamespace(load_report=lambda p: Ctx())
+
+    def _first(self, out):
+        return (out.get("kernels") or out.get("diagnoses"))[0]
+
+    def test_shipped_rules_reach_the_diagnosis(self):
+        out = ncu_report_tools.diagnose_ncu_report(
+            "/dev/null", ncu_report_module=self._fake_module())
+        assert self._first(out)["corroboration"]["shipped_rules_available"] is True
+
+    def test_disagreement_with_nvidia_surfaces_through_the_report_path(self):
+        out = ncu_report_tools.diagnose_ncu_report(
+            "/dev/null", ncu_report_module=self._fake_module())
+        assert self._first(out)["corroboration"]["conflicts"]
+
+    def test_report_without_rules_is_reported_honestly(self):
+        out = ncu_report_tools.diagnose_ncu_report(
+            "/dev/null", ncu_report_module=self._fake_module(with_rules=False))
+        assert self._first(out)["corroboration"]["shipped_rules_available"] is False
