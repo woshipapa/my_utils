@@ -31,7 +31,7 @@ import re
 from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 __all__ = [
     "MetricEntry",
@@ -42,6 +42,10 @@ __all__ = [
     "decode_metric_name",
     "UNIT_MEANINGS",
     "SUBMETRIC_MEANINGS",
+    "UNIT_AXIS",
+    "axis_for_metric_name",
+    "denominator_of",
+    "group_report_metrics",
 ]
 
 
@@ -285,6 +289,162 @@ def decode_metric_name(name: str) -> Dict[str, str]:
         "rollup": rollup,
         "submetric": submetric,
         "prefix": prefix,
+    }
+
+
+# Which analysis axis each hardware unit belongs to. This is what lets a metric
+# nobody catalogued still be placed on an axis: the unit prefix alone says which
+# part of the machine it measures. Units absent from this table map to "", and
+# callers must report that rather than silently bucketing them somewhere.
+UNIT_AXIS: Dict[str, str] = {
+    "sm": "compute",
+    "smsp": "scheduler",
+    "sass": "compute",
+    "gpc": "compute",
+    "tpc": "compute",
+    "gr": "scheduler",
+    "gpu": "compute",
+    "l1tex": "memory_bandwidth",
+    "lts": "memory_bandwidth",
+    "ltc": "memory_bandwidth",
+    "lrc": "memory_bandwidth",
+    "syslts": "memory_bandwidth",
+    "dram": "memory_bandwidth",
+    "dramc": "memory_bandwidth",
+    "fbpa": "memory_bandwidth",
+    "fbp": "memory_bandwidth",
+    "mcc": "memory_bandwidth",
+    "memory": "memory_bandwidth",
+    "pcie": "communication",
+    "nvlrx": "communication",
+    "nvltx": "communication",
+    "c2c": "communication",
+    "launch": "scheduler",
+    "device": "measurement",
+    "profiler": "measurement",
+    "derived": "measurement",
+    "numa": "measurement",
+}
+
+
+def axis_for_metric_name(name: str) -> str:
+    """The analysis axis a metric belongs to, from its unit prefix alone.
+
+    Returns "" for a unit this module does not recognise. That is a gap in
+    :data:`UNIT_AXIS`, and reporting it is how the table gets extended -- a
+    metric assigned to the wrong axis is worse than one assigned to none.
+    """
+    return UNIT_AXIS.get(decode_metric_name(name).get("unit", ""), "")
+
+
+def denominator_of(name: str) -> str:
+    """``active``, ``elapsed``, or "" -- the distinction that flips verdicts.
+
+    A percentage over ACTIVE cycles divides by cycles the unit was busy; over
+    ELAPSED cycles it divides by the kernel's whole duration. A unit busy for 3%
+    of a kernel but saturated while busy reads ~100% active and ~3% elapsed.
+    Ranking units by a mixture of the two puts the idlest unit at the top, which
+    is exactly how an L1 gets reported as the bottleneck of a DRAM-bound kernel.
+    """
+    submetric = decode_metric_name(name).get("submetric", "")
+    if submetric.endswith("_active"):
+        return "active"
+    if submetric.endswith("_elapsed"):
+        return "elapsed"
+    return ""
+
+
+# Metric families that predate the unit__counter grammar and carry no "__".
+# The SourceCounters section emits these; they are real metrics, and lumping
+# them in with display names like "Duration" would hide per-source-line data.
+_LEGACY_PREFIX_UNIT: Tuple[Tuple[str, str], ...] = (
+    ("memory_l1_", "memory"),
+    ("memory_l2_", "memory"),
+    ("memory_shared_", "memory"),
+    ("memory_", "memory"),
+    ("derived_", "derived"),
+)
+
+
+def _legacy_unit(name: str) -> str:
+    """Unit for a metric name that has no ``__`` separator, or ""."""
+    low = str(name or "").strip().lower()
+    for prefix, unit in _LEGACY_PREFIX_UNIT:
+        if low.startswith(prefix):
+            return unit
+    return ""
+
+
+def group_report_metrics(
+    names: Iterable[str],
+    *,
+    catalog: Optional[Mapping[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Account for every metric in a report, catalogued or not.
+
+    A ``--set full`` collection carries thousands of metrics; the curated
+    catalog interprets fewer than two hundred. Previously the rest were loaded
+    and then ignored, so a report could contain the counter that explained a
+    kernel and never mention it. This does not invent thresholds for them -- it
+    names them, decodes them, and places them on an axis, so a reader can see
+    what data is present and unexamined instead of assuming absence.
+
+    ``catalog`` should be ``METRIC_CATALOG``; its per-entry ``names`` tuples mark
+    which spellings a rule already interprets.
+    """
+    known: set = set()
+    if catalog:
+        for spec in catalog.values():
+            for candidate in getattr(spec, "names", ()) or ():
+                known.add(str(candidate))
+
+    by_unit: Dict[str, List[str]] = {}
+    by_axis: Dict[str, List[str]] = {}
+    uncatalogued: List[str] = []
+    unknown_units: Dict[str, int] = {}
+    undecodable: List[str] = []
+    total = 0
+
+    for raw in names or ():
+        text = str(raw or "").strip()
+        if not text:
+            continue
+        total += 1
+        parts = decode_metric_name(text)
+        unit = parts.get("unit", "") or _legacy_unit(text)
+        if not unit:
+            # Display names ("Duration", "Block Size") are not PerfWorks
+            # counters. They are real data, so they are kept, not dropped.
+            undecodable.append(text)
+            continue
+        by_unit.setdefault(unit, []).append(text)
+        axis = UNIT_AXIS.get(unit, "")
+        if axis:
+            by_axis.setdefault(axis, []).append(text)
+        else:
+            unknown_units[unit] = unknown_units.get(unit, 0) + 1
+        if catalog and text not in known:
+            uncatalogued.append(text)
+
+    interpreted = total - len(uncatalogued) if catalog else 0
+    return {
+        "total": total,
+        "by_unit": {u: sorted(v) for u, v in sorted(by_unit.items())},
+        "by_axis": {a: sorted(v) for a, v in sorted(by_axis.items())},
+        "unit_counts": {u: len(v) for u, v in sorted(by_unit.items())},
+        "axis_counts": {a: len(v) for a, v in sorted(by_axis.items())},
+        "uncatalogued": sorted(uncatalogued),
+        "uncatalogued_count": len(uncatalogued),
+        "interpreted_count": interpreted,
+        "unknown_units": dict(sorted(unknown_units.items())),
+        "undecodable": sorted(undecodable),
+        "summary": (
+            f"{total} metrics present. {interpreted} are interpreted by a rule; "
+            f"{len(uncatalogued)} are decoded and placed on an axis but carry no "
+            f"threshold, so nothing judged them."
+            if catalog else
+            f"{total} metrics across {len(by_unit)} hardware units."
+        ),
     }
 
 

@@ -1211,3 +1211,77 @@ class TestDiagnoseKernelReportsAxes:
         assert result["axes"]["axis_count"] == len(axes.AXES)
         assert "power_clock" in result["axes"]["not_examined"]
         assert result["corroboration"]["shipped_rules_available"] is False
+
+
+# ---------------------------------------------------------------------------
+# Metric-name grammar and full-report accounting
+# ---------------------------------------------------------------------------
+
+section_index = _load("ncu.section_index", "ncu/section_index.py")
+
+
+class TestMetricGrammar:
+    def test_every_catalog_metric_decodes_to_a_unit(self):
+        """A catalog name that decodes to no unit would vanish from the inventory."""
+        undecodable = []
+        for spec in metric_catalog.METRIC_CATALOG.values():
+            for name in spec.names:
+                parts = section_index.decode_metric_name(name)
+                if not parts.get("unit") and not section_index._legacy_unit(name):
+                    undecodable.append(name)
+        assert not undecodable, f"catalog names with no decodable unit: {undecodable}"
+
+    def test_every_catalog_metric_lands_on_an_axis(self):
+        orphans = []
+        for spec in metric_catalog.METRIC_CATALOG.values():
+            for name in spec.names:
+                unit = (section_index.decode_metric_name(name).get("unit")
+                        or section_index._legacy_unit(name))
+                if unit and unit not in section_index.UNIT_AXIS:
+                    orphans.append((name, unit))
+        assert not orphans, f"metric units with no axis: {sorted(set(orphans))}"
+
+    def test_active_and_elapsed_denominators_are_distinguished(self):
+        """Mixing the two is how an idle unit gets ranked as the bottleneck."""
+        assert section_index.denominator_of(
+            "sm__throughput.avg.pct_of_peak_sustained_active") == "active"
+        assert section_index.denominator_of(
+            "sm__throughput.avg.pct_of_peak_sustained_elapsed") == "elapsed"
+        assert section_index.denominator_of("dram__bytes.sum") == ""
+
+    def test_collection_prefixes_are_stripped(self):
+        parts = section_index.decode_metric_name(
+            "pmsampling:smsp__warps_issue_stalled_barrier.avg")
+        assert parts["prefix"] == "pmsampling"
+        assert parts["unit"] == "smsp" and parts["rollup"] == "avg"
+
+    def test_unknown_unit_is_reported_not_guessed(self):
+        grouped = section_index.group_report_metrics(["weird__counter.avg"])
+        assert grouped["unknown_units"] == {"weird": 1}
+        assert section_index.axis_for_metric_name("weird__counter.avg") == ""
+
+    def test_uncatalogued_metrics_are_counted_not_dropped(self):
+        grouped = section_index.group_report_metrics(
+            ["sm__throughput.avg.pct_of_peak_sustained_elapsed",
+             "lts__t_sectors_srcunit_tex_op_read.sum"],
+            catalog=metric_catalog.METRIC_CATALOG,
+        )
+        assert grouped["total"] == 2
+        assert "lts__t_sectors_srcunit_tex_op_read.sum" in grouped["uncatalogued"]
+        assert grouped["by_axis"]["memory_bandwidth"]
+
+    def test_display_names_survive_as_undecodable(self):
+        grouped = section_index.group_report_metrics(["Duration"])
+        assert grouped["undecodable"] == ["Duration"]
+
+
+class TestDiagnoseKernelAccountsForEveryMetric:
+    def test_uncatalogued_metrics_are_reported(self):
+        result = ncu_diagnostics.diagnose_kernel({
+            "sm__throughput.avg.pct_of_peak_sustained_elapsed": 70.0,
+            "lts__t_sectors_srcunit_tex_op_read.sum": 12345.0,
+        })
+        inventory = result["metric_inventory"]
+        assert inventory["total"] == 2
+        assert inventory["uncatalogued_count"] == 1
+        assert "memory_bandwidth" in inventory["axis_counts"]

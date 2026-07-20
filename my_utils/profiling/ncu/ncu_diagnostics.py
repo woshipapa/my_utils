@@ -1640,10 +1640,22 @@ def diagnose_kernel(
         axes_examined=[a for a in ("measurement",)],
     )
 
+    # Account for every metric the report carried, not just the catalogued ones.
+    # A --set full collection holds thousands; the catalog interprets under two
+    # hundred. The rest used to be loaded and silently ignored, so a report could
+    # contain the counter that explained the kernel and never mention it. This
+    # does not invent thresholds for them - it names them and places them on an
+    # axis, so "we have no data" and "we had data and nothing read it" stop
+    # looking the same.
+    from .section_index import group_report_metrics  # local import: optional dep
+
+    inventory = group_report_metrics(view.metric_names(), catalog=METRIC_CATALOG)
+
     return {
         "kernel_name": kernel_name,
         "coverage": coverage,
         "axes": axes,
+        "metric_inventory": inventory,
         "corroboration": {
             key: reconciliation[key]
             for key in ("shipped_rules_available", "corroborated", "uncorroborated",
