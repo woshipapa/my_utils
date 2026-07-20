@@ -581,7 +581,7 @@ finding says why.
 
 ## 6. The metric catalog
 
-`my_utils/profiling/ncu/metric_catalog.py` — 103 metrics keyed by stable short
+`my_utils/profiling/ncu/metric_catalog.py` — 177 metrics keyed by stable short
 names, each with per-architecture spelling candidates.
 
 ```python
@@ -674,7 +674,7 @@ axis_for_metric_name("lts__t_sectors.sum")     # 'memory_bandwidth'
 denominator_of("sm__throughput.avg.pct_of_peak_sustained_active")   # 'active'
 
 result["metric_inventory"]["summary"]
-# 3421 metrics present. 168 are interpreted by a rule; 3253 are decoded and
+# 3421 metrics present. 177 are interpreted by a rule; 3244 are decoded and
 # placed on an axis but carry no threshold, so nothing judged them.
 ```
 
@@ -1059,6 +1059,7 @@ it.
 |---|---|
 | `check_warmup` | Too few iterations for a steady-state claim |
 | `check_autotuning` | One name covers many launch configs - an autotune sweep |
+| `check_kernel_name_uniqueness` | One symbol covers different shapes, so per-name stats blend them |
 | `check_cuda_graphs` | Per-kernel host attribution does not exist under graph replay |
 | `check_rank_completeness` | Rank files are missing - a **collection failure**, never "those ranks were idle" |
 | `check_gpu_metric_gaps` | "Missing Data" is sampler exhaustion, not GPU idle |

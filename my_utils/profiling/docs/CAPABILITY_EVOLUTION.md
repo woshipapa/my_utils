@@ -108,7 +108,7 @@ The counterpart to evidence: knowing when to say nothing.
 
 | Capability | Source | Why |
 |---|---|---|
-| `trace_quality.py` (12 checks) | Multiple, per check | Warmup, autotuning, CUDA-graph opacity, rank completeness, GPU-metric gaps, profiler overhead each invalidate specific conclusions. |
+| `trace_quality.py` (13 checks) | Multiple, per check | Warmup, autotuning, CUDA-graph opacity, rank completeness, GPU-metric gaps, profiler overhead each invalidate specific conclusions. |
 | `check_clock_alignment` | NTP/UTC error bounds vs collective durations | Cross-host clock error (1–10 ms) exceeds collective durations (0.1–5 ms), so cross-rank timing claims below a 10 ms floor are noise. |
 | `check_derived_metric_invariants` | Arithmetic identities | MFU > 100%, HFU < MFU, or a sparsity-inflated peak are wrong denominators, not interesting results. |
 | Straggler/victim inversion | DERIVED, from collective semantics | The slow rank waits *least*; fast ranks wait inside NCCL. Naive "who waited longest" identifies victims, not culprits. |

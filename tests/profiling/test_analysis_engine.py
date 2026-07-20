@@ -10,6 +10,7 @@ with no GPU stack installed.
 from __future__ import annotations
 
 import importlib.util
+import re
 import sys
 import types
 from pathlib import Path
@@ -1978,3 +1979,62 @@ class TestSolThresholdsMatchShippedRule:
         t = ncu_diagnostics.SOL_THRESHOLDS
         assert "compute_bound_compute" not in t
         assert "compute_bound_memory" not in t
+
+
+class TestDocsQuoteRealCounts:
+    """Counts cited in the docs drift silently as code is added.
+
+    Two had already drifted when this was written: the section-backed catalog
+    split, and `trace_quality.py (12 checks)` when there were 13 -- the handbook
+    table was also missing a row. A number in prose is a claim like any other.
+    """
+
+    def _docs(self):
+        root = Path(__file__).resolve().parents[2] / "my_utils" / "profiling" / "docs"
+        out = {}
+        for name in ("PERFORMANCE_ANALYSIS_HANDBOOK.md", "CAPABILITY_EVOLUTION.md"):
+            path = root / name
+            if path.exists():
+                out[name] = path.read_text()
+        return out
+
+    def test_cited_counts_match_the_code(self):
+        import re
+        counts = {
+            f"{len(metric_catalog.METRIC_CATALOG)} metrics": True,
+            f"{len(axes.AXES)} axes": True,
+            f"{len(metric_catalog.STALL_REASONS)} stall reasons": True,
+            f"of {len(ncu_diagnostics._ANALYSIS_REQUIREMENTS)} analyses": True,
+        }
+        checks = len([n for n in dir(trace_quality) if n.startswith("check_")])
+        counts[f"({checks} checks)"] = True
+
+        wrong = []
+        for name, text in self._docs().items():
+            # Any "<n> metrics"/"<n> axes"/... that is NOT the real number is stale.
+            # Anchored to the phrasings that state a fact about this codebase.
+            # A bare "<n> metrics" also appears in example output and in
+            # unrelated thresholds, so matching that loosely produces noise.
+            for pattern, real in (
+                (r"catalog interprets (\d+) metrics", len(metric_catalog.METRIC_CATALOG)),
+                (r"metric_catalog\.py` [^\n]*?(\d+) metrics", len(metric_catalog.METRIC_CATALOG)),
+                (r"`METRIC_CATALOG` \((\d+) metrics\)", len(metric_catalog.METRIC_CATALOG)),
+                (r"(\d+) axes\b", len(axes.AXES)),
+                (r"(\d+) stall reasons\b", len(metric_catalog.STALL_REASONS)),
+                (r"of (\d+) analyses\b", len(ncu_diagnostics._ANALYSIS_REQUIREMENTS)),
+                (r"\((\d+) checks\)", checks),
+            ):
+                for found in re.findall(pattern, text):
+                    if int(found) != real:
+                        wrong.append(f"{name}: '{pattern}' cites {found}, code says {real}")
+        assert not wrong, "docs cite stale counts: " + "; ".join(wrong)
+
+    def test_trace_quality_table_lists_every_check(self):
+        """The 9c table must not silently omit a check."""
+        text = self._docs().get("PERFORMANCE_ANALYSIS_HANDBOOK.md", "")
+        if not text:
+            pytest.skip("handbook not present")
+        documented = set(re.findall(r"\| `(check_\w+)`", text))
+        actual = {n for n in dir(trace_quality) if n.startswith("check_")}
+        missing = sorted(actual - documented)
+        assert not missing, f"checks implemented but absent from the 9c table: {missing}"
