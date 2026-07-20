@@ -2207,12 +2207,23 @@ def diagnose_kernel(
     shipped_rules: Optional[Iterable[Any]] = None,
     throttling: Optional[Mapping[str, Any]] = None,
     problem_shape: Optional[Mapping[str, int]] = None,
+    collection: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Run every rule over one kernel's metrics and return a ranked diagnosis.
 
     ``metrics`` maps exact ncu metric names to values.  ``gpu_spec`` unlocks the
     absolute roofline; without it the analysis still works but reports
     arithmetic intensity without a ceiling.
+
+    ``collection`` describes how the report was collected and is forwarded to
+    :func:`~my_utils.profiling.analyzers.measurement_context.describe_collection_mode`
+    (``cache_control``, ``replay_mode``, ``iterations``, ``clocks_locked``,
+    ``input_distribution``). It does not change any finding; it records what
+    these numbers can and cannot be compared against. Nsight Compute flushes
+    every cache before each replay pass by default, so an ncu duration is a
+    cold-cache number and comparing it with a wall-clock timing measures the
+    cache state rather than the code. Omitting it assumes ncu defaults, which is
+    what almost every run uses.
 
     ``problem_shape`` is the GEMM's logical shape (``{"m": M, "n": N, "k": K}``).
     The kernel symbol encodes the TILE shape and never the problem shape, so
@@ -2427,12 +2438,19 @@ def diagnose_kernel(
 
     inventory = group_report_metrics(view.metric_names(), catalog=METRIC_CATALOG)
 
+    # Record how this was measured. Not a finding: a property of the numbers
+    # above, which decides what they may be compared against.
+    from ..analyzers.measurement_context import describe_collection_mode
+
+    context = describe_collection_mode(**{"source": "ncu", **dict(collection or {})})
+
     return {
         "kernel_name": kernel_name,
         "coverage": coverage,
         "axes": axes,
         "metric_inventory": inventory,
         "throttling": throttle_result,
+        "measurement_context": context.to_dict(),
         "corroboration": {
             key: reconciliation[key]
             for key in ("shipped_rules_available", "corroborated", "uncorroborated",

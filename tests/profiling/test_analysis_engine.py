@@ -2038,3 +2038,47 @@ class TestDocsQuoteRealCounts:
         actual = {n for n in dir(trace_quality) if n.startswith("check_")}
         missing = sorted(actual - documented)
         assert not missing, f"checks implemented but absent from the 9c table: {missing}"
+
+
+class TestNoOrphanedAnalysisModules:
+    """An analysis module with no caller is dead weight that looks like coverage.
+
+    This has happened repeatedly: throttling, nccl_bandwidth, trace_quality and
+    distributed_alignment were each complete, exported, tested -- and invoked by
+    nothing, so the axes they cover silently reported as gaps. measurement_context
+    was added in the same session that fixed the others and immediately repeated
+    the mistake. Exported and tested is not the same as reachable.
+    """
+
+    _ENTRY_POINTS = (
+        "ncu/ncu_diagnostics.py",
+        "ncu/ncu_report_tools.py",
+        "sources/nsys_auto_analysis.py",
+        "analyzers/metrics_analyzer.py",
+    )
+
+    def test_analysis_modules_are_reachable_from_an_entry_point(self):
+        root = Path(__file__).resolve().parents[2] / "my_utils" / "profiling"
+        entry_text = "\n".join(
+            (root / rel).read_text() for rel in self._ENTRY_POINTS if (root / rel).exists()
+        )
+        # Modules that must be invoked, not merely importable.
+        required = [
+            "analyzers/axes.py",
+            "analyzers/measurement_context.py",
+            "analyzers/trace_quality.py",
+            "hardware/throttling.py",
+            "ncu/shipped_rules.py",
+            "ncu/source_correlation.py",
+            "ncu/sampling_validity.py",
+            "ncu/section_index.py",
+        ]
+        orphans = []
+        for rel in required:
+            stem = Path(rel).stem
+            if stem not in entry_text:
+                orphans.append(rel)
+        assert not orphans, (
+            "analysis modules with no caller in any entry point "
+            f"(exported and tested is not reachable): {orphans}"
+        )

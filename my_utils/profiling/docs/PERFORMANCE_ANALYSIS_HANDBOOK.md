@@ -352,7 +352,17 @@ diagnose_kernel(
     shipped_rules=load_ncu_report_rule_rows("profile.ncu-rep"),  # 5c
     throttling={"clock_event_mask": mask},                       # 9d
     problem_shape={"m": 4096, "n": 4096, "k": 1024},             # tile quantisation
+    collection={"cache_control": "none", "clocks_locked": True}, # 9g
 )
+```
+
+`collection` changes no finding. It records what the numbers may be compared
+against, and defaults to ncu's own defaults - cold cache, serialised execution -
+because that is what almost every run uses:
+
+```python
+result["measurement_context"]["cache_state"]      # 'cold'
+result["measurement_context"]["cannot_answer"]    # pipeline speed, overlap
 ```
 
 `problem_shape` deserves a note: the kernel symbol encodes the *tile* shape and
