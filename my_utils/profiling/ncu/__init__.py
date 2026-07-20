@@ -15,6 +15,8 @@ from .source_correlation import (
     source_availability,
     summarize_warp_samples,
 )
+from .signal_scan import scan_all_signals
+from .source_correlation import link_findings_to_source as link_findings_to_source
 from .sampling_validity import (
     check_pc_sampling_validity,
     check_pm_sampling_validity,
@@ -56,4 +58,6 @@ __all__ = [
     "summarize_warp_samples",
     "check_pc_sampling_validity",
     "check_pm_sampling_validity",
+    "scan_all_signals",
+    "link_findings_to_source",
 ]

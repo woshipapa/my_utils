@@ -1965,6 +1965,19 @@ def diagnose_ncu_report(
     # not a different question -- for a fused kernel it is usually the only
     # actionable part, and requiring a second command to get it meant most
     # callers never saw it.
+    # Keep the action objects: the linkage step needs them, and re-walking the
+    # report a third time to find them again would be wasteful.
+    action_by_launch: Dict[Tuple[int, int], Any] = {}
+    if include_source:
+        try:
+            _mod = _load_ncu_report_module(ncu_report_module)
+            _ctx = _mod.load_report(str(report_path))
+            for _ri, _rng in enumerate(_iter_ranges(_ctx)):
+                for _ai, _act in enumerate(_iter_actions(_rng)):
+                    action_by_launch[(_ri, _ai)] = _act
+        except Exception:
+            action_by_launch = {}
+
     source_by_launch: Dict[Tuple[int, int], Dict[str, object]] = {}
     if include_source:
         try:
@@ -2020,9 +2033,39 @@ def diagnose_ncu_report(
         )
         diagnosis["range_index"] = range_idx
         diagnosis["action_index"] = action_idx
+        # Reason over every metric the report carried, not only the curated
+        # ones. The curated rules know fixes; this finds anomalies in the
+        # thousands of counters no rule was written for.
+        from .signal_scan import scan_all_signals
+
+        scan = scan_all_signals(metrics)
+        diagnosis["signal_scan"] = {
+            k: v for k, v in scan.items() if k != "findings"
+        }
+        if scan["findings"]:
+            merged = list(diagnosis.get("findings") or [])
+            merged.extend(f.to_dict() for f in scan["findings"])
+            merged.sort(key=lambda f: (
+                {"high": 0, "medium": 1, "low": 2, "info": 3}.get(f.get("severity"), 9),
+                -(f.get("speedup_ceiling") or 1.0),
+            ))
+            diagnosis["findings"] = merged[: int(findings_per_kernel)]
+
         source = source_by_launch.get((range_idx, action_idx))
         if source is not None:
             diagnosis["source_attribution"] = source
+            # The join: each finding, against the lines whose sampled stalls
+            # explain it. This is what makes the pipeline end-to-end rather
+            # than two analyses printed next to each other.
+            attribution = source.get("stall_attribution")
+            if isinstance(attribution, dict) and attribution.get("available"):
+                from .source_correlation import link_findings_to_source
+
+                diagnosis["signal_to_source"] = link_findings_to_source(
+                    diagnosis.get("findings") or [],
+                    action_by_launch.get((range_idx, action_idx)),
+                    attribution=attribution,
+                )
         duration = diagnosis.get("sections", {}).get("bottleneck", {})
         diagnosis["duration_ns"] = (
             metrics.get("gpu__time_duration.sum") if isinstance(metrics, dict) else None
@@ -2174,6 +2217,33 @@ def diagnose_result_to_markdown(payload: Dict[str, object]) -> str:
                             lines.append(f"  - {reason}")
                         if availability.get("reasons_unavailable"):
                             lines.append("")
+
+            link = kernel.get("signal_to_source", {})
+            linked = link.get("linked", []) if isinstance(link, dict) else []
+            if linked:
+                lines.append("### Signal to source")
+                lines.append("")
+                for item in linked[:6]:
+                    lines.append(f"**{item.get('finding_title','')}**")
+                    reasons = ", ".join(item.get("matched_on_stall_reasons") or [])
+                    lines.append(
+                        f"- correlated via `{reasons}` "
+                        f"({item.get('concentration','')}, "
+                        f"{float(item.get('share_explained') or 0.0) * 100:.0f}% of those samples)"
+                    )
+                    for row in item.get("source_lines", [])[:3]:
+                        lines.append(
+                            f"  - `{row.get('file_name','?')}:{row.get('line','?')}` "
+                            f"{row.get('samples', 0)} samples "
+                            f"({float(row.get('share_of_reason') or 0.0) * 100:.0f}%) "
+                            f"`{(row.get('source_text') or '')[:52]}`"
+                        )
+                    lines.append("")
+                lines.append(
+                    "_Correlation by stall reason, not proof of cause. A line can stall "
+                    "for several reasons at once._"
+                )
+                lines.append("")
 
             findings = kernel.get("findings", [])
             if isinstance(findings, list) and findings:

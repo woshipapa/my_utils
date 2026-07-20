@@ -1178,6 +1178,41 @@ python -m my_utils.profiling.cli ncu-diagnose --report profile.ncu-rep
 
 Pass `--no-source` to skip it; it re-reads the report for PC samples.
 
+### The pipeline `ncu-diagnose` runs
+
+One command, three stages, each feeding the next:
+
+1. **Collect** — every metric in the report, not the catalogued subset.
+   `metric_inventory` accounts for all of them.
+2. **Reason** — the 15 curated analyses, plus `scan_all_signals` over
+   everything else. The scan reads metrics by name grammar, so it can say "the
+   constant cache is at 91% of peak" for a unit nobody wrote a rule for. Its
+   thresholds are ours and conservative; it points at a section to read, while
+   the curated rules are what know the fix.
+3. **Localise** — `link_findings_to_source` joins each finding to the source
+   lines whose sampled stalls explain it.
+
+```
+### Signal to source
+
+**Global loads touch 28.0 sectors per request**
+- correlated via `LONG_SCOREBOARD, LG_THROTTLE` (concentrated, 100% of those samples)
+  - `attn.cu:1` 700 samples (100%) `q = load_qkv(...)`
+```
+
+**The join is by stall reason and is a correlation, not a proof.** A line can
+stall for several reasons at once, and a finding can have causes the sampler
+cannot observe. Each link reports how concentrated the evidence is, so a signal
+spread thinly across many lines looks different from one sitting on a single
+line.
+
+**Some findings are deliberately never linked.** Grid shape, occupancy limits,
+tile quantisation and measurement faults are properties of the launch or of the
+data, not of any line. So are the generic scan findings: a saturated constant
+cache has no known relationship to any stall reason, and attaching one would
+put a real source line next to an invented mechanism. That reads as evidence
+and is not.
+
 ### The API this rests on
 
 Verified by reading the `ncu_report` module shipped with Nsight Compute 2026.1.1,

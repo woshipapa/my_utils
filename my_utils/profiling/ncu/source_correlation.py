@@ -52,6 +52,8 @@ __all__ = [
     "pc_sampling_timeline",
     "summarize_warp_samples",
     "source_availability",
+    "link_findings_to_source",
+    "STALL_REASON_BY_CATEGORY",
     "SOURCE_METRIC_HINTS",
 ]
 
@@ -119,6 +121,180 @@ class SourceLineAttribution:
             "sass_samples": list(self.sass_samples),
             "source_text": self.source_text,
         }
+
+
+# Which sampled stall reasons explain which finding categories. This is the
+# join between "what is wrong" and "where it happens": a finding says the kernel
+# is bound on memory latency, and the sampler says which lines were stalled on
+# LONG_SCOREBOARD. Reasons are the names of ``ncu_report.StallReason`` members,
+# read from the shipped module rather than guessed.
+STALL_REASON_BY_CATEGORY: Dict[str, Tuple[str, ...]] = {
+    # Memory latency and throughput.
+    "memory_bound_kernel_below_expectation": ("LONG_SCOREBOARD", "LG_THROTTLE",
+                                              "MIO_THROTTLE", "DRAIN"),
+    "uncoalesced_global_access": ("LONG_SCOREBOARD", "LG_THROTTLE"),
+    "poor_cache_locality": ("LONG_SCOREBOARD",),
+    "memory": ("LONG_SCOREBOARD", "LG_THROTTLE", "MIO_THROTTLE"),
+    # Shared memory and its queues.
+    "shared_memory": ("MIO_THROTTLE", "SHORT_SCOREBOARD"),
+    "bank_conflicts": ("MIO_THROTTLE", "SHORT_SCOREBOARD"),
+    # Compute pipes.
+    "compute_bound_kernel_below_expectation": ("MATH_PIPE_THROTTLE", "WAIT"),
+    "pipe_saturated": ("MATH_PIPE_THROTTLE", "WAIT"),
+    "unexpected_fp64": ("MATH_PIPE_THROTTLE",),
+    "tensor_cores_idle": ("MATH_PIPE_THROTTLE", "WAIT"),
+    # Scheduling and synchronisation.
+    "occupancy": ("NOT_SELECTED", "NO_INSTRUCTIONS"),
+    "occupancy_achieved_gap": ("NOT_SELECTED", "NO_INSTRUCTIONS"),
+    "imbalance": ("BARRIER", "MEMBAR", "DRAIN"),
+    # Control flow.
+    "thread_divergence": ("BRANCH_RESOLVING",),
+    # Register pressure spills to local memory, which is L1TEX traffic.
+    "register_spilling": ("LONG_SCOREBOARD", "LG_THROTTLE"),
+}
+
+# Categories assembled with an f-string, matched by prefix rather than by
+# spelling out every interpolated value. Writing the variants by hand went wrong
+# twice: `uncoalesced_global_{label}` interpolates "load"/"store", not "ld"/"st",
+# so hand-written `uncoalesced_global_ld` entries matched nothing and the
+# highest-severity finding in a test report went unlinked while noisier ones did
+# not. Prefixes cannot be wrong about a suffix they never name.
+_CATEGORY_PREFIX_REASONS: Tuple[Tuple[str, Tuple[str, ...]], ...] = (
+    ("uncoalesced_", ("LONG_SCOREBOARD", "LG_THROTTLE")),
+    ("sparse_global_", ("LONG_SCOREBOARD", "LG_THROTTLE")),
+    ("shared_bank_conflicts_", ("MIO_THROTTLE", "SHORT_SCOREBOARD")),
+    ("occupancy_limited_", ("NOT_SELECTED", "NO_INSTRUCTIONS")),
+    ("sm_load_imbalance", ("BARRIER", "MEMBAR", "DRAIN")),
+    ("l2_load_imbalance", ("LONG_SCOREBOARD",)),
+    ("dram_load_imbalance", ("LONG_SCOREBOARD",)),
+)
+
+# Stall categories localise themselves: a `stall_long_scoreboard` finding is
+# explained by exactly the LONG_SCOREBOARD samples.
+_STALL_CATEGORY_PREFIX = "stall_"
+
+# Categories deliberately NOT linked. Each is a property of the launch or of the
+# measurement rather than of any line, or -- for the generic scan findings --
+# names a unit whose relationship to any stall reason is unknown. Linking them
+# anyway would attach a real source line to an invented mechanism, which reads
+# as evidence and is not.
+_UNLINKABLE = frozenset({
+    "unit_saturated", "unit_duty_cycle",       # generic scan: unit unknown
+    "small_grid", "tail_wave_quantization", "block_size_not_warp_multiple",
+    "tile_quantization", "wave_quantization",
+    "measurement_caveat", "measurement_above_physical_limit",
+    "evidence_conflict", "uninformative_name", "unattributable_kernel",
+    "throttling", "coverage",
+})
+
+
+def link_findings_to_source(
+    findings: Sequence[Any],
+    action: Any,
+    *,
+    attribution: Optional[Mapping[str, Any]] = None,
+    top_k: int = 3,
+) -> Dict[str, Any]:
+    """Attach the source lines that explain each finding.
+
+    A finding says *what*; the sampler says *where*. Joining them is the point
+    of the whole pipeline: "memory bound" plus "line 412 accounts for 60% of
+    LONG_SCOREBOARD samples" is actionable in a way neither half is alone.
+
+    The join is by stall reason, via :data:`STALL_REASON_BY_CATEGORY`. It is a
+    *correlation*, not a proof -- the same line can stall for several reasons and
+    a finding can have causes the sampler cannot see -- so each link carries the
+    share of that reason's samples the line accounts for, and the caller can see
+    how concentrated the evidence is. A finding whose reasons are absent from
+    the samples gets no link rather than a weak one.
+
+    ``attribution`` is the output of :func:`attribute_stalls_to_source`; passing
+    it avoids re-walking the samples when the caller already has it.
+    """
+    if attribution is None:
+        attribution = attribute_stalls_to_source(action, top_k=64)
+    if not isinstance(attribution, Mapping) or not attribution.get("available"):
+        return {
+            "linked": [],
+            "available": False,
+            "reason": (attribution or {}).get(
+                "reason", "no stall attribution available for this launch"),
+        }
+
+    lines = attribution.get("source_lines") or []
+    totals = attribution.get("stall_reasons") or {}
+
+    linked: List[Dict[str, Any]] = []
+    for finding in findings:
+        category = (finding.get("category") if isinstance(finding, Mapping)
+                    else getattr(finding, "category", "")) or ""
+        if category in _UNLINKABLE:
+            continue
+        reasons = STALL_REASON_BY_CATEGORY.get(category)
+        if reasons is None and category.startswith(_STALL_CATEGORY_PREFIX):
+            # `stall_long_scoreboard` -> ("LONG_SCOREBOARD",)
+            reasons = (category[len(_STALL_CATEGORY_PREFIX):].upper(),)
+        if reasons is None:
+            for prefix, prefix_reasons in _CATEGORY_PREFIX_REASONS:
+                if category.startswith(prefix):
+                    reasons = prefix_reasons
+                    break
+        if not reasons:
+            continue
+
+        hits: List[Dict[str, Any]] = []
+        for row in lines:
+            per_reason = row.get("stall_reasons") or {}
+            matched = {r: per_reason[r] for r in reasons if per_reason.get(r)}
+            if not matched:
+                continue
+            samples = sum(matched.values())
+            # Share of all samples for these reasons that this line accounts for.
+            reason_total = sum(int(totals.get(r, 0)) for r in reasons) or 1
+            hits.append({
+                "file_name": row.get("file_name"),
+                "line": row.get("line"),
+                "source_text": row.get("source_text"),
+                "samples": samples,
+                "share_of_reason": samples / reason_total,
+                "matched_stall_reasons": matched,
+                "sass_samples": (row.get("sass_samples") or [])[:2],
+            })
+        if not hits:
+            continue
+        hits.sort(key=lambda h: h["samples"], reverse=True)
+        top = hits[: int(top_k)]
+        covered = sum(h["share_of_reason"] for h in top)
+
+        title = (finding.get("title") if isinstance(finding, Mapping)
+                 else getattr(finding, "title", "")) or ""
+        linked.append({
+            "category": category,
+            "finding_title": title,
+            "matched_on_stall_reasons": list(reasons),
+            "source_lines": top,
+            "share_explained": covered,
+            "concentration": (
+                "concentrated" if top and top[0]["share_of_reason"] >= 0.5 else
+                "spread" if covered < 0.5 else "moderate"
+            ),
+            "caveat": (
+                "Correlation by stall reason, not proof of cause. A line can stall "
+                "for several reasons at once, and a finding can have causes the "
+                "sampler cannot observe."
+            ),
+        })
+
+    return {
+        "available": True,
+        "linked": linked,
+        "linked_count": len(linked),
+        "unlinkable_note": (
+            "Findings absent from this list have no stall reason that would "
+            "localise them -- launch geometry, occupancy limits and measurement "
+            "caveats are properties of the kernel, not of any one line."
+        ),
+    }
 
 
 def _maybe(obj: Any, name: str, *args: Any) -> Any:

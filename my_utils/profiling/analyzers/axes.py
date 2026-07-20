@@ -277,6 +277,10 @@ _CATEGORY_PREFIX_TO_AXIS: Tuple[Tuple[str, str], ...] = (
     ("sparse_global_", "memory_bandwidth"),
     ("shared_bank_conflicts_", "shared_memory"),
     ("pipe_", "compute"),
+    # Generic signal-scan findings name a hardware unit whose axis the scan
+    # itself resolves from the unit prefix; they are filed under measurement
+    # because what they report is "a counter looks anomalous", not a diagnosis.
+    ("unit_", "measurement"),
 )
 
 # Suffixes, for categories built as f"{unit}_load_imbalance".

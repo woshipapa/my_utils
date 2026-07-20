@@ -1133,8 +1133,11 @@ class TestCoverageKeysAreReal:
             [f"stall_{key}" for key in metric_catalog.STALL_REASONS]
             + [f"occupancy_limited_{b}" for b in
                ("registers", "shared_mem", "blocks", "warps", "barriers")]
-            + [f"uncoalesced_global_{op}" for op in ("ld", "st")]
-            + [f"sparse_global_{op}" for op in ("ld", "st")]
+            # The interpolated labels are "load"/"store" here, not "ld"/"st";
+            # the first version of this test asserted values the code never
+            # emits, so it passed while proving nothing about the real ones.
+            + [f"uncoalesced_global_{op}" for op in ("load", "store")]
+            + [f"sparse_global_{op}" for op in ("load", "store")]
             + [f"shared_bank_conflicts_{op}" for op in ("ld", "st")]
             + [f"{unit}_load_imbalance" for unit in ("sm", "l2", "dram")]
         )
@@ -2353,3 +2356,108 @@ class TestDiagnoseIsSelfContained:
         kernel = out["kernels"][0]
         assert kernel["verdict"]
         assert kernel["source_attribution"]["stall_attribution"]["available"] is False
+
+
+signal_scan = _load("ncu.signal_scan", "ncu/signal_scan.py")
+source_correlation_mod = _load("ncu.source_correlation", "ncu/source_correlation.py")
+
+
+class TestSignalScanOverAllMetrics:
+    """Reason about metrics no curated rule covers, without inventing noise."""
+
+    def test_saturated_uncatalogued_unit_is_found(self):
+        out = signal_scan.scan_all_signals({
+            "idc__request_cycles_active.avg.pct_of_peak_sustained_elapsed": 91.0,
+        })
+        assert any(f.category == "unit_saturated" for f in out["findings"])
+
+    def test_units_with_curated_rules_are_not_duplicated(self):
+        out = signal_scan.scan_all_signals({
+            "sm__throughput.avg.pct_of_peak_sustained_elapsed": 95.0,
+        })
+        assert not [f for f in out["findings"] if f.category == "unit_saturated"]
+
+    def test_bursty_unit_is_explained_rather_than_called_idle(self):
+        out = signal_scan.scan_all_signals({
+            "tpc__warps_active.avg.pct_of_peak_sustained_active": 96.0,
+            "tpc__warps_active.avg.pct_of_peak_sustained_elapsed": 8.0,
+        })
+        finding = next(f for f in out["findings"] if f.category == "unit_duty_cycle")
+        assert "Both" in finding.summary and "correct" in finding.summary
+
+    def test_percentage_above_100_is_a_measurement_fault(self):
+        out = signal_scan.scan_all_signals({
+            "fbpa__x.avg.pct_of_peak_sustained_elapsed": 118.0,
+        })
+        finding = next(f for f in out["findings"]
+                       if f.category == "measurement_above_physical_limit")
+        assert finding.severity == "high"
+
+    def test_hit_rate_is_not_read_as_utilisation(self):
+        """A 95% hit rate must not be reported as a saturated unit."""
+        out = signal_scan.scan_all_signals({
+            "lts__t_sector_hit_rate.pct": 95.0,
+        })
+        assert not [f for f in out["findings"] if f.category == "unit_saturated"]
+
+    def test_quiet_report_produces_nothing(self):
+        out = signal_scan.scan_all_signals({
+            "idc__request_cycles_active.avg.pct_of_peak_sustained_elapsed": 12.0,
+        })
+        assert out["findings"] == []
+
+
+class TestSignalToSourceLinkage:
+    """Join what-is-wrong to where-it-happens, and refuse invented joins."""
+
+    def _attribution(self):
+        return {
+            "available": True,
+            "stall_reasons": {"LONG_SCOREBOARD": 700, "MATH_PIPE_THROTTLE": 100},
+            "source_lines": [
+                {"file_name": "attn.cu", "line": 1, "source_text": "load_qkv",
+                 "samples": 700, "stall_reasons": {"LONG_SCOREBOARD": 700},
+                 "sass_samples": ["LDG.E.128"]},
+                {"file_name": "attn.cu", "line": 3, "source_text": "mm(p,v)",
+                 "samples": 100, "stall_reasons": {"MATH_PIPE_THROTTLE": 100},
+                 "sass_samples": []},
+            ],
+        }
+
+    def _link(self, category):
+        return source_correlation_mod.link_findings_to_source(
+            [{"category": category, "title": "t"}], None,
+            attribution=self._attribution())
+
+    def test_memory_finding_lands_on_the_loading_line(self):
+        out = self._link("uncoalesced_global_load")
+        assert out["linked"], "f-string category must match by prefix"
+        row = out["linked"][0]["source_lines"][0]
+        assert row["line"] == 1 and row["share_of_reason"] == pytest.approx(1.0)
+
+    def test_stall_category_localises_itself(self):
+        out = self._link("stall_long_scoreboard")
+        assert out["linked"][0]["source_lines"][0]["line"] == 1
+
+    def test_generic_scan_findings_are_not_linked(self):
+        """A saturated constant cache has no known relation to any stall reason."""
+        assert self._link("unit_saturated")["linked"] == []
+        assert self._link("unit_duty_cycle")["linked"] == []
+
+    def test_launch_geometry_findings_are_not_linked(self):
+        """Grid shape is a property of the launch, not of a line."""
+        assert self._link("small_grid")["linked"] == []
+        assert self._link("tile_quantization")["linked"] == []
+
+    def test_measurement_faults_are_not_linked(self):
+        assert self._link("measurement_above_physical_limit")["linked"] == []
+
+    def test_link_carries_its_own_caveat(self):
+        out = self._link("uncoalesced_global_load")
+        assert "not proof of cause" in out["linked"][0]["caveat"]
+
+    def test_absent_attribution_is_reported_not_faked(self):
+        out = source_correlation_mod.link_findings_to_source(
+            [{"category": "uncoalesced_global_load", "title": "t"}], None,
+            attribution={"available": False, "reason": "no samples"})
+        assert out["available"] is False and out["linked"] == []
