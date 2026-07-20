@@ -3161,3 +3161,100 @@ class TestPmSamplingDeclaredGroups:
         out = source_correlation.analyze_pm_sampling(_NoDuration())
         assert out["available"] is True
         assert "envelope" in out["window_source"]
+
+
+class TestStallAccountingCloses:
+    """After GCStack (ISCA 2025): a cycle stack that does not sum to the total
+    cannot say how much of the runtime it explained.
+
+    GCStack's own mechanism needs a cycle-level simulator -- it inspects every
+    warp slot each cycle -- so it is not portable to hardware counters. Its
+    critique of *priority-based* attribution also does not apply here: each
+    `..._per_issue_active` metric is the average number of warps in that state,
+    so a cycle with several warps stalled differently is already split between
+    them, which is what GCStack achieves in simulation.
+
+    What transfers is the closure check.
+    """
+
+    def _view(self, reasons):
+        metrics = {"smsp__average_warp_latency_per_inst_issued.ratio": 20.0,
+                   "smsp__issue_active.avg.per_cycle_active": 0.1}
+        for name, value in reasons.items():
+            metrics[f"smsp__average_warps_issue_stalled_{name}_per_issue_active.ratio"] = value
+        return ncu_diagnostics.MetricView(metrics)
+
+    def test_complete_accounting_reports_full_explanation(self):
+        result = ncu_diagnostics.analyze_stalls(
+            self._view({"long_scoreboard": 12.0, "barrier": 6.0, "wait": 2.0}))
+        assert result["explained_share"] == pytest.approx(1.0, abs=0.01)
+        assert not [f for f in result["findings"]
+                    if f.title == "Stall accounting does not close"]
+
+    def test_missing_reasons_are_flagged_not_absorbed(self):
+        """Half the reasons absent must not read as 'the rest is fine'."""
+        result = ncu_diagnostics.analyze_stalls(
+            self._view({"long_scoreboard": 8.0}))
+        assert result["explained_share"] == pytest.approx(0.4, abs=0.01)
+        finding = next(f for f in result["findings"]
+                       if f.title == "Stall accounting does not close")
+        assert "not unexplained stalling" in finding.summary
+        assert "WarpStateStats" in finding.actions[0]
+
+    def test_note_states_what_the_top_stalls_cover(self):
+        result = ncu_diagnostics.analyze_stalls(
+            self._view({"long_scoreboard": 12.0, "barrier": 6.0, "wait": 2.0}),
+            top_k=1)
+        assert "top 1 account for 60" in result["accounting_note"]
+
+    def test_absent_total_says_the_shares_have_no_denominator(self):
+        result = ncu_diagnostics.analyze_stalls(ncu_diagnostics.MetricView({}))
+        assert result["explained_share"] is None
+        assert "no denominator" in result["accounting_note"]
+
+
+class TestClockConfound:
+    """A duration measured at one clock is not comparable with one at another.
+
+    On a real pair of reports of the same kernel, the wall-clock gap was 12.4%
+    and the cycle-normalised gap 5.2% -- half the apparent speedup was the SM
+    clock (1674 vs 1789 MHz), and the tool reported the 12.4% as if it were the
+    schedule change. It had both clocks and mentioned neither.
+    """
+
+    def _ctx(self, sm, gpc=None):
+        return measurement_context.describe_collection_mode(
+            source="ncu", sm_clock_hz=sm, gpc_clock_hz=gpc or sm)
+
+    def test_different_clocks_block_a_duration_comparison(self):
+        out = measurement_context.compare_measurements(
+            self._ctx(1.674e9), self._ctx(1.789e9),
+            baseline_value=82464.0, candidate_value=73344.0)
+        assert out["comparable"] is False
+        assert any("different SM clocks" in b for b in out["blockers"])
+
+    def test_clock_normalised_ratio_is_reported(self):
+        out = measurement_context.compare_measurements(
+            self._ctx(1.674e9), self._ctx(1.789e9),
+            baseline_value=82464.0, candidate_value=73344.0)
+        # 0.8894 observed x 1.0691 clock = 0.9508 -- 5% not 11%
+        assert out["clock_normalised_ratio"] == pytest.approx(0.951, abs=0.005)
+        assert "Normalising for the clock" in out["verdict"]
+
+    def test_same_clock_does_not_block(self):
+        out = measurement_context.compare_measurements(
+            self._ctx(1.789e9), self._ctx(1.789e9),
+            baseline_value=100.0, candidate_value=90.0)
+        assert out["comparable"] is True
+
+    def test_gpc_sm_disagreement_invalidates_cycle_figures(self):
+        """5.3% between domains that should agree means they were not measured
+        over the same window."""
+        ctx = self._ctx(1.674e9, gpc=1.762e9)
+        assert ctx.clock_disagreement == pytest.approx(1.053, abs=0.005)
+        assert any("derived from cycles" in c for c in ctx.cannot_answer)
+        assert any("re-collect" in n for n in ctx.notes)
+
+    def test_agreeing_clocks_raise_nothing(self):
+        ctx = self._ctx(1.789e9, gpc=1.789e9)
+        assert not [c for c in ctx.cannot_answer if "derived from cycles" in c]

@@ -417,6 +417,48 @@ def analyze_stalls(view: MetricView, *, top_k: int = 6) -> Dict[str, Any]:
     for row in actionable:
         buckets[row["bucket"]] = buckets.get(row["bucket"], 0.0) + row["cycles_per_issued_inst"]
 
+    # Closed accounting, after GCStack (ISCA 2025). Its central argument is
+    # that a cycle stack which does not sum to the total cannot say how much of
+    # the runtime it has explained, and that priority-based schemes -- which
+    # assign a stall cycle to one event by a fixed ranking -- exaggerate memory
+    # stalls and hide concurrent ones. That critique does not apply to these
+    # counters: each `..._per_issue_active` metric is the average number of
+    # warps in that state, so a cycle with several warps stalled for different
+    # reasons is already split between them proportionally, which is what
+    # GCStack's fractional attribution achieves in simulation.
+    #
+    # What does apply is the closure check. If the report is missing stall
+    # metrics, the shares silently under-account and nothing says so. Measured
+    # on a real H100 report the 19 reasons sum to 21.682 against a total of
+    # 21.664 -- 0.08% apart.
+    accounted = sum(row["cycles_per_issued_inst"] for row in rows
+                    if row["cycles_per_issued_inst"] is not None)
+    residual = (total_latency - accounted) if total_latency else None
+    explained = (accounted / total_latency) if total_latency else None
+
+    # A large residual means reasons are missing from the report, not that the
+    # kernel has unexplained stalls. Saying which it is matters.
+    if explained is not None and explained < 0.9:
+        findings.append(Finding(
+            category="measurement_caveat",
+            title="Stall accounting does not close",
+            summary=(
+                f"The stall reasons present account for {explained * 100:.0f}% of "
+                f"warp latency ({accounted:.2f} of {total_latency:.2f} cycles per "
+                "issued instruction). The rest is not unexplained stalling -- it is "
+                "stall reasons this report does not carry, so every share below is "
+                "computed against a total the report cannot fully break down."
+            ),
+            severity="medium",
+            confidence="high",
+            evidence={"accounted": accounted, "total": total_latency,
+                      "explained_share": explained,
+                      "reasons_present": len(rows)},
+            actions=("Collect --section WarpStateStats in full; partial stall "
+                     "coverage makes every stall share an underestimate.",),
+            source="heuristic",
+        ))
+
     return {
         "warp_cycles_per_issued_inst": total_latency,
         "issue_active": issue_active,
@@ -424,6 +466,24 @@ def analyze_stalls(view: MetricView, *, top_k: int = 6) -> Dict[str, Any]:
         "all_stalls": rows,
         "buckets": dict(sorted(buckets.items(), key=lambda kv: kv[1], reverse=True)),
         "dominant_bucket": max(buckets, key=buckets.get) if buckets else "",
+        # Closure, so a reader can tell "explained and small" from "not measured".
+        "accounted_cycles_per_issued_inst": accounted,
+        "residual_cycles_per_issued_inst": residual,
+        "explained_share": explained,
+        "reasons_present": len(rows),
+        "top_stalls_explain": (
+            sum(r["cycles_per_issued_inst"] or 0.0 for r in rows[:top_k]) / total_latency
+            if total_latency else None
+        ),
+        "accounting_note": (
+            (f"The {len(rows)} stall reasons in this report account for "
+             f"{explained * 100:.1f}% of warp latency; the top {min(top_k, len(rows))} "
+             f"account for "
+             f"{sum(r['cycles_per_issued_inst'] or 0.0 for r in rows[:top_k]) / total_latency * 100:.1f}%.")
+            if explained is not None else
+            "Warp latency total is absent, so the shares below have no denominator "
+            "and cannot be read as fractions of anything."
+        ),
         "findings": findings,
     }
 
@@ -2455,7 +2515,15 @@ def diagnose_kernel(
     # above, which decides what they may be compared against.
     from ..analyzers.measurement_context import describe_collection_mode
 
-    context = describe_collection_mode(**{"source": "ncu", **dict(collection or {})})
+    context = describe_collection_mode(**{
+        "source": "ncu",
+        # The clock the kernel actually ran at. A duration measured at one
+        # clock is not comparable with one measured at another, and on a real
+        # pair of reports half an apparent 12.4% speedup was the clock.
+        "sm_clock_hz": view.get("sm_clock_hz"),
+        "gpc_clock_hz": view.get("gpc_clock_hz"),
+        **dict(collection or {}),
+    })
 
     return {
         "kernel_name": kernel_name,

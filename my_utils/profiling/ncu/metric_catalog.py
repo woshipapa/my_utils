@@ -111,6 +111,16 @@ _CATALOG_LIST: List[MetricSpec] = [
     _m("duration_ns", ["gpu__time_duration.sum"], "SpeedOfLight", "timing", unit="ns"),
     _m("sm_cycles_active", ["sm__cycles_active.avg"], "SpeedOfLight", "timing", unit="cycles"),
     _m("gpc_cycles_elapsed", ["gpc__cycles_elapsed.max"], "SpeedOfLight", "timing", unit="cycles"),
+    # The clock the kernel actually ran at. Nsight Compute defaults to
+    # --clock-control=base, but the achieved clock still varies run to run, and
+    # comparing two durations taken at different clocks mixes the code change
+    # with the frequency change.
+    _m("sm_clock_hz", ["sm__cycles_elapsed.avg.per_second"], "SpeedOfLight", "timing",
+       unit="Hz", description="Measured SM clock. Compare across reports before "
+                              "comparing their durations."),
+    _m("gpc_clock_hz", ["gpc__cycles_elapsed.avg.per_second"], "SpeedOfLight", "timing",
+       unit="Hz", description="Measured GPC clock. Should agree with the SM clock; a "
+                              "gap means the domains were not measured together."),
     _m("dram_clock_hz", ["dram__cycles_elapsed.avg.per_second"], "SpeedOfLight", "timing", unit="Hz"),
 
     # -- Memory traffic ---------------------------------------------------

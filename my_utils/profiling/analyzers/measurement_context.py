@@ -70,6 +70,11 @@ class MeasurementContext:
     warmup_iterations: Optional[int] = None
     clocks_locked: Optional[bool] = None
     input_distribution: str = ""           # "real" | "random" | "ones" | ...
+    #: Measured SM clock, Hz. Nsight Compute defaults to --clock-control=base
+    #: but the clock it *achieves* still varies run to run, and a duration
+    #: measured at one clock is not comparable with one measured at another.
+    sm_clock_hz: Optional[float] = None
+    gpc_clock_hz: Optional[float] = None
     notes: Tuple[str, ...] = ()
 
     @property
@@ -116,6 +121,12 @@ class MeasurementContext:
                 "run-to-run comparison at face value: clocks were not locked, so part "
                 "of any difference is the clock rather than the code"
             )
+        if self.clock_disagreement and self.clock_disagreement > 1.02:
+            out.append(
+                f"anything derived from cycles: the GPC and SM clocks in this "
+                f"report differ by {(self.clock_disagreement - 1) * 100:.1f}%, so the "
+                "two domains were not measured over the same window"
+            )
         if self.input_distribution in ("random", "ones", "zeros"):
             out.append(
                 f"performance on real data: inputs were '{self.input_distribution}', "
@@ -123,9 +134,26 @@ class MeasurementContext:
             )
         return tuple(out)
 
+    @property
+    def clock_disagreement(self) -> Optional[float]:
+        """Ratio between the GPC and SM clocks, or None.
+
+        They should agree. A gap means the two domains were not measured over
+        the same window, which makes every cycle-derived figure in the report
+        suspect. Seen at 5% on a real report whose other counters were also
+        internally inconsistent.
+        """
+        if not self.sm_clock_hz or not self.gpc_clock_hz:
+            return None
+        return max(self.sm_clock_hz, self.gpc_clock_hz) / min(
+            self.sm_clock_hz, self.gpc_clock_hz)
+
     def to_dict(self) -> Dict[str, Any]:
         return {
             "source": self.source,
+            "sm_clock_hz": self.sm_clock_hz,
+            "gpc_clock_hz": self.gpc_clock_hz,
+            "clock_disagreement": self.clock_disagreement,
             "cache_state": self.cache_state,
             "serialized_execution": self.serialized_execution,
             "replay_mode": self.replay_mode,
@@ -148,6 +176,8 @@ def describe_collection_mode(
     warmup_iterations: Optional[int] = None,
     clocks_locked: Optional[bool] = None,
     input_distribution: str = "",
+    sm_clock_hz: Optional[float] = None,
+    gpc_clock_hz: Optional[float] = None,
 ) -> MeasurementContext:
     """Build a :class:`MeasurementContext` from how the tool was invoked.
 
@@ -209,8 +239,20 @@ def describe_collection_mode(
             "state."
         )
 
+    if sm_clock_hz and gpc_clock_hz:
+        ratio = max(sm_clock_hz, gpc_clock_hz) / min(sm_clock_hz, gpc_clock_hz)
+        if ratio > 1.02:
+            notes.append(
+                f"GPC clock {gpc_clock_hz / 1e6:.0f} MHz against SM clock "
+                f"{sm_clock_hz / 1e6:.0f} MHz -- a {(ratio - 1) * 100:.1f}% gap between "
+                "domains that should agree. Treat cycle-derived figures in this "
+                "report as suspect and re-collect."
+            )
+
     return MeasurementContext(
         source=src,
+        sm_clock_hz=sm_clock_hz,
+        gpc_clock_hz=gpc_clock_hz,
         cache_state=cache_state,
         serialized_execution=serialized,
         replay_mode=replay_mode,
@@ -269,6 +311,22 @@ def compare_measurements(
     if baseline_value and candidate_value:
         ratio = candidate_value / baseline_value
 
+    # Duration measured at two different clocks is two different quantities.
+    # On a real pair of reports the wall-clock gap was 12.4% and the
+    # cycle-normalised gap 5.2% -- half the apparent speedup was the clock.
+    clock_ratio = None
+    if baseline.sm_clock_hz and candidate.sm_clock_hz:
+        clock_ratio = candidate.sm_clock_hz / baseline.sm_clock_hz
+        if abs(clock_ratio - 1.0) > 0.01:
+            blockers.append(
+                f"the two measurements ran at different SM clocks "
+                f"({baseline.sm_clock_hz / 1e6:.0f} vs "
+                f"{candidate.sm_clock_hz / 1e6:.0f} MHz, {(clock_ratio - 1) * 100:+.1f}%). "
+                "A duration ratio therefore mixes the change in the code with the "
+                "change in the clock; compare cycles, or lock the clock and "
+                "re-measure"
+            )
+
     result: Dict[str, Any] = {
         "metric": metric,
         "comparable": not blockers,
@@ -288,6 +346,14 @@ def compare_measurements(
         # The raw ratio is still returned under a name that cannot be mistaken
         # for a result, because someone will want it for debugging.
         result["uncomparable_raw_ratio"] = ratio
+        if clock_ratio and ratio:
+            # The part of the difference that is not the clock.
+            result["clock_ratio"] = clock_ratio
+            result["clock_normalised_ratio"] = ratio * clock_ratio
+            result["verdict"] += (
+                f" Normalising for the clock leaves "
+                f"{ratio * clock_ratio:.3f}x of the {ratio:.3f}x observed."
+            )
     else:
         result["ratio"] = ratio
         result["verdict"] = (

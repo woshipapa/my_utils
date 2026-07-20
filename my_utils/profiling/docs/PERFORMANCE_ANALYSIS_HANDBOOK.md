@@ -591,7 +591,7 @@ finding says why.
 
 ## 6. The metric catalog
 
-`my_utils/profiling/ncu/metric_catalog.py` — 177 metrics keyed by stable short
+`my_utils/profiling/ncu/metric_catalog.py` — 179 metrics keyed by stable short
 names, each with per-architecture spelling candidates.
 
 ```python
@@ -656,7 +656,7 @@ r.metric_name   # exact ncu metric
 
 ## 6b. Every metric in the report, not just the catalogued ones
 
-The curated catalog interprets 177 metrics. A `--set full` collection carries
+The curated catalog interprets 179 metrics. A `--set full` collection carries
 thousands. Everything outside the catalog used to be loaded and then touched by
 nothing - a report could hold the exact counter that explained a kernel and the
 analysis would never mention it existed.
@@ -684,7 +684,7 @@ axis_for_metric_name("lts__t_sectors.sum")     # 'memory_bandwidth'
 denominator_of("sm__throughput.avg.pct_of_peak_sustained_active")   # 'active'
 
 result["metric_inventory"]["summary"]
-# 3421 metrics present. 177 are interpreted by a rule; 3244 are decoded and
+# 3421 metrics present. 179 are interpreted by a rule; 3244 are decoded and
 # placed on an axis but carry no threshold, so nothing judged them.
 ```
 
@@ -1473,7 +1473,7 @@ my_utils/profiling/
 These modules are **pure analysis** — no torch, no CUDA. They import and run on a
 laptop with nothing installed, which is what makes them testable.
 
-`tests/profiling/test_analysis_engine.py` (226 tests) is the executable spec.
+`tests/profiling/test_analysis_engine.py` (297 tests) is the executable spec.
 Several tests exist specifically to stop this handbook drifting from the code:
 `TestHandbookExamplesAreReal` checks every documented import resolves,
 `TestCoverageKeysAreReal` pins coverage tables to the metric catalog, and
