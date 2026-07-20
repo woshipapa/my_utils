@@ -50,6 +50,7 @@ __all__ = [
     "analyze_memory_hierarchy",
     "analyze_issue_efficiency",
     "analyze_instruction_mix",
+    "hierarchical_roofline",
     "diagnose_kernel",
     "analysis_coverage",
     "SOL_THRESHOLDS",
@@ -58,13 +59,29 @@ __all__ = [
 
 # NVIDIA's own constants, from the shipped rule sources (Nsight Compute 2026.1.1).
 SOL_THRESHOLDS = {
+    # These four are read verbatim from the SpeedOfLight rule shipped with
+    # Nsight Compute 2026.1.1 (`sections/SpeedOfLight.py`), where they appear as
+    # balanced_threshold / latency_bound_threshold / no_bound_threshold /
+    # waves_threshold. Three different classification schemes circulate in blog
+    # posts and vendor docs -- a single `max(sm,mem) < 60` latency gate, a
+    # banded >80 / 60-80 / <60 table, and a 60/40 two-axis table. The first two
+    # are not rival schemes: they are partial descriptions of this one rule.
+    # Its actual decision tree is:
+    #
+    #   if sm < 80 and mem < 80:
+    #       if sm < 60 and mem < 60:      -> small grid (waves < 1) else latency
+    #       elif |sm - mem| >= 10:        -> whichever is higher dominates
+    #       else:                         -> balanced
+    #   else:                             -> saturated; shift work between units
+    #
+    # This is the primary scheme. The 60/40 two-axis table was here as
+    # `compute_bound_compute`/`compute_bound_memory` and has been removed: it
+    # appears in no shipped rule, nothing read it, and keeping an unverified
+    # threshold beside verified ones invites someone to trust it equally.
     "balanced_delta": 10.0,      # |compute - memory| below this => balanced
     "latency_bound": 60.0,       # both SOL below this => latency issue
     "saturated": 80.0,           # either SOL at/above this => genuinely bound
     "waves_small_grid": 1.0,     # below one wave => small grid
-    # NVIDIA's guided-analysis routing table (compute-bound >60/<40 etc.)
-    "compute_bound_compute": 60.0,
-    "compute_bound_memory": 40.0,
     # CPIStall
     "issue_active_stall_gate": 0.8,
     "stall_share_gate": 0.3,
@@ -1519,6 +1536,199 @@ _PIPE_ACTIONS: Dict[str, str] = {
 }
 
 
+# A sector is 32 bytes on every architecture Nsight Compute supports. Used to
+# derive byte counts from the sector counters, which sections do collect, when
+# the direct byte counters (which they do not) are absent.
+_BYTES_PER_SECTOR = 32.0
+
+
+def hierarchical_roofline(view: MetricView, gpu_spec: Any = None) -> Dict[str, Any]:
+    """Arithmetic intensity at L1, L2 and DRAM, not just DRAM.
+
+    The stock roofline plots one point per kernel: FLOPs over DRAM bytes. That
+    answers "is this kernel memory bound" and nothing about *why*. Computing the
+    same FLOP count against traffic at each level gives three points that share
+    a numerator, and the horizontal spread between them is a direct read on
+    cache locality:
+
+    * **L1 and L2 intensities close together** -- L1 is not catching reuse, so
+      nearly everything that misses L1 also reaches L2. Blocking for L1 is the
+      lever.
+    * **L2 and DRAM intensities close together** -- L2 is not catching reuse
+      either, and the working set genuinely does not fit. Blocking helps only
+      if the tile size can come down.
+    * **Wide spread at both** -- the cache hierarchy is already doing its job,
+      and locality is not where the remaining time is.
+
+    Following the LBNL hierarchical-roofline method, which specifies this as a
+    single-pass collection.
+
+    Two things this deliberately does not paper over:
+
+    **Shared memory is not counted in the L1 byte total.** ``l1tex__t_bytes``
+    excludes shared-memory traffic, so for a tiled GEMM or an attention kernel
+    -- exactly the kernels whose whole design is staging through shared memory
+    -- the L1 intensity is an overestimate. Reported as a caveat whenever the
+    shared-memory pipe shows activity, rather than left for the reader to know.
+
+    **FLOP counts from SASS counters miss tensor-core work**, which is most of
+    the math in the kernels most worth analysing. Inherited from
+    ``compute_roofline`` and surfaced here too, because a numerator that is a
+    floor makes all three intensities floors.
+    """
+    findings: List[Finding] = []
+    caveats: List[str] = []
+    result: Dict[str, Any] = {"findings": findings, "caveats": caveats}
+
+    roofline = compute_roofline(view, gpu_spec)
+    flops = roofline.get("total_flops")
+    if not flops:
+        result["available"] = False
+        result["reason"] = (
+            "No FLOP counters in this report, so no arithmetic intensity can be "
+            "computed at any level. Collect the SASS FLOP counters "
+            "(regex:smsp__sass_thread_inst_executed_op_[dhf](add|mul|fma)_pred_on.sum)."
+        )
+        return result
+
+    def _bytes(direct_key: str, sector_key: str) -> Tuple[Optional[float], str]:
+        direct = view.get(direct_key)
+        if direct is not None:
+            return direct, "byte counter"
+        sectors = view.get(sector_key)
+        if sectors is not None:
+            return sectors * _BYTES_PER_SECTOR, f"{sector_key} x {_BYTES_PER_SECTOR:.0f}"
+        return None, ""
+
+    l1_bytes, l1_source = _bytes("l1_bytes_total", "l1_sectors_total")
+    l2_bytes, l2_source = _bytes("l2_bytes_total", "l2_sectors_total")
+    dram_bytes = view.get("dram_bytes")
+    if dram_bytes is None:
+        read, write = view.get("dram_bytes_read"), view.get("dram_bytes_write")
+        if read is not None or write is not None:
+            dram_bytes = (read or 0.0) + (write or 0.0)
+
+    levels: Dict[str, Dict[str, Any]] = {}
+    for name, byte_count, source in (
+        ("l1", l1_bytes, l1_source),
+        ("l2", l2_bytes, l2_source),
+        ("dram", dram_bytes, "dram__bytes"),
+    ):
+        if byte_count:
+            levels[name] = {
+                "bytes": byte_count,
+                "arithmetic_intensity": flops / byte_count,
+                "byte_source": source,
+            }
+
+    result["available"] = bool(levels)
+    result["total_flops"] = flops
+    result["levels"] = levels
+    if not levels:
+        result["reason"] = (
+            "No traffic counters at any level. Collect --section MemoryWorkloadAnalysis."
+        )
+        return result
+
+    # Shared memory is invisible to the L1 byte counter, and the kernels this
+    # matters most for are precisely the ones worth profiling.
+    shared_active = (
+        view.get("shared_wavefronts_ld") or view.get("shared_wavefronts_st")
+        or view.get("shared_pipe_util")
+    )
+    if "l1" in levels and shared_active:
+        caveats.append(
+            "This kernel uses shared memory, and the L1 byte counter does not include "
+            "shared-memory traffic. The L1 arithmetic intensity above is therefore an "
+            "overestimate -- real bytes moved at that level are higher. This affects "
+            "tiled GEMM and attention kernels most, since staging through shared memory "
+            "is the point of their design."
+        )
+    if roofline.get("flops_undercounted"):
+        caveats.append(
+            "The FLOP total comes from SASS counters, which do not see tensor-core math. "
+            "Every intensity here is a floor, not a measurement."
+        )
+
+    # The gaps between levels are the actual diagnostic.
+    ai_l1 = levels.get("l1", {}).get("arithmetic_intensity")
+    ai_l2 = levels.get("l2", {}).get("arithmetic_intensity")
+    ai_dram = levels.get("dram", {}).get("arithmetic_intensity")
+
+    if ai_l1 and ai_l2:
+        ratio = ai_l2 / ai_l1
+        result["l1_to_l2_intensity_ratio"] = ratio
+        if ratio < 1.5:
+            findings.append(Finding(
+                category="poor_cache_locality",
+                title="L1 is not capturing reuse",
+                summary=(
+                    f"Arithmetic intensity is {ai_l1:.2f} FLOP/byte at L1 and {ai_l2:.2f} "
+                    f"at L2, a ratio of {ratio:.2f}. Nearly every byte that leaves L1 "
+                    "reaches L2, so L1 is passing traffic through rather than serving it. "
+                    "The stock DRAM-only roofline cannot show this."
+                ),
+                severity="medium",
+                confidence="high",
+                evidence={"ai_l1": ai_l1, "ai_l2": ai_l2, "ratio": ratio,
+                          "l1_byte_source": levels["l1"]["byte_source"]},
+                actions=(
+                    "Block for L1: shrink the working set of the inner loop so each "
+                    "fetched line is reused before it is evicted.",
+                ),
+                source="heuristic",
+            ))
+
+    if ai_l2 and ai_dram:
+        ratio = ai_dram / ai_l2
+        result["l2_to_dram_intensity_ratio"] = ratio
+        if ratio < 1.5:
+            findings.append(Finding(
+                category="poor_cache_locality",
+                title="L2 is not capturing reuse either",
+                summary=(
+                    f"Arithmetic intensity is {ai_l2:.2f} FLOP/byte at L2 and "
+                    f"{ai_dram:.2f} at DRAM, a ratio of {ratio:.2f}. Traffic missing L2 "
+                    "goes almost entirely to device memory, so the working set does not "
+                    "fit in L2 at the current tile size."
+                ),
+                severity="medium",
+                confidence="high",
+                evidence={"ai_l2": ai_l2, "ai_dram": ai_dram, "ratio": ratio},
+                actions=(
+                    "Reduce the tile or batch size so the working set fits in L2, or "
+                    "reorder the traversal so reuse happens before eviction.",
+                ),
+                source="heuristic",
+            ))
+
+    if ai_l1 and ai_dram and ai_dram / ai_l1 >= 4.0:
+        result["locality_verdict"] = "healthy"
+        findings.append(Finding(
+            category="poor_cache_locality",
+            title="Cache hierarchy is already capturing most reuse",
+            summary=(
+                f"Arithmetic intensity rises from {ai_l1:.2f} FLOP/byte at L1 to "
+                f"{ai_dram:.2f} at DRAM, a {ai_dram / ai_l1:.1f}x spread. The caches are "
+                "absorbing the traffic they should. Locality is not where the remaining "
+                "time is; look elsewhere before restructuring for cache behaviour."
+            ),
+            severity="info",
+            confidence="high",
+            evidence={"ai_l1": ai_l1, "ai_dram": ai_dram},
+            actions=("Do not spend effort on blocking or tiling; it is already working.",),
+            source="heuristic",
+        ))
+    elif ai_l1 and ai_dram:
+        result["locality_verdict"] = "leaking"
+
+    result["summary"] = " | ".join(
+        f"{name.upper()} AI={info['arithmetic_intensity']:.2f} FLOP/byte"
+        for name, info in levels.items()
+    )
+    return result
+
+
 def analyze_memory_hierarchy(view: MetricView) -> Dict[str, Any]:
     """Where in the hierarchy the traffic actually lands, and whether it should.
 
@@ -1944,6 +2154,8 @@ _ANALYSIS_REQUIREMENTS: Dict[str, Tuple[Tuple[str, ...], str]] = {
                          "SchedulerStats"),
     "instruction_mix": (("inst_pipe_fma", "inst_pipe_alu", "inst_pipe_xu",
                          "inst_pipe_lsu"), "ComputeWorkloadAnalysis"),
+    "hierarchical_roofline": (("l1_sectors_total", "l2_sectors_total", "l1_bytes_total"),
+                              "MemoryWorkloadAnalysis + FLOP counters"),
 }
 
 
@@ -2052,6 +2264,7 @@ def diagnose_kernel(
     hierarchy = analyze_memory_hierarchy(view)
     issue = analyze_issue_efficiency(view)
     inst_mix = analyze_instruction_mix(view)
+    hier_roofline = hierarchical_roofline(view, gpu_spec)
 
     sections = {
         "bottleneck": bottleneck,
@@ -2068,6 +2281,7 @@ def diagnose_kernel(
         "memory_hierarchy": hierarchy,
         "issue_efficiency": issue,
         "instruction_mix": inst_mix,
+        "hierarchical_roofline": hier_roofline,
     }
 
     findings: List[Finding] = []

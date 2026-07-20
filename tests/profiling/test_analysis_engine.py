@@ -1902,3 +1902,79 @@ class TestPcSamplingTimeline:
                     "stall_reason": _FakeStall("BARRIER"), "not_issued": True}]
         out = source_correlation.summarize_warp_samples(_FakeAction(samples=samples))
         assert "WarpStateStats" in out["comparison_note"]
+
+
+class TestHierarchicalRoofline:
+    """Three arithmetic intensities sharing a numerator; the spread is the signal."""
+
+    _FLOPS = {"smsp__sass_thread_inst_executed_op_ffma_pred_on.sum": 1e9}
+
+    def test_leaking_l1_is_reported(self):
+        """L1 and L2 intensities close together means L1 catches no reuse."""
+        result = ncu_diagnostics.hierarchical_roofline(ncu_diagnostics.MetricView({
+            **self._FLOPS,
+            "l1tex__t_sectors.sum": 1e6,
+            "lts__t_sectors.sum": 0.9e6,
+            "dram__bytes.sum": 1e9,
+        }))
+        assert result["available"] is True
+        assert result["l1_to_l2_intensity_ratio"] < 1.5
+        assert any("L1 is not capturing reuse" in f.title for f in result["findings"])
+
+    def test_healthy_hierarchy_advises_against_tiling_work(self):
+        result = ncu_diagnostics.hierarchical_roofline(ncu_diagnostics.MetricView({
+            **self._FLOPS,
+            "l1tex__t_sectors.sum": 1e6,
+            "lts__t_sectors.sum": 1e5,
+            "dram__bytes.sum": 1e6,
+        }))
+        assert result["locality_verdict"] == "healthy"
+        finding = next(f for f in result["findings"] if "already capturing" in f.title)
+        assert "Do not spend effort" in finding.actions[0]
+
+    def test_bytes_derived_from_sectors_when_byte_counters_absent(self):
+        result = ncu_diagnostics.hierarchical_roofline(ncu_diagnostics.MetricView({
+            **self._FLOPS, "l1tex__t_sectors.sum": 1000.0,
+        }))
+        assert result["levels"]["l1"]["bytes"] == pytest.approx(32000.0)
+        assert "x 32" in result["levels"]["l1"]["byte_source"]
+
+    def test_direct_byte_counter_is_preferred(self):
+        result = ncu_diagnostics.hierarchical_roofline(ncu_diagnostics.MetricView({
+            **self._FLOPS, "l1tex__t_bytes.sum": 4096.0, "l1tex__t_sectors.sum": 1000.0,
+        }))
+        assert result["levels"]["l1"]["bytes"] == pytest.approx(4096.0)
+        assert result["levels"]["l1"]["byte_source"] == "byte counter"
+
+    def test_shared_memory_caveat_fires_for_tiled_kernels(self):
+        """l1tex__t_bytes excludes shared traffic -- critical for attention/GEMM."""
+        result = ncu_diagnostics.hierarchical_roofline(ncu_diagnostics.MetricView({
+            **self._FLOPS,
+            "l1tex__t_sectors.sum": 1e6,
+            "l1tex__data_pipe_lsu_wavefronts_mem_shared_op_ld.sum": 5e5,
+        }))
+        assert any("shared-memory traffic" in c for c in result["caveats"])
+        assert any("overestimate" in c for c in result["caveats"])
+
+    def test_missing_flops_reports_why_not_empty(self):
+        result = ncu_diagnostics.hierarchical_roofline(ncu_diagnostics.MetricView({
+            "l1tex__t_sectors.sum": 1e6,
+        }))
+        assert result["available"] is False
+        assert "FLOP counters" in result["reason"]
+
+
+class TestSolThresholdsMatchShippedRule:
+    """Pinned to NVIDIA's SpeedOfLight.py so drift is caught, not debated."""
+
+    def test_four_thresholds_match_nvidia(self):
+        t = ncu_diagnostics.SOL_THRESHOLDS
+        assert t["balanced_delta"] == 10.0     # balanced_threshold
+        assert t["latency_bound"] == 60.0      # latency_bound_threshold
+        assert t["saturated"] == 80.0          # no_bound_threshold
+        assert t["waves_small_grid"] == 1.0    # waves_threshold
+
+    def test_unverified_two_axis_table_is_gone(self):
+        t = ncu_diagnostics.SOL_THRESHOLDS
+        assert "compute_bound_compute" not in t
+        assert "compute_bound_memory" not in t

@@ -413,6 +413,15 @@ _CATALOG_LIST: List[MetricSpec] = [
        "MemoryWorkloadAnalysis", "memory", unit="%", higher_is_better=True),
     _m("l2_cycles_active", ["lts__cycles_active.avg"], "MemoryWorkloadAnalysis", "memory", unit="cycles"),
     _m("l2_cycles_elapsed", ["lts__cycles_elapsed.avg"], "MemoryWorkloadAnalysis", "memory", unit="cycles"),
+    # Direct byte counters for the hierarchical roofline. Not requested by any
+    # shipped section, so they need an explicit --metrics; the sector counters
+    # above are section-collected and a sector is 32 bytes, which is the
+    # fallback path.
+    _m("l1_bytes_total", ["l1tex__t_bytes.sum"], "MemoryWorkloadAnalysis", "memory",
+       unit="byte", description="Bytes through L1/TEX. NOTE: excludes shared-memory "
+                                "traffic, which matters for attention and tiled GEMM."),
+    _m("l2_bytes_total", ["lts__t_bytes.sum"], "MemoryWorkloadAnalysis", "memory",
+       unit="byte", description="Bytes through L2."),
     _m("l2_sectors_total", ["lts__t_sectors.sum"], "MemoryWorkloadAnalysis", "memory", unit="sector"),
     _m("l2_sectors_read", ["lts__t_sectors_op_read.sum"], "MemoryWorkloadAnalysis_Tables", "memory", unit="sector"),
     _m("l2_sectors_write", ["lts__t_sectors_op_write.sum"], "MemoryWorkloadAnalysis_Tables", "memory", unit="sector"),
