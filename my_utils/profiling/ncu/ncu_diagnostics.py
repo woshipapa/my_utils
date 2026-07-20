@@ -2205,6 +2205,7 @@ def diagnose_kernel(
     gpu_spec: Any = None,
     top_k: int = 10,
     shipped_rules: Optional[Iterable[Any]] = None,
+    string_metrics: Optional[Mapping[str, str]] = None,
     throttling: Optional[Mapping[str, Any]] = None,
     problem_shape: Optional[Mapping[str, int]] = None,
     collection: Optional[Mapping[str, Any]] = None,
@@ -2437,6 +2438,18 @@ def diagnose_kernel(
     from .section_index import group_report_metrics  # local import: optional dep
 
     inventory = group_report_metrics(view.metric_names(), catalog=METRIC_CATALOG)
+    # String-valued metrics never reach the numeric view, so without this they
+    # are absent from an inventory that claims to account for everything.
+    if string_metrics:
+        inventory["string_valued"] = sorted(string_metrics)
+        inventory["string_valued_count"] = len(string_metrics)
+        inventory["total_including_string"] = inventory["total"] + len(string_metrics)
+        inventory["summary"] = (
+            inventory["summary"]
+            + f" A further {len(string_metrics)} metrics are string-valued "
+            "(the GPU model, launch policy, and the constituent lists behind each "
+            "Speed-of-Light rollup); they carry no number to judge but are not lost."
+        )
 
     # Record how this was measured. Not a finding: a property of the numbers
     # above, which decides what they may be compared against.

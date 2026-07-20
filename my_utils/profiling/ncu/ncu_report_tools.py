@@ -1967,19 +1967,27 @@ def _rule_rows_for_action(
     return rows
 
 
-def _metrics_for_action(action: Any, *, metric_like: str = "%") -> Dict[str, float]:
-    """Every metric this action carries, as {name: numeric value}.
+def _metrics_for_action(
+    action: Any, *, metric_like: str = "%",
+) -> Tuple[Dict[str, float], Dict[str, str]]:
+    """Every metric this action carries, split into numeric and string-valued.
 
     No curated filter: `metric_names()` is whatever ncu recorded, which for a
-    --set full collection is thousands of entries. Non-numeric metrics are
-    dropped here because the rule engine consumes numbers; they remain visible
-    through the record-level API.
+    --set full collection is thousands of entries.
+
+    The string-valued ones were previously discarded as unparseable. On a real
+    H100 report that silently dropped 21 metrics, and they are not noise:
+    `device__attribute_display_name` is the GPU model (which the caller was
+    being asked to supply by hand), `breakdown:<metric>` lists the constituents
+    a Speed-of-Light rollup maxes over, and `launch__*` carries scheduling
+    policy and cache config. Returned separately rather than dropped.
     """
     try:
         names = list(action.metric_names())
     except Exception:
-        return {}
-    out: Dict[str, float] = {}
+        return {}, {}
+    numeric: Dict[str, float] = {}
+    text: Dict[str, str] = {}
     for raw in names:
         name = str(raw)
         if not _like_match(name, metric_like):
@@ -1988,9 +1996,61 @@ def _metrics_for_action(action: Any, *, metric_like: str = "%") -> Dict[str, flo
             metric = action.metric_by_name(name)
         except Exception:
             continue
-        number = _to_number(_metric_value(metric))
+        value = _metric_value(metric)
+        number = _to_number(value)
         if number is not None:
-            out[name] = number
+            numeric[name] = number
+        elif isinstance(value, str) and value:
+            text[name] = value
+    return numeric, text
+
+
+# The report names the GPU it was collected on, so asking the caller for it is
+# asking for something we already have. Only used when no name was supplied.
+_GPU_NAME_METRIC = "device__attribute_display_name"
+
+
+def gpu_name_from_report(string_metrics: Mapping[str, str]) -> str:
+    """GPU model recorded in the report, or "" when absent."""
+    return str(string_metrics.get(_GPU_NAME_METRIC, "") or "").strip()
+
+
+def resolve_sol_breakdown(
+    string_metrics: Mapping[str, str],
+    numeric_metrics: Mapping[str, float],
+    *,
+    top_k: int = 5,
+) -> Dict[str, Any]:
+    """Say which constituent drives each Speed-of-Light rollup.
+
+    A SOL throughput is a **maximum** over its constituents, not an average, so
+    "SM throughput 34%" can mean one sub-unit at 34% and everything else idle.
+    The report carries the constituent list as a `breakdown:<metric>` string;
+    resolving it against the numeric metrics turns a single opaque percentage
+    into the sub-unit actually responsible.
+    """
+    out: Dict[str, Any] = {}
+    for name, listing in (string_metrics or {}).items():
+        if not name.startswith("breakdown:"):
+            continue
+        target = name[len("breakdown:"):]
+        parts = [p.strip() for p in str(listing).split(",") if p.strip()]
+        resolved = [(p, numeric_metrics[p]) for p in parts if p in numeric_metrics]
+        if not resolved:
+            continue
+        resolved.sort(key=lambda kv: kv[1], reverse=True)
+        out[target] = {
+            "rollup_value": numeric_metrics.get(target),
+            "constituent_count": len(parts),
+            "resolved_count": len(resolved),
+            "top_constituents": [
+                {"metric": m, "value": v} for m, v in resolved[: int(top_k)]
+            ],
+            "note": (
+                "A Speed-of-Light throughput is the maximum over these, not their "
+                "average: the top entry is what the headline number is measuring."
+            ),
+        }
     return out
 
 
@@ -2051,6 +2111,7 @@ class _LaunchBundle:
     action: Any
     metrics: Dict[str, float]
     rules: List[Dict[str, object]]
+    string_metrics: Dict[str, str] = field(default_factory=dict)
     source: Optional[Dict[str, object]] = None
 
 
@@ -2091,10 +2152,12 @@ def walk_report_once(
                     # Source data is optional and often absent. Its failure must
                     # not cost us the metrics and rules already gathered here.
                     source = None
+            numeric, text = _metrics_for_action(action)
             bundles[(range_idx, action_idx)] = _LaunchBundle(
                 kernel_name=kernel_name,
                 action=action,
-                metrics=_metrics_for_action(action),
+                metrics=numeric,
+                string_metrics=text,
                 rules=_rule_rows_for_action(
                     action, range_idx=range_idx, action_idx=action_idx,
                     kernel_name=kernel_name),
@@ -2145,8 +2208,6 @@ def diagnose_ncu_report(
     from ..hardware.gpu_specs import lookup_gpu_spec
     from .ncu_diagnostics import diagnose_kernel
 
-    gpu_spec = lookup_gpu_spec(gpu_name) if gpu_name else None
-
     # One traversal. This used to be four separate loaders, each opening the
     # report and walking every action: metrics, shipped rules, source
     # attribution, and the action objects themselves.
@@ -2157,6 +2218,16 @@ def diagnose_ncu_report(
         source_top_k=int(findings_per_kernel),
         ncu_report_module=ncu_report_module,
     )
+
+    # The report records the GPU it ran on. Asking the caller to supply a name
+    # we already have is how a roofline ends up with no ceiling for no reason.
+    detected_gpu = ""
+    for bundle in bundles.values():
+        detected_gpu = gpu_name_from_report(bundle.string_metrics)
+        if detected_gpu:
+            break
+    effective_gpu = gpu_name or detected_gpu
+    gpu_spec = lookup_gpu_spec(effective_gpu) if effective_gpu else None
 
     diagnoses: List[Dict[str, object]] = []
     for (range_idx, action_idx), bundle in sorted(bundles.items()):
@@ -2171,6 +2242,7 @@ def diagnose_ncu_report(
             top_k=int(findings_per_kernel),
             # NVIDIA's own rule output for this same launch.
             shipped_rules=bundle.rules,
+            string_metrics=bundle.string_metrics,
         )
         diagnosis["range_index"] = range_idx
         diagnosis["action_index"] = action_idx
@@ -2183,6 +2255,13 @@ def diagnose_ncu_report(
 
         scan = scan_all_signals(metrics)
         diagnosis["signal_scan"] = {k: v for k, v in scan.items() if k != "findings"}
+
+        # String-valued metrics: previously dropped as unparseable. They carry
+        # the GPU model, the launch scheduling policy, and the constituent lists
+        # a Speed-of-Light rollup maxes over.
+        diagnosis["string_metrics"] = dict(bundle.string_metrics)
+        diagnosis["sol_breakdown"] = resolve_sol_breakdown(
+            bundle.string_metrics, metrics)
         if scan["findings"]:
             merged = list(diagnosis.get("findings") or [])
             merged.extend(f.to_dict() for f in scan["findings"])
@@ -2222,6 +2301,10 @@ def diagnose_ncu_report(
     return {
         "report_path": str(report_path),
         "gpu": gpu_spec.name if gpu_spec else "",
+        "gpu_detected_from_report": detected_gpu,
+        "gpu_name_source": (
+            "caller" if gpu_name else ("report" if detected_gpu else "unknown")
+        ),
         "kernels_analyzed": len(diagnoses),
         "verdict_counts": dict(sorted(verdict_counts.items(), key=lambda kv: -kv[1])),
         "finding_counts": dict(sorted(finding_counts.items(), key=lambda kv: -kv[1])),

@@ -2742,3 +2742,70 @@ class TestRealReportRegressions:
             None, attribution=attribution)
         assert len(out["linked"]) == 2, (
             "same lines but different mechanisms is two findings, not one")
+
+
+class TestStringValuedMetrics:
+    """21 metrics on a real report have string values, and they are not noise.
+
+    They were dropped as unparseable. Among them: the GPU model (which the
+    caller was being asked to supply by hand), the constituent lists behind each
+    Speed-of-Light rollup, and the launch scheduling policy.
+    """
+
+    class _Action:
+        _NUM = {"sm__throughput.avg.pct_of_peak_sustained_elapsed": 33.7,
+                "sm__pipe_tensor_cycles_active.avg.pct_of_peak_sustained_elapsed": 33.7,
+                "sm__issue_active.avg.pct_of_peak_sustained_elapsed": 14.1}
+        _STR = {"device__attribute_display_name": "NVIDIA H100 80GB HBM3",
+                "launch__cluster_scheduling_policy": "PolicySpread",
+                "breakdown:sm__throughput.avg.pct_of_peak_sustained_elapsed":
+                    "sm__pipe_tensor_cycles_active.avg.pct_of_peak_sustained_elapsed,"
+                    "sm__issue_active.avg.pct_of_peak_sustained_elapsed"}
+
+        class _M:
+            def __init__(self, v): self.v = v
+            def value(self): return self.v
+            def as_double(self): return self.v if isinstance(self.v, float) else None
+            def as_string(self): return self.v if isinstance(self.v, str) else None
+            def unit(self): return ""
+
+        def name(self): return "k"
+        def metric_names(self): return list(self._NUM) + list(self._STR)
+        def metric_by_name(self, n):
+            if n in self._NUM: return self._M(self._NUM[n])
+            if n in self._STR: return self._M(self._STR[n])
+            return None
+
+    def test_string_metrics_are_kept_not_dropped(self):
+        numeric, text = ncu_report_tools._metrics_for_action(self._Action())
+        assert len(numeric) == 3 and len(text) == 3
+        assert text["device__attribute_display_name"] == "NVIDIA H100 80GB HBM3"
+
+    def test_gpu_name_comes_from_the_report(self):
+        _, text = ncu_report_tools._metrics_for_action(self._Action())
+        assert ncu_report_tools.gpu_name_from_report(text) == "NVIDIA H100 80GB HBM3"
+
+    def test_sol_breakdown_names_the_driving_constituent(self):
+        """A SOL throughput is a max over constituents, not an average."""
+        numeric, text = ncu_report_tools._metrics_for_action(self._Action())
+        out = ncu_report_tools.resolve_sol_breakdown(text, numeric)
+        entry = out["sm__throughput.avg.pct_of_peak_sustained_elapsed"]
+        assert entry["rollup_value"] == pytest.approx(33.7)
+        top = entry["top_constituents"][0]
+        assert "pipe_tensor" in top["metric"], "the max constituent drives the rollup"
+        assert "maximum over these" in entry["note"]
+
+    def test_inventory_counts_string_metrics(self):
+        result = ncu_diagnostics.diagnose_kernel(
+            {"sm__throughput.avg.pct_of_peak_sustained_elapsed": 33.7},
+            string_metrics={"device__attribute_display_name": "NVIDIA H100"},
+        )
+        inventory = result["metric_inventory"]
+        assert inventory["string_valued_count"] == 1
+        assert inventory["total_including_string"] == inventory["total"] + 1
+        assert "not lost" in inventory["summary"]
+
+    def test_breakdown_with_unresolvable_constituents_is_skipped(self):
+        out = ncu_report_tools.resolve_sol_breakdown(
+            {"breakdown:x": "not_collected_a,not_collected_b"}, {})
+        assert out == {}
