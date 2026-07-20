@@ -2988,3 +2988,73 @@ class TestSamplingAppearsInTheReport:
     def test_raw_counts_carry_no_percent_sign_in_the_table(self):
         text = self._markdown()
         assert "2964.0%" not in text and "2965%" not in text
+
+
+class TestPmSamplingPassGroups:
+    """PM sampling is multiplexed across replay passes.
+
+    Each pass re-runs the kernel with its own capture window, so series from
+    different passes have different timestamp bases and bucket counts and share
+    no timestamps. On a real report there were seven groups whose start times
+    differed by milliseconds. Bucket index N is a different moment in each, so
+    a window derived from one pass must not be applied to another -- which is
+    exactly what the first version of this function did.
+    """
+
+    class _Action:
+        _PM = "pmsampling:"
+
+        class _M:
+            def __init__(self, values, t0, step):
+                self.values, self.t0, self.step = values, t0, step
+            def num_instances(self): return len(self.values)
+            def as_double(self, i): return float(self.values[i])
+            def as_uint64(self, i): return self.t0 + i * self.step
+            def has_correlation_ids(self): return True
+            def correlation_ids(self): return self
+
+        def metric_names(self):
+            return [self._PM + "sm__cycles_active.avg",
+                    self._PM + "sm__pipe_tensor_cycles_active.avg.pct_of_peak_sustained_elapsed",
+                    self._PM + "smsp__warps_issue_stalled_barrier.avg"]
+
+        def metric_by_name(self, n):
+            M = TestPmSamplingPassGroups._Action._M
+            # pass A: 6 buckets from t=1000, step 1500
+            if n.endswith("sm__cycles_active.avg"):
+                return M([0.0, 100.0, 100.0, 100.0, 0.0, 0.0], 1_000, 1500)
+            if n.endswith("pct_of_peak_sustained_elapsed"):
+                return M([0.0, 90.0, 60.0, 30.0, 0.0, 0.0], 1_000, 1500)
+            # pass B: a DIFFERENT execution -- different base, different length
+            if n.endswith("barrier.avg"):
+                return M([50.0, 400.0, 200.0, 0.0], 9_000_000, 1472)
+            return None
+
+    def test_passes_are_detected(self):
+        out = source_correlation.analyze_pm_sampling(self._Action())
+        assert out["pass_group_count"] == 2
+        assert out["cross_pass_warning"]
+
+    def test_each_series_records_its_pass(self):
+        out = source_correlation.analyze_pm_sampling(self._Action())
+        groups = {e["metric"]: e["pass_group"] for e in out["series"]}
+        assert groups["sm__cycles_active.avg"] == groups[
+            "sm__pipe_tensor_cycles_active.avg.pct_of_peak_sustained_elapsed"]
+        assert groups["smsp__warps_issue_stalled_barrier.avg"] != groups[
+            "sm__cycles_active.avg"]
+
+    def test_window_is_computed_per_pass_not_borrowed(self):
+        """Pass A is active in buckets 1..3; pass B in 0..2. Applying A's
+        window to B would average in a bucket B never had."""
+        out = source_correlation.analyze_pm_sampling(self._Action())
+        barrier = next(e for e in out["series"] if "barrier" in e["metric"])
+        # B's own window is buckets 0..2, mean (50+400+200)/3 = 216.7
+        assert barrier["mean_in_active_window"] == pytest.approx(216.7, abs=1.0)
+
+    def test_single_pass_report_has_no_warning(self):
+        class _One(TestPmSamplingPassGroups._Action):
+            def metric_names(self):
+                return [self._PM + "sm__cycles_active.avg"]
+        out = source_correlation.analyze_pm_sampling(_One())
+        assert out["pass_group_count"] == 1
+        assert out["cross_pass_warning"] == ""

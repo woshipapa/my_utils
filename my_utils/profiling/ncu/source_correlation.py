@@ -852,13 +852,19 @@ def analyze_pm_sampling(action: Any, *, top_k: int = 8) -> Dict[str, Any]:
                     "`pmsampling` sets; a `basic` or `detailed` run has none."),
                 "series": []}
 
-    # The sampler runs across the whole profiling session; the kernel occupies
-    # part of it. Averaging a series over every bucket therefore divides by a
-    # lot of time the kernel was not running, which understates every unit and
-    # is not a "kernel average" in any useful sense. The active window is found
-    # first, from the union of all series, and used as the denominator.
+    # PM sampling is multiplexed across replay passes: `pmsampler_pass_groups`
+    # says how many. Each pass re-runs the kernel with its own capture window,
+    # so series from different passes have different timestamp bases and
+    # different bucket counts, and share no timestamps at all. On the test
+    # report there are seven groups whose start times differ by milliseconds.
+    #
+    # Bucket index N therefore means a different moment in different passes, and
+    # an active window derived from one pass cannot be applied to another. That
+    # is what the first version of this function did -- it took the window from
+    # whichever pass held `sm__cycles_active` and used those indices for
+    # everything.
+    by_pass: Dict[Tuple[int, int, int], List[Tuple[str, List[float]]]] = {}
     raw_series: List[Tuple[str, List[float]]] = []
-    timestamps: List[int] = []
     for name in names:
         metric = _maybe(action, "metric_by_name", name)
         if metric is None:
@@ -866,88 +872,76 @@ def analyze_pm_sampling(action: Any, *, top_k: int = 8) -> Dict[str, Any]:
         count = int(_maybe(metric, "num_instances") or 0)
         if count <= 0:
             continue
-        raw_series.append((name, [float(_maybe(metric, "as_double", i) or 0.0)
-                                  for i in range(count)]))
-        if not timestamps:
-            correlation = _maybe(metric, "correlation_ids")
-            if correlation is not None:
-                timestamps = [int(_maybe(correlation, "as_uint64", i) or 0)
-                              for i in range(count)]
+        values = [float(_maybe(metric, "as_double", i) or 0.0) for i in range(count)]
+        raw_series.append((name, values))
+
+        correlation = _maybe(metric, "correlation_ids")
+        first = step = 0
+        if correlation is not None and count >= 2:
+            first = int(_maybe(correlation, "as_uint64", 0) or 0)
+            second = int(_maybe(correlation, "as_uint64", 1) or 0)
+            step = second - first
+        by_pass.setdefault((first, step, count), []).append((name, values))
 
     if not raw_series:
         return {"available": False,
                 "reason": "`pmsampling:` metrics are present but carry no samples",
                 "series": []}
 
+    # Per pass, the kernel-active window comes from that pass's own series --
+    # they were captured together, so they share a clock.
+    pass_windows: Dict[Tuple[int, int, int], Tuple[int, int]] = {}
+    for key, members in by_pass.items():
+        length = key[2]
+        anchor = next((v for n, v in members if "sm__cycles_active" in n), None)
+        if anchor is None:
+            anchor = [max(v[i] if i < len(v) else 0.0 for _n, v in members)
+                      for i in range(length)]
+        busy = [i for i, value in enumerate(anchor) if value > 0.0]
+        pass_windows[key] = (min(busy), max(busy)) if busy else (0, length - 1)
+
+    pass_ids = {key: index for index, key in enumerate(sorted(by_pass))}
     bucket_count = max(len(values) for _n, values in raw_series)
 
-    # Prefer `sm__cycles_active` to bound the window: the SM being active *is*
-    # the kernel running. Taking the union of every series instead picks up
-    # isolated DRAM blips from before and after the launch, which on the test
-    # report stretched a 81.4us kernel into a 216us "active window" and diluted
-    # every average by a factor of two and a half.
-    anchor = next(
-        (values for name, values in raw_series if "sm__cycles_active" in name), None)
-    window_source = "sm__cycles_active"
-    if anchor is None:
-        anchor = [max((v[i] if i < len(v) else 0.0) for _n, v in raw_series)
-                  for i in range(bucket_count)]
-        window_source = "union of all series (sm__cycles_active not collected)"
-
-    busy = [i for i, value in enumerate(anchor) if value > 0.0]
-    window_lo, window_hi = (min(busy), max(busy)) if busy else (0, bucket_count - 1)
-    window_len = window_hi - window_lo + 1
-
     series: List[Dict[str, Any]] = []
-    for name, values in raw_series:
-        window = values[window_lo:window_hi + 1]
-        # Non-zero buckets counted *inside the window*. Counting them across the
-        # whole series while dividing by the window length produced shares above
-        # 100% for DRAM, which is active before and after the launch.
-        active_in_window = [v for v in window if v > 0.0]
-        active = [v for v in values if v > 0.0]
-        peak = max(values) if values else 0.0
-        short = name[len(PM_SAMPLING_PREFIX):]
-        # Only the pct_of_peak / .pct submetrics are percentages. The rest are
-        # raw counts, and rendering a cycle count as "2965%" is the same class
-        # of error as printing 100 - 0 as "more than 100% miss".
-        is_pct = short.endswith(".pct") or "pct_of_peak" in short
-        entry: Dict[str, Any] = {
-            "metric": short,
-            "is_percentage": is_pct,
-            "unit": "%" if is_pct else "count",
-            "buckets": len(values),
-            "active_buckets": len(active_in_window),
-            "active_buckets_whole_series": len(active),
-            "duty_cycle": (len(active_in_window) / len(window)) if window else 0.0,
-            "peak": peak,
-            # The headline average: over the window in which the kernel was
-            # actually running, not over the sampler's whole session.
-            "mean_in_active_window": (sum(window) / len(window)) if window else 0.0,
-            # Kept, and named for what it is, because it is what you get if you
-            # average the raw series and it is much lower for a reason that has
-            # nothing to do with the kernel.
-            "mean_all_buckets": (sum(values) / len(values)) if values else 0.0,
-            # Mean over only the buckets where this unit did anything at all.
-            "mean_while_nonzero": (sum(active) / len(active)) if active else 0.0,
-        }
-        # The gap between "peak while running" and "average over the kernel" is
-        # the whole point of having a timeline.
-        if peak > 0 and entry["mean_in_active_window"] > 0:
-            entry["peak_to_mean"] = peak / entry["mean_in_active_window"]
-        series.append(entry)
+    for key, members in by_pass.items():
+        window_lo, window_hi = pass_windows[key]
+        for name, values in members:
+            window = values[window_lo:window_hi + 1]
+            active_in_window = [v for v in window if v > 0.0]
+            active = [v for v in values if v > 0.0]
+            peak = max(values) if values else 0.0
+            short = name[len(PM_SAMPLING_PREFIX):]
+            is_pct = short.endswith(".pct") or "pct_of_peak" in short
+            entry: Dict[str, Any] = {
+                "metric": short,
+                "is_percentage": is_pct,
+                "unit": "%" if is_pct else "count",
+                "pass_group": pass_ids[key],
+                "buckets": len(values),
+                "active_buckets": len(active_in_window),
+                "active_buckets_whole_series": len(active),
+                "duty_cycle": (len(active_in_window) / len(window)) if window else 0.0,
+                "peak": peak,
+                "mean_in_active_window": (sum(window) / len(window)) if window else 0.0,
+                "mean_all_buckets": (sum(values) / len(values)) if values else 0.0,
+                "mean_while_nonzero": (sum(active) / len(active)) if active else 0.0,
+            }
+            if peak > 0 and entry["mean_in_active_window"] > 0:
+                entry["peak_to_mean"] = peak / entry["mean_in_active_window"]
+            series.append(entry)
 
-    if not series:
-        return {"available": False,
-                "reason": "`pmsampling:` metrics are present but carry no samples",
-                "series": []}
-
-    # Percentages first: they are the ones with an interpretable scale.
     series.sort(key=lambda e: (e["is_percentage"], e["peak"]), reverse=True)
 
-    duration_ns = None
-    if len(timestamps) >= 2:
-        duration_ns = max(timestamps) - min(timestamps)
+    # Reported from the pass that carries the SM activity anchor, since that is
+    # the one whose window is known to be the kernel rather than an envelope.
+    anchor_key = next((k for k, m in by_pass.items()
+                       if any("sm__cycles_active" in n for n, _v in m)),
+                      next(iter(by_pass)))
+    anchor_lo, anchor_hi = pass_windows[anchor_key]
+    step_ns = anchor_key[1]
+    duration_ns = step_ns * (anchor_key[2] - 1) if step_ns else None
+    window_len = anchor_hi - anchor_lo + 1
 
     # A "bursty" verdict compares a peak against a ceiling, which only exists
     # for percentages. For a raw count there is no bar to be near.
@@ -959,16 +953,23 @@ def analyze_pm_sampling(action: Any, *, top_k: int = 8) -> Dict[str, Any]:
         "available": True,
         "metric_count": len(series),
         "bucket_count": bucket_count,
-        "active_window_buckets": [window_lo, window_hi],
+        "pass_group_count": len(by_pass),
+        "active_window_buckets": [anchor_lo, anchor_hi],
         "active_window_length": window_len,
-        "active_window_ns": (
-            (timestamps[window_hi] - timestamps[window_lo])
-            if len(timestamps) > window_hi else None
-        ),
-        "window_source": window_source,
+        "active_window_ns": (step_ns * (window_len - 1)) if step_ns else None,
+        "cross_pass_warning": (
+            f"These {len(series)} series come from {len(by_pass)} replay passes, "
+            "each a separate execution with its own capture window and bucket "
+            "count. Series within one pass share a clock and can be compared "
+            "bucket for bucket; series from different passes cannot. Comparing "
+            "them by bucket index compares different moments of different runs."
+        ) if len(by_pass) > 1 else "",
+        "window_source": ("sm__cycles_active" if any(
+            "sm__cycles_active" in n for n, _v in by_pass[anchor_key])
+            else "union of that pass's own series"),
         "denominator_note": (
             "`mean_in_active_window` divides by the buckets in which the kernel "
-            f"was running, bounded by {window_source} ({window_len} of "
+            f"was running, bounded per pass group ({window_len} of "
             f"{bucket_count} buckets). "
             "`mean_all_buckets` divides by the sampler's whole session, most of "
             "which the kernel was not running in -- it is reported for "

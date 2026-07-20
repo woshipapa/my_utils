@@ -2521,13 +2521,14 @@ def diagnose_result_to_markdown(payload: Dict[str, object]) -> str:
                         lines.append(f"- _{pm['span_note']}_")
                     lines.append("")
                     lines.append(
-                        "| metric | peak (1 bucket) | mean over active window "
-                        "| non-zero share | mean over whole session |")
-                    lines.append("|---|---|---|---|---|")
+                        "| pass | metric | peak (1 bucket) | mean over active "
+                        "window | non-zero share | mean over whole session |")
+                    lines.append("|---|---|---|---|---|---|")
                     for entry in (pm.get("series") or [])[:8]:
                         unit = "%" if entry.get("is_percentage") else ""
                         lines.append(
-                            f"| `{entry.get('metric','')[:48]}` "
+                            f"| {entry.get('pass_group', 0)} "
+                            f"| `{entry.get('metric','')[:46]}` "
                             f"| {entry.get('peak', 0):.1f}{unit} "
                             f"| {entry.get('mean_in_active_window', 0):.1f}{unit} "
                             f"| {float(entry.get('duty_cycle') or 0) * 100:.0f}% "
@@ -2536,6 +2537,9 @@ def diagnose_result_to_markdown(payload: Dict[str, object]) -> str:
                     lines.append("")
                     if pm.get("denominator_note"):
                         lines.append(f"_{pm['denominator_note']}_")
+                        lines.append("")
+                    if pm.get("cross_pass_warning"):
+                        lines.append(f"**{pm['cross_pass_warning']}**")
                         lines.append("")
                     if pm.get("bursty"):
                         lines.append(f"**{pm.get('note','')}**")
