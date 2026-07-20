@@ -956,3 +956,105 @@ class TestCaveatsReachTheFindingsList:
         }
         result = ncu_diagnostics.diagnose_kernel(metrics, kernel_name="fused")
         assert not any(f["category"] == "measurement_caveat" for f in result["findings"])
+
+
+class TestPackageExportsResolve:
+    """A documented import that does not exist is worse than no documentation."""
+
+    @staticmethod
+    def _check(init_rel, pkg_dir):
+        import ast
+        root = Path(__file__).resolve().parents[2] / "my_utils" / "profiling"
+        tree = ast.parse((root.parent.parent / init_rel).read_text())
+        imported, exported = {}, []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and node.level == 1:
+                for al in node.names:
+                    imported[al.asname or al.name] = node.module
+            if isinstance(node, ast.Assign):
+                for t in node.targets:
+                    if isinstance(t, ast.Name) and t.id == "__all__":
+                        exported = [e.value for e in node.value.elts]
+
+        cache = {}
+
+        def defined_in(mod):
+            if mod not in cache:
+                names = set()
+                src = (root.parent.parent / pkg_dir / f"{mod}.py").read_text()
+                for n in ast.walk(ast.parse(src)):
+                    if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                        names.add(n.name)
+                    elif isinstance(n, ast.Assign):
+                        for t in n.targets:
+                            if isinstance(t, ast.Name):
+                                names.add(t.id)
+                    elif isinstance(n, ast.AnnAssign) and isinstance(n.target, ast.Name):
+                        names.add(n.target.id)
+                cache[mod] = names
+            return cache[mod]
+
+        broken = [
+            name for name in exported
+            if name not in imported or name not in defined_in(imported[name])
+        ]
+        assert not broken, f"{init_rel} exports names that do not resolve: {broken}"
+        assert exported, f"{init_rel} exports nothing"
+
+    def test_analyzers_exports(self):
+        self._check("my_utils/profiling/analyzers/__init__.py", "my_utils/profiling/analyzers")
+
+    def test_hardware_exports(self):
+        self._check("my_utils/profiling/hardware/__init__.py", "my_utils/profiling/hardware")
+
+
+class TestHandbookExamplesAreReal:
+    """Every symbol the handbook tells a reader to import must exist."""
+
+    def test_documented_imports_resolve(self):
+        import ast, re
+        root = Path(__file__).resolve().parents[2] / "my_utils" / "profiling"
+        handbook = root / "docs" / "PERFORMANCE_ANALYSIS_HANDBOOK.md"
+        if not handbook.exists():
+            pytest.skip("handbook not present")
+        text = handbook.read_text()
+
+        missing = []
+        for module, names in re.findall(r"from (my_utils\.profiling[\w.]*) import ([\w, ]+)", text):
+            rel = module.replace("my_utils.profiling", "").lstrip(".").replace(".", "/")
+            candidates = [root / f"{rel}.py", root / rel / "__init__.py"]
+            path = next((c for c in candidates if c.exists()), None)
+            if path is None:
+                missing.append(f"{module} (module not found)")
+                continue
+            defined = set()
+            for n in ast.walk(ast.parse(path.read_text())):
+                if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                    defined.add(n.name)
+                elif isinstance(n, ast.Assign):
+                    for t in n.targets:
+                        if isinstance(t, ast.Name):
+                            defined.add(t.id)
+                elif isinstance(n, ast.AnnAssign) and isinstance(n.target, ast.Name):
+                    defined.add(n.target.id)
+                elif isinstance(n, (ast.Import, ast.ImportFrom)):
+                    for a in n.names:
+                        defined.add(a.asname or a.name.split(".")[0])
+            for name in (x.strip() for x in names.split(",") if x.strip()):
+                if name not in defined:
+                    missing.append(f"{module}.{name}")
+        assert not missing, f"handbook documents imports that do not exist: {missing}"
+
+    def test_python_blocks_parse(self):
+        import ast, re
+        root = Path(__file__).resolve().parents[2] / "my_utils" / "profiling"
+        handbook = root / "docs" / "PERFORMANCE_ANALYSIS_HANDBOOK.md"
+        if not handbook.exists():
+            pytest.skip("handbook not present")
+        bad = []
+        for i, block in enumerate(re.findall(r"```python\n(.*?)```", handbook.read_text(), re.S)):
+            try:
+                ast.parse(block)
+            except SyntaxError as exc:
+                bad.append(f"block {i}: {exc.msg}")
+        assert not bad, f"handbook python blocks do not parse: {bad}"

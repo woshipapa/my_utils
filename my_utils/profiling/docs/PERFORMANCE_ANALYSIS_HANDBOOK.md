@@ -19,6 +19,9 @@ If you read only one thing, read [§0 The 60-second version](#0-the-60-second-ve
 - [7. Interpretation reference](#7-interpretation-reference)
 - [8. Hardware ceilings](#8-hardware-ceilings)
 - [9. Kernel taxonomy](#9-kernel-taxonomy)
+- [9b. Never conclude from a kernel name alone](#9b-never-conclude-from-a-kernel-name-alone)
+- [9c. Trace validity: refuse before you analyse](#9c-trace-validity-refuse-before-you-analyse)
+- [9d. Clock throttling](#9d-clock-throttling)
 - [10. Traps that make numbers lie](#10-traps-that-make-numbers-lie)
 - [11. Python API reference](#11-python-api-reference)
 - [12. Extending the engine](#12-extending-the-engine)
@@ -325,7 +328,68 @@ result["verdict"]                # compute_bound | memory_bound | latency_bound 
 result["findings"]               # ranked, each with evidence + actions + ceiling
 result["sections"]["stalls"]     # full stall ranking and bucket rollup
 result["sections"]["roofline"]   # AI, achieved/attainable TFLOP/s, ridge point
+result["coverage"]               # WHICH analyses ran, and which could not
 ```
+
+### Read `coverage` before you read `findings`
+
+This is the single most important habit with this tool. An analysis that never
+ran, because its section was not collected, produces exactly what a healthy
+analysis produces: **nothing**. Two findings can mean two problems, or two
+problems plus nine questions nobody asked.
+
+```python
+cov = result["coverage"]
+print(cov["summary"])
+# 6 of 11 analyses ran. 5 could not: the required metrics are absent from this
+# report, so those questions were not asked - this is missing coverage, not a
+# clean result.
+
+for skipped in cov["skipped"]:
+    print(skipped["analysis"], "needs", skipped["needs_section"])
+# stalls          needs WarpStateStats
+# shared_memory   needs MemoryWorkloadAnalysis_Tables
+# spilling        needs SourceCounters
+```
+
+Measured against a real H100 fused-kernel report collected with the default
+sections, coverage was **6 of 11**. The five that could not run included stalls
+and shared memory - the first two things you would want for a fused kernel.
+`--set full` closes it.
+
+### Every finding states its evidence
+
+A conclusion without the numbers that produced it is an assertion. Each finding
+carries the metric values it was derived from, what it means, an action, and an
+optimistic ceiling:
+
+```python
+for f in result["findings"]:
+    print(f"[{f['severity']}/{f['confidence']}] {f['title']}")
+    print(" ", f["summary"])
+    print("  evidence:", f["evidence"])
+    print("  actions :", f["actions"])
+    print("  ceiling :", f["speedup_ceiling"])
+```
+
+Real output from the fused-kernel report above:
+
+```
+[low/medium] SM load imbalance of 8%
+  The busiest sm unit is active for 305,542 cycles against an average of 282,228.
+  evidence: {'sm_cycles_avg': 282228, 'sm_cycles_max': 305542, 'imbalance': 0.0763}
+  ceiling : 1.08x
+```
+
+`confidence` is not decoration. It is capped by the quality of the evidence
+underneath: a finding that depends on the kernel *name* being right can never
+exceed `medium`, and drops to `low` when the name is advisory (a truncated
+symbol, or CUTLASS code that may have come from cuBLASLt).
+
+A finding whose category is `measurement_caveat` means a number in the report is
+known to be wrong - for example FP32 FLOPs on a CC 10.x report that lacks the
+packed-FP32 counters, which undercounts by up to 2x. Fix the collection before
+using that number.
 
 Or straight from a report:
 
@@ -343,6 +407,7 @@ payload = diagnose_ncu_report("report.ncu-rep", gpu_name="H100 SXM5", top_kernel
 | `compute_roofline` | AI, achieved vs attainable TFLOP/s, memory vs compute side |
 | `analyze_occupancy` | Binding limiter (registers/smem/blocks/warps/barriers), achieved-vs-theoretical gap |
 | `analyze_launch_config` | Block size not warp-multiple, small grid, tail wave |
+| `analysis_coverage` | **Which analyses could not run**, and the section each needs |
 | `analyze_coalescing` | Excess sectors, sectors/request, bytes/sector, cache locality |
 | `analyze_shared_memory` | Bank conflicts as a share of wavefronts, n-way factor |
 | `analyze_divergence` | Threads-per-instruction, branch efficiency |
@@ -352,7 +417,7 @@ payload = diagnose_ncu_report("report.ncu-rep", gpu_name="H100 SXM5", top_kernel
 
 ### Findings carry evidence and a ceiling, not a prediction
 
-```python
+```jsonc
 {
   "category": "uncoalesced_global_access",
   "severity": "high",
@@ -627,6 +692,163 @@ Inductor embed the fused ATen op names.
 | `volta_sgemm`, anything `simt` | Tensor cores unused | AMP, align dims |
 | `ncclDevKernel_*` alone on its stream | Exposed communication | Overlap flags |
 | One kernel spanning the whole step | Megakernel | Switch to PM sampling |
+
+---
+
+## 9b. Never conclude from a kernel name alone
+
+`my_utils/profiling/analyzers/evidence.py`.
+
+A kernel symbol is the weakest evidence a profiler has, and in named cases it is
+not merely vague but **wrong**:
+
+* **NCCL names lie about the algorithm.** `generate.py::best_kernel()` collapses
+  ~670 device functions onto ~40 launch stubs with the algo and protocol
+  hard-coded to `RING`/`TREE` + `LL`; the real algorithm is dispatched at runtime
+  through `ncclDevFuncTable`. A ReduceScatter genuinely running **NVLS + Simple**
+  appears as `ncclDevKernel_ReduceScatter_Sum_bf16_RING_LL`.
+* **CuTe DSL names carry nothing.** The default is `kernel_kernel_<args>_0`, and
+  `mangle_name` skips every IR value, so no shape or dtype survives.
+  FlashAttention-4 ships exactly this way.
+* **A `cutlass3x_*` symbol does not mean the user wrote CUTLASS.** cuBLASLt
+  embeds CUTLASS-generated kernels.
+
+So conclusions are fused from six sources, ranked by how much each can be
+trusted:
+
+| Provenance | Rank | Why |
+|---|---|---|
+| `HW_COUNTER` | 100 | Records what the silicon actually did |
+| `NVTX` | 80 | Authored by the framework that issued the work |
+| `SOURCE` | 75 | Static analysis of the code that ran |
+| `CUDA_API` | 60 | `cuLaunchKernel` vs `cudaLaunchKernel` separates JIT from static |
+| `LAUNCH_CONFIG` | 50 | Structural, but says nothing about the kernel body |
+| `KERNEL_NAME` | 20 | See above |
+
+```python
+from my_utils.profiling.analyzers import attribute_kernel
+
+fused, warnings = attribute_kernel(
+    "ampere_sgemm_128x64_nn",
+    metrics={"sm__pipe_tensor_cycles_active.avg.pct_of_peak_sustained_elapsed": 0.0},
+)
+fused["uses_tensor_cores"].value        # False
+fused["uses_tensor_cores"].provenance   # 'hw_counter'
+warnings
+# ['Kernel name says matmul but the tensor pipe never activated - either it is an
+#   FP32/SIMT fallback, the dtype is unsupported on this arch, or the shapes are
+#   too small to tile. This is a finding, not a naming quirk.']
+```
+
+**The contradictions are the point.** A name that disagrees with a counter is
+usually the most useful line in the report. And a name that says *nothing*
+produces its own finding rather than silence - otherwise an unlabelled CuTe DSL
+kernel falls through to "no expectations matched", which reads as "nothing
+wrong".
+
+### CUTLASS symbols are the exception
+
+`parse_cutlass_symbol()` is the one place where a name is strong evidence,
+because the template arguments **are** the compiled configuration:
+
+```python
+from my_utils.profiling.sources.kernel_taxonomy import parse_cutlass_symbol
+
+cfg = parse_cutlass_symbol(demangled_symbol)
+cfg.stages       # 9        - mainloop pipeline depth
+cfg.cluster      # (1,1,1)  - thread block cluster
+cfg.tile         # (128,64,64)
+cfg.mma_shape    # (64,64,16)
+cfg.schedule     # 'pingpong'
+cfg.copy_atom    # 'SM90_TMA_LOAD'
+cfg.swizzle      # (3,4,3)
+cfg.observations()
+# ['Cluster shape is 1x1x1, so no multicast across the cluster. ...']
+```
+
+`cfg.truncated` matters: nsys clips long symbols, and an absent field then means
+"not visible", not "not used".
+
+---
+
+## 9c. Trace validity: refuse before you analyse
+
+`my_utils/profiling/analyzers/trace_quality.py`. Every check returns issues with
+a `blocks` flag - `True` means refuse the affected conclusion rather than caveat
+it.
+
+| Check | Refuses when |
+|---|---|
+| `check_warmup` | Too few iterations for a steady-state claim |
+| `check_autotuning` | One name covers many launch configs - an autotune sweep |
+| `check_cuda_graphs` | Per-kernel host attribution does not exist under graph replay |
+| `check_rank_completeness` | Rank files are missing - a **collection failure**, never "those ranks were idle" |
+| `check_gpu_metric_gaps` | "Missing Data" is sampler exhaustion, not GPU idle |
+| `check_profiler_overhead` | The gap you are measuring is the profiler's own flush |
+| `check_clock_alignment` | Cross-rank claim below the ~10 ms floor that NTP alignment supports |
+| `check_nvlink_utilization_validity` | NVLink reads ~100% but may simply be **inactive** |
+| `check_multi_tenancy` | MPS (no per-client attribution), MIG, vGPU, NVLink-centric scheduling |
+| `check_diagnostic_events` | The report's own diagnostics say data was dropped |
+| `check_dataloader_attribution` | No worker threads in the trace, so the dataloader verdict is a guess |
+| `check_derived_metric_invariants` | MFU > 100%, HFU < MFU, sparse peak, unknown dtype |
+
+Two worth spelling out:
+
+**Cross-node timestamps are not synchronised.** nsys aligns reports from
+different hosts by UTC captured at collection start, with an error NVIDIA
+documents as one to tens of milliseconds - while a typical collective runs
+0.1-5 ms. So "rank 3 arrived 4 ms late" is indistinguishable from clock skew.
+Same-host reports use TSC and are precise to nanoseconds; check the
+`Report alignment source` field on the Analysis Summary tab.
+
+**Naming a straggler needs entry times, not durations.** In a synchronous
+collective the slow rank shows a long compute phase and a *short* wait, while
+every fast rank waits inside NCCL - so ranking by time-in-NCCL names the victims:
+
+```python
+from my_utils.profiling.analyzers import detect_straggler_from_traces
+
+# PyTorch Flight Recorder: TORCH_NCCL_TRACE_BUFFER_SIZE=2000
+result = detect_straggler_from_traces(fr_entries, collective_seq_id=7,
+                                      clock_alignment="UTC")
+result["worst_rank"]           # 5
+result["worst_vs_median_ms"]   # 40.0  - vs median, since the straggler
+                               #         poisons the mean it is measured against
+```
+
+---
+
+## 9d. Clock throttling
+
+`my_utils/profiling/hardware/throttling.py`. A throttled run makes every derived
+number wrong in the same direction, while looking exactly like a code regression.
+
+```python
+from my_utils.profiling.hardware import analyze_throttling
+
+r = analyze_throttling(clock_event_mask=0x4, sm_clock_mhz=1395,
+                       boost_clock_mhz=1755, thermal_violation_ns=3e8,
+                       window_ns=1e10)
+r["throttling"]     # True
+r["invalidates"]    # ['mfu', 'achieved_tflops', 'achieved_bandwidth',
+                    #  'pct_of_peak', 'regression_comparison']
+```
+
+**The trap this encodes:** `GpuIdle` (0x1) and `ApplicationsClocksSetting` (0x2)
+share the NVML clock-event field with the real throttle reasons but are **not
+limits being hit**. A bare `mask != 0` test therefore reports every idle GPU in
+the fleet as throttled - and every deliberately clock-pinned benchmark, which is
+the one case where the pinning is exactly what you wanted. Test against
+`0x4|0x8|0x10|0x20|0x40|0x80|0x100`.
+
+Prefer DCGM's accumulating violation counters (`POWER_VIOLATION` 240,
+`THERMAL_VIOLATION` 241) over the instantaneous mask: throttling is bursty and a
+1 Hz sample steps over most of it. Match DCGM fields on **numeric ID**, not name
+- `CLOCK_THROTTLE_REASONS` was renamed to `CLOCKS_EVENT_REASONS` keeping id 112.
+
+Note also that ncu **cannot set clocks on a MIG Compute Instance** at all: pass
+`--clock-control none` and lock externally with
+`nvidia-smi --lock-gpu-clocks=tdp,tdp`.
 
 ---
 

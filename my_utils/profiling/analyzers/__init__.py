@@ -26,19 +26,30 @@ from .evidence import (
     fuse_claims,
 )
 from .metrics_analyzer import MetricsAnalyzer
-from .nccl_bandwidth import analyze_collective, detect_straggler
+from .nccl_bandwidth import (
+    analyze_collective,
+    arrivals_from_flight_recorder,
+    detect_straggler,
+    detect_straggler_from_traces,
+)
 from .trace_quality import (
+    DATALOADER_ATTRIBUTION_SQL,
     QualityIssue,
     assess_trace_quality,
     check_autotuning,
     check_clock_alignment,
     check_cuda_graphs,
     check_dataloader_attribution,
+    check_derived_metric_invariants,
     check_diagnostic_events,
+    check_gpu_metric_gaps,
+    check_kernel_name_uniqueness,
     check_multi_tenancy,
     check_nvlink_utilization_validity,
+    check_profiler_overhead,
     check_rank_completeness,
     check_warmup,
+    group_kernels_by_shape,
 )
 from .triage import TriageThresholds, TriageVerdict, triage_step
 from .workload_profiles import (
@@ -91,9 +102,17 @@ __all__ = [
     "check_diagnostic_events",
     "check_multi_tenancy",
     "check_dataloader_attribution",
+    "DATALOADER_ATTRIBUTION_SQL",
+    "check_kernel_name_uniqueness",
+    "check_profiler_overhead",
+    "check_gpu_metric_gaps",
+    "check_derived_metric_invariants",
+    "group_kernels_by_shape",
     # Collective bandwidth.
     "analyze_collective",
     "detect_straggler",
+    "detect_straggler_from_traces",
+    "arrivals_from_flight_recorder",
     "MetricsAnalyzer",
     "WORKLOAD_PROFILES",
     "WorkloadProfile",
