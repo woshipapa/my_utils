@@ -46,6 +46,7 @@ __all__ = [
     "axis_for_metric_name",
     "denominator_of",
     "group_report_metrics",
+    "audit_catalog_against_sections",
 ]
 
 
@@ -373,6 +374,76 @@ def _legacy_unit(name: str) -> str:
         if low.startswith(prefix):
             return unit
     return ""
+
+
+def audit_catalog_against_sections(
+    catalog: Mapping[str, Any],
+    *,
+    sections_dir: str = "",
+) -> Dict[str, Any]:
+    """Check catalog metric names against a local Nsight Compute install.
+
+    Returns three buckets, and the distinction between the last two matters for
+    building a collection command:
+
+    ``section_backed``
+        The name is requested by at least one shipped section, so collecting
+        that section collects it.
+    ``explicit_only``
+        The base name appears in a shipped section under a different
+        rollup/submetric. The metric is real; this spelling has to be asked for
+        with ``--metrics`` because no section requests it.
+    ``unknown``
+        Neither the name nor its base appears anywhere in the shipped sections.
+        This is a *candidate* typo and nothing stronger: sections request only a
+        subset of what a device exposes, and `--query-metrics` on the target GPU
+        is the only authority. Reporting these as errors would be wrong.
+
+    Returns ``{"available": False}`` when no install is found, which is the
+    normal case on a machine that only reads reports.
+    """
+    index = build_section_index(sections_dir) if sections_dir else build_section_index()
+    if index is None:
+        return {
+            "available": False,
+            "note": (
+                "No local Nsight Compute install found, so catalog names could not be "
+                "checked against the shipped sections. This is not a failure -- it "
+                "means the check did not run."
+            ),
+        }
+
+    known = set(index.metrics)
+    known_base = {name.split(":")[-1].split(".")[0] for name in known}
+
+    section_backed: List[str] = []
+    explicit_only: List[str] = []
+    unknown: List[str] = []
+    for spec in catalog.values():
+        for name in getattr(spec, "names", ()) or ():
+            text = str(name)
+            if text in known:
+                section_backed.append(text)
+            elif text.split(":")[-1].split(".")[0] in known_base:
+                explicit_only.append(text)
+            else:
+                unknown.append(text)
+
+    return {
+        "available": True,
+        "sections_dir": str(index.sections_dir) if hasattr(index, "sections_dir") else "",
+        "shipped_metric_count": len(known),
+        "section_backed": sorted(set(section_backed)),
+        "explicit_only": sorted(set(explicit_only)),
+        "unknown": sorted(set(unknown)),
+        "summary": (
+            f"{len(set(section_backed))} catalog spellings are requested by a shipped "
+            f"section; {len(set(explicit_only))} exist under a different rollup and need "
+            f"an explicit --metrics request; {len(set(unknown))} were not found in the "
+            f"shipped sections at all (candidates only -- sections cover a subset of "
+            f"what a device exposes, so --query-metrics on the target GPU decides)."
+        ),
+    }
 
 
 def group_report_metrics(

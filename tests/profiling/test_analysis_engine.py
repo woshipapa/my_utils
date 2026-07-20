@@ -1509,3 +1509,109 @@ class TestInstructionMix:
     def test_silent_without_pipe_counters(self):
         assert ncu_diagnostics.analyze_instruction_mix(
             ncu_diagnostics.MetricView({}))["findings"] == []
+
+
+class TestRooflineDtypeBasis:
+    """Grading against the wrong precision's peak scales efficiency directly."""
+
+    def _spec(self):
+        return gpu_specs.lookup_gpu_spec("H100 SXM") or gpu_specs.lookup_gpu_spec("H100")
+
+    def test_fp8_counters_pick_the_fp8_peak(self):
+        spec = self._spec()
+        if spec is None:
+            pytest.skip("no H100 spec")
+        result = ncu_diagnostics.compute_roofline(ncu_diagnostics.MetricView({
+            "sm__ops_path_tensor_src_fp8_dst_fp32_sparsity_off.sum": 1e12,
+            "dram__bytes.sum": 1e9, "gpu__time_duration.sum": 1e6,
+        }), spec)
+        assert result["dtype_basis"] == "fp8"
+        assert result["dtype_basis_source"] == "tensor_op_counters"
+
+    def test_unknown_precision_reports_the_spread_not_a_guess(self):
+        spec = self._spec()
+        if spec is None:
+            pytest.skip("no H100 spec")
+        result = ncu_diagnostics.compute_roofline(ncu_diagnostics.MetricView({
+            "sm__pipe_tensor_cycles_active.avg.pct_of_peak_sustained_active": 70.0,
+            "dram__bytes.sum": 1e9, "gpu__time_duration.sum": 1e6,
+        }), spec)
+        assert result.get("dtype_ambiguous") is True
+        assert result["dtype_basis_source"] == "tensor_pipe_active_precision_unknown"
+        assert any("could not be determined" in c for c in result["caveats"])
+
+    def test_plain_fp32_kernel_is_unambiguous(self):
+        spec = self._spec()
+        if spec is None:
+            pytest.skip("no H100 spec")
+        result = ncu_diagnostics.compute_roofline(ncu_diagnostics.MetricView({
+            "smsp__sass_thread_inst_executed_op_ffma_pred_on.sum": 1e9,
+            "dram__bytes.sum": 1e9, "gpu__time_duration.sum": 1e6,
+        }), spec)
+        assert result["dtype_basis"] == "fp32"
+        assert not result.get("dtype_ambiguous")
+
+
+# ---------------------------------------------------------------------------
+# Measurement context
+# ---------------------------------------------------------------------------
+
+measurement_context = _load("analyzers.measurement_context", "analyzers/measurement_context.py")
+
+
+class TestMeasurementContext:
+    """ncu is cold-cache by default; comparing it to wall-clock is invalid."""
+
+    def test_ncu_default_is_cold_cache(self):
+        ctx = measurement_context.describe_collection_mode(source="ncu")
+        assert ctx.cache_state == measurement_context.CacheState.COLD
+        assert any("--cache-control" in n for n in ctx.notes)
+
+    def test_ncu_cannot_answer_overlap(self):
+        ctx = measurement_context.describe_collection_mode(source="ncu")
+        assert any("overlap" in c for c in ctx.cannot_answer)
+
+    def test_cache_control_none_is_warm(self):
+        ctx = measurement_context.describe_collection_mode(
+            source="ncu", cache_control="none")
+        assert ctx.cache_state == measurement_context.CacheState.WARM
+
+    def test_cold_vs_warm_comparison_is_refused(self):
+        cold = measurement_context.describe_collection_mode(source="ncu")
+        warm = measurement_context.describe_collection_mode(source="wallclock")
+        out = measurement_context.compare_measurements(
+            cold, warm, baseline_value=2.0, candidate_value=1.0)
+        assert out["comparable"] is False
+        assert out["ratio"] is None, "an invalid ratio must not be presented as a result"
+        assert out["uncomparable_raw_ratio"] == pytest.approx(0.5)
+        assert any("cache state" in b for b in out["blockers"])
+
+    def test_like_for_like_comparison_is_allowed(self):
+        a = measurement_context.describe_collection_mode(source="ncu", clocks_locked=True)
+        b = measurement_context.describe_collection_mode(source="ncu", clocks_locked=True)
+        out = measurement_context.compare_measurements(
+            a, b, baseline_value=2.0, candidate_value=1.5)
+        assert out["comparable"] is True
+        assert out["ratio"] == pytest.approx(0.75)
+
+    def test_long_unlocked_loop_warns_about_thermals(self):
+        ctx = measurement_context.describe_collection_mode(
+            source="wallclock", iterations=5000, clocks_locked=False)
+        assert any("clock" in n.lower() for n in ctx.notes)
+
+    def test_synthetic_inputs_are_recorded_as_a_limit(self):
+        ctx = measurement_context.describe_collection_mode(
+            source="wallclock", input_distribution="random")
+        assert any("real data" in c for c in ctx.cannot_answer)
+
+
+class TestCatalogAgainstShippedSections:
+    """Ground-truth check when a local Nsight Compute install is present."""
+
+    def test_catalog_names_resolve_or_are_explained(self):
+        audit = section_index.audit_catalog_against_sections(metric_catalog.METRIC_CATALOG)
+        if not audit.get("available"):
+            pytest.skip("no local Nsight Compute install")
+        # Section-backed names must dominate; a large unknown set means drift.
+        assert len(audit["section_backed"]) > len(audit["unknown"])
+        assert audit["shipped_metric_count"] > 500

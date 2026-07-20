@@ -415,6 +415,53 @@ def analyze_stalls(view: MetricView, *, top_k: int = 6) -> Dict[str, Any]:
 # Roofline
 # ---------------------------------------------------------------------------
 
+def _roofline_dtype_basis(
+    view: MetricView, *, fp16_flops: Optional[float], fp64_flops: Optional[float],
+) -> Tuple[str, str, Tuple[str, ...]]:
+    """Decide which precision's peak the roofline is measured against.
+
+    Returns ``(dtype, source, ambiguous_candidates)``. ``source`` records how the
+    choice was made, because a dtype read from a hardware counter and one
+    inferred from the absence of other evidence deserve different trust.
+
+    The tensor-op counters are per-precision and are the only authoritative
+    signal here. When the tensor pipe was busy but no per-precision counter was
+    collected, the precision is genuinely unknown: the candidates are returned so
+    the caller can report the spread instead of asserting one.
+    """
+    tensor_ops = {
+        "fp8": view.get("tensor_ops_fp8"),
+        "fp16": view.get("tensor_ops_fp16"),
+        "bf16": view.get("tensor_ops_bf16"),
+    }
+    observed = {d: v for d, v in tensor_ops.items() if v}
+    if observed:
+        # More than one can be non-zero in a mixed kernel; the dominant one sets
+        # the ceiling, and the others are reported as alternatives.
+        dominant = max(observed, key=lambda d: observed[d])
+        others = tuple(d for d in observed if d != dominant)
+        return dominant, "tensor_op_counters", others
+
+    if fp64_flops:
+        return "fp64", "fp64_flop_counters", ()
+
+    # The tensor pipe was busy but no per-precision counter was collected. This
+    # is the ambiguous case: `tensor_present` cannot express it, because it is
+    # true only when such a counter exists. `pipe_tensor_util` is the signal that
+    # MMA work happened at all.
+    tensor_util = view.get("pipe_tensor_util")
+    if tensor_util and tensor_util > 1.0:
+        # Every dtype the MMA pipes support is a candidate, and on Hopper their
+        # peaks differ by 4x between fp8 and tf32.
+        return "fp16", "tensor_pipe_active_precision_unknown", ("fp8", "fp16", "bf16", "tf32")
+
+    if fp16_flops:
+        # Half-precision in the CUDA cores, not on tensor cores.
+        return "fp16", "fp16_flop_counters", ()
+
+    return "fp32", "fp32_default_no_tensor_activity", ()
+
+
 def compute_roofline(view: MetricView, gpu_spec: Any = None) -> Dict[str, Any]:
     """Derive achieved FLOPs, arithmetic intensity and roofline placement.
 
@@ -539,10 +586,40 @@ def compute_roofline(view: MetricView, gpu_spec: Any = None) -> Dict[str, Any]:
         )
     result["sanity_violations"] = sanity
 
-    dtype = "fp16" if (fp16_flops or tensor_present) else "fp32"
+    # Which precision's peak to measure against. Getting this wrong scales the
+    # efficiency figure directly: on Hopper the FP8 peak is twice the FP16 peak,
+    # so grading an FP8 kernel against FP16 reports it as twice as efficient as
+    # it is. The tensor-op counters say which pipe actually ran, so they decide
+    # this whenever they are present -- the kernel name does not.
+    dtype, dtype_source, dtype_alternatives = _roofline_dtype_basis(
+        view, fp16_flops=fp16_flops, fp64_flops=fp64_flops,
+    )
     ridge = gpu_spec.ridge_point(dtype)
     result["ridge_point"] = ridge
     result["dtype_basis"] = dtype
+    result["dtype_basis_source"] = dtype_source
+
+    # When the precision is ambiguous, report the spread rather than picking one
+    # and presenting it as fact. A reader who sees a single number will use it.
+    if dtype_alternatives:
+        spread = {}
+        for candidate in dtype_alternatives:
+            peak = gpu_spec.peak_tflops(candidate)
+            if peak:
+                spread[candidate] = peak
+        if len(spread) > 1:
+            lo, hi = min(spread.values()), max(spread.values())
+            result["dtype_ambiguous"] = True
+            result["dtype_candidate_peaks_tflops"] = spread
+            if hi > lo * 1.1:
+                result["caveats"].append(
+                    "The precision this kernel ran at could not be determined from the "
+                    f"counters, and the candidate peaks differ by {hi / lo:.1f}x "
+                    f"({', '.join(f'{k}={v:.0f}' for k, v in sorted(spread.items()))} "
+                    f"TFLOP/s). Efficiency is reported against {dtype} and would scale "
+                    "inversely with a different choice. Collect the sm__ops_path_tensor_* "
+                    "counters, or supply the dtype, to remove the ambiguity."
+                )
 
     ai = result["arithmetic_intensity"]
     if ai is not None and ridge is not None:

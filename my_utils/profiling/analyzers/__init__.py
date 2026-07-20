@@ -25,6 +25,21 @@ from .evidence import (
     claims_from_nvtx,
     fuse_claims,
 )
+from .axes import (
+    AXES,
+    AXIS_IDS,
+    Axis,
+    axis_coverage,
+    axis_for_category,
+    axis_for_shipped_rule,
+    summarize_axis_coverage,
+)
+from .measurement_context import (
+    CacheState,
+    MeasurementContext,
+    compare_measurements,
+    describe_collection_mode,
+)
 from .metrics_analyzer import MetricsAnalyzer
 from .nccl_bandwidth import (
     analyze_collective,
@@ -113,6 +128,19 @@ __all__ = [
     "detect_straggler",
     "detect_straggler_from_traces",
     "arrivals_from_flight_recorder",
+    # Performance axes: the shared vocabulary every finding maps onto.
+    "Axis",
+    "AXES",
+    "AXIS_IDS",
+    "axis_for_category",
+    "axis_for_shipped_rule",
+    "axis_coverage",
+    "summarize_axis_coverage",
+    # Measurement context: what a collection mode can and cannot answer.
+    "CacheState",
+    "MeasurementContext",
+    "describe_collection_mode",
+    "compare_measurements",
     "MetricsAnalyzer",
     "WORKLOAD_PROFILES",
     "WorkloadProfile",
