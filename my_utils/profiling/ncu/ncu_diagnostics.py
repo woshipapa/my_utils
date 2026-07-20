@@ -1497,12 +1497,21 @@ def diagnose_kernel(
     gpu_spec: Any = None,
     top_k: int = 10,
     shipped_rules: Optional[Iterable[Any]] = None,
+    throttling: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Run every rule over one kernel's metrics and return a ranked diagnosis.
 
     ``metrics`` maps exact ncu metric names to values.  ``gpu_spec`` unlocks the
     absolute roofline; without it the analysis still works but reports
     arithmetic intensity without a ceiling.
+
+    ``throttling`` accepts the keyword arguments of
+    :func:`~my_utils.profiling.hardware.analyze_throttling` -- a clock-event
+    bitmask, an SM clock, DCGM violation counters. Nsight Compute reports no
+    metric for the clock a kernel actually ran at, so without this the
+    ``power_clock`` axis is honestly reported as unexamined. When throttling is
+    detected, every derived figure it invalidates is demoted to low confidence:
+    a throttled run measures the clock, not the code.
 
     ``shipped_rules`` accepts the rule results Nsight Compute stored in the
     report (``rule_results_as_dicts()``, or the flattened rows from
@@ -1607,6 +1616,50 @@ def diagnose_kernel(
             source="evidence",
         ))
 
+    # Clock throttling first: it decides whether any of the above is attributable
+    # to the code at all. Nsight Compute has no metric for the clock a kernel ran
+    # at, so this can only come from external telemetry the caller supplies.
+    throttle_result: Dict[str, Any] = {}
+    if throttling:
+        from ..hardware.throttling import analyze_throttling  # local: optional dep
+
+        throttle_result = analyze_throttling(**dict(throttling))
+        invalidated = list(throttle_result.get("invalidates") or ())
+        if invalidated:
+            findings.append(Finding(
+                category="throttling",
+                title="The GPU was throttled during this measurement",
+                summary=(
+                    f"{throttle_result['clock_events'].get('detail', '')} "
+                    f"Derived figures that assume a steady clock are not "
+                    f"attributable to the code: {', '.join(invalidated)}."
+                ).strip(),
+                severity="high",
+                confidence="high",
+                evidence={"throttling": throttle_result},
+                actions=tuple(throttle_result["clock_events"].get("remedies") or ())
+                        or ("Lock clocks with nvidia-smi -lgc before re-measuring.",),
+                source="heuristic",
+            ))
+            # A throttled run measures the clock, not the kernel. Any finding
+            # that rests on an invalidated figure must stop claiming certainty.
+            demoted = {"compute", "memory_bandwidth"}
+            from ..analyzers.axes import axis_for_category as _axis_of
+
+            findings = [
+                f if _axis_of(f.category) not in demoted or f.confidence == "low"
+                else Finding(
+                    category=f.category, title=f.title, summary=f.summary,
+                    severity=f.severity, confidence="low",
+                    evidence={**f.evidence, "throttled": True,
+                              "confidence_reduced_because":
+                                  "the GPU was throttled, so this figure reflects "
+                                  "the clock rather than the code"},
+                    actions=f.actions, speedup_ceiling=f.speedup_ceiling, source=f.source,
+                )
+                for f in findings
+            ]
+
     # Cross-check against the rules Nsight Compute ran itself. This must happen
     # before the sort, because it both adds findings and rewrites confidence.
     from .shipped_rules import (  # local import: avoid a cycle at module load
@@ -1636,8 +1689,9 @@ def diagnose_kernel(
         findings,
         metric_present=view,
         shipped_rule_axes=[r.axis for r in normalized_shipped if r.axis],
-        # These ran against this kernel's metrics whether or not they spoke up.
-        axes_examined=[a for a in ("measurement",)],
+        # These ran against this kernel's data whether or not they spoke up. An
+        # axis that was checked and came back clean must not read as a gap.
+        axes_examined=(["measurement"] + (["power_clock"] if throttling else [])),
     )
 
     # Account for every metric the report carried, not just the catalogued ones.
@@ -1656,6 +1710,7 @@ def diagnose_kernel(
         "coverage": coverage,
         "axes": axes,
         "metric_inventory": inventory,
+        "throttling": throttle_result,
         "corroboration": {
             key: reconciliation[key]
             for key in ("shipped_rules_available", "corroborated", "uncorroborated",

@@ -55,6 +55,7 @@ def _load(dotted: str, relative_path: str):
 
 
 gpu_specs = _load("hardware.gpu_specs", "hardware/gpu_specs.py")
+throttling = _load("hardware.throttling", "hardware/throttling.py")
 kernel_taxonomy = _load("sources.kernel_taxonomy", "sources/kernel_taxonomy.py")
 metric_catalog = _load("ncu.metric_catalog", "ncu/metric_catalog.py")
 triage = _load("analyzers.triage", "analyzers/triage.py")
@@ -1285,3 +1286,34 @@ class TestDiagnoseKernelAccountsForEveryMetric:
         assert inventory["total"] == 2
         assert inventory["uncatalogued_count"] == 1
         assert "memory_bandwidth" in inventory["axis_counts"]
+
+
+class TestThrottlingIsWiredIn:
+    """A throttled run measures the clock, not the kernel."""
+
+    def test_power_clock_axis_is_a_gap_without_telemetry(self):
+        result = ncu_diagnostics.diagnose_kernel({"sm__cycles_elapsed.avg": 1e6})
+        assert "power_clock" in result["axes"]["not_examined"]
+
+    def test_throttling_is_reported_and_demotes_confidence(self):
+        result = ncu_diagnostics.diagnose_kernel(
+            {"sm__throughput.avg.pct_of_peak_sustained_elapsed": 85.0,
+             "gpu__compute_memory_throughput.avg.pct_of_peak_sustained_elapsed": 20.0},
+            kernel_name="gemm",
+            throttling={"clock_event_mask": 0x4},   # SwPowerCap
+        )
+        assert "power_clock" not in result["axes"]["not_examined"]
+        throttle_findings = [f for f in result["findings"] if f["category"] == "throttling"]
+        assert throttle_findings, "a throttled run must say so"
+        assert throttle_findings[0]["severity"] == "high"
+        for finding in result["findings"]:
+            if finding["category"] in ("bottleneck", "below_roofline"):
+                assert finding["confidence"] == "low"
+
+    def test_idle_gpu_is_not_reported_as_throttled(self):
+        """GpuIdle (0x1) and ApplicationsClocksSetting (0x2) are not throttling."""
+        result = ncu_diagnostics.diagnose_kernel(
+            {"sm__throughput.avg.pct_of_peak_sustained_elapsed": 85.0},
+            throttling={"clock_event_mask": 0x1 | 0x2},
+        )
+        assert not [f for f in result["findings"] if f["category"] == "throttling"]
