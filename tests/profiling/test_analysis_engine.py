@@ -2809,3 +2809,92 @@ class TestStringValuedMetrics:
         out = ncu_report_tools.resolve_sol_breakdown(
             {"breakdown:x": "not_collected_a,not_collected_b"}, {})
         assert out == {}
+
+
+class TestInstructionAndPmSampling:
+    """Instruction-level attribution, and the PM-sampling timeline."""
+
+    class _Action:
+        _P = "smsp__pcsamp_warps_issue_stalled_"
+        _PM = "pmsampling:"
+
+        class _M:
+            def __init__(self, values, correlation=None):
+                self.values = values
+                self._c = correlation
+            def num_instances(self): return len(self.values)
+            def as_double(self, i): return float(self.values[i])
+            def as_uint64(self, i): return int(self.values[i])
+            def has_correlation_ids(self): return self._c is not None
+            def correlation_ids(self):
+                if self._c is None: return None
+                return TestInstructionAndPmSampling._Action._M(self._c)
+
+        def metric_names(self):
+            return [self._P + "long_scoreboard",
+                    self._PM + "sm__pipe_tensor_cycles_active.avg.pct_of_peak_sustained_elapsed",
+                    self._PM + "sm__cycles_active.avg"]
+
+        def metric_by_name(self, n):
+            M = TestInstructionAndPmSampling._Action._M
+            if n.endswith("long_scoreboard"):
+                return M([600.0, 100.0], correlation=[0x10, 0x20])
+            if n.endswith("pct_of_peak_sustained_elapsed"):
+                # bursty: high peak, low average
+                return M([0.0, 0.0, 94.0, 90.0, 0.0, 0.0],
+                         correlation=[1000, 2500, 4000, 5500, 7000, 8500])
+            if n.endswith("sm__cycles_active.avg"):
+                return M([0.0, 2964.0, 100.0, 0.0, 0.0, 0.0],
+                         correlation=[1000, 2500, 4000, 5500, 7000, 8500])
+            return None
+
+        def source_files(self): return {"k.cu": "convert line\nload line\n"}
+        def source_info(self, a):
+            t = {0x10: ("k.cu", 1), 0x20: ("k.cu", 2)}
+            if a not in t: return None
+            f, l = t[a]
+            class I:
+                def file_name(self): return f
+                def line(self): return l
+            return I()
+        def sass_by_pc(self, a):
+            return {0x10: "PRMT R19, R8, 0x7732, RZ", 0x20: "LDG.E.128 R4"}.get(a, "")
+        def ptx_by_pc(self, a): return ""
+        def timed_warp_samples(self): return []
+
+    def test_top_instruction_carries_its_sass(self):
+        out = source_correlation.top_stalling_instructions(self._Action())
+        assert out["available"] is True
+        top = out["instructions"][0]
+        assert top["sass"] == "PRMT R19, R8, 0x7732, RZ"
+        assert top["line"] == 1 and top["dominant_stall_reason"] == "LONG_SCOREBOARD"
+        assert top["address_hex"] == "0x10"
+
+    def test_instruction_view_is_finer_than_the_line_view(self):
+        out = source_correlation.top_stalling_instructions(self._Action())
+        assert out["distinct_instructions"] == 2
+        assert "finer than the line view" in out["note"]
+
+    def test_pm_sampling_reports_peak_against_kernel_average(self):
+        out = source_correlation.analyze_pm_sampling(self._Action())
+        assert out["available"] is True
+        tensor = next(e for e in out["series"] if "tensor" in e["metric"])
+        assert tensor["peak"] == pytest.approx(94.0)
+        assert tensor["mean_overall"] < 35.0, "average hides the burst"
+        assert out["bursty"], "a 94% peak at a 31% average is the point of a timeline"
+
+    def test_raw_counts_are_not_rendered_as_percentages(self):
+        """`sm__cycles_active.avg` is a count; "2964%" is nonsense."""
+        out = source_correlation.analyze_pm_sampling(self._Action())
+        counts = [e for e in out["series"] if not e["is_percentage"]]
+        assert counts and counts[0]["unit"] == "count"
+        # and a count must never be called bursty, having no ceiling
+        assert all(e["is_percentage"] for e in out["bursty"])
+
+    def test_pm_sampling_absent_is_explained(self):
+        class _Bare:
+            def metric_names(self): return ["sm__throughput.avg"]
+            def metric_by_name(self, n): return None
+        out = source_correlation.analyze_pm_sampling(_Bare())
+        assert out["available"] is False
+        assert "pmsampling" in out["reason"]

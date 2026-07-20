@@ -2058,9 +2058,11 @@ def _source_for_action(action: Any, *, top_k: int = 8) -> Dict[str, object]:
     """Source attribution for one action, gated on sampling validity."""
     from .sampling_validity import check_pc_sampling_validity, check_pm_sampling_validity
     from .source_correlation import (
+        analyze_pm_sampling,
         attribute_stalls_to_source,
         pc_sampling_timeline,
         source_availability,
+        top_stalling_instructions,
     )
 
     read = _metric_reader(action)
@@ -2100,6 +2102,11 @@ def _source_for_action(action: Any, *, top_k: int = 8) -> Dict[str, object]:
         entry["stall_attribution"] = attribute_stalls_to_source(action, top_k=top_k)
     if "pc_sampling_timeline" not in blocked:
         entry["timeline"] = pc_sampling_timeline(action)
+    # One level finer than the line view: the exact instruction.
+    if not (blocked & {"hot_line_ranking", "stall_attribution"}):
+        entry["top_instructions"] = top_stalling_instructions(action, top_k=top_k)
+    # PM sampling is a separate instrument: PC sampling says where, this says when.
+    entry["pm_sampling"] = analyze_pm_sampling(action)
     return entry
 
 

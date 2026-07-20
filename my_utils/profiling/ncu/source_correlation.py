@@ -50,6 +50,8 @@ __all__ = [
     "correlate_metric_to_source",
     "attribute_stalls_to_source",
     "attribute_stalls_via_metrics",
+    "top_stalling_instructions",
+    "analyze_pm_sampling",
     "pc_sampling_timeline",
     "summarize_warp_samples",
     "source_availability",
@@ -819,6 +821,216 @@ def attribute_stalls_to_source(
                 "be tied to a source line, most often inlined or compiler-generated code."
                 if unlocated_samples else ""
             )
+        ),
+    }
+
+
+PM_SAMPLING_PREFIX = "pmsampling:"
+
+
+def analyze_pm_sampling(action: Any, *, top_k: int = 8) -> Dict[str, Any]:
+    """Read the PM-sampling timeline: how utilisation moved across the kernel.
+
+    PM sampling is a different instrument from PC sampling. PC sampling says
+    *where* (which instruction stalled); PM sampling says *when* (what the
+    machine was doing at each point in the kernel's execution). The metrics
+    arrive as ``pmsampling:<metric>`` with one value per time bucket and
+    correlation IDs carrying the GPU timestamp of each bucket.
+
+    The reason it matters, and the reason a whole-kernel average cannot replace
+    it: on a real report the tensor pipe read 33.7% for the kernel as a whole
+    and peaked at 93.8% inside a window covering under a fifth of the samples.
+    Those are not the same machine. An average across a burst and a long idle
+    tail describes neither.
+    """
+    names = [str(n) for n in (_maybe(action, "metric_names") or ())
+             if str(n).startswith(PM_SAMPLING_PREFIX)]
+    if not names:
+        return {"available": False,
+                "reason": (
+                    "No `pmsampling:` metrics. PM sampling ships in the `full` and "
+                    "`pmsampling` sets; a `basic` or `detailed` run has none."),
+                "series": []}
+
+    series: List[Dict[str, Any]] = []
+    timestamps: List[int] = []
+    for name in names:
+        metric = _maybe(action, "metric_by_name", name)
+        if metric is None:
+            continue
+        count = int(_maybe(metric, "num_instances") or 0)
+        if count <= 0:
+            continue
+        values = [float(_maybe(metric, "as_double", i) or 0.0) for i in range(count)]
+        if not timestamps:
+            correlation = _maybe(metric, "correlation_ids")
+            if correlation is not None:
+                timestamps = [int(_maybe(correlation, "as_uint64", i) or 0)
+                              for i in range(count)]
+
+        active = [v for v in values if v > 0.0]
+        peak = max(values) if values else 0.0
+        short = name[len(PM_SAMPLING_PREFIX):]
+        # Only the pct_of_peak / .pct submetrics are percentages. The rest are
+        # raw counts, and rendering a cycle count as "2965%" is the same class
+        # of error as printing 100 - 0 as "more than 100% miss".
+        is_pct = short.endswith(".pct") or "pct_of_peak" in short
+        entry: Dict[str, Any] = {
+            "metric": short,
+            "is_percentage": is_pct,
+            "unit": "%" if is_pct else "count",
+            "buckets": count,
+            "active_buckets": len(active),
+            "duty_cycle": len(active) / count if count else 0.0,
+            "peak": peak,
+            "mean_overall": (sum(values) / count) if count else 0.0,
+            "mean_while_active": (sum(active) / len(active)) if active else 0.0,
+        }
+        # The gap between "peak while running" and "average over the kernel" is
+        # the whole point of having a timeline.
+        if peak > 0 and entry["mean_overall"] > 0:
+            entry["peak_to_mean"] = peak / entry["mean_overall"]
+        series.append(entry)
+
+    if not series:
+        return {"available": False,
+                "reason": "`pmsampling:` metrics are present but carry no samples",
+                "series": []}
+
+    # Percentages first: they are the ones with an interpretable scale.
+    series.sort(key=lambda e: (e["is_percentage"], e["peak"]), reverse=True)
+
+    duration_ns = None
+    if len(timestamps) >= 2:
+        duration_ns = max(timestamps) - min(timestamps)
+
+    # A "bursty" verdict compares a peak against a ceiling, which only exists
+    # for percentages. For a raw count there is no bar to be near.
+    bursty = [e for e in series
+              if e["is_percentage"] and e.get("peak_to_mean", 1.0) >= 2.0
+              and e["peak"] >= 50.0]
+
+    return {
+        "available": True,
+        "metric_count": len(series),
+        "bucket_count": series[0]["buckets"],
+        "sampled_span_ns": duration_ns,
+        "bucket_interval_ns": (duration_ns / (series[0]["buckets"] - 1)
+                               if duration_ns and series[0]["buckets"] > 1 else None),
+        "series": series[: int(top_k)],
+        "bursty": [
+            {"metric": e["metric"], "peak": e["peak"],
+             "mean_overall": e["mean_overall"],
+             "active_share": e["duty_cycle"],
+             # Carried so a consumer can tell a percentage from a count without
+             # re-deriving it from the metric name.
+             "is_percentage": e["is_percentage"], "unit": e["unit"]}
+            for e in bursty
+        ],
+        "note": (
+            "; ".join(
+                f"{e['metric'].split('.')[0]} peaks at {e['peak']:.0f}% but averages "
+                f"{e['mean_overall']:.0f}% across the kernel (non-zero in "
+                f"{e['duty_cycle'] * 100:.0f}% of time buckets)"
+                for e in bursty[:3]
+            )
+            or "No percentage-valued unit shows a large gap between its peak and "
+               "its kernel average."
+        ),
+        "counts_note": (
+            "Series marked `unit: count` are raw per-bucket counts, not "
+            "percentages; they have no ceiling to be measured against."
+        ),
+    }
+
+
+def top_stalling_instructions(
+    action: Any, *, top_k: int = 12,
+) -> Dict[str, Any]:
+    """Rank individual SASS instructions by sampled stall cycles.
+
+    Source-line attribution answers "which line"; a line compiles to many
+    instructions and they do not stall for the same reason. This goes one level
+    finer -- the exact instruction at the exact address -- which is what tells
+    you a bf16 conversion is three PRMT/IMAD instructions rather than a memory
+    access.
+    """
+    names = [str(n) for n in (_maybe(action, "metric_names") or ())
+             if str(n).startswith(PCSAMP_STALL_PREFIX) and not str(n).endswith("_not_issued")]
+    if not names:
+        return {"available": False,
+                "reason": f"no `{PCSAMP_STALL_PREFIX}*` metrics in this report",
+                "instructions": []}
+
+    files = _as_dict(_maybe(action, "source_files"))
+    by_address: Dict[int, Dict[str, Any]] = {}
+
+    for metric_name in names:
+        reason = metric_name[len(PCSAMP_STALL_PREFIX):].upper()
+        metric = _maybe(action, "metric_by_name", metric_name)
+        if metric is None or not _maybe(metric, "has_correlation_ids"):
+            continue
+        correlation = _maybe(metric, "correlation_ids")
+        if correlation is None:
+            continue
+        for index in range(int(_maybe(metric, "num_instances") or 0)):
+            value = _maybe(metric, "as_double", index)
+            if not value or value <= 0:
+                continue
+            raw = _maybe(correlation, "as_uint64", index)
+            if raw is None:
+                continue
+            address = int(raw)
+            entry = by_address.setdefault(address, {
+                "address": address, "samples": 0.0, "stall_reasons": Counter(),
+            })
+            entry["samples"] += value
+            entry["stall_reasons"][reason] += value
+
+    if not by_address:
+        return {"available": False,
+                "reason": "stall metrics carry no non-zero per-instruction values",
+                "instructions": []}
+
+    ranked = sorted(by_address.values(), key=lambda e: e["samples"], reverse=True)
+    total = sum(e["samples"] for e in ranked) or 1.0
+
+    out: List[Dict[str, Any]] = []
+    for entry in ranked[: int(top_k)]:
+        address = entry["address"]
+        info = _maybe(action, "source_info", address)
+        file_name = str(_maybe(info, "file_name") or "") if info is not None else ""
+        line = _maybe(info, "line") if info is not None else None
+        text = ""
+        if file_name and line is not None:
+            content = files.get(file_name)
+            if content:
+                lines = content.splitlines()
+                if 0 < int(line) <= len(lines):
+                    text = lines[int(line) - 1].strip()
+        dominant = entry["stall_reasons"].most_common(1)
+        out.append({
+            "address": address,
+            "address_hex": f"0x{address:x}",
+            "sass": str(_maybe(action, "sass_by_pc", address) or "").strip(),
+            "samples": int(entry["samples"]),
+            "share": entry["samples"] / total,
+            "dominant_stall_reason": dominant[0][0] if dominant else "",
+            "stall_reasons": {k: int(v) for k, v in entry["stall_reasons"].most_common(4)},
+            "file_name": file_name,
+            "line": int(line) if line is not None else None,
+            "source_text": text,
+        })
+
+    return {
+        "available": True,
+        "total_samples": int(total),
+        "distinct_instructions": len(by_address),
+        "instructions": out,
+        "note": (
+            f"{len(by_address)} instructions carried a non-zero stall sample. One "
+            "source line compiles to many instructions and they do not stall for "
+            "the same reason, which is why this is a level finer than the line view."
         ),
     }
 
