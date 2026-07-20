@@ -389,16 +389,36 @@ def analyze_stalls(view: MetricView, *, top_k: int = 6) -> Dict[str, Any]:
         if share is None or not issue_gate_open or share <= gate_share:
             continue
         # Stall-elimination ceiling: removing a stall that occupies `share` of
-        # warp latency can at best speed the kernel by 1/(1-share).
+        # warp latency can at best speed the kernel by 1/(1-share). This assumes
+        # the stall is entirely removable and nothing else becomes the limit,
+        # which is why it is labelled a ceiling and not a prediction.
         ceiling = 1.0 / (1.0 - share) if share < 0.95 else None
+
+        # On a Hopper warp-specialized GEMM, Long Scoreboard absorbs warpgroup
+        # synchronisation as well as global-memory latency: NVIDIA staff
+        # document a case where Stall GMMA + Stall Barrier summed to within 3%
+        # of Stall Long Scoreboard. Advising better coalescing there sends the
+        # author after memory latency that is really pipeline sync.
+        confounded = (
+            row["key"] == "long_scoreboard"
+            and (view.get("inst_pipe_gmma") or view.get("pipe_tma_util"))
+        )
         findings.append(Finding(
             category=f"stall_{row['key']}",
             title=f"Warp stalls dominated by {row['display']}",
             summary=(
                 f"{row['display']} accounts for {share * 100:.0f}% of warp cycles per issued "
                 f"instruction ({row['cycles_per_issued_inst']:.2f} cycles). {row['meaning']}"
+                + (
+                    " NOTE: this kernel uses warpgroup MMA or TMA, and on such kernels "
+                    "Long Scoreboard absorbs warpgroup synchronisation as well as "
+                    "global-memory latency -- NVIDIA staff document a case where GMMA "
+                    "and Barrier stalls summed to within 3% of it. Read it together "
+                    "with the gmma and barrier stalls below before concluding memory."
+                    if confounded else ""
+                )
             ),
-            severity="high" if share > 0.5 else "medium",
+            severity=("medium" if confounded else ("high" if share > 0.5 else "medium")),
             confidence="high",
             evidence={
                 "stall_metric": STALL_REASONS[row["key"]].metric_name,
@@ -407,7 +427,13 @@ def analyze_stalls(view: MetricView, *, top_k: int = 6) -> Dict[str, Any]:
                 "warp_cycles_per_issued_inst": total_latency,
                 "issue_active": issue_active,
             },
-            actions=tuple(row["fixes"]),
+            actions=(
+                tuple(f for f in row["fixes"]
+                      if "coalesc" not in f.lower() and "locality" not in f.lower())
+                + ("Check the gmma and barrier stalls first: on a warpgroup-MMA "
+                   "kernel those are part of what Long Scoreboard is counting.",)
+                if confounded else tuple(row["fixes"])
+            ),
             speedup_ceiling=ceiling,
             source="ncu_rule",
         ))
@@ -1364,6 +1390,43 @@ def analyze_divergence(view: MetricView) -> Dict[str, Any]:
     }
 
 
+# H100/A100 register file per SM. Used only to recognise a deliberate
+# full-register-file allocation, never to compute anything.
+_REGISTER_FILE_PER_SM = 65536
+
+
+def _registers_are_deliberate(view: MetricView) -> Optional[Dict[str, Any]]:
+    """Whether the register count is the largest that fits, i.e. chosen.
+
+    A Hopper warp-specialized GEMM is advised to give one CTA the whole SM, and
+    then to take every register: 65536 / 384 threads = 170.7, so 168 (the
+    largest multiple of 8 below it) means the author took all of them. Reading
+    that as careless register pressure inverts the intent -- which is what this
+    tool did on a real CUTLASS kernel, at high severity.
+    """
+    registers = view.get("registers_per_thread")
+    block = view.get("block_size")
+    if not registers or not block:
+        return None
+    ceiling = _REGISTER_FILE_PER_SM / block
+    used = registers * block
+    if registers >= ceiling - 8:      # within one allocation granule of the cap
+        return {
+            "registers_per_thread": registers,
+            "block_size": block,
+            "registers_used": used,
+            "register_file": _REGISTER_FILE_PER_SM,
+            "ceiling_per_thread": ceiling,
+            "reason": (
+                f"{registers:.0f} registers x {block:.0f} threads = {used:,.0f} of the "
+                f"{_REGISTER_FILE_PER_SM:,} available, and {_REGISTER_FILE_PER_SM:,}/"
+                f"{block:.0f} = {ceiling:.1f} is the per-thread ceiling. This is the "
+                "largest allocation that fits, so it was chosen, not overrun."
+            ),
+        }
+    return None
+
+
 def analyze_spilling(view: MetricView) -> Dict[str, Any]:
     """Register spilling to local memory."""
     findings: List[Finding] = []
@@ -1375,6 +1438,8 @@ def analyze_spilling(view: MetricView) -> Dict[str, Any]:
 
     local_total = local_ld + local_st
     share = (local_total / total_inst) if total_inst else None
+
+    deliberate = _registers_are_deliberate(view)
 
     if local_total > 0:
         severity = "medium"
@@ -1388,6 +1453,16 @@ def analyze_spilling(view: MetricView) -> Dict[str, Any]:
                 f" Worse, only {local_hit:.0f}% of local loads hit L1, so spills are reaching "
                 "L2 or DRAM."
             )
+        # A register count that fills the file was chosen, not overrun. Local
+        # traffic alongside it is the cost of a deliberate trade, not evidence
+        # of carelessness, and reporting it at high severity told the author of
+        # a CUTLASS warp-specialized GEMM to undo their design.
+        if deliberate:
+            severity = "low" if severity == "medium" else "medium"
+            extra += (
+                " " + deliberate["reason"] + " The spilling is the cost of that "
+                "choice; whether it is worth paying is a design question, not a defect."
+            )
         findings.append(Finding(
             category="register_spilling",
             title="Register spilling to local memory",
@@ -1400,7 +1475,8 @@ def analyze_spilling(view: MetricView) -> Dict[str, Any]:
             confidence="high",
             evidence={"local_ld_inst": local_ld, "local_st_inst": local_st,
                       "local_share_of_inst": share, "registers_per_thread": regs,
-                      "local_ld_hit_rate_pct": local_hit},
+                      "local_ld_hit_rate_pct": local_hit,
+                      "register_allocation_deliberate": deliberate},
             actions=(
                 "Shorten live ranges or recompute values instead of keeping them alive.",
                 "Reduce the per-thread tile so the working set fits in registers.",
@@ -1412,6 +1488,7 @@ def analyze_spilling(view: MetricView) -> Dict[str, Any]:
 
     return {"local_ld_inst": local_ld, "local_st_inst": local_st,
             "local_share_of_inst": share, "registers_per_thread": regs,
+            "register_allocation_deliberate": deliberate,
             "findings": findings}
 
 
@@ -1957,6 +2034,21 @@ def analyze_issue_efficiency(view: MetricView) -> Dict[str, Any]:
                        ("warps_active_per_scheduler", active)):
         if value is not None:
             result[key] = value
+
+    # A warp-specialized kernel deliberately keeps most warps parked: the
+    # producer warpgroup waits on TMA for nearly the whole kernel by design, and
+    # a Hopper GEMM is advised to give one CTA the entire SM. Telling such a
+    # kernel to raise occupancy inverts its design, and on a real CUTLASS
+    # warp-specialized GEMM this rule fired at "0.16 eligible warps" and
+    # recommended exactly that.
+    if _is_warp_specialized(view):
+        result["warp_specialized"] = True
+        result["note"] = (
+            "Warp-specialized kernel: producer warps wait on TMA by design, so a "
+            "low eligible-warp count is the intended steady state rather than a "
+            "scheduling problem. The eligible-warp rule is not applied."
+        )
+        return result
 
     # NVIDIA's own SchedulerStats guidance: below roughly one eligible warp per
     # scheduler per cycle, the scheduler idles whenever the chosen warp stalls.

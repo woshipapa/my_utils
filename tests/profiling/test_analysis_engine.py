@@ -3258,3 +3258,85 @@ class TestClockConfound:
     def test_agreeing_clocks_raise_nothing(self):
         ctx = self._ctx(1.789e9, gpc=1.789e9)
         assert not [c for c in ctx.cannot_answer if "derived from cycles" in c]
+
+
+class TestWarpSpecializedKernelsAreNotJudgedAsCommodity:
+    """A Hopper warp-specialized GEMM violates commodity-kernel rules by design.
+
+    On a real CUTLASS kernel this tool emitted two high-severity findings --
+    register spilling and low occupancy -- both of which told the author to undo
+    the design. 168 registers x 384 threads is 64,512 of a 65,536-register file:
+    the largest allocation that fits. Producer warps wait on TMA for nearly the
+    whole kernel; that is the steady state, not a scheduling fault.
+    """
+
+    _WS = {"sm__inst_executed_pipe_tensor_op_gmma.avg.pct_of_peak_sustained_active": 30.0}
+
+    def test_full_register_file_is_recognised_as_deliberate(self):
+        view = ncu_diagnostics.MetricView(
+            {"launch__registers_per_thread": 168.0, "launch__block_size": 384.0})
+        out = ncu_diagnostics._registers_are_deliberate(view)
+        assert out is not None
+        assert out["registers_used"] == 64512
+        assert "chosen, not overrun" in out["reason"]
+
+    def test_ordinary_register_count_is_not_excused(self):
+        view = ncu_diagnostics.MetricView(
+            {"launch__registers_per_thread": 40.0, "launch__block_size": 256.0})
+        assert ncu_diagnostics._registers_are_deliberate(view) is None
+
+    def test_spilling_severity_drops_when_registers_are_deliberate(self):
+        base = {"smsp__inst_executed_op_local_ld.sum": 70000.0,
+                "smsp__inst_executed_op_local_st.sum": 20000.0,
+                "smsp__inst_executed.sum": 500000.0,
+                "l1tex__t_sector_pipe_lsu_mem_local_op_ld_hit_rate.pct": 38.0}
+        careless = ncu_diagnostics.analyze_spilling(ncu_diagnostics.MetricView(
+            {**base, "launch__registers_per_thread": 40.0, "launch__block_size": 256.0}))
+        deliberate = ncu_diagnostics.analyze_spilling(ncu_diagnostics.MetricView(
+            {**base, "launch__registers_per_thread": 168.0, "launch__block_size": 384.0}))
+        assert careless["findings"][0].severity == "high"
+        assert deliberate["findings"][0].severity != "high"
+        assert "design question, not a defect" in deliberate["findings"][0].summary
+
+    def test_eligible_warp_rule_is_not_applied_to_warp_specialized(self):
+        starved = {"smsp__warps_eligible.avg.per_cycle_active": 0.16,
+                   "smsp__warps_active.avg.per_cycle_active": 3.0}
+        ordinary = ncu_diagnostics.analyze_issue_efficiency(
+            ncu_diagnostics.MetricView(starved))
+        specialized = ncu_diagnostics.analyze_issue_efficiency(
+            ncu_diagnostics.MetricView({**starved, **self._WS}))
+        assert ordinary["findings"], "the rule must still fire on a normal kernel"
+        assert specialized["findings"] == []
+        assert specialized["warp_specialized"] is True
+        assert "by design" in specialized["note"]
+
+    def test_long_scoreboard_confound_is_stated_on_wgmma_kernels(self):
+        stalls = {"smsp__average_warp_latency_per_inst_issued.ratio": 20.0,
+                  "smsp__average_warps_issue_stalled_long_scoreboard_per_issue_active.ratio": 12.0,
+                  "smsp__issue_active.avg.per_cycle_active": 0.1}
+        plain = ncu_diagnostics.analyze_stalls(ncu_diagnostics.MetricView(stalls))
+        wgmma = ncu_diagnostics.analyze_stalls(
+            ncu_diagnostics.MetricView({**stalls, **self._WS}))
+        plain_ls = next(f for f in plain["findings"] if f.category == "stall_long_scoreboard")
+        wgmma_ls = next(f for f in wgmma["findings"] if f.category == "stall_long_scoreboard")
+        assert plain_ls.severity == "high"
+        assert wgmma_ls.severity == "medium", "confounded, so not asserted at high"
+        assert "warpgroup synchronisation" in wgmma_ls.summary
+        assert not any("coalesc" in a.lower() for a in wgmma_ls.actions), (
+            "coalescing advice sends the author after memory that is really sync")
+
+    def test_bf16_tensor_ops_resolve_without_the_sparsity_suffix(self):
+        """The report carries `..._src_bf16_dst_fp32.sum`; the catalog only had
+        the `_sparsity_off` spelling, so the dtype came back unknown."""
+        view = ncu_diagnostics.MetricView({
+            "sm__ops_path_tensor_src_bf16_dst_fp32.sum": 25769803776.0,
+            "gpu__time_duration.sum": 82464.0, "dram__bytes.sum": 1e9})
+        spec = gpu_specs.lookup_gpu_spec("H100 SXM5")
+        result = ncu_diagnostics.compute_roofline(view, spec)
+        assert result["tensor_ops"] == pytest.approx(25769803776.0)
+        if spec is not None:
+            # dtype_basis is only derived once a spec supplies the peaks.
+            assert result["dtype_basis"] == "bf16"
+            assert not result.get("dtype_ambiguous")
+            # 25.77e9 ops / 82.464us = 312.5 TOPS
+            assert result["achieved_tflops"] == pytest.approx(312.5, abs=1.0)
