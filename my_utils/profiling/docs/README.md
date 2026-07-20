@@ -8,6 +8,11 @@
 看 **`PERFORMANCE_ANALYSIS_HANDBOOK.md`** —— 端到端权威手册，涵盖采集命令、分析 API、
 判读阈值（附出处）、硬件天花板、以及会让数据说谎的陷阱。人和 agent 都从这里开始。
 
+0b. **我想知道这套工具都有哪些能力、每个能力是怎么来的、为什么要加**  
+看 **`CAPABILITY_EVOLUTION.md`** —— 从最早版本到现在的完整演进记录：每个能力的来源
+（本地验证 / 官方源码 / 我们自己推导）和它解决的具体问题。凡是因为“出过错”才加的
+能力，都写明了错在哪。
+
 1. 我只想马上跑起来  
 看 `UNIFIED_PROFILING_QUICKSTART.md`
 
@@ -27,6 +32,8 @@
 
 ### 快速上手
 
+- [PERFORMANCE_ANALYSIS_HANDBOOK.md](./PERFORMANCE_ANALYSIS_HANDBOOK.md) —— 端到端手册
+- [CAPABILITY_EVOLUTION.md](./CAPABILITY_EVOLUTION.md) —— 能力演进与出处
 - [UNIFIED_PROFILING_QUICKSTART.md](./UNIFIED_PROFILING_QUICKSTART.md)
 - [CROSS_FRAMEWORK_PROFILE_REFERENCE.md](./CROSS_FRAMEWORK_PROFILE_REFERENCE.md)
 - [FRAMEWORK_INTEGRATION_PLAYBOOK_ZH.md](./FRAMEWORK_INTEGRATION_PLAYBOOK_ZH.md)

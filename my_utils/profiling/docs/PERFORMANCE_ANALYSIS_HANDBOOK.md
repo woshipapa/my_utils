@@ -15,13 +15,19 @@ If you read only one thing, read [§0 The 60-second version](#0-the-60-second-ve
 - [3. Collection: ncu](#3-collection-ncu)
 - [4. Analysis: the top-down triage](#4-analysis-the-top-down-triage)
 - [5. Analysis: per-kernel diagnosis](#5-analysis-per-kernel-diagnosis)
+- [5b. The 14 axes: what "complete" means](#5b-the-14-axes-what-complete-means)
+- [5c. Cross-checking against NVIDIA's own rules](#5c-cross-checking-against-nvidias-own-rules)
 - [6. The metric catalog](#6-the-metric-catalog)
+- [6b. Every metric in the report, not just the catalogued ones](#6b-every-metric-in-the-report-not-just-the-catalogued-ones)
 - [7. Interpretation reference](#7-interpretation-reference)
 - [8. Hardware ceilings](#8-hardware-ceilings)
 - [9. Kernel taxonomy](#9-kernel-taxonomy)
 - [9b. Never conclude from a kernel name alone](#9b-never-conclude-from-a-kernel-name-alone)
 - [9c. Trace validity: refuse before you analyse](#9c-trace-validity-refuse-before-you-analyse)
 - [9d. Clock throttling](#9d-clock-throttling)
+- [9e. Where, not what: source and SASS attribution](#9e-where-not-what-source-and-sass-attribution)
+- [9f. Sampling validity: PC and PM sampling](#9f-sampling-validity-pc-and-pm-sampling)
+- [9g. How a measurement was taken](#9g-how-a-measurement-was-taken)
 - [10. Traps that make numbers lie](#10-traps-that-make-numbers-lie)
 - [11. Python API reference](#11-python-api-reference)
 - [12. Extending the engine](#12-extending-the-engine)
@@ -329,7 +335,29 @@ result["findings"]               # ranked, each with evidence + actions + ceilin
 result["sections"]["stalls"]     # full stall ranking and bucket rollup
 result["sections"]["roofline"]   # AI, achieved/attainable TFLOP/s, ridge point
 result["coverage"]               # WHICH analyses ran, and which could not
+result["axes"]                   # WHICH of the 14 axes were examined (see 5b)
+result["metric_inventory"]       # every metric present, interpreted or not (6b)
+result["corroboration"]          # agreement/conflict with NVIDIA's rules (5c)
+result["throttling"]             # populated only when telemetry is supplied (9d)
 ```
+
+Optional inputs, each of which closes a gap that is otherwise reported honestly
+as unexamined rather than silently skipped:
+
+```python
+diagnose_kernel(
+    metrics,
+    kernel_name=name,
+    gpu_spec=spec,
+    shipped_rules=load_ncu_report_rule_rows("profile.ncu-rep"),  # 5c
+    throttling={"clock_event_mask": mask},                       # 9d
+    problem_shape={"m": 4096, "n": 4096, "k": 1024},             # tile quantisation
+)
+```
+
+`problem_shape` deserves a note: the kernel symbol encodes the *tile* shape and
+never the *problem* shape, so tile quantisation cannot be checked without it.
+When it is absent the check reports itself as unasked rather than passing.
 
 ### Read `coverage` before you read `findings`
 
@@ -341,7 +369,7 @@ problems plus nine questions nobody asked.
 ```python
 cov = result["coverage"]
 print(cov["summary"])
-# 6 of 11 analyses ran. 5 could not: the required metrics are absent from this
+# 2 of 15 analyses ran. 13 could not: the required metrics are absent from this
 # report, so those questions were not asked - this is missing coverage, not a
 # clean result.
 
@@ -352,10 +380,21 @@ for skipped in cov["skipped"]:
 # spilling        needs SourceCounters
 ```
 
-Measured against a real H100 fused-kernel report collected with the default
-sections, coverage was **6 of 11**. The five that could not run included stalls
-and shared memory - the first two things you would want for a fused kernel.
-`--set full` closes it.
+Measured against a report carrying only Speed-of-Light and launch metrics -
+what `--set basic` gives you - coverage is **2 of 15**. The thirteen that cannot
+run include stalls, shared memory and source attribution: the first things you
+would want for a fused kernel. `--set full` closes most of it; source
+correlation additionally needs `-lineinfo` at build time (see 9e).
+
+The number moved from "6 of 11" to "2 of 15" between versions of this handbook,
+and both parts of that are worth knowing. Four analyses were added. But the
+older figure was also **wrong**: `_ANALYSIS_REQUIREMENTS` gated four analyses on
+catalog keys that did not exist (`warp_cycles_per_issue` for what is really
+`warp_cycles_per_issued_inst`, and six more). `MetricView.get` returns `None`
+for an unknown key rather than raising, so stalls, coalescing, divergence and
+spilling were reported as uncollected on *every* report, including full ones
+where those rules had run and emitted findings. A coverage report that lies is
+worse than no coverage report, so a test now pins every key to the catalog.
 
 ### Every finding states its evidence
 
@@ -442,6 +481,104 @@ that does not do this will confidently mis-grade every tensor-core kernel.
 
 ---
 
+## 5b. The 14 axes: what "complete" means
+
+A findings list cannot tell you what was *not* examined. Silence from the
+communication axis means either "collectives are fine" or "nobody looked", and
+those call for opposite next steps. `analyzers/axes.py` is the checklist that
+makes the difference visible.
+
+```python
+from my_utils.profiling.analyzers.axes import AXES, axis_coverage, axis_for_category
+
+result["axes"]["summary"]
+# 4 of 14 axes examined. Not examined: shared_memory, stall, divergence,
+# registers, communication, latency_launch, host_pipeline, power_clock,
+# numerics, multi_gpu. Those axes produced no findings because they were never
+# checked, which is not the same as being clean.
+
+for axis in result["axes"]["axes"]:
+    if not axis["examined"]:
+        print(axis["axis"], "->", axis["remedy"])
+# stall        -> --section WarpStateStats
+# power_clock  -> Sample nvmlDeviceGetCurrentClocksEventReasons or DCGM 100/112/155/240/241
+```
+
+| Axis | Question it answers | Where it comes from |
+|---|---|---|
+| `compute` | Are the math pipes the limit, and the right pipe? | ncu SOL, pipes, roofline |
+| `memory_bandwidth` | Which level is saturated, and is the traffic avoidable? | ncu memory sections |
+| `shared_memory` | Is shared memory serialising on bank conflicts? | MemoryWorkloadAnalysis_Tables |
+| `scheduler` | Do schedulers have warps to issue; is the grid shaped right? | Occupancy, LaunchStats, SchedulerStats |
+| `stall` | When warps cannot issue, what are they waiting on? | WarpStateStats |
+| `divergence` | Are threads in a warp doing the same work? | InstructionStats |
+| `registers` | Is register pressure spilling to local memory? | LaunchStats, SourceCounters |
+| `communication` | Are collectives at achievable bus bandwidth; who is late? | nsys + NCCL flight recorder |
+| `latency_launch` | Is the GPU idle waiting for the host? | nsys timeline |
+| `host_pipeline` | Is the input pipeline or Python the limit? | nsys with `--trace=osrt` |
+| `power_clock` | Did the GPU run at the clock the numbers assume? | NVML / DCGM telemetry |
+| `numerics` | Is the kernel using the narrowest precision allowed? | tensor-op counters |
+| `multi_gpu` | Are all ranks doing equal work at the same time? | per-rank traces |
+| `measurement` | Is this data trustworthy enough to conclude anything? | always available |
+
+**Three axes can never be closed by ncu alone.** `communication`,
+`latency_launch` and `host_pipeline` need a timeline; `power_clock` needs
+external telemetry, because Nsight Compute reports no metric for the clock a
+kernel actually ran at. A per-kernel report showing those as gaps is correct
+behaviour, not a missing feature.
+
+Why axes exist at all: three vocabularies described the same things. Our engine
+emitted `uncoalesced_global_access`, NVIDIA's shipped rules emit
+`UncoalescedGlobalAccess` under `MemoryWorkloadAnalysis`, and the nsys side said
+`memcpy_bound`. Cross-checking silently matched nothing until all three mapped
+onto one vocabulary.
+
+---
+
+## 5c. Cross-checking against NVIDIA's own rules
+
+An `.ncu-rep` carries NVIDIA's own findings. Every action exposes
+`rule_results_as_dicts()`: message, section, focus metrics, often a speedup
+estimate. We were extracting them and throwing them away while running our own
+re-implementation of the same rules.
+
+```python
+from my_utils.profiling.ncu.ncu_diagnostics import diagnose_kernel
+from my_utils.profiling.ncu.ncu_report_tools import load_ncu_report_rule_rows
+
+shipped = load_ncu_report_rule_rows("profile.ncu-rep")
+result = diagnose_kernel(metrics, kernel_name=name, shipped_rules=shipped)
+
+result["corroboration"]["corroborated"]    # axes where we and NVIDIA agree
+result["corroboration"]["conflicts"]       # where we disagree -- the valuable part
+result["corroboration"]["ncu_only"]        # rules NVIDIA fired that we lack
+```
+
+Four outcomes, each treated differently:
+
+- **Agreement** promotes the finding to high confidence and names the
+  corroborating rule in its evidence.
+- **Disagreement on the bottleneck verdict** becomes its own high-severity
+  finding. If we say compute-bound and `SOLBottleneck` says memory-bound, one of
+  us is reading the wrong number - most often a Speed-of-Light comparison mixing
+  `_active` and `_elapsed` denominators.
+- **NVIDIA-only rules** are added rather than dropped, so nothing shipped in the
+  report is lost.
+- **Absent shipped rules weaken nothing.** Missing corroboration is not evidence
+  against a finding, and the result says so explicitly rather than silently
+  leaving findings unmarked.
+
+### The LOCAL/GLOBAL speedup trap
+
+Nsight Compute reports estimated speedups as either `GLOBAL` (relative to the
+whole kernel) or `LOCAL` (relative to the section it came from). A 40% LOCAL
+estimate on a section that is 5% of runtime is worth about 2%. The rule result
+does not carry that section's share of runtime, so a LOCAL estimate is **never**
+promoted to a kernel-level ceiling here - `speedup_ceiling` stays `None` and the
+finding says why.
+
+---
+
 ## 6. The metric catalog
 
 `my_utils/profiling/ncu/metric_catalog.py` — 103 metrics keyed by stable short
@@ -507,6 +644,70 @@ r.metric_name   # exact ncu metric
 
 ---
 
+## 6b. Every metric in the report, not just the catalogued ones
+
+The curated catalog interprets 177 metrics. A `--set full` collection carries
+thousands. Everything outside the catalog used to be loaded and then touched by
+nothing - a report could hold the exact counter that explained a kernel and the
+analysis would never mention it existed.
+
+Metric names are not opaque. They follow the PerfWorks grammar:
+
+```
+<unit>__<counter>[.<rollup>][.<submetric>]
+
+sm__throughput.avg.pct_of_peak_sustained_elapsed
+|        |      |            |
+unit   counter rollup     submetric
+```
+
+```python
+from my_utils.profiling.ncu.section_index import (
+    decode_metric_name, axis_for_metric_name, denominator_of, group_report_metrics,
+)
+
+decode_metric_name("pmsampling:smsp__warps_issue_stalled_barrier.avg")
+# {'unit': 'smsp', 'quantity': 'warps_issue_stalled_barrier',
+#  'rollup': 'avg', 'submetric': '', 'prefix': 'pmsampling'}
+
+axis_for_metric_name("lts__t_sectors.sum")     # 'memory_bandwidth'
+denominator_of("sm__throughput.avg.pct_of_peak_sustained_active")   # 'active'
+
+result["metric_inventory"]["summary"]
+# 3421 metrics present. 168 are interpreted by a rule; 3253 are decoded and
+# placed on an axis but carry no threshold, so nothing judged them.
+```
+
+The unit prefix alone places a metric on an axis, so an uncatalogued counter is
+still named, decoded and grouped rather than dropped. An unrecognised unit is
+reported as unrecognised - a metric filed under the wrong axis is worse than one
+filed under none.
+
+### Checking the catalog against a real install
+
+If Nsight Compute is installed locally, the shipped `.section` files are ground
+truth for which metrics exist and which sections request them:
+
+```python
+from my_utils.profiling.ncu.section_index import audit_catalog_against_sections
+from my_utils.profiling.ncu.metric_catalog import METRIC_CATALOG
+
+audit_catalog_against_sections(METRIC_CATALOG)["summary"]
+# 147 catalog spellings are requested by a shipped section; 37 exist under a
+# different rollup and need an explicit --metrics request; 32 were not found in
+# the shipped sections at all (candidates only ...)
+```
+
+That third bucket is **candidates, not errors**. Sections request only a subset
+of what a device exposes, so `--query-metrics` on the target GPU is the only
+authority. Several device attributes and `dram__bytes_read.sum` land there and
+are perfectly real.
+
+The distinction matters when building a collection command: `explicit_only` and
+`unknown` metrics will not arrive from `--section` alone.
+
+---
+
 ## 7. Interpretation reference
 
 ### 7.1 Bottleneck classification (NVIDIA's SOLBottleneck thresholds)
@@ -521,6 +722,83 @@ r.metric_name   # exact ncu metric
 | diff < 10 | | balanced | roofline |
 
 Grading: **> 80 excellent, 60-80 good, 40-60 fair, < 40 poor.**
+
+**Provenance of these four numbers.** They are read verbatim from the
+`SpeedOfLight` rule shipped with Nsight Compute 2026.1.1
+(`sections/SpeedOfLight.py`), where they appear as `balanced_threshold=10`,
+`latency_bound_threshold=60`, `no_bound_threshold=80`, `waves_threshold=1`. Its
+actual decision tree:
+
+```
+if sm < 80 and mem < 80:
+    if sm < 60 and mem < 60:   -> small grid (waves < 1) else latency issue
+    elif |sm - mem| >= 10:     -> whichever is higher dominates
+    else:                      -> balanced
+else:                          -> saturated; shift work between units
+```
+
+Three classification schemes circulate in blog posts and vendor material: a
+single `max(sm,mem) < 60` latency gate, a banded >80 / 60-80 / <60 table, and a
+60/40 two-axis table. **The first two are not rival schemes** - they are partial
+descriptions of the one rule above. The third appears in no shipped rule; it
+was present in `SOL_THRESHOLDS` as `compute_bound_compute`/`compute_bound_memory`,
+was read by nothing, and has been removed. An unverified threshold sitting
+beside verified ones invites equal trust.
+
+One deliberate divergence: at >= 80 NVIDIA's rule says "shift work from the most
+utilised unit" without naming a bound. We label it `compute_bound` /
+`memory_bound`, which is more directly actionable and routes to the same section
+NVIDIA's rule points at.
+
+### 7.1b Hierarchical roofline: why, not just whether
+
+The stock roofline plots one point per kernel - FLOPs over DRAM bytes - which
+says whether a kernel is memory bound and nothing about why. Computing the same
+FLOP count against traffic at each cache level gives three points sharing a
+numerator, and the horizontal spread reads directly as locality.
+
+```python
+from my_utils.profiling.ncu.ncu_diagnostics import hierarchical_roofline
+
+h = hierarchical_roofline(view, gpu_spec)
+h["summary"]     # L1 AI=0.03 FLOP/byte | L2 AI=0.04 | DRAM AI=1.00
+h["locality_verdict"]   # 'healthy' | 'leaking'
+```
+
+| Observation | Meaning | Lever |
+|---|---|---|
+| L1 and L2 intensities close (ratio < 1.5) | L1 passes traffic through rather than serving it | block for L1 |
+| L2 and DRAM close (ratio < 1.5) | working set does not fit L2 at this tile size | shrink tile, reorder traversal |
+| DRAM/L1 spread >= 4x | caches already absorbing reuse | **do not** spend effort on tiling |
+
+That last row is the one most tools cannot produce: a finding that tells you
+what *not* to do.
+
+Two things it refuses to smooth over:
+
+- **`l1tex__t_bytes` excludes shared-memory traffic.** So the L1 intensity is an
+  *overestimate* precisely for tiled GEMM and attention - the kernels whose whole
+  design is staging through shared memory, and the ones most likely to be
+  profiled. Reported as a caveat whenever the shared pipe shows activity.
+- **SASS FLOP counters miss tensor-core math**, making all three intensities
+  floors rather than measurements.
+
+The direct byte counters are not requested by any shipped section, so the sector
+counters are the fallback at 32 bytes/sector, and `byte_source` records which
+was used rather than presenting derived and measured bytes identically.
+
+**Nsight Compute ships this too**, as four chart sections — one per precision:
+
+```
+--section SpeedOfLight_HierarchicalSingleRooflineChart   # fp32
+--section SpeedOfLight_HierarchicalHalfRooflineChart     # fp16
+--section SpeedOfLight_HierarchicalDoubleRooflineChart   # fp64
+--section SpeedOfLight_HierarchicalTensorRooflineChart   # tensor
+```
+
+They render in the ncu UI; `hierarchical_roofline` gives you the same three
+points programmatically, plus the level-to-level ratios and the shared-memory
+caveat. Collect the matching chart section when you want to see it plotted.
 
 ### 7.2 Symptom to cause
 
@@ -852,6 +1130,190 @@ Note also that ncu **cannot set clocks on a MIG Compute Instance** at all: pass
 
 ---
 
+## 9e. Where, not what: source and SASS attribution
+
+Every other analysis here says *what* is wrong. For a fused kernel that is often
+not enough: "this kernel stalls on long-scoreboard" does not say which of six
+fused stages stalls, and no whole-kernel counter can - the question is
+structurally unanswerable from aggregates.
+
+```python
+from my_utils.profiling.ncu.source_correlation import (
+    attribute_stalls_to_source, correlate_metric_to_source,
+    pc_sampling_timeline, source_availability,
+)
+
+out = attribute_stalls_to_source(action, top_k=15)
+for line in out["source_lines"]:
+    print(f"{line['file_name']}:{line['line']}  {line['samples']:5d}  "
+          f"{line['dominant_stall_reason']:18s} {line['source_text']}")
+# attn.cu:2    400  MIO_THROTTLE       softmax
+# attn.cu:1    300  LONG_SCOREBOARD    load q
+```
+
+That is the whole point of the module: two lines of a fused kernel, two
+different bottlenecks, two different fixes.
+
+### The API this rests on
+
+Verified by reading the `ncu_report` module shipped with Nsight Compute 2026.1.1,
+not from documentation:
+
+| Call | Returns |
+|---|---|
+| `IMetric.has_correlation_ids()` | whether a metric carries per-instruction values |
+| `IMetric.correlation_ids()` | parallel metric whose instance values are addresses |
+| `IAction.source_info(addr)` | `ISourceInfo` with `file_name()` / `line()` |
+| `IAction.sass_by_pc(addr)` | SASS text, `""` when unavailable |
+| `IAction.ptx_by_pc(addr)` | PTX text |
+| `IAction.source_files()` | `{filename: content}`, empty content when not imported |
+| `IAction.timed_warp_samples()` | PC-sampling series: timestamp, pc, stall_reason, not_issued |
+
+### Three reasons it returns nothing, with three different fixes
+
+```python
+source_availability(action)["reasons_unavailable"]
+```
+
+1. **A bare `ncu` run collects no source metrics at all.** `SourceCounters`
+   ships only in the `detailed` and `full` sets; the default is `basic`. This is
+   the most common cause and has nothing to do with how the code was built.
+2. **No `-lineinfo`.** Addresses exist but map to no source line. SASS-level
+   attribution still works; source-level does not.
+3. **File property mismatch.** Nsight Compute checks the source file's
+   modification time and size against what the compiler recorded. Re-saving a
+   `.cu` after compiling is enough to break source display. `--import-source
+   yes` embeds the source and sidesteps this entirely.
+
+### The timeline is not a summary
+
+`pc_sampling_timeline` buckets samples by timestamp rather than aggregating
+them. Sorting a time series by magnitude - which is what a naive summary does -
+destroys the one dimension sampling adds over `WarpStateStats`:
+
+```python
+tl = pc_sampling_timeline(action, bucket_ns=100_000)
+tl["phase_sequence"]      # ['LONG_SCOREBOARD', 'MATH_PIPE_THROTTLE']
+tl["note"]
+# The dominant stall reason changes 1 time(s) across the kernel
+# (LONG_SCOREBOARD -> MATH_PIPE_THROTTLE). A single averaged stall breakdown
+# would report a blend of these and suggest the wrong fix for each phase.
+```
+
+A kernel that is memory bound then compute bound averages to uniformly
+mediocre, and the averaged answer is wrong for both halves.
+
+---
+
+## 9f. Sampling validity: PC and PM sampling
+
+Sampled data looks identical whether it is sound or badly undersampled: a list
+of samples with a distribution. Eleven samples and eleven thousand render the
+same way and mean entirely different things.
+
+```python
+from my_utils.profiling.ncu.sampling_validity import (
+    check_pc_sampling_validity, check_pm_sampling_validity,
+)
+
+v = check_pc_sampling_validity(
+    sample_count=metrics["smsp__pcsamp_sample_count"],
+    interval_cycles=metrics["smsp__pcsamp_interval_cycles"],
+    dropped_bytes=metrics["smsp__pcsamp_dropped_bytes"],
+    buffer_overflow=metrics["smsp__pcsamp_buffer_overflow"],
+)
+v["usable"], v["blocked_conclusions"]
+```
+
+Checks and thresholds mirror NVIDIA's shipped `PCSamplingData` and
+`PMSamplingData` rules, read from the rule sources rather than invented.
+
+| Signal | Meaning | Fix |
+|---|---|---|
+| `pcsamp_dropped_bytes > 0` | samples dropped under backpressure | raise `--warp-sampling-interval` |
+| `pcsamp_buffer_overflow` | buffer filled; later samples missing | raise `--warp-sampling-buffer-size` |
+| `pcsamp_sample_count == 0` | nothing collected (often kernel < one interval) | shorter interval, or longer kernel |
+| PM `interval/duration >= 1` | at most one sample | reduce `--pm-sampling-interval` |
+| PM `interval/duration > 0.1` | very few samples; short phases invisible | reduce interval |
+| PM on CC < 7.5 | unsupported entirely | no configuration helps |
+
+**Drops and overflows are the dangerous case.** They do not add noise, they
+**bias**: drops correlate with the busiest periods, so the hottest code is
+exactly what goes missing, and an overflow truncates everything after a point.
+Both block attribution outright.
+
+Sample counts block *per conclusion* rather than wholesale. Below ~200 samples,
+ranking one source line above another is not supported, while the overall stall
+distribution still is - different claims need different support. That 200 floor
+is ours, not NVIDIA's, and is marked as such in the code.
+
+### These five counters need an explicit `--metrics`
+
+`smsp__pcsamp_sample_count`, `_interval_cycles`, `_buffer_overflow`,
+`_buffer_size_bytes`, `_dropped_bytes` are requested by NVIDIA's *rule*, not by
+any section's `Metrics` block. Collecting `SourceCounters` does **not** collect
+them. `ncu_full_collection.yaml` requests them explicitly. Without them, a
+biased sample set is indistinguishable from a sound one.
+
+---
+
+## 9g. How a measurement was taken
+
+Two correct measurements of the same kernel routinely disagree by 2x, and the
+reason is almost never the kernel.
+
+**Nsight Compute flushes every GPU cache before each replay pass by default**
+(`--cache-control all`). An ncu duration is a *cold-cache* number. A wall-clock
+timing of the same kernel in a pipeline, where the previous kernel left its
+output in L2, is a *warm* number. Neither is wrong. Comparing them is.
+
+```python
+from my_utils.profiling.analyzers.measurement_context import (
+    describe_collection_mode, compare_measurements,
+)
+
+ncu_run   = describe_collection_mode(source="ncu")            # cold, serialised
+wallclock = describe_collection_mode(source="wallclock")      # warm
+
+cmp = compare_measurements(ncu_run, wallclock,
+                           baseline_value=2.0, candidate_value=1.0)
+cmp["comparable"]   # False
+cmp["ratio"]        # None  <- deliberately not 0.5
+cmp["verdict"]
+# Not comparable. Cache state differs (cold vs warm). A cold-cache measurement
+# and a warm one are different quantities; the difference between them is not a
+# change in the code. Re-measure both sides the same way ...
+```
+
+`ratio` stays `None` when the modes differ. The raw number is available as
+`uncomparable_raw_ratio` - a name that cannot be mistaken for a result.
+Reporting a 2x "regression" that is entirely cache state sends someone to
+optimise a kernel that did not change.
+
+### What each mode structurally cannot answer
+
+These are not caveats to weigh. They are questions where the measurement
+contains no information:
+
+| Mode | Cannot answer |
+|---|---|
+| ncu (default) | how fast the kernel runs in a pipeline - caches were flushed |
+| ncu (any) | whether work overlaps - execution is serialised to profile it |
+| unknown cache state | comparison with anything, since cache state moves durations more than most optimisations |
+| clocks unlocked | run-to-run comparison at face value |
+| synthetic inputs | performance on real data |
+
+Use `--cache-control none` for pipeline-realistic ncu numbers. Stream
+concurrency has to come from Nsight Systems; it is invisible to ncu by
+construction.
+
+**Thermal drift from long profiling loops** is real and documented: a published
+H100 result was revised from 74% to 84% of peak after the iteration count was
+found to be heating the part. `describe_collection_mode(iterations=..., 
+clocks_locked=...)` warns when a long loop runs without pinned clocks.
+
+---
+
 ## 10. Traps that make numbers lie
 
 Read this before trusting any number.
@@ -902,22 +1364,46 @@ my_utils/profiling/
 │                                    uses_tensor_cores, CATEGORY_EXPECTATIONS
 ├── ncu/metric_catalog.py            METRIC_CATALOG, STALL_REASONS, resolve_metric,
 │                                    describe_arch, SECTION_SETS
+├── ncu/section_index.py             decode_metric_name, axis_for_metric_name,
+│                                    denominator_of, group_report_metrics,
+│                                    audit_catalog_against_sections
 ├── ncu/ncu_diagnostics.py           diagnose_kernel, classify_bottleneck,
 │                                    analyze_stalls, compute_roofline, MetricView,
-│                                    SOL_THRESHOLDS, Finding
+│                                    analyze_memory_hierarchy, analyze_issue_efficiency,
+│                                    analyze_instruction_mix, hierarchical_roofline,
+│                                    analysis_coverage, SOL_THRESHOLDS, Finding
+├── ncu/shipped_rules.py             normalize_shipped_rules, ShippedRule,
+│                                    reconcile_with_shipped_rules
+├── ncu/source_correlation.py        attribute_stalls_to_source, source_availability,
+│                                    correlate_metric_to_source, pc_sampling_timeline,
+│                                    summarize_warp_samples
+├── ncu/sampling_validity.py         check_pc_sampling_validity,
+│                                    check_pm_sampling_validity
 ├── ncu/ncu_report_tools.py          diagnose_ncu_report, analyze_ncu_report,
-│                                    NcuReportSkillEngine
+│                                    load_ncu_report_rule_rows, NcuReportSkillEngine
+├── analyzers/axes.py                AXES, axis_coverage, axis_for_category,
+│                                    axis_for_shipped_rule
+├── analyzers/measurement_context.py describe_collection_mode, compare_measurements,
+│                                    MeasurementContext, CacheState
+├── analyzers/trace_quality.py       assess_trace_quality, check_clock_alignment,
+│                                    check_derived_metric_invariants, ...
+├── analyzers/nccl_bandwidth.py      analyze_collective, detect_straggler_from_traces
+├── hardware/throttling.py           analyze_throttling, decode_clock_event_mask
 ├── analyzers/triage.py              triage_step, TriageThresholds, TriageVerdict,
 │                                    merge_intervals, interval_overlap_ns
 ├── sources/nsys_analyze.py          analyze_nsys_sqlite
 ├── sources/nsys_auto_analysis.py    build_comprehensive_analysis
-└── sources/nsys_sql_skills.py       NsysSqlSkillEngine (29 SQL skills)
+└── sources/nsys_sql_skills.py       NsysSqlSkillEngine (30 SQL skills)
 ```
 
 These modules are **pure analysis** — no torch, no CUDA. They import and run on a
 laptop with nothing installed, which is what makes them testable.
 
-`tests/profiling/test_analysis_engine.py` (80 tests) is the executable spec.
+`tests/profiling/test_analysis_engine.py` (219 tests) is the executable spec.
+Several tests exist specifically to stop this handbook drifting from the code:
+`TestHandbookExamplesAreReal` checks every documented import resolves,
+`TestCoverageKeysAreReal` pins coverage tables to the metric catalog, and
+`TestSolThresholdsMatchShippedRule` pins the SOL constants to NVIDIA's rule.
 
 ### Common recipes
 
