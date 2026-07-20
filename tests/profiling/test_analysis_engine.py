@@ -3058,3 +3058,13 @@ class TestPmSamplingPassGroups:
         out = source_correlation.analyze_pm_sampling(_One())
         assert out["pass_group_count"] == 1
         assert out["cross_pass_warning"] == ""
+
+    def test_all_series_are_returned_not_truncated(self):
+        """`top_k` truncated the payload, so 26 series returned 8 and the new
+        stall-reason series were invisible to any consumer."""
+        out = source_correlation.analyze_pm_sampling(self._Action())
+        assert out["series_count"] == len(out["series"]) == 3
+
+    def test_explicit_top_k_still_trims(self):
+        out = source_correlation.analyze_pm_sampling(self._Action(), top_k=1)
+        assert len(out["series"]) == 1 and out["series_count"] == 3

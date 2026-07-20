@@ -828,7 +828,7 @@ def attribute_stalls_to_source(
 PM_SAMPLING_PREFIX = "pmsampling:"
 
 
-def analyze_pm_sampling(action: Any, *, top_k: int = 8) -> Dict[str, Any]:
+def analyze_pm_sampling(action: Any, *, top_k: int = 0) -> Dict[str, Any]:
     """Read the PM-sampling timeline: how utilisation moved across the kernel.
 
     PM sampling is a different instrument from PC sampling. PC sampling says
@@ -984,7 +984,12 @@ def analyze_pm_sampling(action: Any, *, top_k: int = 8) -> Dict[str, Any]:
         "span_covers_replays": True,
         "bucket_interval_ns": (duration_ns / (series[0]["buckets"] - 1)
                                if duration_ns and series[0]["buckets"] > 1 else None),
-        "series": series[: int(top_k)],
+        # All of them. `top_k` truncated the payload rather than the display,
+        # so a report with 26 series returned 8 and the fifteen new stall-reason
+        # series were invisible to any consumer. Truncation belongs to whatever
+        # renders this, which can see how much room it has.
+        "series": series[: int(top_k)] if int(top_k) > 0 else series,
+        "series_count": len(series),
         "bursty": [
             {"metric": e["metric"], "peak": e["peak"],
              "mean_in_active_window": e["mean_in_active_window"],
