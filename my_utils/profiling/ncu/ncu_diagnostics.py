@@ -49,6 +49,7 @@ __all__ = [
     "analyze_imbalance",
     "analyze_memory_hierarchy",
     "analyze_issue_efficiency",
+    "analyze_instruction_mix",
     "diagnose_kernel",
     "analysis_coverage",
     "SOL_THRESHOLDS",
@@ -1307,6 +1308,140 @@ def analyze_pipes(view: MetricView) -> Dict[str, Any]:
     return {"pipes": present, "busiest": busiest, "findings": findings}
 
 
+# Each instruction pipe, and what work landing there means. The XU and ADU
+# entries are the ones that pay for themselves: transcendental and
+# address-arithmetic pressure is invisible in a SpeedOfLight rollup, because
+# neither pipe is what "compute throughput" measures.
+_INSTRUCTION_PIPES: Tuple[Tuple[str, str, str], ...] = (
+    ("inst_pipe_fma", "FMA (fp32/int)", ""),
+    ("inst_pipe_alu", "ALU (integer, logic)", ""),
+    ("inst_pipe_fp64", "FP64", "FP64 is 1/64 rate on consumer and 1/2 on datacenter parts; "
+                              "unintended doubles are a common accidental slowdown."),
+    ("inst_pipe_fp16", "FP16 in the FMA pipe", "Half precision running in FMA rather than "
+                                               "on tensor cores leaves most of the peak unused."),
+    ("inst_pipe_xu", "XU (transcendental: rsqrt, exp, sin)",
+     "The XU pipe is roughly a quarter rate. Softmax and normalisation land here, "
+     "and the cost does not appear in the compute SOL figure."),
+    ("inst_pipe_lsu", "LSU (load/store issue)",
+     "A saturated LSU is an instruction-issue limit, not a bandwidth limit: the fix "
+     "is fewer, wider accesses, not faster memory."),
+    ("inst_pipe_adu", "ADU (address arithmetic)",
+     "Address computation dominating usually means indexing that could be strength-"
+     "reduced or hoisted out of the inner loop."),
+    ("inst_pipe_tex", "TEX (texture/surface)", ""),
+    ("inst_pipe_uniform", "Uniform datapath", ""),
+    ("inst_pipe_cbu", "CBU (convergence/branch)",
+     "Convergence-unit pressure accompanies heavy branching or warp synchronisation."),
+    ("inst_pipe_tmem", "Tensor memory (Blackwell)", ""),
+    ("inst_pipe_gmma", "GMMA (Hopper warpgroup MMA)", ""),
+    ("inst_pipe_tensor_dmma", "DMMA (fp64 tensor)", ""),
+)
+
+
+def analyze_instruction_mix(view: MetricView) -> Dict[str, Any]:
+    """Which instruction pipe the work actually lands in.
+
+    The SpeedOfLight compute figure is a max over pipes, so a kernel bound on
+    the transcendental unit or on address arithmetic shows a low compute SOL and
+    reads as latency bound. Naming the busiest pipe changes the advice
+    completely: a saturated XU is fixed by cutting transcendental calls, a
+    saturated LSU by widening accesses, and neither by anything that helps a
+    FMA-bound kernel.
+
+    Every one of these metrics was in the catalog and read by nothing.
+    """
+    findings: List[Finding] = []
+    result: Dict[str, Any] = {"findings": findings}
+
+    pipes: List[Tuple[str, str, float, str]] = []
+    for key, label, note in _INSTRUCTION_PIPES:
+        value = view.get(key)
+        if value is not None:
+            pipes.append((key, label, float(value), note))
+    if not pipes:
+        return result
+
+    pipes.sort(key=lambda item: item[2], reverse=True)
+    result["pipes"] = {key: value for key, _label, value, _note in pipes}
+    top_key, top_label, top_value, top_note = pipes[0]
+    result["busiest_pipe"] = top_label
+    result["busiest_pipe_pct"] = top_value
+
+    # These percentages are pct_of_peak_sustained_ACTIVE. They say how hard a
+    # pipe worked while the SM was active, which is the right question for "is
+    # this pipe the limit" but is NOT comparable with the _elapsed figures that
+    # classify_bottleneck uses. The finding says so rather than inviting the
+    # reader to rank them against the SOL numbers.
+    if top_value >= 60.0:
+        findings.append(Finding(
+            category="pipe_saturated",
+            title=f"{top_label} is the busiest instruction pipe",
+            summary=(
+                f"The {top_label} pipe runs at {top_value:.0f}% of its peak while the SM "
+                f"is active. " + (top_note + " " if top_note else "") +
+                "Speed-of-light compute throughput is a maximum over pipes, so a kernel "
+                "limited by this pipe can still show a modest compute SOL and be "
+                "misread as latency bound."
+            ),
+            severity="medium" if top_value >= 80.0 else "low",
+            confidence="high",
+            evidence={
+                "pipe": top_key,
+                "pct_of_peak_active": top_value,
+                "all_pipes": {label: value for _k, label, value, _n in pipes},
+                "denominator": "active (not comparable with _elapsed SOL figures)",
+            },
+            actions=(
+                _PIPE_ACTIONS.get(top_key,
+                                  "Reduce the instruction count landing in this pipe."),
+            ),
+            source="heuristic",
+        ))
+
+    # FP64 where nobody asked for it. Distinct from the pipe-saturation finding
+    # above: even a few percent of FP64 on a part with a 1/64 rate is a large
+    # share of the time.
+    fp64 = view.get("inst_pipe_fp64")
+    if fp64 is not None and fp64 > 1.0 and top_key != "inst_pipe_fp64":
+        findings.append(Finding(
+            category="unexpected_fp64",
+            title="FP64 instructions are executing",
+            summary=(
+                f"The FP64 pipe is at {fp64:.1f}% of peak. On parts where FP64 runs at "
+                "1/64 rate, even a small instruction share can dominate the time. This "
+                "is usually an unintended double: a literal without an f suffix, or a "
+                "math function that defaulted to the double overload."
+            ),
+            severity="medium",
+            confidence="medium",
+            evidence={"inst_pipe_fp64_pct_active": fp64},
+            actions=(
+                "Check for double literals (1.0 vs 1.0f) and double-precision math "
+                "calls (exp vs expf) in the kernel.",
+            ),
+            source="heuristic",
+        ))
+    return result
+
+
+_PIPE_ACTIONS: Dict[str, str] = {
+    "inst_pipe_xu": "Cut transcendental calls: reuse computed values, use the fast-math "
+                    "intrinsics (__expf, __frcp_rn) where the accuracy allows, or "
+                    "restructure softmax/normalisation to evaluate fewer of them.",
+    "inst_pipe_lsu": "Issue fewer, wider memory instructions: vectorise to 128-bit "
+                     "accesses so the same bytes move in a quarter of the instructions.",
+    "inst_pipe_adu": "Hoist address arithmetic out of the inner loop, or strength-reduce "
+                     "the indexing to pointer increments.",
+    "inst_pipe_fp64": "Remove unintended double precision: check for literals without an "
+                      "f suffix and for double-overload math calls.",
+    "inst_pipe_fp16": "Half-precision work is running in the FMA pipe rather than on "
+                      "tensor cores. Check the shapes and the layout permit an MMA path.",
+    "inst_pipe_alu": "Reduce integer and logic work in the inner loop; it is often index "
+                     "arithmetic that can be hoisted or precomputed.",
+    "inst_pipe_cbu": "Reduce branching and warp-level synchronisation in the hot path.",
+}
+
+
 def analyze_memory_hierarchy(view: MetricView) -> Dict[str, Any]:
     """Where in the hierarchy the traffic actually lands, and whether it should.
 
@@ -1730,6 +1865,8 @@ _ANALYSIS_REQUIREMENTS: Dict[str, Tuple[Tuple[str, ...], str]] = {
                          "MemoryWorkloadAnalysis"),
     "issue_efficiency": (("warps_eligible_per_scheduler", "issue_slot_util"),
                          "SchedulerStats"),
+    "instruction_mix": (("inst_pipe_fma", "inst_pipe_alu", "inst_pipe_xu",
+                         "inst_pipe_lsu"), "ComputeWorkloadAnalysis"),
 }
 
 
@@ -1837,6 +1974,7 @@ def diagnose_kernel(
     imbalance = analyze_imbalance(view)
     hierarchy = analyze_memory_hierarchy(view)
     issue = analyze_issue_efficiency(view)
+    inst_mix = analyze_instruction_mix(view)
 
     sections = {
         "bottleneck": bottleneck,
@@ -1852,6 +1990,7 @@ def diagnose_kernel(
         "imbalance": imbalance,
         "memory_hierarchy": hierarchy,
         "issue_efficiency": issue,
+        "instruction_mix": inst_mix,
     }
 
     findings: List[Finding] = []

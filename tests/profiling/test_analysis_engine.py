@@ -1471,3 +1471,41 @@ class TestTraceQualityGating:
     def test_nothing_struck_when_nothing_blocked(self):
         recs = ["Increase batch size"]
         assert nsys_auto._strike_blocked_recommendations(recs, set()) == recs
+
+
+class TestInstructionMix:
+    """SpeedOfLight compute is a max over pipes, so it hides the busy one."""
+
+    def test_transcendental_bound_kernel_is_named(self):
+        result = ncu_diagnostics.analyze_instruction_mix(ncu_diagnostics.MetricView({
+            "sm__inst_executed_pipe_xu.avg.pct_of_peak_sustained_active": 85.0,
+            "sm__inst_executed_pipe_fma.avg.pct_of_peak_sustained_active": 20.0,
+        }))
+        assert "XU" in result["busiest_pipe"]
+        finding = result["findings"][0]
+        assert finding.severity == "medium"
+        assert "__expf" in finding.actions[0] or "transcendental" in finding.actions[0]
+
+    def test_lsu_bound_is_not_advised_as_a_bandwidth_problem(self):
+        result = ncu_diagnostics.analyze_instruction_mix(ncu_diagnostics.MetricView({
+            "sm__inst_executed_pipe_lsu.avg.pct_of_peak_sustained_active": 90.0,
+        }))
+        assert "vectorise" in result["findings"][0].actions[0].lower()
+
+    def test_active_denominator_is_declared(self):
+        """These are _active percentages and must not be ranked against SOL."""
+        result = ncu_diagnostics.analyze_instruction_mix(ncu_diagnostics.MetricView({
+            "sm__inst_executed_pipe_alu.avg.pct_of_peak_sustained_active": 75.0,
+        }))
+        assert "active" in result["findings"][0].evidence["denominator"]
+
+    def test_incidental_fp64_is_flagged_separately(self):
+        result = ncu_diagnostics.analyze_instruction_mix(ncu_diagnostics.MetricView({
+            "sm__inst_executed_pipe_fma.avg.pct_of_peak_sustained_active": 70.0,
+            "sm__inst_executed_pipe_fp64.avg.pct_of_peak_sustained_active": 4.0,
+        }))
+        assert any(f.category == "unexpected_fp64" for f in result["findings"])
+
+    def test_silent_without_pipe_counters(self):
+        assert ncu_diagnostics.analyze_instruction_mix(
+            ncu_diagnostics.MetricView({}))["findings"] == []
