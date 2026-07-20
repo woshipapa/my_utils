@@ -2461,3 +2461,24 @@ class TestSignalToSourceLinkage:
             [{"category": "uncoalesced_global_load", "title": "t"}], None,
             attribution={"available": False, "reason": "no samples"})
         assert out["available"] is False and out["linked"] == []
+
+
+class TestNcuReportModuleDiscovery:
+    """`ncu_report` ships with Nsight Compute, not on PyPI.
+
+    The first-run failure for anyone with a real report is an ImportError whose
+    fix is a PYTHONPATH entry, not a pip install. Discovery removes the step
+    where it can be found; the error message covers when it cannot.
+    """
+
+    def test_discovery_returns_a_dir_or_none_never_a_guess(self):
+        found = ncu_report_tools.find_ncu_report_dir()
+        assert found is None or (found / "ncu_report.py").exists()
+
+    def test_error_message_is_actionable(self):
+        import re
+        source = Path(ncu_report_tools.__file__).read_text()
+        block = source.split("The `ncu_report` module is required")[1][:1200]
+        assert "PYTHONPATH" in block
+        assert "not on PyPI" in block or "nothing to" in block
+        assert "find /" in block, "must tell the user how to locate it"

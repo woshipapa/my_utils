@@ -63,12 +63,68 @@ def _load_ncu_report_module(ncu_report_module: Any = None) -> ModuleType:
         return ncu_report_module
     try:
         import ncu_report as mod  # type: ignore
-    except Exception as exc:
-        raise RuntimeError(
-            "ncu_report module is required for .ncu-rep direct parsing. "
-            "Install/use Nsight Compute Python Report Interface."
-        ) from exc
-    return mod  # type: ignore[return-value]
+    except Exception:
+        pass
+    else:
+        return mod  # type: ignore[return-value]
+
+    # Not on the path. It ships with Nsight Compute rather than on PyPI, so the
+    # fix is a PYTHONPATH entry, not an install. Locating it here turns the most
+    # common first-run failure into a copy-pasteable command.
+    found = find_ncu_report_dir()
+    if found:
+        import sys as _sys
+
+        _sys.path.insert(0, str(found))
+        try:
+            import ncu_report as mod  # type: ignore
+        except Exception:
+            pass
+        else:
+            return mod  # type: ignore[return-value]
+
+    raise RuntimeError(
+        "The `ncu_report` module is required to read .ncu-rep files, and it is not "
+        "importable.\n\n"
+        "It ships inside Nsight Compute; it is not on PyPI, so there is nothing to "
+        "pip install. Point PYTHONPATH at the directory containing ncu_report.py:\n\n"
+        "  # Linux (typical)\n"
+        "  export PYTHONPATH=/opt/nvidia/nsight-compute/<version>/extras/python:$PYTHONPATH\n"
+        "  # bundled with CUDA\n"
+        "  export PYTHONPATH=/usr/local/cuda/nsight-compute-<version>/extras/python:$PYTHONPATH\n"
+        "  # macOS\n"
+        "  export PYTHONPATH='/Applications/NVIDIA Nsight Compute.app/Contents/MacOS/python':$PYTHONPATH\n\n"
+        "To find it on this machine:\n"
+        "  find / -name 'ncu_report.py' 2>/dev/null | head\n\n"
+        "The module must also match the Python version you are running it under."
+    )
+
+
+def find_ncu_report_dir() -> Optional[Path]:
+    """Locate the directory holding ``ncu_report.py``, or None.
+
+    Searched because the module ships with Nsight Compute rather than on PyPI,
+    and its location differs between a standalone install, a CUDA-bundled one,
+    and macOS. Returns None rather than guessing when nothing is found.
+    """
+    import glob as _glob
+    import os as _os
+
+    candidates = [
+        _os.environ.get("NCU_PYTHON_DIR", ""),
+        "/opt/nvidia/nsight-compute/*/extras/python",
+        "/usr/local/cuda*/nsight-compute-*/extras/python",
+        "/usr/local/NVIDIA-Nsight-Compute*/extras/python",
+        "/Applications/NVIDIA Nsight Compute.app/Contents/MacOS/python",
+        str(Path.home() / "nsight-compute" / "*" / "extras" / "python"),
+    ]
+    for candidate in candidates:
+        if not candidate:
+            continue
+        for path in sorted(_glob.glob(candidate), reverse=True) or [candidate]:
+            if (Path(path) / "ncu_report.py").exists():
+                return Path(path)
+    return None
 
 
 def _maybe_call(obj: object, name: str, default: Any = None) -> Any:
