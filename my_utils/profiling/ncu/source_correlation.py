@@ -277,11 +277,20 @@ def link_findings_to_source(
         # Two findings that resolve to the same lines via the same reasons are
         # one piece of evidence, not two. Repeating it under a second heading
         # makes a single observation look corroborated.
-        signature = (tuple(reasons),
+        #
+        # The signature uses the reasons that actually carried samples, not the
+        # reasons the category declares. `register_spilling` declares
+        # (LONG_SCOREBOARD, LG_THROTTLE) and `stall_long_scoreboard` declares
+        # (LONG_SCOREBOARD); on a report where LG_THROTTLE is zero those are the
+        # same evidence, but keying on the declared tuple made them look
+        # distinct and both were printed against an identical set of lines.
+        effective = sorted({r for hit in top for r in hit["matched_stall_reasons"]})
+        signature = (tuple(effective),
                      tuple((h["file_name"], h["line"]) for h in top))
         if signature in seen_signatures:
             duplicates.append({"category": category, "finding_title": title,
-                               "same_lines_as": seen_signatures[signature]})
+                               "same_lines_as": seen_signatures[signature],
+                               "identical_via": list(effective)})
             continue
         seen_signatures[signature] = title
 
@@ -289,6 +298,10 @@ def link_findings_to_source(
             "category": category,
             "finding_title": title,
             "matched_on_stall_reasons": list(reasons),
+            # Which of them actually carried samples here. A declared reason
+            # that contributed nothing should not read as corroboration.
+            "contributing_stall_reasons": effective,
+            "declared_but_absent": sorted(set(reasons) - set(effective)),
             "source_lines": top,
             "share_explained": covered,
             "concentration": (

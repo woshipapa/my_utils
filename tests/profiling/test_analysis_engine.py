@@ -3340,3 +3340,66 @@ class TestWarpSpecializedKernelsAreNotJudgedAsCommodity:
             assert not result.get("dtype_ambiguous")
             # 25.77e9 ops / 82.464us = 312.5 TOPS
             assert result["achieved_tflops"] == pytest.approx(312.5, abs=1.0)
+
+
+class TestLinkageDedupUsesContributingReasons:
+    """A declared stall reason that carried no samples is not corroboration.
+
+    `register_spilling` declares (LONG_SCOREBOARD, LG_THROTTLE) and
+    `stall_long_scoreboard` declares (LONG_SCOREBOARD). On a real report where
+    LG_THROTTLE was zero, those resolved to an identical set of lines but the
+    dedup keyed on the *declared* tuple, so both were printed -- one observation
+    rendered twice under different headings, which reads as two pieces of
+    evidence.
+    """
+
+    _ATTRIBUTION = {
+        "available": True,
+        "stall_reasons": {"LONG_SCOREBOARD": 1000, "LG_THROTTLE": 0},
+        "source_lines": [
+            {"file_name": "k.cu", "line": 1, "samples": 600,
+             "stall_reasons": {"LONG_SCOREBOARD": 600}},
+            {"file_name": "k.cu", "line": 2, "samples": 400,
+             "stall_reasons": {"LONG_SCOREBOARD": 400}},
+        ],
+    }
+
+    def _link(self, categories):
+        return source_correlation.link_findings_to_source(
+            [{"category": c, "title": c} for c in categories], None,
+            attribution=self._ATTRIBUTION)
+
+    def test_zero_sample_reason_does_not_make_a_finding_distinct(self):
+        out = self._link(["stall_long_scoreboard", "register_spilling"])
+        assert len(out["linked"]) == 1, "same lines, same contributing reason"
+        assert out["duplicate_links"][0]["identical_via"] == ["LONG_SCOREBOARD"]
+
+    def test_contributing_reasons_are_reported_separately(self):
+        out = self._link(["register_spilling"])
+        entry = out["linked"][0]
+        assert entry["contributing_stall_reasons"] == ["LONG_SCOREBOARD"]
+        assert entry["declared_but_absent"] == ["LG_THROTTLE"]
+        # the declared list is still available, unchanged
+        assert "LG_THROTTLE" in entry["matched_on_stall_reasons"]
+
+    def test_genuinely_different_reasons_are_still_kept(self):
+        attribution = {
+            "available": True,
+            "stall_reasons": {"LONG_SCOREBOARD": 500, "BARRIER": 500},
+            "source_lines": [
+                {"file_name": "k.cu", "line": 1, "samples": 1000,
+                 "stall_reasons": {"LONG_SCOREBOARD": 500, "BARRIER": 500}},
+            ],
+        }
+        out = source_correlation.link_findings_to_source(
+            [{"category": "stall_long_scoreboard", "title": "ls"},
+             {"category": "stall_barrier", "title": "b"}],
+            None, attribution=attribution)
+        assert len(out["linked"]) == 2, (
+            "same line, different mechanisms, both carrying samples")
+
+    def test_markdown_shows_the_absent_reason(self):
+        text = ncu_report_tools.diagnose_result_to_markdown(
+            {"kernels": [{"kernel_name": "k",
+                          "signal_to_source": self._link(["register_spilling"])}]})
+        assert "carried no samples here" in text

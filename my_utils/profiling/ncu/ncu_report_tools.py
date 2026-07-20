@@ -2564,9 +2564,14 @@ def diagnose_result_to_markdown(payload: Dict[str, object]) -> str:
                 lines.append("")
                 for item in linked[:6]:
                     lines.append(f"**{item.get('finding_title','')}**")
-                    reasons = ", ".join(item.get("matched_on_stall_reasons") or [])
+                    # Show what carried samples, not what the category declares.
+                    reasons = ", ".join(item.get("contributing_stall_reasons")
+                                        or item.get("matched_on_stall_reasons") or [])
+                    absent = item.get("declared_but_absent") or []
                     lines.append(
-                        f"- correlated via `{reasons}` "
+                        f"- correlated via `{reasons}`"
+                        + (f" (`{', '.join(absent)}` carried no samples here)" if absent else "")
+                        + " "
                         f"({item.get('concentration','')}, "
                         f"{float(item.get('share_explained') or 0.0) * 100:.0f}% of those samples)"
                     )
