@@ -901,6 +901,32 @@ def analyze_pm_sampling(action: Any, *, top_k: int = 0) -> Dict[str, Any]:
         pass_windows[key] = (min(busy), max(busy)) if busy else (0, length - 1)
 
     pass_ids = {key: index for index, key in enumerate(sorted(by_pass))}
+
+    # Nsight Compute declares which metrics *cannot* share a pass, as a
+    # `Groups:` line per metric in the shipped .section files. Timestamps say
+    # what actually happened -- the scheduler may pack several compatible
+    # groups into one pass, and on the test report `sampling_2` and
+    # `sampling_3` were merged. So timestamps are authoritative for pass
+    # identity and the declared name is carried alongside as the explanation.
+    declared: Dict[str, str] = {}
+    declared_by_base: Dict[str, str] = {}
+    try:
+        from .section_index import pm_sampling_groups
+
+        declared = pm_sampling_groups()
+        # The section declares one rollup/submetric spelling per metric and the
+        # report may carry another (`...lsu_wavefronts.avg` against a declared
+        # `...lsu_wavefronts.pct_of_peak_sustained_elapsed`), so exact-name
+        # lookup alone left real metrics unattributed. The base name is what
+        # identifies the counter, and the counter is what the grouping is about.
+        for full, group in declared.items():
+            declared_by_base.setdefault(full.split(".")[0], group)
+    except Exception:
+        declared, declared_by_base = {}, {}
+
+    def _declared_group(metric_name: str) -> str:
+        return (declared.get(metric_name)
+                or declared_by_base.get(metric_name.split(".")[0], ""))
     bucket_count = max(len(values) for _n, values in raw_series)
 
     series: List[Dict[str, Any]] = []
@@ -918,6 +944,9 @@ def analyze_pm_sampling(action: Any, *, top_k: int = 0) -> Dict[str, Any]:
                 "is_percentage": is_pct,
                 "unit": "%" if is_pct else "count",
                 "pass_group": pass_ids[key],
+                # What NVIDIA's section files say this metric belongs to. A
+                # pass may contain more than one declared group.
+                "declared_group": _declared_group(name),
                 "buckets": len(values),
                 "active_buckets": len(active_in_window),
                 "active_buckets_whole_series": len(active),
@@ -954,6 +983,20 @@ def analyze_pm_sampling(action: Any, *, top_k: int = 0) -> Dict[str, Any]:
         "metric_count": len(series),
         "bucket_count": bucket_count,
         "pass_group_count": len(by_pass),
+        "declared_groups_seen": sorted({_declared_group(n) for n, _v in raw_series
+                                        if _declared_group(n)}),
+        "pass_composition": {
+            str(pass_ids[k]): sorted({_declared_group(n) or "(undeclared)"
+                                      for n, _v in members})
+            for k, members in by_pass.items()
+        },
+        "pass_note": (
+            "Nsight Compute's shipped sections declare which metrics cannot "
+            "share a pass (`Groups:` per metric). Timestamps say what actually "
+            "happened, because the scheduler may pack several compatible groups "
+            "into one pass. Both are reported: `pass_group` is observed, "
+            "`declared_group` is the constraint that produced it."
+        ),
         "active_window_buckets": [anchor_lo, anchor_hi],
         "active_window_length": window_len,
         "active_window_ns": (step_ns * (window_len - 1)) if step_ns else None,

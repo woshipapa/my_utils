@@ -3068,3 +3068,46 @@ class TestPmSamplingPassGroups:
     def test_explicit_top_k_still_trims(self):
         out = source_correlation.analyze_pm_sampling(self._Action(), top_k=1)
         assert len(out["series"]) == 1 and out["series_count"] == 3
+
+
+class TestPmSamplingDeclaredGroups:
+    """Nsight Compute declares the pass grouping; we do not have to infer it.
+
+    `PmSampling_WarpStates.section` states it outright -- "Metrics in different
+    groups come from different passes" -- and carries a `Groups: "sampling_wsN"`
+    line per metric. On a real H100 capture the five declared warp-state groups
+    matched the five timestamp clusters exactly.
+
+    Declared groups are a constraint, not the outcome: the scheduler may pack
+    several compatible groups into one pass, and on that same report
+    `sampling_2`+`sampling_3` and `sampling_0`+`sampling_1` were each merged.
+    So timestamps stay authoritative for pass identity and the declared name is
+    carried as the explanation.
+    """
+
+    def test_groups_are_read_from_the_install(self):
+        groups = section_index.pm_sampling_groups()
+        if not groups:
+            pytest.skip("no local Nsight Compute install")
+        warp_states = {
+            name.replace("pmsampling:smsp__warps_issue_stalled_", "").replace(".avg", ""): group
+            for name, group in groups.items()
+            if "warps_issue_stalled" in name
+        }
+        assert warp_states.get("long_scoreboard") == "sampling_ws2"
+        assert warp_states.get("barrier") == "sampling_ws0"
+        # barrier and long_scoreboard in different groups is why "what was the
+        # barrier doing when long_scoreboard peaked" is unanswerable.
+        assert warp_states["barrier"] != warp_states["long_scoreboard"]
+
+    def test_lookup_falls_back_to_the_base_name(self):
+        """The section declares one submetric spelling and the report may carry
+        another, which left real metrics unattributed on an exact-name match."""
+        groups = section_index.pm_sampling_groups()
+        if not groups:
+            pytest.skip("no local Nsight Compute install")
+        bases = {name.split(".")[0] for name in groups}
+        assert "pmsampling:l1tex__data_pipe_lsu_wavefronts" in bases
+
+    def test_absent_install_returns_empty_not_a_guess(self):
+        assert section_index.pm_sampling_groups("/nonexistent/path") == {}

@@ -47,6 +47,7 @@ __all__ = [
     "denominator_of",
     "group_report_metrics",
     "audit_catalog_against_sections",
+    "pm_sampling_groups",
 ]
 
 
@@ -444,6 +445,40 @@ def audit_catalog_against_sections(
             f"what a device exposes, so --query-metrics on the target GPU decides)."
         ),
     }
+
+
+@lru_cache(maxsize=4)
+def pm_sampling_groups(sections_dir: str = "") -> Dict[str, str]:
+    """Map each PM-sampling metric to the pass group Nsight Compute assigns it.
+
+    PM sampling is multiplexed: metrics that cannot share a pass are split
+    across replay passes, each a separate execution with its own clock. The
+    shipped ``PmSampling_WarpStates.section`` states this outright -- "Metrics
+    in different groups come from different passes" -- and declares the grouping
+    with a ``Groups: "sampling_wsN"`` line per metric.
+
+    Reading it beats inferring the grouping from correlation-ID timestamps: it
+    is declarative, available without a report, and survives a report where two
+    passes happen to start close together. Verified against a real H100 capture,
+    where the five declared groups matched the five timestamp clusters exactly.
+
+    Returns ``{}`` when no install is present, in which case the caller should
+    fall back to clustering by timestamp.
+    """
+    directory = Path(sections_dir) if sections_dir else find_sections_dir()
+    if not directory or not Path(directory).is_dir():
+        return {}
+
+    mapping: Dict[str, str] = {}
+    pattern = re.compile(r'Name:\s*"(pmsampling:[^"]+)"\s*\n\s*Groups:\s*"([^"]+)"')
+    for path in sorted(Path(directory).glob("*.section")):
+        try:
+            text = path.read_text(errors="replace")
+        except OSError:
+            continue
+        for match in pattern.finditer(text):
+            mapping.setdefault(match.group(1), match.group(2))
+    return mapping
 
 
 def group_report_metrics(
