@@ -184,8 +184,24 @@ _CATALOG_LIST: List[MetricSpec] = [
     _m("shared_conflicts_nway", ["derived__memory_l1_conflicts_shared_nway"],
        "SourceCounters", "shared_memory", unit="way", higher_is_better=False, ideal=1.0),
     _m("shared_pipe_util", ["sm__pipe_shared_cycles_active.avg.pct_of_peak_sustained_active",
-     "sm__pipe_shared_cycles_active.avg.pct_of_peak_sustained_elapsed"],
-       "ComputeWorkloadAnalysis", "shared_memory", unit="%"),
+                            "sm__pipe_shared_cycles_active.avg.pct_of_peak_sustained_elapsed"],
+       "ComputeWorkloadAnalysis", "pipes", unit="%", higher_is_better=True,
+       description=(
+           "Shared/composite pipe utilisation. NOT an independent shared-memory signal on "
+           "Hopper: measured on a real sm_90 GEMM it returns values bit-identical to the "
+           "tensor pipe and to sm__throughput across all four rollups, because the wgmma "
+           "operand path and the tensor pipe are the same underlying counter on GH100. For "
+           "actual shared-memory pressure use l1tex__data_bank_reads / _bank_writes."
+       ),
+       notes="Composite pipe: NVIDIA documents it as the logical sum of sub-pipes that "
+             "cannot saturate alone. Expand to sub-pipes before acting on it."),
+    _m("shared_bank_reads", ["l1tex__data_bank_reads.avg.pct_of_peak_sustained_active"],
+       "MemoryWorkloadAnalysis", "shared_memory", unit="%", higher_is_better=True,
+       description="Shared-memory bank read pressure. Unlike shared_pipe_util this is "
+                   "independent of the tensor pipe on Hopper."),
+    _m("shared_bank_writes", ["l1tex__data_bank_writes.avg.pct_of_peak_sustained_active"],
+       "MemoryWorkloadAnalysis", "shared_memory", unit="%", higher_is_better=True,
+       description="Shared-memory bank write pressure."),
 
     # -- Occupancy --------------------------------------------------------
     _m("achieved_occupancy", ["sm__warps_active.avg.pct_of_peak_sustained_active"],

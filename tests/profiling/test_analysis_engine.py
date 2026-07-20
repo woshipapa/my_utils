@@ -58,8 +58,8 @@ gpu_specs = _load("hardware.gpu_specs", "hardware/gpu_specs.py")
 kernel_taxonomy = _load("sources.kernel_taxonomy", "sources/kernel_taxonomy.py")
 metric_catalog = _load("ncu.metric_catalog", "ncu/metric_catalog.py")
 triage = _load("analyzers.triage", "analyzers/triage.py")
-ncu_diagnostics = _load("ncu.ncu_diagnostics", "ncu/ncu_diagnostics.py")
 evidence = _load("analyzers.evidence", "analyzers/evidence.py")
+ncu_diagnostics = _load("ncu.ncu_diagnostics", "ncu/ncu_diagnostics.py")
 
 
 # ---------------------------------------------------------------------------
@@ -726,3 +726,94 @@ class TestTriageRefusesMissingData:
             sync_api_ns=5e8, kernel_durations_ns=[4e3] * 50,
         )
         assert verdict.verdict == "host_bound"
+
+
+class TestCutlassSymbolParsing:
+    """The template arguments ARE the configuration, not a label someone chose."""
+
+    REAL = (
+        "void cutlass::device_kernel<cutlass::gemm::kernel::GemmUniversal<"
+        "cute::tuple<int,int,int>, cutlass::gemm::collective::CollectiveMma<"
+        "cutlass::gemm::MainloopSm90TmaGmmaWarpSpecialized<9, "
+        "cute::tuple<cute::C<1>,cute::C<1>,cute::C<1> >, "
+        "cutlass::gemm::KernelTmaWarpSpecializedPingpong>, "
+        "cute::tuple<cute::C<128>,cute::C<64>,cute::C<64> >, cutlass::bfloat16_t, "
+        "cute::TiledMMA<cute::MMA_Atom<cute::SM90::GMMA::MMA_64x64x16_F32BF16BF16_SS> >, "
+        "cute::SM90_TMA_LOAD, cute::ComposedLayout<cute::Swizzle<3,4,3> > > > >"
+    )
+
+    def test_recovers_configuration(self):
+        cfg = kernel_taxonomy.parse_cutlass_symbol(self.REAL)
+        assert cfg.arch == "sm90"
+        assert cfg.stages == 9
+        assert cfg.cluster == (1, 1, 1)
+        assert cfg.tile == (128, 64, 64)
+        assert cfg.mma_shape == (64, 64, 16)
+        assert cfg.operand_source == "SS"
+        assert cfg.schedule == "pingpong"
+        assert cfg.copy_atom == "SM90_TMA_LOAD"
+        assert cfg.uses_tma() is True
+        assert cfg.swizzle == (3, 4, 3)
+
+    def test_ignores_non_cutlass(self):
+        assert kernel_taxonomy.parse_cutlass_symbol("ampere_sgemm_128x64_nn") is None
+
+    def test_truncation_is_reported_not_hidden(self):
+        cfg = kernel_taxonomy.parse_cutlass_symbol(
+            "void cutlass::device_kernel<cutlass::gemm::kernel::GemmUniversal<cute::tuple<int, int"
+        )
+        assert cfg.truncated is True
+        assert any("not visible" in o for o in cfg.observations())
+
+    def test_unswizzled_layout_is_flagged(self):
+        cfg = kernel_taxonomy.parse_cutlass_symbol(
+            "void cutlass::device_kernel<X<cute::Swizzle<0,4,3> > >"
+        )
+        assert any("unswizzled" in o for o in cfg.observations())
+
+
+class TestAnalysisCoverage:
+    """A skipped analysis and a clean analysis both produce zero findings."""
+
+    def test_missing_sections_are_reported(self):
+        # A SpeedOfLight-only report, which is what real ncu runs often carry.
+        view = ncu_diagnostics.MetricView({
+            "sm__throughput.avg.pct_of_peak_sustained_elapsed": 85.0,
+            "gpu__compute_memory_throughput.avg.pct_of_peak_sustained_elapsed": 60.0,
+        })
+        cov = ncu_diagnostics.analysis_coverage(view)
+        assert "bottleneck" in cov["ran"]
+        skipped = {s["analysis"] for s in cov["skipped"]}
+        assert "stalls" in skipped
+        assert "shared_memory" in skipped
+        assert cov["coverage_pct"] < 100.0
+        assert "not a clean result" in cov["summary"]
+
+    def test_named_section_is_actionable(self):
+        view = ncu_diagnostics.MetricView({})
+        cov = ncu_diagnostics.analysis_coverage(view)
+        for entry in cov["skipped"]:
+            assert entry["needs_section"], f"{entry['analysis']} has no section to collect"
+        assert cov["remedy"]
+
+
+class TestEveryFindingCarriesEvidence:
+    """A conclusion without its evidence is an assertion, not an analysis."""
+
+    def test_all_findings_have_evidence(self):
+        metrics = {
+            "sm__throughput.avg.pct_of_peak_sustained_elapsed": 25.0,
+            "gpu__compute_memory_throughput.avg.pct_of_peak_sustained_elapsed": 20.0,
+            "sm__warps_active.avg.pct_of_peak_sustained_active": 12.0,
+            "sm__maximum_warps_per_active_cycle_pct": 50.0,
+            "smsp__issue_active.avg.per_cycle_active": 0.15,
+            "launch__grid_size": 8.0,
+            "launch__block_size": 100.0,
+            "launch__waves_per_multiprocessor": 0.3,
+        }
+        result = ncu_diagnostics.diagnose_kernel(metrics, kernel_name="my_fused_kernel")
+        findings = [f if isinstance(f, dict) else f.to_dict() for f in result["findings"]]
+        assert findings, "expected findings from a deliberately unhealthy kernel"
+        for f in findings:
+            assert f.get("evidence"), f"finding {f['title']!r} carries no evidence"
+            assert f.get("summary"), f"finding {f['title']!r} carries no explanation"

@@ -48,6 +48,7 @@ __all__ = [
     "analyze_pipes",
     "analyze_imbalance",
     "diagnose_kernel",
+    "analysis_coverage",
     "SOL_THRESHOLDS",
 ]
 
@@ -1253,9 +1254,46 @@ def _article(word: str) -> str:
     return "an" if str(word)[:1].lower() in "aeiou" else "a"
 
 
-def _expectation_findings(view: MetricView, kernel_info: Any) -> List[Finding]:
-    """Compare a kernel against what its *category* should achieve."""
+def _expectation_findings(
+    view: MetricView,
+    kernel_info: Any,
+    *,
+    category_confidence: str = "low",
+    name_is_informative: bool = True,
+) -> List[Finding]:
+    """Compare a kernel against what its *category* should achieve.
+
+    Every finding here rests on the category being right, and the category comes
+    from the kernel symbol - the weakest evidence available. So the confidence of
+    each finding is capped by the confidence of the classification itself, and an
+    uninformative name produces an explicit finding rather than silence: a
+    ``kernel_kernel_0`` from CuTe DSL would otherwise fall through to "no
+    expectations matched", which reads exactly like "nothing is wrong".
+    """
     from ..sources.kernel_taxonomy import CATEGORY_EXPECTATIONS  # local import: avoid cycle
+
+    findings: List[Finding] = []
+
+    if not name_is_informative:
+        return [Finding(
+            category="unattributable_kernel",
+            title="Kernel name carries no workload information",
+            summary=(
+                "This symbol identifies no workload category, so the checks that compare a "
+                "kernel against what its category should achieve could not run. That is a gap "
+                "in coverage, not a clean result. CuTe DSL kernels default to this shape and "
+                "FlashAttention-4 ships that way."
+            ),
+            severity="info",
+            confidence="high",
+            evidence={"kernel_name": getattr(kernel_info, "name", "")},
+            actions=(
+                "Call set_name_prefix() at the launch site to make the kernel attributable.",
+                "Until then, judge this kernel from counters alone: tensor pipe, DRAM SOL, "
+                "and the stall profile do not depend on the name.",
+            ),
+            source="expectation",
+        )]
 
     if kernel_info is None:
         return []
@@ -1263,8 +1301,10 @@ def _expectation_findings(view: MetricView, kernel_info: Any) -> List[Finding]:
     if not expectation:
         return []
 
-    findings: List[Finding] = []
     category = kernel_info.category
+    # A name-derived category never supports better than medium confidence, and
+    # an advisory one (truncated symbol, cuBLASLt-embedded CUTLASS) drops to low.
+    capped = {"high": "medium", "medium": "medium", "low": "low"}.get(category_confidence, "low")
 
     want_tc = expectation.get("expect_tensor_cores")
     tensor_util = view.get("pipe_tensor_util")
@@ -1278,8 +1318,9 @@ def _expectation_findings(view: MetricView, kernel_info: Any) -> List[Finding]:
                 "and whether a fallback path was selected."
             ),
             severity="high",
-            confidence="medium",
+            confidence=capped,
             evidence={"pipe_tensor_util_pct": tensor_util,
+                      "category_provenance": "kernel_name",
                       "pipe_fma_util_pct": view.get("pipe_fma_util"),
                       "kernel_category": category,
                       "kernel_name": getattr(kernel_info, "name", "")},
@@ -1349,6 +1390,66 @@ def _expectation_findings(view: MetricView, kernel_info: Any) -> List[Finding]:
 _SEVERITY_ORDER = {"high": 0, "medium": 1, "low": 2, "info": 3}
 
 
+
+# Which catalog metric each analysis needs before it can say anything at all.
+# Used to report what was *not* checked: an analysis that silently skips looks
+# identical to one that ran and found nothing, and those mean opposite things.
+_ANALYSIS_REQUIREMENTS: Dict[str, Tuple[Tuple[str, ...], str]] = {
+    "bottleneck":    (("compute_sol", "memory_sol"), "SpeedOfLight"),
+    "roofline":      (("dram_bytes", "duration_ns"), "SpeedOfLight + MemoryWorkloadAnalysis"),
+    "stalls":        (("warp_cycles_per_issue",), "WarpStateStats"),
+    "occupancy":     (("achieved_occupancy", "theoretical_occupancy"), "Occupancy"),
+    "launch":        (("grid_size", "block_size"), "LaunchStats"),
+    "coalescing":    (("l1_sectors_per_request", "bytes_per_sector_global_ld"),
+                      "MemoryWorkloadAnalysis_Tables"),
+    "shared_memory": (("shared_bank_conflicts_ld", "shared_bank_conflicts_st"),
+                      "MemoryWorkloadAnalysis_Tables"),
+    "divergence":    (("threads_per_inst",), "WarpStateStats / SourceCounters"),
+    "spilling":      (("local_load_sectors", "local_store_sectors"), "SourceCounters"),
+    "pipes":         (("pipe_tensor_util", "pipe_fma_util"), "ComputeWorkloadAnalysis"),
+    "imbalance":     (("sm_cycles_active_avg", "sm_cycles_active_max"), "WorkloadDistribution"),
+}
+
+
+def analysis_coverage(view: MetricView) -> Dict[str, Any]:
+    """Report which analyses could run against this report, and which could not.
+
+    An analysis that never ran because its section was not collected produces no
+    findings - exactly like an analysis that ran and found nothing healthy. A
+    report showing two findings may therefore be two problems, or two problems
+    plus eight unasked questions. This makes the difference explicit.
+    """
+    ran: List[str] = []
+    skipped: List[Dict[str, str]] = []
+    for analysis, (keys, section) in sorted(_ANALYSIS_REQUIREMENTS.items()):
+        if any(view.get(key) is not None for key in keys):
+            ran.append(analysis)
+        else:
+            skipped.append({
+                "analysis": analysis,
+                "needs_section": section,
+                "missing_metrics": ", ".join(keys),
+            })
+    total = len(_ANALYSIS_REQUIREMENTS)
+    return {
+        "ran": ran,
+        "skipped": skipped,
+        "coverage_pct": round(100.0 * len(ran) / total, 1) if total else 0.0,
+        "summary": (
+            f"{len(ran)} of {total} analyses ran. "
+            + (
+                f"{len(skipped)} could not: the required metrics are absent from this report, "
+                "so those questions were not asked - this is missing coverage, not a clean result."
+                if skipped else "Full coverage."
+            )
+        ),
+        "remedy": (
+            "Collect with --set full, or add the named sections with --section, to close the gap."
+            if skipped else ""
+        ),
+    }
+
+
 def diagnose_kernel(
     metrics: Mapping[str, float],
     *,
@@ -1362,6 +1463,7 @@ def diagnose_kernel(
     absolute roofline; without it the analysis still works but reports
     arithmetic intensity without a ceiling.
     """
+    from ..analyzers.evidence import attribute_kernel  # local import: avoid cycle
     from ..sources.kernel_taxonomy import classify_kernel, parse_gemm_kernel  # local import
 
     view = metrics if isinstance(metrics, MetricView) else MetricView(metrics)
@@ -1404,15 +1506,51 @@ def diagnose_kernel(
     findings: List[Finding] = []
     for section in sections.values():
         findings.extend(section.get("findings", []) if isinstance(section, dict) else [])
-    findings.extend(_expectation_findings(view, kernel_info))
+    # Route the classification through the evidence layer so a name that
+    # disagrees with the counters is reported as a contradiction rather than
+    # silently winning.
+    fused, name_warnings = attribute_kernel(kernel_name or "", metrics=view)
+    category_attr = fused.get("category")
+    informative_attr = fused.get("name_is_informative")
+    findings.extend(_expectation_findings(
+        view, kernel_info,
+        category_confidence=(category_attr.confidence if category_attr else "low"),
+        name_is_informative=(informative_attr.value is not False) if informative_attr else True,
+    ))
+    for warning in name_warnings:
+        # Two different situations arrive here: the name asserting something the
+        # counters contradict, and the name asserting nothing at all. Only the
+        # first is a conflict, and calling the second one that would be wrong.
+        uninformative = "carries no shape or dtype" in warning
+        findings.append(Finding(
+            category="uninformative_name" if uninformative else "evidence_conflict",
+            title=(
+                "Kernel name carries no shape or dtype information"
+                if uninformative
+                else "Kernel name disagrees with the measured counters"
+            ),
+            summary=warning,
+            severity="low" if uninformative else "medium",
+            confidence="high",
+            evidence={"kernel_name": kernel_name},
+            actions=(
+                ("Read shape and dtype from the counters or from NVTX; the symbol has neither.",)
+                if uninformative
+                else ("Trust the counters. The symbol is the weakest evidence in the report.",)
+            ),
+            source="evidence",
+        ))
 
     findings.sort(key=lambda f: (
         _SEVERITY_ORDER.get(f.severity, 9),
         -(f.speedup_ceiling or 1.0),
     ))
 
+    coverage = analysis_coverage(view)
+
     return {
         "kernel_name": kernel_name,
+        "coverage": coverage,
         "kernel_category": getattr(kernel_info, "category", "") if kernel_info else "",
         "kernel_framework": getattr(kernel_info, "framework", "") if kernel_info else "",
         "architecture": arch,

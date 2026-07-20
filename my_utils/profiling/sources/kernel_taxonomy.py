@@ -26,7 +26,9 @@ __all__ = [
     "KernelInfo",
     "GemmShape",
     "NcclCollective",
+    "CutlassConfig",
     "classify_kernel",
+    "parse_cutlass_symbol",
     "is_megakernel",
     "parse_gemm_kernel",
     "parse_nccl_kernel",
@@ -678,3 +680,172 @@ def summarize_categories(kernel_names: Sequence[str]) -> Dict[str, int]:
         info = classify_kernel(name)
         counts[info.category] = counts.get(info.category, 0) + 1
     return dict(sorted(counts.items(), key=lambda kv: kv[1], reverse=True))
+
+
+# ---------------------------------------------------------------------------
+# CUTLASS template symbols
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class CutlassConfig:
+    """Kernel configuration recovered from a demangled CUTLASS 3.x/4.x symbol.
+
+    Unusually for anything name-derived, this is high-quality evidence: the
+    template arguments *are* the configuration the kernel was compiled with, not
+    a label someone chose. A demangled ``cutlass::device_kernel<...>`` states its
+    pipeline depth, cluster shape, tile, MMA atom and swizzle outright, at zero
+    collection cost.
+
+    Two caveats keep it honest. nsys truncates long symbols, so absent fields
+    mean "not visible" rather than "not used" - hence ``truncated``. And a
+    CUTLASS symbol does not mean the user wrote CUTLASS: cuBLASLt embeds
+    CUTLASS-generated kernels, so this describes the code, never its author.
+    """
+
+    arch: str = ""                  # sm90, sm100, ...
+    stages: Optional[int] = None    # mainloop pipeline depth
+    cluster: Tuple[int, ...] = ()   # thread block cluster shape
+    tile: Tuple[int, ...] = ()      # CTA tile M x N x K
+    mma_shape: Tuple[int, ...] = () # MMA instruction shape
+    mma_kind: str = ""              # hmma / hgmma / utcqmma ...
+    operand_source: str = ""        # SS (shared/shared) or RS (register/shared)
+    schedule: str = ""              # pingpong / cooperative / ...
+    copy_atom: str = ""             # SM90_TMA_LOAD, SM80_CP_ASYNC, ...
+    swizzle: Tuple[int, int, int] = ()   # Swizzle<B, M, S>
+    dtypes: Tuple[str, ...] = ()
+    truncated: bool = False
+
+    def uses_tma(self) -> Optional[bool]:
+        if not self.copy_atom:
+            return None
+        return "TMA" in self.copy_atom.upper()
+
+    def observations(self) -> List[str]:
+        """Configuration facts worth reporting, derived only from the symbol."""
+        out: List[str] = []
+        if self.swizzle and self.swizzle[0] == 0:
+            out.append(
+                "Shared-memory layout is unswizzled (Swizzle<0,...>), so bank conflicts "
+                "are expected on the operand path."
+            )
+        if self.copy_atom and "CP_ASYNC" in self.copy_atom.upper() and self.arch >= "sm90":
+            out.append(
+                f"Uses {self.copy_atom} on {self.arch}: this is the pre-Hopper async-copy "
+                "path, not TMA. A TMA atom frees registers and enables warp specialisation."
+            )
+        if self.stages is not None and self.stages <= 2:
+            out.append(
+                f"Only {self.stages} mainloop pipeline stages. If shared memory allows, more "
+                "depth hides global latency better."
+            )
+        if self.cluster and len(self.cluster) >= 2 and all(c == 1 for c in self.cluster):
+            out.append(
+                "Cluster shape is 1x1x1, so no multicast across the cluster. On Hopper and "
+                "later a larger cluster with TMA multicast can cut redundant DRAM traffic."
+            )
+        if self.truncated:
+            out.append(
+                "The symbol was truncated before parsing finished, so absent fields mean "
+                "'not visible', not 'not used'."
+            )
+        return out
+
+
+_CUTLASS_SYMBOL_RE = re.compile(r"cutlass::(?:device_)?[kK]ernel2?\s*<|cutlass::gemm::kernel::")
+_CUTLASS_MAINLOOP_RE = re.compile(r"Mainloop(?:Sm|sm)(?P<arch>\d+)\w*?<\s*(?P<stages>\d+)\s*,")
+_CUTLASS_SCHEDULE_RE = re.compile(
+    r"Kernel(?:Tma)?(?:WarpSpecialized)?(?P<sched>Pingpong|Cooperative|FP8FastAccum|WarpSpecialized)",
+    re.IGNORECASE)
+_CUTLASS_SWIZZLE_RE = re.compile(r"cute::Swizzle<\s*(\d+)\s*,\s*(-?\d+)\s*,\s*(-?\d+)\s*>")
+_CUTLASS_COPY_RE = re.compile(r"cute::(SM\d+_TMA_LOAD(?:_MULTICAST)?|SM\d+_TMA_STORE|SM\d+_CP_ASYNC\w*)")
+_CUTLASS_MMA_RE = re.compile(
+    r"MMA_(?P<m>\d+)x(?P<n>\d+)x(?P<k>\d+)_(?P<types>[A-Z0-9]+?)_(?P<src>SS|RS)\b")
+_CUTLASS_MMA_KIND_RE = re.compile(r"\b(?:op_)?(hgmma|hmma|igmma|imma|bgmma|bmma|utchmma|utcqmma|utcomma|utcimma)\b",
+                                  re.IGNORECASE)
+_CUTE_TUPLE_RE = re.compile(r"cute::tuple<((?:\s*cute::C<-?\d+>\s*,?)+)>")
+_CUTE_C_RE = re.compile(r"cute::C<(-?\d+)>")
+_CUTLASS_DTYPE_RE = re.compile(
+    r"cutlass::(bfloat16_t|half_t|tfloat32_t|float_e4m3_t|float_e5m2_t|float_e2m1_t|int8_t|uint8_t)")
+
+
+def parse_cutlass_symbol(kernel_name: str) -> Optional[CutlassConfig]:
+    """Recover the kernel configuration encoded in a demangled CUTLASS symbol.
+
+    Returns ``None`` for anything that is not a CUTLASS template instantiation.
+    Every field is optional: a truncated symbol yields whatever survived.
+    """
+    raw = str(kernel_name or "")
+    if not raw or not _CUTLASS_SYMBOL_RE.search(raw):
+        return None
+
+    # nsys clips long symbols. An unbalanced angle-bracket count is the reliable
+    # tell, since a complete template instantiation always balances.
+    truncated = raw.endswith(("...", "…")) or raw.count("<") > raw.count(">")
+
+    arch = ""
+    stages: Optional[int] = None
+    mainloop = _CUTLASS_MAINLOOP_RE.search(raw)
+    if mainloop:
+        arch = f"sm{mainloop.group('arch')}"
+        try:
+            stages = int(mainloop.group("stages"))
+        except ValueError:
+            stages = None
+    if not arch:
+        by_name = re.search(r"\bsm_?(\d{2,3})\b", raw, re.IGNORECASE)
+        if by_name:
+            arch = f"sm{by_name.group(1)}"
+
+    # Static-integer tuples carry cluster and tile shapes. They appear in source
+    # order: the cluster inside the mainloop policy, the CTA tile after it.
+    shapes: List[Tuple[int, ...]] = []
+    for match in _CUTE_TUPLE_RE.finditer(raw):
+        values = tuple(int(v) for v in _CUTE_C_RE.findall(match.group(1)))
+        if len(values) >= 2:
+            shapes.append(values)
+    cluster: Tuple[int, ...] = ()
+    tile: Tuple[int, ...] = ()
+    for shape in shapes:
+        # A cluster is a handful of small numbers; a CTA tile is powers of two in
+        # the tens-to-hundreds. That separates them without relying on position,
+        # which truncation would break.
+        if not cluster and all(v <= 16 for v in shape):
+            cluster = shape
+        elif not tile and any(v >= 32 for v in shape):
+            tile = shape
+
+    mma_shape: Tuple[int, ...] = ()
+    operand_source = ""
+    mma = _CUTLASS_MMA_RE.search(raw)
+    if mma:
+        mma_shape = (int(mma.group("m")), int(mma.group("n")), int(mma.group("k")))
+        operand_source = mma.group("src")
+
+    mma_kind = ""
+    kind = _CUTLASS_MMA_KIND_RE.search(raw)
+    if kind:
+        mma_kind = kind.group(1).lower()
+
+    schedule = ""
+    sched = _CUTLASS_SCHEDULE_RE.search(raw)
+    if sched:
+        schedule = sched.group("sched").lower()
+
+    copy_atom = ""
+    copy = _CUTLASS_COPY_RE.search(raw)
+    if copy:
+        copy_atom = copy.group(1)
+
+    swizzle: Tuple[int, int, int] = ()
+    sw = _CUTLASS_SWIZZLE_RE.search(raw)
+    if sw:
+        swizzle = (int(sw.group(1)), int(sw.group(2)), int(sw.group(3)))
+
+    dtypes = tuple(dict.fromkeys(_CUTLASS_DTYPE_RE.findall(raw)))
+
+    return CutlassConfig(
+        arch=arch, stages=stages, cluster=cluster, tile=tile,
+        mma_shape=mma_shape, mma_kind=mma_kind, operand_source=operand_source,
+        schedule=schedule, copy_atom=copy_atom, swizzle=swizzle,
+        dtypes=dtypes, truncated=truncated,
+    )
