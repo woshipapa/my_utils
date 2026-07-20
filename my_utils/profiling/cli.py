@@ -1085,6 +1085,7 @@ def cmd_ncu_diagnose(args: argparse.Namespace) -> int:
         top_kernels=int(args.top_kernels),
         findings_per_kernel=int(args.findings_per_kernel),
         gpu_name=str(args.gpu or ""),
+        include_source=not bool(getattr(args, "no_source", False)),
     )
     if str(args.format).lower() in {"md", "markdown"}:
         text = diagnose_result_to_markdown(payload)
@@ -1672,6 +1673,10 @@ def build_parser() -> argparse.ArgumentParser:
     ncu_diagnose.add_argument(
         "--gpu", default="",
         help="GPU name (e.g. 'H100 SXM5') to unlock absolute roofline ceilings",
+    )
+    ncu_diagnose.add_argument(
+        "--no-source", action="store_true",
+        help="skip source-line attribution (it re-reads the report for PC samples)",
     )
     ncu_diagnose.add_argument("--format", default="md", choices=["json", "md", "markdown"])
     ncu_diagnose.add_argument("--output", default="")

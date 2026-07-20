@@ -1840,6 +1840,95 @@ def load_ncu_report_records(
     return out
 
 
+def _collect_source_attribution(
+    report_path: str,
+    *,
+    kernel_like: str = "%",
+    top_k: int = 8,
+    ncu_report_module: Any = None,
+) -> Dict[Tuple[int, int], Dict[str, object]]:
+    """Per-launch source attribution, gated on PC-sampling validity.
+
+    Returns a dict keyed by (range_index, action_index). Every entry says
+    whether attribution was possible and, when it was not, which of the three
+    causes applies -- a `basic` collection with no SourceCounters, a build
+    without -lineinfo, or samples too biased to rank.
+    """
+    from .sampling_validity import check_pc_sampling_validity, check_pm_sampling_validity
+    from .source_correlation import (
+        attribute_stalls_to_source,
+        pc_sampling_timeline,
+        source_availability,
+    )
+
+    mod = _load_ncu_report_module(ncu_report_module)
+    ctx = mod.load_report(str(report_path))
+    out: Dict[Tuple[int, int], Dict[str, object]] = {}
+
+    for range_idx, range_obj in enumerate(_iter_ranges(ctx)):
+        for action_idx, action in enumerate(_iter_actions(range_obj)):
+            if not _like_match(str(_maybe_call(action, "name", "") or ""), kernel_like):
+                continue
+
+            def _metric(key: str, _a: object = action) -> Optional[float]:
+                getter = getattr(_a, "metric_by_name", None)
+                if getter is None:
+                    return None
+                try:
+                    metric = getter(key)
+                except Exception:
+                    return None
+                if metric is None:
+                    return None
+                value = _maybe_call(metric, "as_double", None)
+                if value is None:
+                    value = _maybe_call(metric, "as_uint64", None)
+                try:
+                    return float(value) if value is not None else None
+                except (TypeError, ValueError):
+                    return None
+
+            validity = check_pc_sampling_validity(
+                sample_count=_metric("smsp__pcsamp_sample_count"),
+                interval_cycles=_metric("smsp__pcsamp_interval_cycles"),
+                kernel_duration_cycles=_metric("gpc__cycles_elapsed.max"),
+                dropped_bytes=_metric("smsp__pcsamp_dropped_bytes"),
+                buffer_overflow=_metric("smsp__pcsamp_buffer_overflow"),
+                buffer_size_bytes=_metric("smsp__pcsamp_buffer_size_bytes"),
+            )
+            blocked = set(validity.get("blocked_conclusions") or ())
+            availability = source_availability(action)
+
+            entry: Dict[str, object] = {
+                "availability": availability,
+                "sampling_validity": validity,
+                "pm_sampling_validity": check_pm_sampling_validity(
+                    cc_major=_metric("device__attribute_compute_capability_major"),
+                    cc_minor=_metric("device__attribute_compute_capability_minor"),
+                    interval=(_metric("profiler__pmsampler_interval_time")
+                              or _metric("profiler__pmsampler_interval_cycles")),
+                    duration=(_metric("gpu__time_duration.sum")
+                              or _metric("gpc__cycles_elapsed.max")),
+                    pass_groups=_metric("profiler__pmsampler_pass_groups"),
+                ),
+            }
+            if blocked & {"hot_line_ranking", "stall_attribution"}:
+                entry["stall_attribution"] = {
+                    "available": False,
+                    "withheld_because": sorted(blocked),
+                    "reason": (
+                        "Source-line ranking withheld: the PC samples in this report "
+                        "cannot support it. See sampling_validity."
+                    ),
+                }
+            else:
+                entry["stall_attribution"] = attribute_stalls_to_source(action, top_k=top_k)
+            if "pc_sampling_timeline" not in blocked:
+                entry["timeline"] = pc_sampling_timeline(action)
+            out[(range_idx, action_idx)] = entry
+    return out
+
+
 def diagnose_ncu_report(
     report_path: str,
     *,
@@ -1847,6 +1936,7 @@ def diagnose_ncu_report(
     top_kernels: int = 10,
     findings_per_kernel: int = 8,
     gpu_name: str = "",
+    include_source: bool = True,
     ncu_report_module: Any = None,
 ) -> Dict[str, object]:
     """Run the full rule engine over every profiled kernel in a report.
@@ -1869,6 +1959,24 @@ def diagnose_ncu_report(
         kernel_like=kernel_like,
         ncu_report_module=ncu_report_module,
     )
+
+    # Index source attribution by launch. This lives here rather than only in a
+    # separate skill because "which line stalls" is part of diagnosing a kernel,
+    # not a different question -- for a fused kernel it is usually the only
+    # actionable part, and requiring a second command to get it meant most
+    # callers never saw it.
+    source_by_launch: Dict[Tuple[int, int], Dict[str, object]] = {}
+    if include_source:
+        try:
+            source_by_launch = _collect_source_attribution(
+                report_path, kernel_like=kernel_like,
+                top_k=int(findings_per_kernel),
+                ncu_report_module=ncu_report_module,
+            )
+        except Exception:
+            # Source data is optional and frequently absent (basic set, no
+            # -lineinfo). Its absence must not take down the diagnosis.
+            source_by_launch = {}
 
     # Index NVIDIA's shipped rule results by launch, so each kernel's diagnosis
     # can be cross-checked against the rules ncu itself ran on that same launch.
@@ -1912,6 +2020,9 @@ def diagnose_ncu_report(
         )
         diagnosis["range_index"] = range_idx
         diagnosis["action_index"] = action_idx
+        source = source_by_launch.get((range_idx, action_idx))
+        if source is not None:
+            diagnosis["source_attribution"] = source
         duration = diagnosis.get("sections", {}).get("bottleneck", {})
         diagnosis["duration_ns"] = (
             metrics.get("gpu__time_duration.sum") if isinstance(metrics, dict) else None
@@ -2012,7 +2123,57 @@ def diagnose_result_to_markdown(payload: Dict[str, object]) -> str:
             stalls = sections.get("stalls", {}) if isinstance(sections, dict) else {}
             if isinstance(stalls, dict) and stalls.get("dominant_bucket"):
                 lines.append(f"- dominant stall bucket: `{stalls['dominant_bucket']}`")
+
+            axes_block = kernel.get("axes", {})
+            if isinstance(axes_block, dict) and axes_block.get("summary"):
+                lines.append(f"- axes: {axes_block['summary']}")
+            corrob = kernel.get("corroboration", {})
+            if isinstance(corrob, dict) and corrob.get("conflicts"):
+                lines.append(
+                    f"- **{len(corrob['conflicts'])} disagreement(s) with Nsight Compute's "
+                    "own rules - resolve before acting**"
+                )
             lines.append("")
+
+            # Where, not just what. For a fused kernel this is usually the only
+            # actionable part, so it is rendered inline rather than left to a
+            # separate command.
+            source = kernel.get("source_attribution", {})
+            if isinstance(source, dict):
+                attribution = source.get("stall_attribution", {})
+                if isinstance(attribution, dict) and attribution.get("available"):
+                    rows = attribution.get("source_lines") or []
+                    if rows:
+                        lines.append("### Where it stalls")
+                        lines.append("")
+                        lines.append("| source | samples | dominant stall | line |")
+                        lines.append("|---|---|---|---|")
+                        for row in rows[:8]:
+                            lines.append(
+                                f"| `{row.get('file_name','?')}:{row.get('line','?')}` "
+                                f"| {row.get('samples', 0)} "
+                                f"| {row.get('dominant_stall_reason','')} "
+                                f"| `{(row.get('source_text') or '')[:60]}` |"
+                            )
+                        lines.append("")
+                        note = attribution.get("confidence_note")
+                        if note:
+                            lines.append(f"_{note}_")
+                            lines.append("")
+                elif isinstance(attribution, dict) and attribution.get("reason"):
+                    lines.append(f"- source attribution unavailable: {attribution['reason']}")
+                    lines.append("")
+                    # Only when attribution actually failed. `source_availability`
+                    # reports on source-correlated *metrics*, while stall
+                    # attribution runs off timed warp samples and needs neither
+                    # -- printing its reasons after a successful table said "no
+                    # source data" directly beneath the source data.
+                    availability = source.get("availability", {})
+                    if isinstance(availability, dict):
+                        for reason in (availability.get("reasons_unavailable") or [])[:2]:
+                            lines.append(f"  - {reason}")
+                        if availability.get("reasons_unavailable"):
+                            lines.append("")
 
             findings = kernel.get("findings", [])
             if isinstance(findings, list) and findings:

@@ -2255,3 +2255,101 @@ class TestReportDiagnosisUsesShippedRules:
         out = ncu_report_tools.diagnose_ncu_report(
             "/dev/null", ncu_report_module=self._fake_module(with_rules=False))
         assert self._first(out)["corroboration"]["shipped_rules_available"] is False
+
+
+class TestDiagnoseIsSelfContained:
+    """`ncu-diagnose` must answer both what and where, in one command.
+
+    Source attribution used to be reachable only through a separate SkillEngine
+    call, so the question a fused kernel most needs answered -- which line
+    stalls -- was absent from the command people actually run.
+    """
+
+    def _module(self, with_samples=True):
+        class Stall:
+            def __init__(self, n): self.name = n
+
+        class M:
+            def __init__(self, v): self.v = v
+            def value(self): return self.v
+            def as_double(self): return self.v
+            def as_uint64(self): return int(self.v)
+            def unit(self): return ""
+            def has_correlation_ids(self): return False
+
+        vals = {
+            "sm__throughput.avg.pct_of_peak_sustained_elapsed": 32.0,
+            "gpu__compute_memory_throughput.avg.pct_of_peak_sustained_elapsed": 28.0,
+            "smsp__pcsamp_sample_count": 5000.0,
+            "smsp__pcsamp_interval_cycles": 1000.0,
+        }
+
+        class Action:
+            def name(self): return "fused_attn_fwd"
+            def metric_names(self): return list(vals)
+            def metric_by_name(self, k): return M(vals[k]) if k in vals else None
+            def rule_results_as_dicts(self): return []
+            def source_files(self): return {"attn.cu": "load\nsoftmax\nmm\n"}
+            def source_info(self, a):
+                table = {0x10: ("attn.cu", 1), 0x20: ("attn.cu", 2)}
+                if a not in table:
+                    return None
+                fname, ln = table[a]
+
+                class I:
+                    def file_name(self): return fname
+                    def line(self): return ln
+                return I()
+            def sass_by_pc(self, a): return ""
+            def ptx_by_pc(self, a): return ""
+            def timed_warp_samples(self):
+                if not with_samples:
+                    return []
+                return [{"timestamp": i * 100, "pc": 0x20,
+                         "stall_reason": Stall("MIO_THROTTLE"), "not_issued": True}
+                        for i in range(600)]
+
+        class Rng:
+            num_actions = 1
+            def action_by_idx(self, i): return Action()
+
+        class Ctx:
+            num_ranges = 1
+            def range_by_idx(self, i): return Rng()
+
+        return types.SimpleNamespace(load_report=lambda p: Ctx())
+
+    def test_source_attribution_is_in_the_diagnosis(self):
+        out = ncu_report_tools.diagnose_ncu_report(
+            "/dev/null", ncu_report_module=self._module())
+        kernel = out["kernels"][0]
+        assert "source_attribution" in kernel
+        rows = kernel["source_attribution"]["stall_attribution"]["source_lines"]
+        assert rows and rows[0]["line"] == 2
+
+    def test_markdown_renders_where_it_stalls(self):
+        text = ncu_report_tools.diagnose_result_to_markdown(
+            ncu_report_tools.diagnose_ncu_report(
+                "/dev/null", ncu_report_module=self._module()))
+        assert "### Where it stalls" in text
+        assert "MIO_THROTTLE" in text
+
+    def test_no_contradiction_when_attribution_succeeds(self):
+        """Do not print 'no source data' directly beneath the source data."""
+        text = ncu_report_tools.diagnose_result_to_markdown(
+            ncu_report_tools.diagnose_ncu_report(
+                "/dev/null", ncu_report_module=self._module()))
+        assert "### Where it stalls" in text
+        assert "No source-correlated metrics" not in text
+
+    def test_include_source_false_skips_it(self):
+        out = ncu_report_tools.diagnose_ncu_report(
+            "/dev/null", include_source=False, ncu_report_module=self._module())
+        assert "source_attribution" not in out["kernels"][0]
+
+    def test_absent_samples_do_not_break_the_diagnosis(self):
+        out = ncu_report_tools.diagnose_ncu_report(
+            "/dev/null", ncu_report_module=self._module(with_samples=False))
+        kernel = out["kernels"][0]
+        assert kernel["verdict"]
+        assert kernel["source_attribution"]["stall_attribution"]["available"] is False

@@ -150,7 +150,14 @@ def _instance_values(metric: Any) -> List[float]:
 
 
 def source_availability(action: Any) -> Dict[str, Any]:
-    """Report whether source correlation is possible, and if not, why.
+    """Report whether *metric* source correlation is possible, and if not, why.
+
+    Scope note: this describes correlating per-instruction **metric** values to
+    source, which needs metrics carrying correlation IDs.
+    :func:`attribute_stalls_to_source` runs off ``timed_warp_samples`` instead
+    and needs none of that -- so a report can attribute stalls to source lines
+    while this function reports correlation as impossible. Both are true; they
+    are answering different questions.
 
     The three causes are independent and have different fixes, so they are
     distinguished rather than collapsed into "no source data".

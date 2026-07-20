@@ -1165,6 +1165,19 @@ for line in out["source_lines"]:
 That is the whole point of the module: two lines of a fused kernel, two
 different bottlenecks, two different fixes.
 
+`ncu-diagnose` includes this per kernel; the skill below is for when you want
+it on its own or with a specific metric attributed:
+
+```bash
+python -m my_utils.profiling.cli ncu-diagnose --report profile.ncu-rep
+# ...
+# ### Where it stalls
+# | source        | samples | dominant stall  | line       |
+# | `attn.cu:2`   | 600     | MIO_THROTTLE    | `softmax`  |
+```
+
+Pass `--no-source` to skip it; it re-reads the report for PC samples.
+
 ### The API this rests on
 
 Verified by reading the `ncu_report` module shipped with Nsight Compute 2026.1.1,
