@@ -464,6 +464,38 @@ def analyze_stalls(view: MetricView, *, top_k: int = 6) -> Dict[str, Any]:
 
     # A large residual means reasons are missing from the report, not that the
     # kernel has unexplained stalls. Saying which it is matters.
+    # Both directions. Disjoint states cannot exceed their own total, so >100%
+    # is the stronger evidence of a broken measurement -- and the first version
+    # could never fire on it. On a real report the states summed to 104.9% of
+    # the reported warp latency, giving a negative residual that was printed as
+    # an ordinary number while every share was computed against a total its own
+    # components exceeded.
+    if explained is not None and explained > 1.02:
+        findings.append(Finding(
+            category="measurement_above_physical_limit",
+            title="Stall states sum to more than the total they partition",
+            summary=(
+                f"The stall reasons account for {explained * 100:.1f}% of warp "
+                f"latency ({accounted:.2f} against a reported {total_latency:.2f} "
+                "cycles per issued instruction). These states are disjoint, so they "
+                "cannot exceed their own total: the two figures come from different "
+                "replay passes and disagree. Every share below is computed against "
+                "the smaller of them and is correspondingly inflated."
+            ),
+            severity="medium",
+            confidence="high",
+            evidence={"accounted": accounted, "total": total_latency,
+                      "explained_share": explained,
+                      "residual": residual,
+                      "shares_recomputed_against_sum": {
+                          row["key"]: (row["cycles_per_issued_inst"] / accounted)
+                          for row in rows[:5]
+                          if row["cycles_per_issued_inst"] is not None and accounted
+                      }},
+            actions=("Re-collect with locked clocks; a cross-pass disagreement of "
+                     "this size makes severity boundaries unreliable.",),
+            source="heuristic",
+        ))
     if explained is not None and explained < 0.9:
         findings.append(Finding(
             category="measurement_caveat",
@@ -496,6 +528,11 @@ def analyze_stalls(view: MetricView, *, top_k: int = 6) -> Dict[str, Any]:
         "accounted_cycles_per_issued_inst": accounted,
         "residual_cycles_per_issued_inst": residual,
         "explained_share": explained,
+        # The shares above use the reported total; these use the sum of the
+        # states themselves, which is coherent by construction. They differ
+        # exactly when the report does not close.
+        "share_basis_disagreement": (
+            abs(explained - 1.0) if explained is not None else None),
         "reasons_present": len(rows),
         "top_stalls_explain": (
             sum(r["cycles_per_issued_inst"] or 0.0 for r in rows[:top_k]) / total_latency
@@ -890,7 +927,15 @@ def _is_warp_specialized(view: MetricView) -> bool:
     ``launch__registers_per_thread`` a profiler reports is a weighted artifact of
     those, so the standard occupancy model does not apply.
     """
-    if view.get("inst_pipe_gmma") or view.get("pipe_tma_util"):
+    # Thresholds, not truthiness. `pipe_tma_util = 1e-9` returned True, so a
+    # genuinely occupancy-starved kernel that issued one TMA instruction had its
+    # finding suppressed. TMA alone does not qualify either: plenty of Hopper
+    # kernels use TMA without warp specialization. Warpgroup MMA is the stronger
+    # signal, and TMA only counts alongside meaningful tensor-pipe activity.
+    gmma = view.get("inst_pipe_gmma") or 0.0
+    tma = view.get("pipe_tma_util") or 0.0
+    tensor = view.get("pipe_tensor_util") or 0.0
+    if gmma >= 1.0 or (tma >= 1.0 and tensor >= 5.0):
         return True
     return False
 
@@ -1410,7 +1455,13 @@ def _registers_are_deliberate(view: MetricView) -> Optional[Dict[str, Any]]:
         return None
     ceiling = _REGISTER_FILE_PER_SM / block
     used = registers * block
-    if registers >= ceiling - 8:      # within one allocation granule of the cap
+    # Relative, not absolute. "Within 8 registers" is one allocation granule at
+    # block=384 and 12.5% of the cap at block=1024, so an ordinary
+    # 1024-thread kernel at 56 registers was being excused as deliberate.
+    close_to_cap = registers >= ceiling * 0.97
+    # And the excuse only applies to a design that deliberately takes the SM.
+    # A commodity kernel that happens to sit near its cap is still spilling.
+    if close_to_cap and _is_warp_specialized(view):
         return {
             "registers_per_thread": registers,
             "block_size": block,

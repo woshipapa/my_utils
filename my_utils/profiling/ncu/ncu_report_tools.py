@@ -2570,7 +2570,10 @@ def diagnose_result_to_markdown(payload: Dict[str, object]) -> str:
                     absent = item.get("declared_but_absent") or []
                     lines.append(
                         f"- correlated via `{reasons}`"
-                        + (f" (`{', '.join(absent)}` carried no samples here)" if absent else "")
+                        + (f" (`{', '.join(absent)}` carried no samples in this kernel)"
+                           if absent else "")
+                        + (f" (plus `{', '.join(item['contributing_below_cut'])}` on lines "
+                           "below the cut)" if item.get("contributing_below_cut") else "")
                         + " "
                         f"({item.get('concentration','')}, "
                         f"{float(item.get('share_explained') or 0.0) * 100:.0f}% of those samples)"

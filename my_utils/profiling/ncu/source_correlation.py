@@ -282,9 +282,17 @@ def link_findings_to_source(
         # reasons the category declares. `register_spilling` declares
         # (LONG_SCOREBOARD, LG_THROTTLE) and `stall_long_scoreboard` declares
         # (LONG_SCOREBOARD); on a report where LG_THROTTLE is zero those are the
-        # same evidence, but keying on the declared tuple made them look
-        # distinct and both were printed against an identical set of lines.
-        effective = sorted({r for hit in top for r in hit["matched_stall_reasons"]})
+        # same evidence, and keying on the declared tuple printed both against
+        # an identical set of lines.
+        #
+        # Computed over ALL hits, not the printed top-K. The first version used
+        # `top`, which folded genuinely distinct findings whenever a reason was
+        # real but spread thinly: LG_THROTTLE carrying a third of the samples
+        # across ten lines of thirty, all below the display cut, vanished from
+        # the signature and the finding lost its source attribution entirely.
+        # It also made dedup depend on a display parameter, so the same report
+        # deduped differently at top_k=3 and top_k=5.
+        effective = sorted({r for hit in hits for r in hit["matched_stall_reasons"]})
         signature = (tuple(effective),
                      tuple((h["file_name"], h["line"]) for h in top))
         if signature in seen_signatures:
@@ -301,7 +309,15 @@ def link_findings_to_source(
             # Which of them actually carried samples here. A declared reason
             # that contributed nothing should not read as corroboration.
             "contributing_stall_reasons": effective,
-            "declared_but_absent": sorted(set(reasons) - set(effective)),
+            # Absent means it carried nothing anywhere in this kernel, not that
+            # it missed the printed rows. The first version compared against the
+            # top-K and so reported "carried no samples here" for a reason
+            # holding a third of them -- a false statement the tool did not make
+            # before that change.
+            "declared_but_absent": sorted(
+                r for r in reasons if not totals.get(r)),
+            "contributing_below_cut": sorted(
+                set(effective) - {r for hit in top for r in hit["matched_stall_reasons"]}),
             "source_lines": top,
             "share_explained": covered,
             "concentration": (

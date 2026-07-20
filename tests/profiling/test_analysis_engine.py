@@ -1656,8 +1656,11 @@ class TestMeasurementContext:
         assert any("cache state" in b for b in out["blockers"])
 
     def test_like_for_like_comparison_is_allowed(self):
-        a = measurement_context.describe_collection_mode(source="ncu", clocks_locked=True)
-        b = measurement_context.describe_collection_mode(source="ncu", clocks_locked=True)
+        # Clocks must be supplied: an unrecorded clock no longer passes silently.
+        a = measurement_context.describe_collection_mode(
+            source="ncu", clocks_locked=True, sm_clock_hz=1.7e9, gpc_clock_hz=1.7e9)
+        b = measurement_context.describe_collection_mode(
+            source="ncu", clocks_locked=True, sm_clock_hz=1.7e9, gpc_clock_hz=1.7e9)
         out = measurement_context.compare_measurements(
             a, b, baseline_value=2.0, candidate_value=1.5)
         assert out["comparable"] is True
@@ -3273,8 +3276,11 @@ class TestWarpSpecializedKernelsAreNotJudgedAsCommodity:
     _WS = {"sm__inst_executed_pipe_tensor_op_gmma.avg.pct_of_peak_sustained_active": 30.0}
 
     def test_full_register_file_is_recognised_as_deliberate(self):
+        # Near the cap AND warp-specialized: an ordinary kernel sitting near its
+        # cap is still spilling, so the excuse is gated on the design.
         view = ncu_diagnostics.MetricView(
-            {"launch__registers_per_thread": 168.0, "launch__block_size": 384.0})
+            {"launch__registers_per_thread": 168.0, "launch__block_size": 384.0,
+             **self._WS})
         out = ncu_diagnostics._registers_are_deliberate(view)
         assert out is not None
         assert out["registers_used"] == 64512
@@ -3293,7 +3299,8 @@ class TestWarpSpecializedKernelsAreNotJudgedAsCommodity:
         careless = ncu_diagnostics.analyze_spilling(ncu_diagnostics.MetricView(
             {**base, "launch__registers_per_thread": 40.0, "launch__block_size": 256.0}))
         deliberate = ncu_diagnostics.analyze_spilling(ncu_diagnostics.MetricView(
-            {**base, "launch__registers_per_thread": 168.0, "launch__block_size": 384.0}))
+            {**base, "launch__registers_per_thread": 168.0, "launch__block_size": 384.0,
+             **self._WS}))
         assert careless["findings"][0].severity == "high"
         assert deliberate["findings"][0].severity != "high"
         assert "design question, not a defect" in deliberate["findings"][0].summary
@@ -3402,4 +3409,153 @@ class TestLinkageDedupUsesContributingReasons:
         text = ncu_report_tools.diagnose_result_to_markdown(
             {"kernels": [{"kernel_name": "k",
                           "signal_to_source": self._link(["register_spilling"])}]})
-        assert "carried no samples here" in text
+        assert "carried no samples in this kernel" in text
+
+
+class TestVerificationRegressions:
+    """Cases an adversarial verification found the previous fixes got wrong.
+
+    The suite that passed before this class exercised only the inputs that
+    worked: a dedup fixture where the extra reason was exactly zero, and
+    `compare_measurements` only ever on a duration.
+    """
+
+    # --- dedup must not fold a reason that is real but spread thin ----------
+    _SPREAD = {
+        "available": True,
+        "stall_reasons": {"LONG_SCOREBOARD": 600, "LG_THROTTLE": 300},
+        "source_lines": (
+            [{"file_name": "k.cu", "line": i, "samples": 200,
+              "stall_reasons": {"LONG_SCOREBOARD": 200}} for i in (1, 2, 3)]
+            + [{"file_name": "k.cu", "line": 10 + i, "samples": 30,
+                "stall_reasons": {"LG_THROTTLE": 30}} for i in range(10)]
+        ),
+    }
+
+    def test_reason_below_the_display_cut_still_distinguishes(self):
+        """LG_THROTTLE is a third of the samples, spread under the top-K cut."""
+        out = source_correlation.link_findings_to_source(
+            [{"category": "stall_long_scoreboard", "title": "LS"},
+             {"category": "register_spilling", "title": "SPILL"}],
+            None, attribution=self._SPREAD, top_k=3)
+        assert len(out["linked"]) == 2, "distinct mechanisms must not be folded"
+        assert out["duplicate_links"] == []
+
+    def test_declared_but_absent_means_absent_from_the_kernel(self):
+        out = source_correlation.link_findings_to_source(
+            [{"category": "register_spilling", "title": "SPILL"}],
+            None, attribution=self._SPREAD, top_k=3)
+        entry = out["linked"][0]
+        assert entry["declared_but_absent"] == [], (
+            "LG_THROTTLE carried 300 samples; calling it absent is a false claim")
+        assert entry["contributing_below_cut"] == ["LG_THROTTLE"]
+
+    def test_dedup_is_independent_of_the_display_cut(self):
+        keys = []
+        for k in (2, 3, 5):
+            out = source_correlation.link_findings_to_source(
+                [{"category": "stall_long_scoreboard", "title": "LS"},
+                 {"category": "register_spilling", "title": "SPILL"}],
+                None, attribution=self._SPREAD, top_k=k)
+            keys.append(len(out["linked"]))
+        assert len(set(keys)) == 1, f"dedup varied with top_k: {keys}"
+
+    def test_truly_zero_reason_still_folds(self):
+        zero = {"available": True,
+                "stall_reasons": {"LONG_SCOREBOARD": 1000, "LG_THROTTLE": 0},
+                "source_lines": [{"file_name": "k.cu", "line": 1, "samples": 1000,
+                                  "stall_reasons": {"LONG_SCOREBOARD": 1000}}]}
+        out = source_correlation.link_findings_to_source(
+            [{"category": "stall_long_scoreboard", "title": "LS"},
+             {"category": "register_spilling", "title": "SPILL"}],
+            None, attribution=zero)
+        assert len(out["linked"]) == 1
+
+    # --- register tolerance must be relative, and gated ---------------------
+    _WS = {"sm__inst_executed_pipe_tensor_op_gmma.avg.pct_of_peak_sustained_active": 30.0}
+
+    def test_large_block_does_not_get_a_looser_excuse(self):
+        """56 regs at block=1024 is 12.5% below the cap, not one granule."""
+        view = ncu_diagnostics.MetricView(
+            {"launch__registers_per_thread": 56.0, "launch__block_size": 1024.0,
+             **self._WS})
+        assert ncu_diagnostics._registers_are_deliberate(view) is None
+
+    def test_deliberate_requires_warp_specialization(self):
+        near_cap = {"launch__registers_per_thread": 168.0, "launch__block_size": 384.0}
+        assert ncu_diagnostics._registers_are_deliberate(
+            ncu_diagnostics.MetricView(near_cap)) is None
+        assert ncu_diagnostics._registers_are_deliberate(
+            ncu_diagnostics.MetricView({**near_cap, **self._WS})) is not None
+
+    # --- warp-specialization detection needs a threshold -------------------
+    def test_trace_tma_does_not_suppress_a_real_finding(self):
+        starved = {"smsp__warps_eligible.avg.per_cycle_active": 0.16,
+                   "smsp__warps_active.avg.per_cycle_active": 3.0}
+        trace = {"sm__pipe_tma_cycles_active.avg.pct_of_peak_sustained_active": 1e-9}
+        out = ncu_diagnostics.analyze_issue_efficiency(
+            ncu_diagnostics.MetricView({**starved, **trace}))
+        assert out["findings"], "one TMA instruction must not suppress the rule"
+
+    def test_tma_alone_is_not_warp_specialization(self):
+        tma_only = {"sm__pipe_tma_cycles_active.avg.pct_of_peak_sustained_active": 5.0}
+        assert ncu_diagnostics._is_warp_specialized(
+            ncu_diagnostics.MetricView(tma_only)) is False
+        with_tensor = {**tma_only,
+                       "sm__pipe_tensor_cycles_active.avg.pct_of_peak_sustained_active": 30.0}
+        assert ncu_diagnostics._is_warp_specialized(
+            ncu_diagnostics.MetricView(with_tensor)) is True
+
+    # --- clock correction depends on what is being compared ----------------
+    def _pair(self):
+        return (measurement_context.describe_collection_mode(
+                    source="ncu", sm_clock_hz=1.674e9, gpc_clock_hz=1.674e9),
+                measurement_context.describe_collection_mode(
+                    source="ncu", sm_clock_hz=1.789e9, gpc_clock_hz=1.789e9))
+
+    def test_byte_counts_are_not_clock_corrected(self):
+        a, b = self._pair()
+        out = measurement_context.compare_measurements(
+            a, b, baseline_value=1e9, candidate_value=1e9, metric="dram__bytes.sum")
+        assert out["comparable"] is True, "a byte count does not depend on the clock"
+        assert out.get("clock_normalised_ratio") is None
+
+    def test_throughput_is_divided_not_multiplied(self):
+        a, b = self._pair()
+        out = measurement_context.compare_measurements(
+            a, b, baseline_value=301.6, candidate_value=354.6,
+            metric="achieved_tflops")
+        assert out["metric_kind"] == "rate"
+        # 1.1757 / 1.0687 = 1.100, not 1.1757 * 1.0687 = 1.256
+        assert out["clock_normalised_ratio"] == pytest.approx(1.100, abs=0.01)
+
+    def test_duration_is_multiplied(self):
+        a, b = self._pair()
+        out = measurement_context.compare_measurements(
+            a, b, baseline_value=82464.0, candidate_value=73344.0,
+            metric="duration_ns")
+        assert out["clock_normalised_ratio"] == pytest.approx(0.951, abs=0.005)
+
+    def test_missing_clock_does_not_fail_open(self):
+        known = measurement_context.describe_collection_mode(
+            source="ncu", sm_clock_hz=1.7e9)
+        unknown = measurement_context.describe_collection_mode(source="ncu")
+        out = measurement_context.compare_measurements(
+            known, unknown, baseline_value=100.0, candidate_value=90.0,
+            metric="duration_ns")
+        assert out["comparable"] is False
+        assert any("unrecorded" in b for b in out["blockers"])
+
+    # --- closure must fire in both directions ------------------------------
+    def test_states_exceeding_their_total_are_flagged(self):
+        view = ncu_diagnostics.MetricView({
+            "smsp__average_warp_latency_per_inst_issued.ratio": 20.0,
+            "smsp__average_warps_issue_stalled_long_scoreboard_per_issue_active.ratio": 15.0,
+            "smsp__average_warps_issue_stalled_barrier_per_issue_active.ratio": 6.0,
+            "smsp__issue_active.avg.per_cycle_active": 0.1})
+        out = ncu_diagnostics.analyze_stalls(view)
+        assert out["explained_share"] > 1.02
+        finding = next(f for f in out["findings"]
+                       if "sum to more than" in f.title)
+        assert "cannot exceed their own total" in finding.summary
+        assert out["residual_cycles_per_issued_inst"] < 0

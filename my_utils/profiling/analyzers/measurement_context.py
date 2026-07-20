@@ -264,6 +264,23 @@ def describe_collection_mode(
     )
 
 
+# How a metric responds to the clock. Anything not recognised is treated as
+# clock-independent, because inventing a correction is worse than omitting one.
+_DURATION_HINTS = ("duration", "time", "latency", "elapsed_ns", "_ns", "us", "ms")
+_RATE_HINTS = ("throughput", "flops", "flop_s", "tflop", "bandwidth", "per_second",
+               "gbps", "bytes_per", "rate")
+
+
+def _metric_kind(metric: str) -> str:
+    """`duration`, `rate`, or `clock_independent`."""
+    low = str(metric or "").lower()
+    if any(h in low for h in _RATE_HINTS):
+        return "rate"
+    if any(h in low for h in _DURATION_HINTS):
+        return "duration"
+    return "clock_independent"
+
+
 def compare_measurements(
     baseline: MeasurementContext,
     candidate: MeasurementContext,
@@ -314,18 +331,33 @@ def compare_measurements(
     # Duration measured at two different clocks is two different quantities.
     # On a real pair of reports the wall-clock gap was 12.4% and the
     # cycle-normalised gap 5.2% -- half the apparent speedup was the clock.
+    # How the clock enters depends on what is being compared. A duration scales
+    # inversely with the clock; a throughput scales with it; a byte count and a
+    # cycle count do not depend on it at all. Applying the duration correction
+    # to everything invented a 6.9% difference between two runs that moved
+    # byte-identical traffic, and inverted the correction for throughputs.
+    kind = _metric_kind(metric)
     clock_ratio = None
     if baseline.sm_clock_hz and candidate.sm_clock_hz:
         clock_ratio = candidate.sm_clock_hz / baseline.sm_clock_hz
-        if abs(clock_ratio - 1.0) > 0.01:
+        if kind == "clock_independent":
+            pass    # bytes, counts, cycles: the clock does not enter
+        elif abs(clock_ratio - 1.0) > 0.01:
             blockers.append(
                 f"the two measurements ran at different SM clocks "
                 f"({baseline.sm_clock_hz / 1e6:.0f} vs "
                 f"{candidate.sm_clock_hz / 1e6:.0f} MHz, {(clock_ratio - 1) * 100:+.1f}%). "
-                "A duration ratio therefore mixes the change in the code with the "
-                "change in the clock; compare cycles, or lock the clock and "
-                "re-measure"
+                f"A {kind.replace('_', '-')} ratio therefore mixes the change in the "
+                "code with the change in the clock; compare cycles, or lock the "
+                "clock and re-measure"
             )
+    elif not (baseline.sm_clock_hz and candidate.sm_clock_hz) and kind != "clock_independent":
+        # Failing open here let a comparison through with no clock evidence at
+        # all, which is the case most likely to be confounded.
+        blockers.append(
+            "the SM clock is unrecorded on at least one side, so whether the two "
+            "ran at the same frequency is unknown"
+        )
 
     result: Dict[str, Any] = {
         "metric": metric,
@@ -346,10 +378,13 @@ def compare_measurements(
         # The raw ratio is still returned under a name that cannot be mistaken
         # for a result, because someone will want it for debugging.
         result["uncomparable_raw_ratio"] = ratio
-        if clock_ratio and ratio:
-            # The part of the difference that is not the clock.
+        if clock_ratio and ratio and kind != "clock_independent":
+            # A duration shrinks as the clock rises, so multiply; a throughput
+            # grows with it, so divide.
             result["clock_ratio"] = clock_ratio
-            result["clock_normalised_ratio"] = ratio * clock_ratio
+            result["metric_kind"] = kind
+            result["clock_normalised_ratio"] = (
+                ratio * clock_ratio if kind == "duration" else ratio / clock_ratio)
             result["verdict"] += (
                 f" Normalising for the clock leaves "
                 f"{ratio * clock_ratio:.3f}x of the {ratio:.3f}x observed."
