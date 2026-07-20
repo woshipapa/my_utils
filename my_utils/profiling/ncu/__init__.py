@@ -8,6 +8,17 @@ from .shipped_rules import (
     reconcile_with_shipped_rules,
     shipped_rules_to_findings,
 )
+from .source_correlation import (
+    attribute_stalls_to_source,
+    correlate_metric_to_source,
+    pc_sampling_timeline,
+    source_availability,
+    summarize_warp_samples,
+)
+from .sampling_validity import (
+    check_pc_sampling_validity,
+    check_pm_sampling_validity,
+)
 from .section_index import (
     audit_catalog_against_sections,
     axis_for_metric_name,
@@ -38,4 +49,11 @@ __all__ = [
     "decode_metric_name",
     "denominator_of",
     "group_report_metrics",
+    "attribute_stalls_to_source",
+    "correlate_metric_to_source",
+    "pc_sampling_timeline",
+    "source_availability",
+    "summarize_warp_samples",
+    "check_pc_sampling_validity",
+    "check_pm_sampling_validity",
 ]

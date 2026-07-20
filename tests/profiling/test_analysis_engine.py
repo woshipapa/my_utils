@@ -1615,3 +1615,290 @@ class TestCatalogAgainstShippedSections:
         # Section-backed names must dominate; a large unknown set means drift.
         assert len(audit["section_backed"]) > len(audit["unknown"])
         assert audit["shipped_metric_count"] > 500
+
+
+# ---------------------------------------------------------------------------
+# Sampling validity
+# ---------------------------------------------------------------------------
+
+sampling_validity = _load("ncu.sampling_validity", "ncu/sampling_validity.py")
+
+
+class TestPcSamplingValidity:
+    """Mirrors NVIDIA's PCSamplingData rule; biased samples must not be used."""
+
+    def test_dropped_samples_block_attribution(self):
+        out = sampling_validity.check_pc_sampling_validity(
+            sample_count=5000, interval_cycles=1000, dropped_bytes=4096)
+        assert out["usable"] is False
+        assert "stall_attribution" in out["blocked_conclusions"]
+        issue = next(i for i in out["issues"] if i["key"] == "pcsamp_dropped_samples")
+        assert "--warp-sampling-interval" in issue["remedy"]
+
+    def test_buffer_overflow_blocks_attribution(self):
+        out = sampling_validity.check_pc_sampling_validity(
+            sample_count=5000, interval_cycles=1000, buffer_overflow=1,
+            buffer_size_bytes=1 << 20)
+        assert out["usable"] is False
+        assert "--warp-sampling-buffer-size" in out["issues"][0]["remedy"]
+
+    def test_zero_samples_explains_short_kernel(self):
+        out = sampling_validity.check_pc_sampling_validity(
+            sample_count=0, interval_cycles=100000, kernel_duration_cycles=5000)
+        issue = next(i for i in out["issues"] if i["key"] == "pcsamp_no_samples")
+        assert "shorter than" in issue["detail"]
+
+    def test_few_samples_block_ranking_but_not_distribution(self):
+        out = sampling_validity.check_pc_sampling_validity(
+            sample_count=40, interval_cycles=1000)
+        assert "hot_line_ranking" in out["blocked_conclusions"]
+        assert "sampled_stall_distribution" not in out["blocked_conclusions"]
+
+    def test_healthy_sampling_is_usable(self):
+        out = sampling_validity.check_pc_sampling_validity(
+            sample_count=50000, interval_cycles=1000, kernel_duration_cycles=10_000_000)
+        assert out["usable"] is True and out["blocked_conclusions"] == []
+
+    def test_absent_interval_is_not_reported_as_valid(self):
+        out = sampling_validity.check_pc_sampling_validity(sample_count=100)
+        assert out["checked"] is False and out["usable"] is None
+
+
+class TestPmSamplingValidity:
+    """Mirrors NVIDIA's PMSamplingData rule, including its architecture gate."""
+
+    def test_unsupported_architecture_is_reported(self):
+        out = sampling_validity.check_pm_sampling_validity(cc_major=7, cc_minor=0)
+        assert out["supported"] is False
+        assert "pm_sampling_timeline" in out["blocked_conclusions"]
+
+    def test_interval_longer_than_workload_blocks_the_timeline(self):
+        out = sampling_validity.check_pm_sampling_validity(
+            cc_major=9, cc_minor=0, interval=2_000_000, duration=1_000_000)
+        assert out["usable"] is False
+        assert out["interval_duration_ratio"] == pytest.approx(2.0)
+
+    def test_interval_over_ten_percent_is_flagged(self):
+        out = sampling_validity.check_pm_sampling_validity(
+            cc_major=9, cc_minor=0, interval=200_000, duration=1_000_000)
+        assert out["usable"] is False
+        assert "phase_detection" in out["blocked_conclusions"]
+
+    def test_floor_interval_advises_longer_workload_not_smaller_interval(self):
+        out = sampling_validity.check_pm_sampling_validity(
+            cc_major=9, cc_minor=0, interval=500, duration=600)
+        remedy = out["issues"][0]["remedy"]
+        assert "longer-running" in remedy
+
+    def test_fine_interval_is_usable(self):
+        out = sampling_validity.check_pm_sampling_validity(
+            cc_major=9, cc_minor=0, interval=1000, duration=10_000_000)
+        assert out["usable"] is True
+        assert out["estimated_sample_count"] == pytest.approx(10000)
+
+
+# ---------------------------------------------------------------------------
+# Source correlation
+# ---------------------------------------------------------------------------
+
+source_correlation = _load("ncu.source_correlation", "ncu/source_correlation.py")
+
+
+class _FakeStall:
+    def __init__(self, name):
+        self.name = name
+
+
+class _FakeMetric:
+    """Mirrors the IMetric surface verified against ncu_report 2026.1.1."""
+
+    def __init__(self, values, correlation=None):
+        self._values = values
+        self._correlation = correlation
+
+    def num_instances(self):
+        return len(self._values)
+
+    def as_double(self, index):
+        return float(self._values[index])
+
+    def has_correlation_ids(self):
+        return self._correlation is not None
+
+    def correlation_ids(self):
+        return _FakeMetric(self._correlation) if self._correlation else None
+
+
+class _FakeAction:
+    """Mirrors the IAction surface: source_info/sass_by_pc/source_files/..."""
+
+    def __init__(self, *, metrics=None, sources=None, lines=None,
+                 sass=None, samples=None):
+        self._metrics = metrics or {}
+        self._sources = sources or {}
+        self._lines = lines or {}       # address -> (file, line)
+        self._sass = sass or {}
+        self._samples = samples or []
+
+    def metric_names(self):
+        return list(self._metrics)
+
+    def metric_by_name(self, name):
+        return self._metrics.get(name)
+
+    def source_files(self):
+        return dict(self._sources)
+
+    def source_info(self, address):
+        entry = self._lines.get(address)
+        if entry is None:
+            return None
+        file_name, line = entry
+
+        class _Info:
+            def file_name(self_inner):
+                return file_name
+
+            def line(self_inner):
+                return line
+
+        return _Info()
+
+    def sass_by_pc(self, address):
+        return self._sass.get(address, "")
+
+    def ptx_by_pc(self, address):
+        return ""
+
+    def timed_warp_samples(self):
+        return list(self._samples)
+
+
+class TestSourceAvailability:
+    def test_basic_set_is_diagnosed_as_the_cause(self):
+        """The most common cause: a bare ncu run collects no source metrics."""
+        report = source_correlation.source_availability(_FakeAction())
+        assert report["source_correlation_possible"] is False
+        assert any("basic" in r and "SourceCounters" in r
+                   for r in report["reasons_unavailable"])
+
+    def test_missing_lineinfo_is_distinguished_from_missing_section(self):
+        action = _FakeAction(metrics={
+            "sass__inst_executed": _FakeMetric([1.0], correlation=[0x10]),
+        })
+        report = source_correlation.source_availability(action)
+        assert report["source_correlation_possible"] is True
+        assert any("-lineinfo" in r for r in report["reasons_unavailable"])
+
+    def test_empty_file_content_suggests_import_source(self):
+        action = _FakeAction(
+            metrics={"sass__inst_executed": _FakeMetric([1.0], correlation=[0x10])},
+            sources={"kernel.cu": ""},
+        )
+        report = source_correlation.source_availability(action)
+        assert any("--import-source" in r for r in report["reasons_unavailable"])
+
+
+class TestMetricToSourceCorrelation:
+    def _action(self):
+        return _FakeAction(
+            metrics={"sass__inst_executed": _FakeMetric(
+                [10.0, 90.0, 5.0], correlation=[0x10, 0x20, 0x30])},
+            sources={"kernel.cu": "line one\nline two\nline three\n"},
+            lines={0x10: ("kernel.cu", 1), 0x20: ("kernel.cu", 2)},
+            sass={0x10: "LDG.E R0", 0x20: "FFMA R2, R0, R1", 0x30: "EXIT"},
+        )
+
+    def test_hot_line_is_ranked_first_with_its_source_text(self):
+        out = source_correlation.correlate_metric_to_source(
+            self._action(), "sass__inst_executed")
+        assert out["available"] is True
+        top = out["source_lines"][0]
+        assert top["line"] == 2 and top["source_text"] == "line two"
+        assert "FFMA" in top["sass_samples"][0]
+
+    def test_unlocated_instructions_are_counted_not_hidden(self):
+        out = source_correlation.correlate_metric_to_source(
+            self._action(), "sass__inst_executed")
+        assert out["unlocated_value"] == pytest.approx(5.0)
+        assert "could not be tied to a source line" in out["note"]
+
+    def test_whole_kernel_metric_says_so_rather_than_returning_empty(self):
+        action = _FakeAction(metrics={"sm__throughput": _FakeMetric([50.0])})
+        out = source_correlation.correlate_metric_to_source(action, "sm__throughput")
+        assert out["available"] is False
+        assert "whole-kernel total" in out["reason"]
+
+    def test_absent_metric_is_reported(self):
+        out = source_correlation.correlate_metric_to_source(_FakeAction(), "nope")
+        assert out["available"] is False and "not in this report" in out["reason"]
+
+
+class TestStallAttribution:
+    def _action(self):
+        samples = (
+            [{"timestamp": 1000 + i, "pc": 0x20,
+              "stall_reason": _FakeStall("LONG_SCOREBOARD"), "not_issued": True}
+             for i in range(30)]
+            + [{"timestamp": 2000 + i, "pc": 0x10,
+                "stall_reason": _FakeStall("WAIT"), "not_issued": False}
+               for i in range(5)]
+        )
+        return _FakeAction(
+            sources={"kernel.cu": "load here\ncompute here\n"},
+            lines={0x10: ("kernel.cu", 1), 0x20: ("kernel.cu", 2)},
+            sass={0x20: "LDG.E.128 R4"},
+            samples=samples,
+        )
+
+    def test_stalls_are_attributed_to_the_hottest_line(self):
+        out = source_correlation.attribute_stalls_to_source(self._action())
+        assert out["available"] is True
+        top = out["source_lines"][0]
+        assert top["line"] == 2
+        assert top["dominant_stall_reason"] == "LONG_SCOREBOARD"
+        assert top["source_text"] == "compute here"
+
+    def test_sample_count_confidence_is_stated(self):
+        out = source_correlation.attribute_stalls_to_source(self._action())
+        assert "statistical" in out["confidence_note"]
+        assert out["total_samples"] == 35
+
+    def test_missing_samples_are_explained(self):
+        out = source_correlation.attribute_stalls_to_source(_FakeAction())
+        assert out["available"] is False and "basic" in out["reason"]
+
+
+class TestPcSamplingTimeline:
+    def test_phase_change_is_detected_not_averaged_away(self):
+        """A kernel memory-bound then compute-bound must not average to 'mediocre'."""
+        samples = (
+            [{"timestamp": i * 1000, "pc": 0x10,
+              "stall_reason": _FakeStall("LONG_SCOREBOARD"), "not_issued": True}
+             for i in range(100)]
+            + [{"timestamp": 200_000 + i * 1000, "pc": 0x20,
+                "stall_reason": _FakeStall("MATH_PIPE_THROTTLE"), "not_issued": False}
+               for i in range(100)]
+        )
+        out = source_correlation.pc_sampling_timeline(
+            _FakeAction(samples=samples), bucket_ns=50_000)
+        assert out["available"] is True
+        assert out["phase_change_count"] >= 1
+        assert "LONG_SCOREBOARD" in out["phase_sequence"]
+        assert "MATH_PIPE_THROTTLE" in out["phase_sequence"]
+        assert "wrong fix for each phase" in out["note"]
+
+    def test_uniform_kernel_says_the_average_is_representative(self):
+        samples = [{"timestamp": i * 1000, "pc": 0x10,
+                    "stall_reason": _FakeStall("WAIT"), "not_issued": False}
+                   for i in range(200)]
+        out = source_correlation.pc_sampling_timeline(
+            _FakeAction(samples=samples), bucket_ns=50_000)
+        assert out["phase_change_count"] == 0
+        assert "representative" in out["note"]
+
+    def test_summary_names_its_relationship_to_warpstatestats(self):
+        samples = [{"timestamp": 1, "pc": 0x10,
+                    "stall_reason": _FakeStall("BARRIER"), "not_issued": True}]
+        out = source_correlation.summarize_warp_samples(_FakeAction(samples=samples))
+        assert "WarpStateStats" in out["comparison_note"]

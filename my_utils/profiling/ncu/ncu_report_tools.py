@@ -1514,6 +1514,121 @@ class NcuReportSkillEngine:
     def _skill_rule_results(self, *, kernel_like: str = "%", top_k: int = 200) -> Dict[str, object]:
         return self._rule_payload(kernel_like=kernel_like, top_k=top_k)
 
+    def _skill_source_attribution(
+        self, *, kernel_like: str = "%", top_k: int = 15, metric_like: str = "",
+    ) -> Dict[str, object]:
+        """Attribute stalls and instruction counts to source lines.
+
+        This is the only analysis in the package that answers *where* rather than
+        *what*, which for a fused kernel is usually the whole question: knowing
+        the kernel stalls on long-scoreboard does not say which of the fused
+        stages is stalling, and no whole-kernel counter can.
+
+        Everything here is gated on sampling validity first. Dropped samples and
+        buffer overflows bias the distribution toward whatever ran early, so a
+        ranking built on them is confidently wrong rather than merely noisy.
+        """
+        from .sampling_validity import check_pc_sampling_validity
+        from .source_correlation import (
+            attribute_stalls_to_source,
+            correlate_metric_to_source,
+            pc_sampling_timeline,
+            source_availability,
+            summarize_warp_samples,
+        )
+
+        mod = _load_ncu_report_module(self._ncu_report_module)
+        ctx = mod.load_report(str(self.report_path))
+
+        out: List[Dict[str, object]] = []
+        for range_obj in _iter_ranges(ctx):
+            for action in _iter_actions(range_obj):
+                name = str(_maybe_call(action, "name", "") or "")
+                if not _like_match(name, kernel_like):
+                    continue
+
+                availability = source_availability(action)
+
+                def _metric(key: str, _action: object = action) -> Optional[float]:
+                    # _maybe_call takes no call arguments, and metric_by_name
+                    # needs one, so this reads the attribute directly.
+                    getter = getattr(_action, "metric_by_name", None)
+                    if getter is None:
+                        return None
+                    try:
+                        metric = getter(key)
+                    except Exception:
+                        return None
+                    if metric is None:
+                        return None
+                    value = _maybe_call(metric, "as_double", None)
+                    if value is None:
+                        value = _maybe_call(metric, "as_uint64", None)
+                    try:
+                        return float(value) if value is not None else None
+                    except (TypeError, ValueError):
+                        return None
+
+                validity = check_pc_sampling_validity(
+                    sample_count=_metric("smsp__pcsamp_sample_count"),
+                    interval_cycles=_metric("smsp__pcsamp_interval_cycles"),
+                    kernel_duration_cycles=_metric("gpc__cycles_elapsed.max"),
+                    dropped_bytes=_metric("smsp__pcsamp_dropped_bytes"),
+                    buffer_overflow=_metric("smsp__pcsamp_buffer_overflow"),
+                    buffer_size_bytes=_metric("smsp__pcsamp_buffer_size_bytes"),
+                )
+                blocked = set(validity.get("blocked_conclusions") or ())
+
+                entry: Dict[str, object] = {
+                    "kernel_name": name,
+                    "availability": availability,
+                    "sampling_validity": validity,
+                    "warp_sample_summary": summarize_warp_samples(action),
+                }
+
+                # Each analysis is withheld individually: too few samples blocks
+                # ranking lines against each other but not the overall
+                # distribution, and saying so is more useful than one verdict.
+                if "hot_line_ranking" in blocked or "stall_attribution" in blocked:
+                    entry["stall_attribution"] = {
+                        "available": False,
+                        "withheld_because": sorted(blocked),
+                        "reason": (
+                            "Source-line ranking was withheld: the PC samples in this "
+                            "report cannot support it. See sampling_validity."
+                        ),
+                    }
+                else:
+                    entry["stall_attribution"] = attribute_stalls_to_source(
+                        action, top_k=int(top_k))
+
+                if "pc_sampling_timeline" in blocked:
+                    entry["timeline"] = {
+                        "available": False,
+                        "withheld_because": sorted(blocked),
+                    }
+                else:
+                    entry["timeline"] = pc_sampling_timeline(action)
+
+                if metric_like:
+                    entry["metric_attribution"] = correlate_metric_to_source(
+                        action, metric_like, top_k=int(top_k))
+
+                out.append(entry)
+
+        return {
+            "kernels": out,
+            "kernel_count": len(out),
+            "note": (
+                "Empty results here mean source data was not collected, not that the "
+                "kernel has no hot lines. A bare `ncu` run uses the `basic` set, which "
+                "does not include SourceCounters; use --set full or "
+                "--section SourceCounters, and build with -lineinfo."
+                if not any(k["availability"]["source_correlation_possible"] for k in out)
+                else ""
+            ),
+        }
+
     def _skill_bottleneck_report(
         self,
         *,
@@ -1611,6 +1726,20 @@ class NcuReportSkillEngine:
                     SkillParam("top_k", "top rows limit", "int", False, 200),
                 ],
                 run_fn=self._skill_rule_results,
+            ),
+            "source_attribution": ReportSkill(
+                name="source_attribution",
+                title="Source Attribution",
+                description=(
+                    "Attribute stalls and metrics to source lines and SASS, gated on "
+                    "PC-sampling validity."
+                ),
+                params=[
+                    SkillParam("kernel_like", "kernel name filter", "str", False, "%"),
+                    SkillParam("top_k", "max source lines", "int", False, 15),
+                    SkillParam("metric_like", "extra metric to attribute", "str", False, ""),
+                ],
+                run_fn=self._skill_source_attribution,
             ),
             "bottleneck_report": ReportSkill(
                 name="bottleneck_report",

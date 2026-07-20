@@ -545,7 +545,35 @@ _CATALOG_LIST: List[MetricSpec] = [
     _m("max_warps_per_sm", ["device__attribute_max_warps_per_multiprocessor"], "LaunchStats", "device", unit="warp"),
 
     # -- PC sampling -------------------------------------------------------
-    _m("pcsamp_sample_count", ["smsp__pcsamp_sample_count"], "SourceCounters", "sampling", unit="sample"),
+    _m("pcsamp_sample_count", ["smsp__pcsamp_sample_count"], "SourceCounters", "sampling", unit="sample",
+       description="PC samples collected. Zero means sampling ran but caught nothing, "
+                   "commonly because the kernel is shorter than one sampling interval."),
+    # The remaining PC-sampling counters are what NVIDIA's own PCSamplingData
+    # rule reads to decide whether the samples are usable at all. Without them a
+    # biased sample set is indistinguishable from a sound one.
+    #
+    # These four are requested by the RULE, not by any section's Metrics block,
+    # so collecting SourceCounters does NOT collect them -- they need an explicit
+    # --metrics request. Verified against the shipped PCSamplingData.py, where
+    # they appear as Importance.OPTIONAL MetricRequests.
+    _m("pcsamp_interval_cycles", ["smsp__pcsamp_interval_cycles"], "SourceCounters", "sampling",
+       unit="cycle", description="Cycles between PC samples. Compare against kernel duration."),
+    _m("pcsamp_buffer_overflow", ["smsp__pcsamp_buffer_overflow"], "SourceCounters", "sampling",
+       description="Non-zero means samples after the overflow point are missing, biasing "
+                   "the distribution toward early execution. Raise --warp-sampling-buffer-size."),
+    _m("pcsamp_buffer_size_bytes", ["smsp__pcsamp_buffer_size_bytes"], "SourceCounters", "sampling",
+       unit="byte", description="Size of the PC-sampling buffer that was used."),
+    _m("pcsamp_dropped_bytes", ["smsp__pcsamp_dropped_bytes"], "SourceCounters", "sampling",
+       unit="byte", description="Non-zero means samples were dropped under backpressure. Drops "
+                                "correlate with the busiest periods, so the hottest code is the "
+                                "most under-represented. Raise --warp-sampling-interval."),
+    # PM sampling: a timeline of metrics across the workload, not a total.
+    _m("pmsampler_interval_time", ["profiler__pmsampler_interval_time"], "PmSampling", "sampling",
+       description="PM sampling interval, time-based (CC > 8.0)."),
+    _m("pmsampler_interval_cycles", ["profiler__pmsampler_interval_cycles"], "PmSampling", "sampling",
+       unit="cycle", description="PM sampling interval, cycle-based (CC 7.5-8.0)."),
+    _m("pmsampler_pass_groups", ["profiler__pmsampler_pass_groups"], "PmSampling", "sampling",
+       description="Number of pass groups PM sampling needed. More passes means more replay."),
 ]
 
 METRIC_CATALOG: Dict[str, MetricSpec] = {spec.key: spec for spec in _CATALOG_LIST}

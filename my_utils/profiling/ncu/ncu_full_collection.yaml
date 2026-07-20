@@ -40,8 +40,8 @@
 ## - Build with `-lineinfo` (nvcc) or `--generate-line-info` to make SourceCounters
 ##   attributable to source lines rather than SASS addresses only.
 ## - PM sampling contends for the same counter hardware as full-section
-##   collection. Collect it in a SEPARATE run (see ncu_pmsampling.yaml usage note
-##   at the bottom) rather than adding it here.
+##   collection. Collect it in a SEPARATE run (see the usage note at the bottom
+##   of this file) rather than adding it here.
 
 output_dir: ./logs/ncu
 output_prefix: ncu_full_collection
@@ -80,6 +80,18 @@ ncu:
     - "regex:sm__pipe_.*_cycles_active.avg.pct_of_peak_sustained_active"
     - "regex:smsp__sass_thread_inst_executed_op_[dhf](add|mul|fma)_pred_on.sum"
     - "regex:launch__occupancy_limit_.*"
+
+    # PC-sampling validity counters. Requested by NVIDIA's own PCSamplingData
+    # *rule*, not by any section's Metrics block, so collecting SourceCounters
+    # does NOT collect them. Without these, a sample set biased by dropped
+    # samples or a buffer overflow is indistinguishable from a sound one -- and
+    # drops correlate with the busiest periods, so the hottest code is exactly
+    # what goes missing. Verified against the shipped PCSamplingData.py.
+    - "smsp__pcsamp_sample_count"
+    - "smsp__pcsamp_interval_cycles"
+    - "smsp__pcsamp_buffer_overflow"
+    - "smsp__pcsamp_buffer_size_bytes"
+    - "smsp__pcsamp_dropped_bytes"
     - "breakdown:sm__throughput.avg.pct_of_peak_sustained_elapsed"
     - "breakdown:gpu__compute_memory_throughput.avg.pct_of_peak_sustained_elapsed"
 
