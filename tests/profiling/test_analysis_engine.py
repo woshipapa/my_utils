@@ -926,3 +926,33 @@ class TestShapeKeyedGrouping:
         g = trace_quality.group_kernels_by_shape(launches)
         assert g["non_stationary"]
         assert "single" in g["warning"]
+
+
+class TestCaveatsReachTheFindingsList:
+    """A caveat that stays inside its section is invisible to every caller."""
+
+    def test_incomplete_measurement_surfaces(self):
+        # CC 10.0 without the packed-FP32 counters: the FP32 figure is halved,
+        # and a caller reading only `findings` must still learn that.
+        metrics = {
+            "gpu__time_duration.sum": 1e6,
+            "dram__bytes.sum": 1e8,
+            "smsp__sass_thread_inst_executed_op_ffma_pred_on.sum": 1e9,
+            "device__attribute_compute_capability_major": 10,
+            "device__attribute_compute_capability_minor": 0,
+            "sm__throughput.avg.pct_of_peak_sustained_elapsed": 70.0,
+            "gpu__compute_memory_throughput.avg.pct_of_peak_sustained_elapsed": 30.0,
+        }
+        result = ncu_diagnostics.diagnose_kernel(metrics, kernel_name="fused")
+        assert any(f["category"] == "measurement_caveat" for f in result["findings"]), \
+            "roofline caveat never reached the findings list"
+        assert result["sections"]["roofline"]["packed_fp32_applied"] is False
+
+    def test_no_spurious_caveat_when_complete(self):
+        metrics = {
+            "gpu__time_duration.sum": 1e6,
+            "dram__bytes.sum": 1e8,
+            "smsp__sass_thread_inst_executed_op_ffma_pred_on.sum": 1e9,
+        }
+        result = ncu_diagnostics.diagnose_kernel(metrics, kernel_name="fused")
+        assert not any(f["category"] == "measurement_caveat" for f in result["findings"])

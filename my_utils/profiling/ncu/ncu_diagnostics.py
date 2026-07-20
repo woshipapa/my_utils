@@ -1533,8 +1533,24 @@ def diagnose_kernel(
     }
 
     findings: List[Finding] = []
-    for section in sections.values():
-        findings.extend(section.get("findings", []) if isinstance(section, dict) else [])
+    for section_name, section in sections.items():
+        if not isinstance(section, dict):
+            continue
+        findings.extend(section.get("findings", []))
+        # A caveat that stays inside its section is invisible: callers read the
+        # findings list. A measurement known to be wrong must appear there, or a
+        # silently halved FP32 figure reads as a clean result.
+        for caveat in section.get("caveats") or ():
+            findings.append(Finding(
+                category="measurement_caveat",
+                title=f"{section_name} measurement is known to be incomplete",
+                summary=str(caveat),
+                severity="medium",
+                confidence="high",
+                evidence={"section": section_name},
+                actions=("Collect the missing counters before using this number.",),
+                source="heuristic",
+            ))
     # Route the classification through the evidence layer so a name that
     # disagrees with the counters is reported as a contradiction rather than
     # silently winning.
