@@ -31,7 +31,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from typing import Dict, Iterable, List, Mapping, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -512,6 +512,64 @@ def analyze_communication(
             for r in top_ops
         ],
         "issues": issues,
+        "bandwidth_efficiency": _collective_bandwidth_coverage(nccl_rows),
+    }
+
+
+def _collective_bandwidth_coverage(nccl_rows: List[Dict]) -> Dict:
+    """State plainly that bus bandwidth is not measurable from this data.
+
+    The only honest answer here is a negative one. Grading a collective needs
+    algorithmic bandwidth (message bytes / duration) converted to bus bandwidth
+    by a factor that depends on the collective and the rank count -- for
+    all-reduce, ``2(n-1)/n``. The nccl_breakdown table carries kernel names and
+    durations and nothing else: no message size, no rank count.
+
+    Reporting "communication looks fine" from timing alone would be inventing a
+    verdict. A collective moving a tenth of the bytes it should, at a tenth of
+    achievable bandwidth, takes exactly as long as a healthy one -- duration
+    cannot distinguish them. So this names what is missing and how to get it.
+
+    :func:`~my_utils.profiling.analyzers.nccl_bandwidth.analyze_collective` does
+    the grading as soon as sizes are available from any of the sources below.
+    """
+    collectives: Dict[str, float] = {}
+    for row in nccl_rows or ():
+        name = str(row.get("kernel_name") or "")
+        low = name.lower()
+        for kind in ("allreduce", "allgather", "reducescatter", "broadcast",
+                     "reduce", "alltoall", "sendrecv"):
+            if kind in low.replace("_", ""):
+                collectives[kind] = collectives.get(kind, 0.0) + _f(row.get("total_ms"))
+                break
+
+    return {
+        "measurable": False,
+        "algbw_gbps": None,
+        "busbw_gbps": None,
+        "efficiency": None,
+        "collective_time_ms_by_kind": {k: round(v, 3) for k, v in sorted(collectives.items())},
+        "reason": (
+            "Bus bandwidth needs message bytes and rank count; the NCCL kernel table "
+            "records neither. Kernel duration alone cannot separate a collective that "
+            "is slow from one that is simply large, so no efficiency verdict is given "
+            "here rather than a guessed one."
+        ),
+        "how_to_measure": (
+            "Any one of: (1) NCCL flight recorder "
+            "(TORCH_NCCL_TRACE_BUFFER_SIZE=<n>), which records size and entry time per "
+            "collective; (2) NVTX ranges carrying the message size around each "
+            "collective; (3) a matching nccl-tests run for the same shapes and rank "
+            "count. Feed any of these to analyzers.nccl_bandwidth.analyze_collective, "
+            "which converts algbw to busbw with the per-collective factor and grades "
+            "it against the interconnect ceiling."
+        ),
+        "caveat": (
+            "Collective kinds above are read from kernel symbols. NCCL's launch stubs "
+            "collapse many device functions onto few kernel symbols, so the symbol is "
+            "reliable for the collective kind but NOT for the algorithm (ring vs tree) "
+            "or protocol (LL/LL128/Simple)."
+        ),
     }
 
 
@@ -1400,6 +1458,59 @@ def _triage_from_tables(
     return verdict.to_dict() if hasattr(verdict, "to_dict") else None
 
 
+def _assess_quality(inputs: Optional[Dict], aggregate_kernels: List[Dict]) -> Dict:
+    """Run the trace-validity checks, or say clearly that they did not run."""
+    if inputs is None:
+        return {
+            "checked": False,
+            "trustworthy": None,
+            "blocked_conclusions": [],
+            "issues": [],
+            "note": (
+                "Trace-validity checks did not run: no trace_quality_inputs were "
+                "supplied. Nothing below has been gated on warmup, autotuning, CUDA "
+                "graph opacity, rank completeness, GPU-metric gaps or profiler "
+                "overhead. An unvalidated trace is not a validated one."
+            ),
+        }
+
+    from ..analyzers.trace_quality import assess_trace_quality  # local: avoid cycle
+
+    payload = dict(inputs)
+    payload.setdefault("kernel_names", [
+        str(r.get("kernel_name") or "") for r in (aggregate_kernels or ())
+    ])
+    result = assess_trace_quality(**payload)
+    result["checked"] = True
+    return result
+
+
+def _strike_blocked_recommendations(recs: Any, blocked: set) -> Any:
+    """Remove recommendations the trace cannot support, and say why.
+
+    Annotating a blocked conclusion is not enough. A reader scanning a
+    recommendation list acts on the entries, not on the caveats attached to
+    them, so an unsupportable recommendation has to leave the list.
+    """
+    if not isinstance(recs, list):
+        return recs
+    kept: List[Any] = []
+    struck: List[Any] = []
+    for rec in recs:
+        text = (rec if isinstance(rec, str) else str(rec.get("text", rec))).lower()
+        if any(term.replace("_", " ") in text or term in text for term in blocked):
+            struck.append(rec)
+        else:
+            kept.append(rec)
+    if struck:
+        kept.append(
+            "WITHHELD: " + str(len(struck)) + " recommendation(s) were removed because "
+            "the trace cannot support them (" + ", ".join(sorted(blocked)) + "). "
+            "They are not absent findings - they are unanswerable questions."
+        )
+    return kept
+
+
 def build_comprehensive_analysis(
     gpu_name: str,
     summary: Dict,
@@ -1415,9 +1526,20 @@ def build_comprehensive_analysis(
     cpu_launch_gap: List[Dict],
     short_kernels: List[Dict],
     kernel_duration_stats: List[Dict],
+    *,
+    trace_quality_inputs: Optional[Dict] = None,
 ) -> Dict:
     """
     Orchestrate the full automatic analysis and return a rich result dict.
+
+    ``trace_quality_inputs`` is forwarded to
+    :func:`~my_utils.profiling.analyzers.trace_quality.assess_trace_quality`
+    (iteration counts, report paths, expected world size, profiler overhead).
+    Whatever it reports as a blocked conclusion is stripped from the
+    recommendations below rather than merely annotated: a trace that cannot
+    support a claim should not produce that claim at all. Omitting it means the
+    validity checks did not run, which the result records explicitly -- an
+    unvalidated trace is not a validated one.
     """
     specs = lookup_gpu_specs(gpu_name)
 
@@ -1458,7 +1580,16 @@ def build_comprehensive_analysis(
     )
     attribution = analyze_kernel_attribution(aggregate_kernels)
 
+    # Validity gating. This runs last so it can strike conclusions the other
+    # analyses produced, and its verdict travels with the result: "we checked
+    # and it is sound" and "we never checked" must not read the same.
+    quality = _assess_quality(trace_quality_inputs, aggregate_kernels)
+    blocked = set(quality.get("blocked_conclusions") or ())
+    if blocked:
+        recs = _strike_blocked_recommendations(recs, blocked)
+
     return {
+        "trace_quality": quality,
         "triage": triage,
         "kernel_attribution": attribution,
         "hardware": {
