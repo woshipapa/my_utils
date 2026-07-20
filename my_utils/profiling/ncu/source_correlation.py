@@ -828,7 +828,9 @@ def attribute_stalls_to_source(
 PM_SAMPLING_PREFIX = "pmsampling:"
 
 
-def analyze_pm_sampling(action: Any, *, top_k: int = 0) -> Dict[str, Any]:
+def analyze_pm_sampling(
+    action: Any, *, top_k: int = 0, kernel_duration_ns: Optional[float] = None,
+) -> Dict[str, Any]:
     """Read the PM-sampling timeline: how utilisation moved across the kernel.
 
     PM sampling is a different instrument from PC sampling. PC sampling says
@@ -851,6 +853,14 @@ def analyze_pm_sampling(action: Any, *, top_k: int = 0) -> Dict[str, Any]:
                     "No `pmsampling:` metrics. PM sampling ships in the `full` and "
                     "`pmsampling` sets; a `basic` or `detailed` run has none."),
                 "series": []}
+
+    if kernel_duration_ns is None:
+        metric = _maybe(action, "metric_by_name", "gpu__time_duration.sum")
+        if metric is not None:
+            # `_maybe(obj, name, *args)` forwards args to the call, so a
+            # default must not be passed positionally -- `as_double(None)`
+            # raises and the duration silently came back None.
+            kernel_duration_ns = _maybe(metric, "as_double")
 
     # PM sampling is multiplexed across replay passes: `pmsampler_pass_groups`
     # says how many. Each pass re-runs the kernel with its own capture window,
@@ -888,17 +898,51 @@ def analyze_pm_sampling(action: Any, *, top_k: int = 0) -> Dict[str, Any]:
                 "reason": "`pmsampling:` metrics are present but carry no samples",
                 "series": []}
 
-    # Per pass, the kernel-active window comes from that pass's own series --
-    # they were captured together, so they share a clock.
+    # Per pass, find the window in which the kernel ran. Every pass executes
+    # the same kernel, so its duration is known and identical across passes;
+    # the sampler's own span is not, and neither is the envelope of whatever
+    # counters that pass happened to carry.
+    #
+    # Using the envelope alone fails in both directions, as the test report
+    # shows. A pass carrying DRAM counters sees activity either side of the
+    # launch and reports a 200us window for an 81us kernel. A pass carrying two
+    # sparse stall reasons (imc_miss, lg_throttle -- non-zero in 6 buckets of
+    # 193) reports 10.5us, which then inflates its own mean by eight.
+    #
+    # So the window is sized from the kernel duration and *placed* by finding
+    # the densest run of that size. Passes 0-4 of the test report land within
+    # 1.5us of the measured 81.4us that way.
+    duration_ns = kernel_duration_ns or 0.0
     pass_windows: Dict[Tuple[int, int, int], Tuple[int, int]] = {}
+    pass_window_source: Dict[Tuple[int, int, int], str] = {}
     for key, members in by_pass.items():
-        length = key[2]
-        anchor = next((v for n, v in members if "sm__cycles_active" in n), None)
-        if anchor is None:
-            anchor = [max(v[i] if i < len(v) else 0.0 for _n, v in members)
-                      for i in range(length)]
-        busy = [i for i, value in enumerate(anchor) if value > 0.0]
-        pass_windows[key] = (min(busy), max(busy)) if busy else (0, length - 1)
+        _t0, step_ns, length = key
+        envelope = [max((v[i] if i < len(v) else 0.0) for _n, v in members)
+                    for i in range(length)]
+
+        expected = int(round(duration_ns / step_ns)) if (duration_ns and step_ns) else 0
+        if 0 < expected < length:
+            # Slide a window of the kernel's own length and take the densest.
+            # Normalising per series first stops one large-magnitude counter
+            # from deciding the placement for all of them.
+            scales = [max(v) or 1.0 for _n, v in members]
+            weight = [
+                sum((v[i] if i < len(v) else 0.0) / scales[j]
+                    for j, (_n, v) in enumerate(members))
+                for i in range(length)
+            ]
+            running = sum(weight[:expected])
+            best_sum, best_lo = running, 0
+            for i in range(expected, length):
+                running += weight[i] - weight[i - expected]
+                if running > best_sum:
+                    best_sum, best_lo = running, i - expected + 1
+            pass_windows[key] = (best_lo, best_lo + expected - 1)
+            pass_window_source[key] = "kernel duration, placed by densest run"
+        else:
+            busy = [i for i, value in enumerate(envelope) if value > 0.0]
+            pass_windows[key] = (min(busy), max(busy)) if busy else (0, length - 1)
+            pass_window_source[key] = "envelope of this pass's own series"
 
     pass_ids = {key: index for index, key in enumerate(sorted(by_pass))}
 
@@ -1007,9 +1051,12 @@ def analyze_pm_sampling(action: Any, *, top_k: int = 0) -> Dict[str, Any]:
             "bucket for bucket; series from different passes cannot. Comparing "
             "them by bucket index compares different moments of different runs."
         ) if len(by_pass) > 1 else "",
-        "window_source": ("sm__cycles_active" if any(
-            "sm__cycles_active" in n for n, _v in by_pass[anchor_key])
-            else "union of that pass's own series"),
+        "window_source": pass_window_source.get(anchor_key, ""),
+        "kernel_duration_ns": kernel_duration_ns,
+        "pass_window_us": {
+            str(pass_ids[k]): round((pass_windows[k][1] - pass_windows[k][0]) * k[1] / 1000.0, 1)
+            for k in by_pass
+        },
         "denominator_note": (
             "`mean_in_active_window` divides by the buckets in which the kernel "
             f"was running, bounded per pass group ({window_len} of "

@@ -2890,7 +2890,9 @@ class TestInstructionAndPmSampling:
         assert tensor["peak"] == pytest.approx(94.0)
         assert tensor["mean_in_active_window"] > tensor["mean_all_buckets"], (
             "the window average must exceed the whole-session average")
-        assert out["window_source"] == "sm__cycles_active"
+        # The window is derived per pass; with no kernel duration in this
+        # fixture it falls back to that pass's own envelope.
+        assert "envelope" in out["window_source"] or "kernel duration" in out["window_source"]
 
     def test_duty_cycle_is_counted_inside_the_window(self):
         """Counting non-zero buckets series-wide over a window denominator
@@ -3111,3 +3113,51 @@ class TestPmSamplingDeclaredGroups:
 
     def test_absent_install_returns_empty_not_a_guess(self):
         assert section_index.pm_sampling_groups("/nonexistent/path") == {}
+
+    def test_window_is_sized_from_the_kernel_duration(self):
+        """Every pass runs the same kernel, so its duration is the same in all
+        of them. The envelope of whatever counters a pass happens to carry is
+        not: a pass holding DRAM counters sees activity either side of the
+        launch, and a pass holding two sparse stall reasons sees almost none."""
+
+        class _Sparse:
+            _PM = "pmsampling:"
+
+            class _M:
+                def __init__(self, values, t0, step):
+                    self.values, self.t0, self.step = values, t0, step
+                def num_instances(self): return len(self.values)
+                def as_double(self, i=None):
+                    return 8000.0 if i is None else float(self.values[i])
+                def as_uint64(self, i): return self.t0 + i * self.step
+                def has_correlation_ids(self): return True
+                def correlation_ids(self): return self
+
+            def metric_names(self):
+                return [self._PM + "smsp__warps_issue_stalled_imc_miss.avg"]
+
+            def metric_by_name(self, n):
+                M = _Sparse._M
+                if n == "gpu__time_duration.sum":
+                    return M([], 0, 1)          # as_double() -> 8000 ns
+                # non-zero in 1 bucket of 10; the envelope would give a
+                # 1-bucket window and inflate the mean tenfold
+                return M([0, 0, 0, 100.0, 0, 0, 0, 0, 0, 0], 1000, 1000)
+
+        out = source_correlation.analyze_pm_sampling(_Sparse())
+        entry = out["series"][0]
+        # 8000ns / 1000ns per bucket = 8 buckets, not the 1 the envelope gives
+        assert entry["active_buckets"] == 1
+        assert entry["mean_in_active_window"] == pytest.approx(100.0 / 8, abs=0.1)
+        assert "kernel duration" in out["window_source"]
+
+    def test_falls_back_to_the_envelope_without_a_duration(self):
+        class _NoDuration(TestPmSamplingPassGroups._Action):
+            def metric_by_name(self, n):
+                if n == "gpu__time_duration.sum":
+                    return None
+                return TestPmSamplingPassGroups._Action.metric_by_name(self, n)
+
+        out = source_correlation.analyze_pm_sampling(_NoDuration())
+        assert out["available"] is True
+        assert "envelope" in out["window_source"]
