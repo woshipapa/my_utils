@@ -1,31 +1,11 @@
+from importlib import abc as _importlib_abc
 from importlib import import_module
+from importlib import machinery as _importlib_machinery
 import sys
 
-from .core.utils import (
-    register_hooks,
-    print_model_params,
-    tensor_md5,
-    DebugLayer,
-    filename,
-    MyTimer,
-    NoOpMyTimer,
-    global_timer,
-    setup_logging_and_timer,
-    print_cuda_memory_gb,
-    DebuggingEvent,
-    print_tensor_info,
-    record_oom_threshold,
-    ChecksumUtils,
-    get_global_timer,
-)
-from .hooks.ForwardProfileHook import ForwardProfilerHook
-from .core.annotations import parametrize_shapes
-from .core.logger import GlobalLogger, get_global_logger
-from .legacy_profilers.DITProfiler import create_profiler_context
-from .distributed.clockSyncUtils import ClockSynchronizer
-from .memory.oom_restore import set_oom_flag, check_oom_flag
-from .artifacts.dump_utils import DumpTensorIO, DumpConfig, UniversalDumper, get_dumper
-from .hooks.module_hook import ForwardTraceRecorder
+# Torch-free eager re-exports.  `my_utils.profiling` and `my_utils.tracing`
+# never import torch at module level, so importing them keeps a plain
+# `import my_utils` working on machines without the GPU stack installed.
 from .profiling import (
     CaptureBackend,
     NoOpBackend,
@@ -102,7 +82,79 @@ from .tracing.nvtx_utils import (
     TORCH_NVTX_AVAILABLE,
     create_labeler,
 )
-from .core.method_patch import MethodPatchHandle, MethodPatcher
+
+# Lazy (PEP 562) re-exports.  The core/hooks/distributed/memory/artifacts/
+# legacy_profilers subpackages import torch (or other heavy optional deps) at
+# module level, so their names are only imported on first attribute access to
+# keep `import my_utils` torch-free.
+_LAZY_ATTRS = {
+    # .core.utils
+    "register_hooks": "my_utils.core.utils",
+    "print_model_params": "my_utils.core.utils",
+    "tensor_md5": "my_utils.core.utils",
+    "DebugLayer": "my_utils.core.utils",
+    "filename": "my_utils.core.utils",
+    "MyTimer": "my_utils.core.utils",
+    "NoOpMyTimer": "my_utils.core.utils",
+    "global_timer": "my_utils.core.utils",
+    "setup_logging_and_timer": "my_utils.core.utils",
+    "print_cuda_memory_gb": "my_utils.core.utils",
+    "DebuggingEvent": "my_utils.core.utils",
+    "print_tensor_info": "my_utils.core.utils",
+    "record_oom_threshold": "my_utils.core.utils",
+    "ChecksumUtils": "my_utils.core.utils",
+    "get_global_timer": "my_utils.core.utils",
+    # .core.annotations / .core.logger / .core.method_patch
+    "parametrize_shapes": "my_utils.core.annotations",
+    "GlobalLogger": "my_utils.core.logger",
+    "get_global_logger": "my_utils.core.logger",
+    "MethodPatchHandle": "my_utils.core.method_patch",
+    "MethodPatcher": "my_utils.core.method_patch",
+    # .hooks
+    "ForwardProfilerHook": "my_utils.hooks.ForwardProfileHook",
+    "ForwardTraceRecorder": "my_utils.hooks.module_hook",
+    "ModuleProfiler": "my_utils.hooks.moduleProfiler",
+    # .legacy_profilers
+    "create_profiler_context": "my_utils.legacy_profilers.DITProfiler",
+    "ProfilerWrapper": "my_utils.legacy_profilers.profilerwrapper",
+    # .distributed
+    "ClockSynchronizer": "my_utils.distributed.clockSyncUtils",
+    "etcd_barrier": "my_utils.distributed.etcd_utils",
+    "pad_for_sequence_parallel": "my_utils.distributed.pad",
+    "remove_pad_by_value": "my_utils.distributed.pad",
+    # .memory
+    "set_oom_flag": "my_utils.memory.oom_restore",
+    "check_oom_flag": "my_utils.memory.oom_restore",
+    "GPU_Performance_Tracker": "my_utils.memory.gpu_mem_tracker",
+    # .artifacts
+    "DumpTensorIO": "my_utils.artifacts.dump_utils",
+    "DumpConfig": "my_utils.artifacts.dump_utils",
+    "UniversalDumper": "my_utils.artifacts.dump_utils",
+    "get_dumper": "my_utils.artifacts.dump_utils",
+    "analyze_sm_throughput_from_csv": "my_utils.artifacts.ncu_analyze_from_csv",
+    "compare_kernel_metrics": "my_utils.artifacts.ncu_analyze_from_csv",
+}
+
+
+def __getattr__(name: str):
+    module_path = _LAZY_ATTRS.get(name)
+    if module_path is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    try:
+        module = import_module(module_path)
+    except ImportError as err:
+        raise ImportError(
+            f"my_utils.{name} requires {module_path}, which failed to import: {err}. "
+            "If torch is missing, install it with `pip install torch`."
+        ) from err
+    value = getattr(module, name)
+    globals()[name] = value  # cache so __getattr__ runs once per name
+    return value
+
+
+def __dir__():
+    return sorted(set(globals()) | set(_LAZY_ATTRS))
+
 
 __all__ = [
     "register_hooks",
@@ -207,54 +259,20 @@ __all__ = [
     "create_labeler",
     "MethodPatchHandle",
     "MethodPatcher",
+    # Optional exports, resolved lazily; accessing them without their heavy
+    # dependencies installed raises ImportError (previously they were probed
+    # eagerly and silently dropped from __all__ when unavailable).
+    "ProfilerWrapper",
+    "ModuleProfiler",
+    "GPU_Performance_Tracker",
+    "etcd_barrier",
+    "analyze_sm_throughput_from_csv",
+    "compare_kernel_metrics",
+    "pad_for_sequence_parallel",
+    "remove_pad_by_value",
 ]
 
 # Optional exports: keep import-time dependencies minimal for base install.
-try:
-    from .legacy_profilers.profilerwrapper import ProfilerWrapper
-
-    __all__.append("ProfilerWrapper")
-except Exception:
-    pass
-
-try:
-    from .hooks.moduleProfiler import ModuleProfiler
-
-    __all__.append("ModuleProfiler")
-except Exception:
-    pass
-
-try:
-    from .memory.gpu_mem_tracker import GPU_Performance_Tracker
-
-    __all__.append("GPU_Performance_Tracker")
-except Exception:
-    pass
-
-try:
-    from .distributed.etcd_utils import etcd_barrier
-
-    __all__.append("etcd_barrier")
-except Exception:
-    pass
-
-try:
-    from .artifacts.ncu_analyze_from_csv import (
-        analyze_sm_throughput_from_csv,
-        compare_kernel_metrics,
-    )
-
-    __all__.extend(["analyze_sm_throughput_from_csv", "compare_kernel_metrics"])
-except Exception:
-    pass
-
-try:
-    from .distributed.pad import pad_for_sequence_parallel, remove_pad_by_value
-
-    __all__.extend(["pad_for_sequence_parallel", "remove_pad_by_value"])
-except Exception:
-    pass
-
 try:
     from .profiling.adapters import (
         DEFAULT_ADAPTER_REGISTRY,
@@ -316,15 +334,39 @@ _LEGACY_MODULE_ALIASES = {
 }
 
 
+class _LegacyAliasLoader(_importlib_abc.Loader):
+    """Loader that resolves a legacy alias by importing its target module.
+
+    ``exec_module`` swaps the freshly created placeholder for the real target
+    module in ``sys.modules``; the import machinery re-reads ``sys.modules``
+    after execution, so the legacy name ends up bound to the target module —
+    exactly what the previous eager registration produced, minus the eager
+    (torch-importing) part.
+    """
+
+    def __init__(self, target_name: str) -> None:
+        self._target_name = target_name
+
+    def create_module(self, spec):
+        return None  # use default module creation
+
+    def exec_module(self, module) -> None:
+        sys.modules[module.__name__] = import_module(self._target_name)
+
+
+class _LegacyAliasFinder(_importlib_abc.MetaPathFinder):
+    """Meta-path finder serving `my_utils.<flat_name>` legacy aliases lazily."""
+
+    def find_spec(self, fullname, path=None, target=None):
+        target_name = _LEGACY_MODULE_ALIASES.get(fullname)
+        if target_name is None:
+            return None
+        return _importlib_machinery.ModuleSpec(fullname, _LegacyAliasLoader(target_name))
+
+
 def _register_legacy_module_aliases() -> None:
-    for legacy_name, target_name in _LEGACY_MODULE_ALIASES.items():
-        if legacy_name in sys.modules:
-            continue
-        try:
-            sys.modules[legacy_name] = import_module(target_name)
-        except Exception:
-            # Keep package import robust even when optional dependencies are absent.
-            continue
+    if not any(isinstance(finder, _LegacyAliasFinder) for finder in sys.meta_path):
+        sys.meta_path.append(_LegacyAliasFinder())
 
 
 _register_legacy_module_aliases()

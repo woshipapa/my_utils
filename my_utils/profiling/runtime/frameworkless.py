@@ -6,11 +6,20 @@ import subprocess
 from functools import lru_cache
 from typing import Any
 
-import torch
-
 from .backends import CudaProfilerBackend
 
 _VERSION_RE = re.compile(r"(\d{4})\.(\d+)")
+
+
+def _torch():
+    """Import torch on demand; only the capture backend needs it."""
+    try:
+        import torch
+    except ImportError as err:
+        raise ImportError(
+            "torch is required for the capture backend; pip install torch"
+        ) from err
+    return torch
 
 
 class TorchCudaProfilerBackend:
@@ -20,16 +29,17 @@ class TorchCudaProfilerBackend:
         self.synchronize = bool(synchronize)
 
     def _sync(self) -> None:
+        torch = _torch()
         if self.synchronize and torch.cuda.is_available():
             torch.cuda.synchronize()
 
     def start(self) -> None:
         self._sync()
-        torch.cuda.cudart().cudaProfilerStart()
+        _torch().cuda.cudart().cudaProfilerStart()
 
     def stop(self) -> None:
         self._sync()
-        torch.cuda.cudart().cudaProfilerStop()
+        _torch().cuda.cudart().cudaProfilerStop()
 
 
 def create_nsys_capture_backend(synchronize: bool = True) -> tuple[Any, str]:

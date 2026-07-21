@@ -131,7 +131,7 @@ def test_nsys_panel_generate_command_without_execute(monkeypatch, capsys) -> Non
     rc = main(["nsys-panel"])
     assert rc == 0
     out = capsys.readouterr().out
-    assert "NSYS Interactive Panel" in out
+    assert "Profiling Interactive Panel (NSYS + NCU)" in out
     assert "myutils-profile nsys-sql-skill --sqlite demo.sqlite" in out
 
 

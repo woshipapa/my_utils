@@ -1807,6 +1807,7 @@ class NcuReportSkillEngine:
                     "Attribute stalls and metrics to source lines and SASS, gated on "
                     "PC-sampling validity."
                 ),
+                category="diagnose",
                 params=[
                     SkillParam("kernel_like", "kernel name filter", "str", False, "%"),
                     SkillParam("top_k", "max source lines", "int", False, 15),

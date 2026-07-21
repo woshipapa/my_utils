@@ -5,8 +5,6 @@ import sys
 from types import SimpleNamespace
 from pathlib import Path
 
-import torch  # type: ignore
-
 
 def _load_frameworkless():
     root = Path(__file__).resolve().parents[2] / "my_utils" / "profiling" / "runtime"
@@ -34,7 +32,6 @@ def _load_frameworkless():
     fw_spec = importlib.util.spec_from_file_location(fw_name, root / "frameworkless.py")
     assert fw_spec is not None and fw_spec.loader is not None
     fw_mod = importlib.util.module_from_spec(fw_spec)
-    fw_mod.torch = torch  # avoid accidental unresolved reference in some runners
     sys.modules[fw_name] = fw_mod
     fw_spec.loader.exec_module(fw_mod)
     return fw_mod
