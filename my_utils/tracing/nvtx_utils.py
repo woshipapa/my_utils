@@ -12,13 +12,45 @@ except Exception:
     _nvtx = None
     NVTX_AVAILABLE = False
 
-try:
-    import torch.cuda.nvtx as _torch_nvtx
+# torch.cuda.nvtx is resolved on first use, not at module import. The old
+# guarded module-level import was invisible without torch but eager with it:
+# `import my_utils` pulled the whole torch stack (~half a second, 700+ modules)
+# through profiling.runtime.capture_controller -> here, defeating the lazy
+# design everywhere else. `TORCH_NVTX_AVAILABLE` is likewise decided lazily --
+# a module-level constant would force the import it exists to avoid.
+_torch_nvtx = None
+_torch_nvtx_checked = False
 
-    TORCH_NVTX_AVAILABLE = True
-except Exception:
-    _torch_nvtx = None
-    TORCH_NVTX_AVAILABLE = False
+
+def _get_torch_nvtx():
+    """Return torch.cuda.nvtx, importing it on first call, or None."""
+    global _torch_nvtx, _torch_nvtx_checked
+    if not _torch_nvtx_checked:
+        _torch_nvtx_checked = True
+        try:
+            import torch.cuda.nvtx as mod
+
+            _torch_nvtx = mod
+        except Exception:
+            _torch_nvtx = None
+    return _torch_nvtx
+
+
+def _torch_nvtx_available() -> bool:
+    return _get_torch_nvtx() is not None
+
+
+class _TorchNvtxAvailability:
+    """Bool-like deferral so `TORCH_NVTX_AVAILABLE` keeps working as a name."""
+
+    def __bool__(self) -> bool:
+        return _torch_nvtx_available()
+
+    def __repr__(self) -> str:
+        return repr(bool(self))
+
+
+TORCH_NVTX_AVAILABLE = _TorchNvtxAvailability()
 
 
 def _env_enabled() -> bool:
@@ -383,7 +415,7 @@ class TorchNvtxLabeler:
                 domain_name=effective_domain,
                 category=category,
             )
-        token = _torch_nvtx.range_start(message)
+        token = _get_torch_nvtx().range_start(message)
         self._active_stack.append(token)
         return token
 
@@ -404,7 +436,7 @@ class TorchNvtxLabeler:
         else:
             self._remove_token(token)
 
-        _torch_nvtx.range_end(token)
+        _get_torch_nvtx().range_end(token)
 
     def mark(
         self,
@@ -416,8 +448,9 @@ class TorchNvtxLabeler:
         if not self.enabled:
             return
 
-        if hasattr(_torch_nvtx, "mark"):
-            _torch_nvtx.mark(
+        _mod = _get_torch_nvtx()
+        if hasattr(_mod, "mark"):
+            _mod.mark(
                 self._compose_message(
                     label,
                     domain_name=domain_name or self.default_domain,
@@ -438,7 +471,7 @@ class TorchNvtxLabeler:
     ) -> int | None:
         if not self.enabled:
             return None
-        return _torch_nvtx.range_push(
+        return _get_torch_nvtx().range_push(
             self._compose_message(
                 label,
                 domain_name=domain_name or self.default_domain,
@@ -449,7 +482,7 @@ class TorchNvtxLabeler:
     def pop(self) -> int | None:
         if not self.enabled:
             return None
-        return _torch_nvtx.range_pop()
+        return _get_torch_nvtx().range_pop()
 
     @contextmanager
     def range(
