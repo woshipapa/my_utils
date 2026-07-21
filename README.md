@@ -1,134 +1,115 @@
 # my_utils
 
-面向 PyTorch 训练/推理工作流的实用工具集，核心覆盖：
+[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 
-- 性能采集与分析（NSYS / NCU / 统一 metrics）
-- 运行时追踪与 Hook（NVTX / module hooks）
-- 分布式辅助（时钟同步 / etcd barrier / sequence parallel padding）
-- 内存诊断（snapshot / OOM flag / GPU tracker）
+A GPU profiling toolkit for NVIDIA GPUs. It wraps the collection side (Nsight
+Systems, Nsight Compute, the NCCL Inspector profiler plugin) in ready-to-run
+presets, and turns the resulting reports into diagnoses: an evidence-based
+kernel diagnosis engine that reads an `.ncu-rep` and produces ranked findings
+with per-metric evidence and PC/PM-sampling source attribution, top-down nsys
+triage, NCCL collective analysis, cross-framework capture adapters, and HTML
+timeline visualization.
 
-**性能分析从这里开始**：[`my_utils/profiling/docs/PERFORMANCE_ANALYSIS_HANDBOOK.md`](my_utils/profiling/docs/PERFORMANCE_ANALYSIS_HANDBOOK.md)
-（采集 → 分析 → 判读的端到端手册）。给 agent 的接手说明见 [`AGENTS.md`](AGENTS.md)。
-- 产物落盘与离线分析（dump / CSV）
+**Start here for performance work:**
+[`my_utils/profiling/docs/PERFORMANCE_ANALYSIS_HANDBOOK.md`](my_utils/profiling/docs/PERFORMANCE_ANALYSIS_HANDBOOK.md)
+— the end-to-end guide from collection to diagnosis.
 
-## 30秒定位
+## What runs where
 
-```mermaid
-flowchart TD
-    A[开始: 我要做什么] --> B{目标}
-    B -->|训练全局性能| C[profiling/templates + nsys]
-    B -->|单kernel瓶颈| D[profiling/ncu]
-    B -->|代码内埋点追踪| E[tracing + hooks]
-    B -->|分布式辅助能力| F[distributed]
-    B -->|内存诊断| G[memory]
-    B -->|基础工具| H[core]
-```
+- The **analysis core is pure Python** — no torch, no CUDA, no GPU. It runs
+  anywhere Python 3.10+ runs, including a laptop analysing reports collected
+  on a cluster.
+- The **capture paths** need the NVIDIA tools themselves (`nsys`, `ncu`, or
+  the NCCL Inspector plugin) on the machine doing the collection.
+- Reading `.ncu-rep` files requires the `ncu_report` Python module, which
+  **ships with Nsight Compute** — it is not on PyPI, so the fix for
+  `import ncu_report` failures is a `PYTHONPATH` entry, not a pip install
+  (the CLI prints the exact command when it cannot find it).
 
-## 安装
-
-```bash
-cd my_utils
-pip install -e .
-```
-
-可选依赖（按需）：
+## Install
 
 ```bash
-pip install -e .[profiling,tensordict,etcd,nvml,nvtx,system,megatron]
+pip install git+https://github.com/woshipapa/my_utils.git
 ```
 
-常用组合：
+`torch` is intentionally **not** a dependency — it is only needed for the
+in-process capture backend, and pulling it in would disturb environments with
+a tuned torch/cuDNN stack. Install it separately or use the `[torch]` extra
+if you need that path.
+
+## Quickstart
 
 ```bash
-# 仅安装 my_utils，不动你现有 torch/cuDNN 环境
-pip install -e .
+# You have an .ncu-rep: per-kernel diagnosis (bottleneck class, stalls, roofline, fixes)
+myutils-profile ncu-diagnose --report run.ncu-rep --gpu "H100 SXM5" --format md
 
-# 安装所有可选依赖（不含 torch）
-pip install -e .[all]
+# Or the raw summarized view with per-metric stats
+ncu-report-analyze --report run.ncu-rep --top-k 20 --pretty
 
-# 安装所有可选依赖（含 torch）
-pip install -e .[all_with_torch]
+# You have an nsys capture: export sqlite, then summary/overlap/NCCL/iteration analysis
+nsys export --type sqlite run.nsys-rep
+nsys-analyze --sqlite run.sqlite --output nsys_analyze.json
 ```
 
-## 一眼可用命令（最常用）
+## CLI commands
 
-NSYS 快速采集：
+Every command below is also available as a `myutils-profile <name>` subcommand;
+`myutils-profile` additionally exposes the unified metrics pipeline
+(`ingest` / `analyze` / `report` / `diff` / `trace`) and the
+`ncu-metrics` / `ncu-diagnose` helpers.
 
-```bash
-bash my_utils/profiling/templates/run_nsys_quick.sh -- python train.py --config cfg.yaml
-```
+| Command | What it does |
+|---|---|
+| `myutils-profile` | Umbrella CLI: all subcommands plus the unified metrics pipeline |
+| `nsys-panel` | Interactive panel to pick an nsys subcommand, fill args, run or print it |
+| `nsys-sql-skill` | Run built-in SQL skills against an nsys-exported SQLite |
+| `nsys-export` | Export SQLite kernel timeline rows to JSON/CSV |
+| `nsys-analyze` | Summary / overlap / NCCL / iteration / MFU analysis of an nsys SQLite |
+| `nsys-diff` | Diff two nsys SQLite profiles by kernel/NVTX aggregates |
+| `nsys-module-kernel-compare` | Compare two profiles for one module/NVTX scope (stream timeline + resource deltas) |
+| `nsys-timeline-html` | Export an interactive HTML timeline from an nsys SQLite |
+| `nsys-iter-overlap` | Per-iteration compute/comm/overlap breakdown from NVTX markers |
+| `nsys-iter-outliers` | Flag statistically anomalous training iterations by step duration |
+| `ncu-csv-skill` | Run built-in parsing skills for ncu CSV exports |
+| `ncu-csv-analyze` | Summarized analysis of an ncu CSV export |
+| `ncu-report-skill` | Run built-in parsing skills for `.ncu-rep` reports |
+| `ncu-report-analyze` | Summarized `.ncu-rep` analysis with per-metric stats and top bottlenecks |
+| `nccl-inspector-skill` | Run built-in parsing skills for NCCL Inspector JSON/Prometheus output |
+| `nccl-inspector-analyze` | Summarize NCCL Inspector dumps: collectives/P2P, bandwidth, rank skew |
 
-NSYS 离线分析：
+## Documentation
 
-```bash
-myutils-profile nsys-analyze --sqlite ./train_rank0.sqlite --output ./nsys_analyze.json
-```
+- [`PERFORMANCE_ANALYSIS_HANDBOOK.md`](my_utils/profiling/docs/PERFORMANCE_ANALYSIS_HANDBOOK.md)
+  — the flagship document: collect every metric that matters, then turn it
+  into a diagnosis.
+- [`CAPABILITY_EVOLUTION.md`](my_utils/profiling/docs/CAPABILITY_EVOLUTION.md)
+  — how the analysis engine's capabilities are organised and grown.
+- [`UNIFIED_PROFILING_QUICKSTART.md`](my_utils/profiling/docs/UNIFIED_PROFILING_QUICKSTART.md)
+  — the config-driven metrics collector: providers, workload-aware rules,
+  report diff, Chrome trace export.
+- [`my_utils/profiling/README.md`](my_utils/profiling/README.md) — the
+  profiling package landing page and subpackage map.
 
-NCU 完整采集：
+Some in-depth design docs are currently in Chinese; English translations are
+in progress.
 
-```bash
-python my_utils/profiling/ncu/run_ncu_quick_yaml.py \
-  --config my_utils/profiling/ncu/ncu_full_collection.yaml
-```
+The non-profiling subpackages (`core/`, `hooks/`, `memory/`, `distributed/`,
+`artifacts/`, `legacy_profilers/`, `tracing/`) are auxiliary utilities from
+the same training workflows, shipped as-is without support commitments.
 
-NCU 报告分析：
+## Troubleshooting
 
-```bash
-myutils-profile ncu-report-analyze --report ./run.ncu-rep --top-k 20 --pretty
-```
+- **`import ncu_report` fails** — the module ships inside Nsight Compute
+  (`<install>/extras/python`), not on PyPI. The CLI auto-detects common
+  install locations and prints the exact `PYTHONPATH` export to use when it
+  cannot.
+- **NVTX ranges do not appear in the nsys timeline** — make sure NVTX is in
+  the trace set (`nsys profile -t cuda,nvtx ...`); labelers created by
+  `my_utils.tracing` degrade to no-ops when NVTX is unavailable or disabled.
+- **HTML report charts render blank** — generated reports load Chart.js /
+  ECharts from `cdn.jsdelivr.net`; on an offline machine, open the report
+  where that CDN is reachable or vendor the script locally.
 
-## Python 最小示例
+## License
 
-### 1) core: 计时 + 日志
-
-```python
-from my_utils.core import setup_logging_and_timer
-
-logger, timer = setup_logging_and_timer(
-    logger_name="train",
-    log_file="train.log",
-    use_cuda=True,
-    rank=0,
-)
-
-timer.start("forward")
-# ... your forward ...
-timer.stop("forward")
-```
-
-### 2) tracing: NVTX 自动降级
-
-```python
-from my_utils.tracing import create_labeler
-
-labeler = create_labeler(preferred="auto")
-with labeler.range("train_step"):
-    # ... your step ...
-    pass
-```
-
-## 包结构（按用途）
-
-- [my_utils/profiling](./my_utils/profiling/README.md): 统一 profiling 入口（NSYS/NCU/metrics）
-- [my_utils/core](./my_utils/core/README.md): logger/timer/通用工具
-- [my_utils/tracing](./my_utils/tracing/README.md): NVTX labeler 与 trace 辅助
-- [my_utils/hooks](./my_utils/hooks/README.md): forward hook / module trace / module profiler
-- [my_utils/distributed](./my_utils/distributed/README.md): clock sync / etcd barrier / pad helpers
-- [my_utils/memory](./my_utils/memory/README.md): snapshot / OOM / GPU memory tracker
-- [my_utils/artifacts](./my_utils/artifacts/README.md): dump 与 CSV 离线分析
-- [my_utils/legacy_profilers](./my_utils/legacy_profilers/README.md): 历史 profiler 兼容层
-
-## 兼容性说明
-
-- 旧导入路径（例如 `from my_utils.utils import MyTimer`）仍可用。
-- 新代码建议使用分层路径（例如 `from my_utils.core import MyTimer`）。
-- `my_utils/__init__.py` 内置了 legacy module aliases，便于旧项目平滑迁移。
-
-## 文档推荐阅读顺序
-
-1. [`my_utils/profiling/README.md`](./my_utils/profiling/README.md)
-2. [`my_utils/profiling/docs/FRAMEWORK_INTEGRATION_PLAYBOOK_ZH.md`](./my_utils/profiling/docs/FRAMEWORK_INTEGRATION_PLAYBOOK_ZH.md)
-3. [`my_utils/profiling/examples/framework_playbook_samples/README.md`](./my_utils/profiling/examples/framework_playbook_samples/README.md)
-4. [`my_utils/profiling/templates/README.md`](./my_utils/profiling/templates/README.md)
-5. [`my_utils/profiling/ncu/README.md`](./my_utils/profiling/ncu/README.md)
-6. [`my_utils/profiling/docs/README.md`](./my_utils/profiling/docs/README.md)
+Apache-2.0. See [LICENSE](LICENSE).

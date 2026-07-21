@@ -1,116 +1,127 @@
-# Profiling Quick Guide
+# Profiling
 
-> **完整手册**：[`docs/PERFORMANCE_ANALYSIS_HANDBOOK.md`](docs/PERFORMANCE_ANALYSIS_HANDBOOK.md)
-> —— 教你用最新版 my_utils 采集全部 nsys/ncu 指标并得到性能优化指引。本页是速查，手册是权威。
+> **Full handbook:** [`docs/PERFORMANCE_ANALYSIS_HANDBOOK.md`](docs/PERFORMANCE_ANALYSIS_HANDBOOK.md)
+> — how to collect every nsys/ncu metric that matters and turn it into a
+> diagnosis. This page is the quick map; the handbook is authoritative.
 
-你只需要先回答一个问题：你现在要看“整段训练行为”还是“单个 kernel 细节”。
+Start by answering one question: do you want to look at **whole-training
+behaviour** or **single-kernel detail**?
 
-- `nsys`：看训练全局时间线、通信/计算重叠、迭代耗时、跨版本对比。
-- `ncu`：看单 kernel 的瓶颈（SM/DRAM/occupancy/stall/rules）。
-- `nccl-inspector`：看 NCCL profiler plugin 输出的 collective/P2P 带宽、耗时、rank skew。
+- `nsys`: whole-training timeline, compute/communication overlap, iteration
+  time, cross-run comparison.
+- `ncu`: single-kernel bottlenecks (SM/DRAM/occupancy/stalls/rules).
+- `nccl-inspector`: collective/P2P bandwidth, latency and rank skew from the
+  NCCL profiler plugin output.
 
-## 30秒流程图
+## The 30-second decision tree
 
 ```mermaid
 flowchart TD
-    A[开始: 我要做性能分析] --> B{分析目标}
-    B -->|整段训练/多卡行为| C[走 NSYS]
-    B -->|单个 kernel 瓶颈| D[走 NCU]
-    B -->|NCCL collective/P2P细节| E[走 NCCL Inspector]
+    A[Start: I want to analyse performance] --> B{Goal}
+    B -->|Whole-training / multi-GPU behaviour| C[Use NSYS]
+    B -->|Single-kernel bottleneck| D[Use NCU]
+    B -->|NCCL collective/P2P detail| E[Use NCCL Inspector]
 
-    C --> C1[run_nsys_quick.sh 抓trace]
-    C1 --> C2{是否已有 sqlite}
-    C2 -->|有| C3[nsys-analyze 看报告]
-    C2 -->|没有| C4[先采集生成 sqlite]
-    C3 --> C5{要对比两版吗}
-    C5 -->|是| C6[nsys-diff]
-    C5 -->|否| C7[结束]
+    C --> C1[Capture a trace with run_nsys_quick.sh]
+    C1 --> C2{Have a sqlite already?}
+    C2 -->|Yes| C3[nsys-analyze for the report]
+    C2 -->|No| C4[Collect first to produce a sqlite]
+    C3 --> C5{Comparing two runs?}
+    C5 -->|Yes| C6[nsys-diff]
+    C5 -->|No| C7[Done]
 
-    D --> D1[ncu_full_collection.yaml 采集]
-    D1 --> D2{是否已有 .ncu-rep}
-    D2 -->|有| D3[ncu-report-analyze]
-    D2 -->|没有| D4[先运行采集命令]
-    D3 --> D5[看 coverage + top_bottlenecks]
-    D5 --> D6[结束]
+    D --> D1[Collect with ncu_full_collection.yaml]
+    D1 --> D2{Have a .ncu-rep already?}
+    D2 -->|Yes| D3[ncu-report-analyze / ncu-diagnose]
+    D2 -->|No| D4[Run the collection command first]
+    D3 --> D5[Read coverage + top_bottlenecks]
+    D5 --> D6[Done]
 
-    E --> E1[启用 NCCL_PROFILER_PLUGIN + NCCL_INSPECTOR_ENABLE]
-    E1 --> E2[nccl-inspector-analyze 解析 JSON/Prometheus]
-    E2 --> E3[看 top_collectives/rank_skew/timing_sources]
+    E --> E1[Enable NCCL_PROFILER_PLUGIN + NCCL_INSPECTOR_ENABLE]
+    E1 --> E2[nccl-inspector-analyze parses JSON/Prometheus]
+    E2 --> E3[Read top_collectives / rank_skew / timing_sources]
 ```
 
-## 一眼选命令（按需求）
+## Read `coverage` before `findings`
 
-1. 我要先抓一份训练整体 trace（推荐先做）
+The single most important habit with this tool. An analysis that never ran —
+because its metric section was not collected — produces exactly what a healthy
+analysis produces: nothing. Every analyzer therefore reports which analyses
+ran and which could not, and why. Read that first; two findings can mean two
+problems, or two problems plus nine questions nobody asked. Missing coverage
+is not a clean result.
+
+## Subpackage map
+
+| Subpackage | What it is |
+|---|---|
+| [`analyzers/`](analyzers/) | Cross-source analysis: top-down nsys triage decision tree, workload-aware rules, NCCL bandwidth models, rank alignment/skew, trace-quality checks. |
+| [`ncu/`](ncu/) | Nsight Compute: collection presets (YAML), the metric catalog with per-architecture spellings, and the evidence-based kernel rule engine behind `ncu-diagnose`. |
+| [`sources/`](sources/) | Nsight Systems: SQLite parsing, SQL skills, kernel-name taxonomy, iteration/MFU/diff/timeline exporters. |
+| [`hardware/`](hardware/) | GPU capability tables (dense peaks, ridge points) and clock-throttling detection. |
+| [`metrics/`](metrics/) | The canonical `MetricEvent` schema, providers and storage for the unified metrics pipeline. |
+| [`runtime/`](runtime/) | In-process profiler control: capture windows, backends, framework-less operation. |
+| [`adapters/`](adapters/) | Framework integrations (PyTorch, Megatron, DeepSpeed, HuggingFace, TorchTitan, VERL, SLIME, ROLL, SGLang, vLLM) that auto-register capture providers. |
+| [`visualization/`](visualization/) | HTML report generation: charts, layouts, timeline pages. |
+| [`nccl/`](nccl/) | NCCL Inspector plugin output: parsing and collective/P2P summaries. |
+| [`templates/`](templates/) | Ready-to-run nsys launch scripts and YAML configs. |
+| [`pipeline/`](pipeline/) | The config-driven `MetricsCollector` that ties providers, analysis and reports together. |
+| [`docs/`](docs/) | The handbook, design docs and reference material — index at [`docs/README.md`](docs/README.md). |
+
+## Pick a command by need
+
+1. Capture a whole-training trace (do this first):
 
 ```bash
 bash my_utils/profiling/templates/run_nsys_quick.sh -- python train.py --config cfg.yaml
 ```
 
-说明：一键把你的训练命令包上 `nsys profile`，产出 `.nsys-rep/.sqlite`。
-
-2. 我想用 YAML 管理 NSYS 参数
-
-```bash
-python my_utils/profiling/templates/run_nsys_quick_yaml.py \
-  --config my_utils/profiling/templates/nsys_quick_launch.yaml
-```
-
-说明：改 YAML 即可，不用改脚本。
-
-3. 我已经有 NSYS sqlite，想直接看分析结果
+2. Already have an nsys sqlite — analyse it:
 
 ```bash
 myutils-profile nsys-analyze --sqlite ./train_rank0.sqlite --output ./nsys_analyze.json
 ```
 
-说明：输出统一分析报告（summary/overlap/nccl/iteration/mfu 等）。
-
-4. 我想对比两次训练差异
+3. Compare two runs:
 
 ```bash
 myutils-profile nsys-diff --before-sqlite ./a.sqlite --after-sqlite ./b.sqlite --output ./diff.json
 ```
 
-说明：对比 kernel/nvtx 聚合差异，定位退化来源。
-
-5. 我想看单个 kernel 瓶颈（NCU）
+4. Collect single-kernel detail (NCU, diagnosis-first preset):
 
 ```bash
 python my_utils/profiling/ncu/run_ncu_quick_yaml.py \
   --config my_utils/profiling/ncu/ncu_full_collection.yaml
 ```
 
-说明：这是 NCU 诊断优先模板，采集维度最完整。
-
-6. 我已经有 `.ncu-rep`，直接要瓶颈结论
+5. Already have a `.ncu-rep` — get the bottleneck verdict:
 
 ```bash
+myutils-profile ncu-diagnose --report ./run.ncu-rep --gpu "H100 SXM5" --format md
 myutils-profile ncu-report-analyze --report ./run.ncu-rep --top-k 20 --pretty
 ```
 
-说明：输出 `rule_results + bottleneck_report + coverage`。
-
-7. 我已经有 NCCL Inspector dump，想看通信明细
+6. Already have NCCL Inspector dumps — get communication detail:
 
 ```bash
 myutils-profile nccl-inspector-analyze --input ./nccl-inspector-logs --top-k 20 --pretty
 ```
 
-说明：解析 NCCL profiler plugin 的 Inspector JSON/JSONL 输出，汇总 collective/P2P、带宽、耗时、rank skew。
+## Common config files
 
-## 常用配置文件
+- NSYS quick template: [`templates/nsys_quick_launch.yaml`](templates/nsys_quick_launch.yaml)
+- NSYS full-args template: [`templates/nsys_2026_2_full_args.yaml`](templates/nsys_2026_2_full_args.yaml)
+- NCU quick template: [`ncu/ncu_quick_launch.yaml`](ncu/ncu_quick_launch.yaml)
+- NCU full-coverage training template: [`ncu/ncu_full_collection.yaml`](ncu/ncu_full_collection.yaml)
+- NCU full-args template: [`ncu/ncu_2026_1_1_full_args.yaml`](ncu/ncu_2026_1_1_full_args.yaml)
+- NCCL Inspector docs: [`nccl/README.md`](nccl/README.md)
 
-- NSYS 快速模板：`my_utils/profiling/templates/nsys_quick_launch.yaml`
-- NSYS 全量参数模板：`my_utils/profiling/templates/nsys_2026_2_full_args.yaml`
-- NCU 快速模板：`my_utils/profiling/ncu/ncu_quick_launch.yaml`
-- NCU 训练全覆盖模板：`my_utils/profiling/ncu/ncu_full_collection.yaml`
-- NCU 全量参数模板：`my_utils/profiling/ncu/ncu_2026_1_1_full_args.yaml`
-- NCCL Inspector 文档：`my_utils/profiling/nccl/README.md`
+## Going deeper
 
-## 深入文档入口
-
-- NSYS：`my_utils/profiling/templates/README.md`
-- NCU：`my_utils/profiling/ncu/README.md`
-- 设计与文档索引：`my_utils/profiling/docs/README.md`
-- 跨框架实战指南（TorchTitan/Megatron/DeepSpeed/HF/VERL/SLIME/ROLL/SGLang/vLLM）：`my_utils/profiling/docs/FRAMEWORK_INTEGRATION_PLAYBOOK_ZH.md`
-- 跨框架可运行样例：`my_utils/profiling/examples/framework_playbook_samples/README.md`
+- The handbook: [`docs/PERFORMANCE_ANALYSIS_HANDBOOK.md`](docs/PERFORMANCE_ANALYSIS_HANDBOOK.md)
+- Capability overview: [`docs/CAPABILITY_EVOLUTION.md`](docs/CAPABILITY_EVOLUTION.md)
+- Unified metrics pipeline: [`docs/UNIFIED_PROFILING_QUICKSTART.md`](docs/UNIFIED_PROFILING_QUICKSTART.md)
+- NSYS templates: [`templates/README.md`](templates/README.md)
+- NCU presets: [`ncu/README.md`](ncu/README.md)
+- Docs index: [`docs/README.md`](docs/README.md)

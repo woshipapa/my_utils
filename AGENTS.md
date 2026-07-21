@@ -23,8 +23,8 @@ my_utils/profiling/ncu/ncu_diagnostics.py      the ncu rule engine
 my_utils/profiling/analyzers/triage.py         the nsys top-down tree
 ```
 
-Keep it that way. It is what makes `tests/profiling/test_analysis_engine.py` (80
-tests) runnable in CI and on a laptop. If you need torch in an analysis path, you
+Keep it that way. It is what makes `tests/profiling/test_analysis_engine.py`
+runnable in CI and on a laptop. If you need torch in an analysis path, you
 have almost certainly put the code in the wrong layer.
 
 Note that `my_utils/__init__.py` imports torch, so those tests load modules by file
@@ -102,11 +102,6 @@ Target **Python 3.10**. The training runtime this supports is 3.10, and PEP 701
 f-string features (backslashes inside replacement fields, quote reuse) parse only
 on 3.12+. A regression here breaks `import my_utils.profiling` entirely on the
 target runtime.
-
-```bash
-# Detector for the whole package (no 3.10 interpreter needed):
-#   walks tokens, flags backslashes / quote reuse / multi-line exprs inside f-strings
-```
 
 If you are adding string-heavy code, prefer hoisting constants out of f-strings
 over escaping inside them.
