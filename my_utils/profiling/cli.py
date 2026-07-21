@@ -1581,7 +1581,7 @@ def build_parser() -> argparse.ArgumentParser:
         default="",
         help=(
             "NVTX text LIKE pattern to restrict analysis to the union time window of all "
-            "matching NVTX ranges. No implicit wildcard is added; use %/_ (or *) explicitly "
+            "matching NVTX ranges. No implicit wildcard is added; use %%/_ (or *) explicitly "
             "for fuzzy matching (e.g. '%%step_%%'). "
             "When set, start_ns/end_ns are derived automatically from matching ranges "
             "unless --start-ns/--end-ns are explicitly provided."
@@ -1623,8 +1623,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     ncu_csv_analyze = sub.add_parser("ncu-csv-analyze", help="run summarized analysis for ncu csv")
     ncu_csv_analyze.add_argument("--csv", required=True, help="ncu csv path")
-    ncu_csv_analyze.add_argument("--metric-like", default="", help="metric LIKE pattern (%/_/*)")
-    ncu_csv_analyze.add_argument("--kernel-like", default="%", help="kernel LIKE pattern (%/_/*)")
+    ncu_csv_analyze.add_argument("--metric-like", default="", help="metric LIKE pattern (%%/_/*)")
+    ncu_csv_analyze.add_argument("--kernel-like", default="%", help="kernel LIKE pattern (%%/_/*)")
     ncu_csv_analyze.add_argument("--top-k", type=int, default=20)
     ncu_csv_analyze.add_argument("--format", default="json", choices=["json", "markdown", "md"])
     ncu_csv_analyze.add_argument("--output", default="")
@@ -1666,7 +1666,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="diagnose every kernel in a .ncu-rep: bottleneck class, stalls, roofline, fixes",
     )
     ncu_diagnose.add_argument("--report", required=True, help="ncu report path (.ncu-rep)")
-    ncu_diagnose.add_argument("--kernel-like", default="%", help="kernel LIKE pattern (%/_/*)")
+    ncu_diagnose.add_argument("--kernel-like", default="%", help="kernel LIKE pattern (%%/_/*)")
     ncu_diagnose.add_argument("--top-kernels", type=int, default=10,
                               help="how many kernels to report, ranked by duration")
     ncu_diagnose.add_argument("--findings-per-kernel", type=int, default=8)
@@ -1688,8 +1688,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="run summarized analysis for ncu .ncu-rep (includes per-metric stats)",
     )
     ncu_report_analyze.add_argument("--report", required=True, help="ncu report path (.ncu-rep)")
-    ncu_report_analyze.add_argument("--metric-like", default="", help="metric LIKE pattern (%/_/*)")
-    ncu_report_analyze.add_argument("--kernel-like", default="%", help="kernel LIKE pattern (%/_/*)")
+    ncu_report_analyze.add_argument("--metric-like", default="", help="metric LIKE pattern (%%/_/*)")
+    ncu_report_analyze.add_argument("--kernel-like", default="%", help="kernel LIKE pattern (%%/_/*)")
     ncu_report_analyze.add_argument("--top-k", type=int, default=20)
     ncu_report_analyze.add_argument(
         "--include-all-metrics",
@@ -1746,8 +1746,8 @@ def build_parser() -> argparse.ArgumentParser:
         default="",
         help="optional NCCL Inspector Prometheus textfile or directory",
     )
-    nccl_analyze.add_argument("--op-like", default="%", help="operation LIKE pattern (%/_/*)")
-    nccl_analyze.add_argument("--comm-like", default="%", help="communicator name LIKE pattern (%/_/*)")
+    nccl_analyze.add_argument("--op-like", default="%", help="operation LIKE pattern (%%/_/*)")
+    nccl_analyze.add_argument("--comm-like", default="%", help="communicator name LIKE pattern (%%/_/*)")
     nccl_analyze.add_argument("--min-msg-size-bytes", type=int, default=0)
     nccl_analyze.add_argument("--top-k", type=int, default=20)
     nccl_analyze.add_argument("--format", default="json", choices=["json", "markdown", "md"])
@@ -1889,7 +1889,7 @@ def build_parser() -> argparse.ArgumentParser:
         default="",
         help=(
             "SQL LIKE pattern for NVTX text matching (example: 'qwen_layer_%%'). "
-            "No implicit wildcard is added; use %/_ (or *) explicitly. "
+            "No implicit wildcard is added; use %%/_ (or *) explicitly. "
             "When set, timeline focuses on matched NVTX scopes."
         ),
     )
@@ -2095,7 +2095,7 @@ def build_parser() -> argparse.ArgumentParser:
         default="",
         help=(
             "SQL LIKE pattern for NVTX text matching. "
-            "No implicit wildcard is added; use %/_ (or *) explicitly. "
+            "No implicit wildcard is added; use %%/_ (or *) explicitly. "
             "Each sqlite uses its own matched NVTX scope(s)."
         ),
     )
