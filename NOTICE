@@ -1,0 +1,14 @@
+my_utils
+Copyright 2026 the my_utils authors
+
+This product is licensed under the Apache License, Version 2.0
+(see the LICENSE file).
+
+The Nsight Compute analysis modules under my_utils/profiling/ncu/
+(metric_catalog.py, ncu_diagnostics.py, sampling_validity.py,
+shipped_rules.py) re-implement checks, thresholds, and stall-reason
+semantics from the rule scripts distributed with NVIDIA Nsight Compute
+(Copyright (c) NVIDIA CORPORATION, BSD-3-Clause), and a small number of
+short advisory sentences closely track the wording of those rules'
+messages. No NVIDIA source files are included in this distribution.
+NVIDIA and Nsight are trademarks of NVIDIA Corporation.

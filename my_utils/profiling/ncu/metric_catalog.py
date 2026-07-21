@@ -678,7 +678,7 @@ _STALL_LIST: List[StallReason] = [
         "synchronization"),
     StallReason(
         "membar", "Membar",
-        "Waiting on a memory barrier / fence to drain.",
+        "Blocked until an outstanding memory fence completes.",
         ("Remove fences that are not required.",
          "Narrow the fence scope (block instead of device where possible)."),
         "synchronization"),
@@ -699,7 +699,7 @@ _STALL_LIST: List[StallReason] = [
         "tex_throttle", "Tex Throttle",
         "The L1TEX texture/surface pipeline queue is full.",
         ("Issue fewer texture/surface operations.",
-         "Consider plain global loads: the texture path accepts four threads' requests per cycle versus 32 for global."),
+         "Consider plain global loads: per cycle the texture path services only 4 thread requests while the global path services a full warp of 32."),
         "device_memory"),
     StallReason(
         "math_pipe_throttle", "Math Pipe Throttle",
@@ -740,7 +740,7 @@ _STALL_LIST: List[StallReason] = [
         pcsamp_key="no_instructions"),
     StallReason(
         "branch_resolving", "Branch Resolving",
-        "Waiting for a branch target to be resolved.",
+        "Blocked until the divergent branch destination is known.",
         ("Reduce dynamic/indirect branching.",
          "Hoist loop-invariant conditions out of hot loops."),
         "instruction"),

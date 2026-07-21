@@ -167,7 +167,7 @@ def check_pc_sampling_validity(
         ))
 
     if count is not None and count == 0:
-        detail = "PC sampling was enabled but no samples were collected for this kernel."
+        detail = "The PC sampler ran against this kernel and came back empty."
         remedy = "Reduce --warp-sampling-interval, or profile a longer-running kernel."
         if duration and interval >= duration:
             detail += (
@@ -300,15 +300,15 @@ def check_pm_sampling_validity(
     ratio = interval_value / duration_value
     if ratio >= 1.0:
         detail = (
-            f"The sampling interval is {ratio:.1f}x the workload duration, so there was "
-            "at most one opportunity to sample. Any timeline built from this describes "
-            "the sampler, not the workload."
+            f"One sampling period is {ratio:.1f}x as long as the whole workload, "
+            "leaving at most a single chance to sample. Any timeline built from "
+            "this describes the sampler, not the workload."
         )
         severity, blocks = "high", True
     elif ratio > 0.1:
         detail = (
-            f"The sampling interval is {ratio * 100:.0f}% of the workload duration, so "
-            "only a handful of samples exist. A phase change shorter than one interval "
+            f"One sampling period covers {ratio * 100:.0f}% of the workload, so only "
+            "a handful of samples exist. A phase change shorter than one interval "
             "is invisible, and the timeline may show phases that are sampling artefacts."
         )
         severity, blocks = "medium", True

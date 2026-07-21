@@ -14,3 +14,14 @@ build/
 dist/
 my_utils.egg-info/*
 .DS_Store
+
+# release hygiene (added pre-OSS)
+# release hygiene (added pre-OSS)
+tmp_*/
+.tmp_*/
+test_*.html
+*.sqlite
+*.nsys-rep
+*.ncu-rep
+uv.lock
+*.egg-info/

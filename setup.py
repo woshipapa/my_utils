@@ -39,7 +39,7 @@ extras_require["all_with_torch"] = sorted(
 
 setup(
     name="my_utils",
-    version="0.1",
+    version="0.1.0",
     packages=find_packages(),
     package_dir={"": "."},
     include_package_data=True,
@@ -80,16 +80,18 @@ setup(
     },
     install_requires=install_requires,
     extras_require=extras_require,
-    author="Your Name",
-    author_email="your_email@example.com",
-    description="Profiling and debugging utilities for PyTorch",
+    author="papa",
+    author_email="96102319+woshipapa@users.noreply.github.com",
+    description="GPU profiling toolkit: nsys/ncu collection presets and an "
+                "evidence-based kernel diagnosis engine",
     long_description=long_description,
     long_description_content_type="text/markdown",
-    url="https://github.com/yourusername/my_utils",
-    python_requires=">=3.8",
+    url="https://github.com/woshipapa/my_utils",
+    python_requires=">=3.10",
+    license="Apache-2.0",
     classifiers=[
         "Programming Language :: Python :: 3",
-        "License :: OSI Approved :: MIT License",
+        "License :: OSI Approved :: Apache Software License",
         "Operating System :: OS Independent",
     ],
 )
