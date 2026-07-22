@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Deprecation-shim tests (P1.7).
 
 Covers the 0.1.x deprecation policy (docs/API_STABILITY.md):

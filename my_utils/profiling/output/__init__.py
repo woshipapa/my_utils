@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 from .metrics_diff import ReportDiff, compare_reports, write_diff
 from .metrics_report import MetricsReportRenderer
 from .metrics_trace import (

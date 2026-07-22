@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 from .clockSyncUtils import ClockSynchronizer, SocketClockSynchronizer
 
 __all__ = ["ClockSynchronizer", "SocketClockSynchronizer"]

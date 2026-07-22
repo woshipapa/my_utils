@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 from .base import AdapterContext, FrameworkAdapter
 from .deepspeed import DeepSpeedAdapter
 from .huggingface import HuggingFaceAdapter

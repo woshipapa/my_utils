@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 from .nsys_analyze import analyze_nsys_sqlite, analyze_to_markdown
 from .nsys_diff import diff_nsys_sqlite, diff_to_markdown
 from .nsys_flat_export import collect_kernel_rows, export_kernels_flat

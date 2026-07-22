@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Tests for the ``NCU_PATH`` / ``NSIGHT_COMPUTE_HOME`` environment overrides.
 
 The env-var logic lives in one place (``nsight_paths``) and is consumed by

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """
 可视化增强 - 使用示例
 

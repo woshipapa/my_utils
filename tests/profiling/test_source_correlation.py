@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Tests for my_utils.profiling.ncu.source_correlation, plus the report-rendering checks that reuse its fake-action machinery."""
 
 from __future__ import annotations

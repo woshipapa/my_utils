@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """The canonical performance axes, and what it takes to have analysed each one.
 
 Every part of this package produced its own vocabulary: our rule engine emits

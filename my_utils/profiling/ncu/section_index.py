@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Complete metric index generated from the Nsight Compute ``.section`` files.
 
 :mod:`metric_catalog` is hand-written: it gives a stable short key, a threshold

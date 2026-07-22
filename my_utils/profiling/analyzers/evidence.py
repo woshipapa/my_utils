@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Evidence fusion: never conclude from a kernel name alone.
 
 A kernel symbol is the weakest evidence a profiler has, and it does not merely

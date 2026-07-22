@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Shared torch-free loading machinery for the profiling test suite.
 
 The modules under test are pure analysis code with no CUDA or torch

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 import torch
 from torch.profiler import profile, record_function, ProfilerActivity
 import matplotlib.pyplot as plt

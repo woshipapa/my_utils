@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Regression guard: importing my_utils must not import torch.
 
 ``my_utils/__init__.py`` re-exports the profiling package eagerly and defers

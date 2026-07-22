@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 from .nccl_inspector_tools import (
     NcclInspectorSkillEngine,
     analyze_nccl_inspector,

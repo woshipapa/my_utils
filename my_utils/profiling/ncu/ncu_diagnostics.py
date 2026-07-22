@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Rule engine mapping Nsight Compute metrics onto named performance problems.
 
 The rules below mirror the ones Nsight Compute ships (``SOLBottleneck``,

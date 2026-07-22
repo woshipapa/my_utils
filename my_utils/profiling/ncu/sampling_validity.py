@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Whether sampled data is trustworthy before anything is concluded from it.
 
 PC sampling and PM sampling both produce data that looks identical whether it is

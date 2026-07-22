@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Per-instruction and per-source-line attribution from an ncu report.
 
 Every analysis elsewhere in this package answers "what is wrong with this

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """
 图表渲染组件
 

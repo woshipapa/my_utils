@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Clock throttling: was the GPU actually allowed to run at the speed you assumed?
 
 A throttled run makes every derived number wrong in the same direction - lower

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 class ProfileManager:
     def __init__(self, profile_cfg: dict, logger=None):
         self.cfg = profile_cfg or {}

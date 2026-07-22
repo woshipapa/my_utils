@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 from .ForwardProfileHook import ForwardProfilerHook
 from .module_hook import ForwardTraceRecorder
 

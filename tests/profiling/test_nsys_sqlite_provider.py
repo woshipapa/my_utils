@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Tests for my_utils.profiling.sources.nsys_sqlite_provider."""
 
 from __future__ import annotations

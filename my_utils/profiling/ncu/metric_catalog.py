@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Complete Nsight Compute metric catalog: names, meanings, thresholds, collection presets.
 
 This is the single place that knows *what a metric is called* and *what a good

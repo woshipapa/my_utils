@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 from .annotations import parametrize_shapes
 from .logger import GlobalLogger, get_global_logger
 from .method_patch import MethodPatchHandle, MethodPatcher

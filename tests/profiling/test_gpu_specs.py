@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Tests for my_utils.profiling.hardware.gpu_specs."""
 
 from __future__ import annotations

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 from .metrics_provider import BaseMetricsProvider, MetricsProvider, ProviderCapabilities
 from .metrics_providers import (
     CProfileStatsProvider,

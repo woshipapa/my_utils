@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """How a measurement was taken, and what that makes it unable to answer.
 
 Two correct measurements of the same kernel disagree by 2x routinely, and the

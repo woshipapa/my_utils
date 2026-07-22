@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 from .backends import CaptureBackend, CudaProfilerBackend, NoOpBackend
 from .capture_controller import CaptureController, HookEvent
 from .config import (

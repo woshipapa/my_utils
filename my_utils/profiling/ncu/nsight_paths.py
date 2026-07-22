@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Locate a Nsight Compute installation from environment variables.
 
 Single source of truth for the env-var override logic shared by

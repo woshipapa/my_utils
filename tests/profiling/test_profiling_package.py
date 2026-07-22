@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Package-level health checks for my_utils.profiling: exports, docs, module reachability and subpackage import order."""
 
 from __future__ import annotations

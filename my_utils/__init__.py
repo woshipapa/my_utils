@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 from importlib import abc as _importlib_abc
 from importlib import import_module
 from importlib import machinery as _importlib_machinery

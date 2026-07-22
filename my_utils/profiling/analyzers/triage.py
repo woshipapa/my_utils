@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Top-down triage: one verdict for where a training step's time actually goes.
 
 The analyzers in this package each answer a narrow question.  This module runs

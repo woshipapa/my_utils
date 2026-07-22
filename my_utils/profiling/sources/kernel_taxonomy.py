@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Kernel-name classification: category, tensor-core usage, GEMM tiles, NCCL collectives.
 
 Kernel names are the only workload signal present in every nsys report, so a lot

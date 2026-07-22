@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 from .DITProfiler import create_profiler_context
 
 __all__ = ["create_profiler_context"]

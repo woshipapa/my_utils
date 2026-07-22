@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Trace-validity checks: can this profile be trusted before it is analysed?
 
 Every check here answers one question - *is the data good enough to draw the

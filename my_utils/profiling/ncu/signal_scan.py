@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Reason over every metric in the report, not only the curated ones.
 
 The rule engine interprets ~177 metrics chosen because each has a threshold and

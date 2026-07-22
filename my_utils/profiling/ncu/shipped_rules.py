@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Reconcile our rule engine against the rules Nsight Compute itself ships.
 
 An ``.ncu-rep`` carries NVIDIA's own findings: every action exposes

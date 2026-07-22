@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 # profiling/adapters.py
 # Purpose: Extract lightweight profiling metadata (iter/microbatch info) from
 # call args/kwargs to support capture matching logic.

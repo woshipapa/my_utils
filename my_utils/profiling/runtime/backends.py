@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 # profiling/backends.py
 # Purpose: Define capture backends for profiling, including a no-op backend and
 # a CUDA cudart-based backend that starts/stops profiling with optional sync.

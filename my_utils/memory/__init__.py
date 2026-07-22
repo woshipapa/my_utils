@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 from .memory_snapshot import (
     MemorySnapshotter,
     NoOpMemorySnapshotter,

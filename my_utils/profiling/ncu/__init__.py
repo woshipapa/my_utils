@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 from .run_ncu_quick_yaml import build_command_from_payload, main
 from .ncu_csv_tools import NcuCsvSkillEngine, analyze_ncu_csv, analyze_ncu_to_markdown
 from .ncu_report_tools import (

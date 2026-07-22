@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """nsys_auto_analysis.py
 
 Comprehensive automatic analysis pipeline for Nsight Systems SQLite profiles.

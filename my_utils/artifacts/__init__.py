@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 from .dump_utils import DumpConfig, DumpTensorIO, UniversalDumper, get_dumper
 
 __all__ = ["DumpConfig", "DumpTensorIO", "UniversalDumper", "get_dumper"]

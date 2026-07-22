@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Tests for my_utils.profiling.analyzers.nccl_bandwidth."""
 
 from __future__ import annotations

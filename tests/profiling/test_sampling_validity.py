@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Tests for my_utils.profiling.ncu.sampling_validity."""
 
 from __future__ import annotations

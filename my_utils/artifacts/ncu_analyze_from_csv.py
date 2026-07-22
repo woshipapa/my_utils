@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 # utils/profiler_tools.py
 
 import pandas as pd

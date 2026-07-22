@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Authoritative GPU hardware specifications for roofline / speed-of-light analysis.
 
 Every peak in this module is a **dense** figure. NVIDIA datasheets usually quote

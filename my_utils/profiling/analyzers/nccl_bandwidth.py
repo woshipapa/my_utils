@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """NCCL bus-bandwidth analysis: is the network slow, or is a rank late?
 
 Collective duration on its own says almost nothing. A slow AllReduce is equally

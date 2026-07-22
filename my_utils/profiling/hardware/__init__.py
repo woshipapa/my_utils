@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Hardware capability tables shared by the nsys and ncu analysis paths."""
 
 from .throttling import (
