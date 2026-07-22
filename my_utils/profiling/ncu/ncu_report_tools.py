@@ -2531,7 +2531,13 @@ def diagnose_ncu_report(
                     {"high": 0, "medium": 1, "low": 2, "info": 3}.get(
                         f.get("severity"), 9
                     ),
-                    -(f.get("speedup_ceiling") or 1.0),
+                    # Rank by expected payoff where a bound exists, mirroring
+                    # the sort inside diagnose_kernel.
+                    -(
+                        f.get("estimated_speedup_upper_bound")
+                        or f.get("speedup_ceiling")
+                        or 1.0
+                    ),
                 )
             )
             diagnosis["findings"] = merged[: int(findings_per_kernel)]
@@ -2655,6 +2661,78 @@ def diagnose_result_to_markdown(payload: Dict[str, object]) -> str:
                     lines.append(
                         f"  - NOTE: {roofline.get('flops_undercount_reason', '')}"
                     )
+                if roofline.get("peak_tflops") and roofline.get("peak_tflops_basis"):
+                    lines.append(
+                        f"  - graded against {roofline['peak_tflops']:.0f} TFLOP/s: "
+                        f"{roofline['peak_tflops_basis']}"
+                    )
+
+            # Hierarchical AI (same FLOP numerator at every level) as supporting
+            # evidence under the DRAM roofline headline.
+            hier = (
+                sections.get("hierarchical_roofline", {})
+                if isinstance(sections, dict)
+                else {}
+            )
+            if isinstance(hier, dict) and hier.get("available") and hier.get("summary"):
+                lines.append(f"- AI hierarchy: {hier['summary']}")
+                ratio_bits = []
+                if hier.get("l1_to_l2_intensity_ratio"):
+                    ratio_bits.append(f"L1->L2 {hier['l1_to_l2_intensity_ratio']:.1f}x")
+                if hier.get("l2_to_dram_intensity_ratio"):
+                    ratio_bits.append(
+                        f"L2->DRAM {hier['l2_to_dram_intensity_ratio']:.1f}x"
+                    )
+                if ratio_bits:
+                    lines.append(f"  - intensity ratios: {', '.join(ratio_bits)}")
+                if hier.get("l2_dram_locality_note"):
+                    lines.append(f"  - {hier['l2_dram_locality_note']}")
+
+            # Instruction roofline (Ding & Williams 2019) alongside the FLOP one.
+            inst_roof = (
+                sections.get("instruction_roofline", {})
+                if isinstance(sections, dict)
+                else {}
+            )
+            if isinstance(inst_roof, dict):
+                if inst_roof.get("available"):
+                    per_txn = inst_roof.get("warp_inst_per_transaction") or {}
+                    txn_txt = ", ".join(
+                        f"{lvl.upper()} {val:.2f}" for lvl, val in per_txn.items()
+                    )
+                    pieces = [
+                        f"{inst_roof.get('achieved_warp_ginst_per_sec', 0.0):.1f} "
+                        "G warp-inst/s"
+                    ]
+                    if inst_roof.get("pct_of_peak") is not None:
+                        pieces.append(
+                            f"{inst_roof['pct_of_peak']:.0f}% of issue ceiling"
+                        )
+                    if txn_txt:
+                        pieces.append(f"warp-inst per 32B transaction: {txn_txt}")
+                    lines.append(f"- instruction roofline: {'; '.join(pieces)}")
+                    if inst_roof.get("interpretation"):
+                        lines.append(f"  - {inst_roof['interpretation']}")
+                elif inst_roof.get("reason"):
+                    lines.append(f"- instruction roofline: {inst_roof['reason']}")
+
+            # Special-function pressure: one line whether it fired or not, so
+            # "checked and clean" is distinguishable from "never checked".
+            sfu = sections.get("sfu_pressure", {}) if isinstance(sections, dict) else {}
+            if isinstance(sfu, dict) and sfu.get("available"):
+                xu_pct = sfu.get("xu_pct_of_peak_active")
+                tensor_pct = sfu.get("tensor_pct_of_peak_active")
+                state = (
+                    "special-function bound (see findings)"
+                    if sfu.get("fired")
+                    else "no special-function pressure"
+                )
+                bits = [f"XU/SFU {xu_pct:.1f}% of peak" if xu_pct is not None else ""]
+                if tensor_pct is not None:
+                    bits.append(f"tensor pipe {tensor_pct:.1f}%")
+                lines.append(
+                    f"- SFU check: {', '.join(b for b in bits if b)} - {state}"
+                )
 
             stalls = sections.get("stalls", {}) if isinstance(sections, dict) else {}
             if isinstance(stalls, dict) and stalls.get("dominant_bucket"):
@@ -2663,6 +2741,13 @@ def diagnose_result_to_markdown(payload: Dict[str, object]) -> str:
             axes_block = kernel.get("axes", {})
             if isinstance(axes_block, dict) and axes_block.get("summary"):
                 lines.append(f"- axes: {axes_block['summary']}")
+            # The clock-state caveat changes what every compute-vs-memory number
+            # above may be compared against, so it belongs next to them.
+            ctx = kernel.get("measurement_context", {})
+            if isinstance(ctx, dict):
+                bias = ctx.get("clock_control_bias") or {}
+                if isinstance(bias, dict) and bias.get("biased") and bias.get("caveat"):
+                    lines.append(f"- **measurement caveat**: {bias['caveat']}")
             corrob = kernel.get("corroboration", {})
             if isinstance(corrob, dict) and corrob.get("conflicts"):
                 lines.append(
@@ -2893,14 +2978,33 @@ def diagnose_result_to_markdown(payload: Dict[str, object]) -> str:
                 for finding in findings:
                     if not isinstance(finding, dict):
                         continue
+                    bound = finding.get("estimated_speedup_upper_bound")
+                    basis = finding.get("speedup_basis")
                     ceiling = finding.get("speedup_ceiling")
-                    ceiling_text = (
-                        f" _(up to {float(ceiling):.2f}x)_" if ceiling else ""
-                    )
+                    if bound:
+                        ceiling_text = (
+                            f" _(at most {float(bound):.2f}x -- upper bound, "
+                            "not a prediction)_"
+                        )
+                    elif ceiling:
+                        ceiling_text = f" _(up to {float(ceiling):.2f}x)_"
+                    else:
+                        ceiling_text = ""
                     lines.append(
                         f"- **[{finding.get('severity', 'info')}]** {finding.get('title', '')}{ceiling_text}"
                     )
                     lines.append(f"  - {finding.get('summary', '')}")
+                    if bound:
+                        lines.append(
+                            f"  - speedup bound: removing this stall entirely "
+                            f"would buy at most {(float(bound) - 1.0) * 100:.0f}% "
+                            "-- an upper bound, not a prediction. "
+                            f"{basis or ''}"
+                        )
+                    elif basis:
+                        # A stall-backed finding whose bound was withheld says
+                        # why, rather than silently showing no number.
+                        lines.append(f"  - speedup bound withheld: {basis}")
                     for action in finding.get("actions", []) or []:
                         lines.append(f"  - fix: {action}")
                 lines.append("")
@@ -3182,5 +3286,20 @@ def analyze_ncu_report_to_markdown(payload: Dict[str, object]) -> str:
     return "\n".join(lines)
 
 
+def _jsonable(obj: object) -> object:
+    """Last-resort serializer: Finding (and anything with to_dict) to a dict.
+
+    The per-analysis sections embed `Finding` dataclasses directly, so
+    `ncu-diagnose --format json` crashed on every report that produced a
+    section-level finding.
+    """
+    to_dict = getattr(obj, "to_dict", None)
+    if callable(to_dict):
+        return to_dict()
+    return str(obj)
+
+
 def report_result_to_json(payload: object, *, pretty: bool = False) -> str:
-    return json.dumps(payload, ensure_ascii=False, indent=2 if pretty else None)
+    return json.dumps(
+        payload, ensure_ascii=False, indent=2 if pretty else None, default=_jsonable
+    )

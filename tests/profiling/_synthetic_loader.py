@@ -69,6 +69,7 @@ triage = _load("analyzers.triage", "analyzers/triage.py")
 evidence = _load("analyzers.evidence", "analyzers/evidence.py")
 nccl_bandwidth = _load("analyzers.nccl_bandwidth", "analyzers/nccl_bandwidth.py")
 trace_quality = _load("analyzers.trace_quality", "analyzers/trace_quality.py")
+speedup_model = _load("ncu.speedup_model", "ncu/speedup_model.py")
 ncu_diagnostics = _load("ncu.ncu_diagnostics", "ncu/ncu_diagnostics.py")
 
 section_index = _load("ncu.section_index", "ncu/section_index.py")
@@ -83,6 +84,9 @@ sampling_validity = _load("ncu.sampling_validity", "ncu/sampling_validity.py")
 source_correlation = _load("ncu.source_correlation", "ncu/source_correlation.py")
 signal_scan = _load("ncu.signal_scan", "ncu/signal_scan.py")
 source_correlation_mod = _load("ncu.source_correlation", "ncu/source_correlation.py")
+# Depends on metric_catalog, ncu_diagnostics, ncu_report_tools and
+# measurement_context, all loaded above.
+report_diff = _load("ncu.report_diff", "ncu/report_diff.py")
 
 
 # ---------------------------------------------------------------------------

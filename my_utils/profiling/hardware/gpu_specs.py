@@ -103,6 +103,14 @@ class GpuSpec:
     fp4_tflops: float = 0.0
     int8_tops: float = 0.0
 
+    # Special-function unit (XU/SFU) throughput in TFLOP/s of transcendental
+    # ops (exp2/rsqrt/sin). Deliberately tiny next to the tensor peaks:
+    # FlashAttention-3 (arXiv:2407.08608) quotes 3.9 TFLOP/s of special
+    # functions against 989 TFLOP/s dense FP16 on H100 SXM, a ~256x gap that
+    # makes softmax/normalisation a credible critical path. 0.0 means "not
+    # recorded here", never "zero throughput".
+    sfu_tflops: float = 0.0
+
     supports_sparsity: bool = True
     aliases: Tuple[str, ...] = field(default_factory=tuple)
     notes: str = ""
@@ -204,6 +212,8 @@ _GPU_SPECS: List[GpuSpec] = [
         bf16_tflops=989.4,
         fp8_tflops=1979.0,
         int8_tops=1979.0,
+        # Same 132-SM silicon and clocks as H100 SXM5, so the same SFU rate.
+        sfu_tflops=3.9,
         aliases=("h200",),
         notes="Lowest BF16 ridge in the Hopper family (~206) thanks to HBM3e.",
     ),
@@ -219,6 +229,11 @@ _GPU_SPECS: List[GpuSpec] = [
         smem_bandwidth_gbps=31000.0,
         nvlink_gbps=900.0,
         pcie_gbps=64.0,
+        # Compute peaks from the NVIDIA H100 datasheet: dense, no sparsity.
+        # The datasheet's headline tensor figures are the 2x "with sparsity"
+        # numbers (e.g. 1979 TFLOPS FP16); the dense halves are stored here
+        # (TF32 494.7, FP16/BF16 989.4, FP8/INT8 1979). `peak_tflops(...,
+        # sparse=True)` derives the sparse rate; never store it pre-doubled.
         fp64_tflops=34.0,
         fp32_tflops=67.0,
         tf32_tflops=494.7,
@@ -226,6 +241,9 @@ _GPU_SPECS: List[GpuSpec] = [
         bf16_tflops=989.4,
         fp8_tflops=1979.0,
         int8_tops=1979.0,
+        # FlashAttention-3 (arXiv:2407.08608) quotes this SKU's special-function
+        # throughput at 3.9 TFLOP/s (16 SFUs/SM x 132 SMs at boost clock).
+        sfu_tflops=3.9,
         aliases=("h100 sxm", "h100 80gb hbm3", "h100-sxm"),
     ),
     GpuSpec(
@@ -290,6 +308,8 @@ _GPU_SPECS: List[GpuSpec] = [
         bf16_tflops=989.4,
         fp8_tflops=1979.0,
         int8_tops=1979.0,
+        # Same 132-SM silicon and clocks as H100 SXM5, so the same SFU rate.
+        sfu_tflops=3.9,
         aliases=("h800",),
         notes=(
             "Export SKU: NVLink cut to 400 GB/s. Measured single-stream HBM 1861 GB/s "

@@ -1146,3 +1146,283 @@ class TestRegisterFigureIsKernelLevel:
         spec = metric_catalog.METRIC_CATALOG["registers_per_thread"]
         assert "KERNEL-LEVEL" in spec.description
         assert "warpgroup" in spec.description
+
+
+class TestSfuPressure:
+    """The FlashAttention-3 rule: SFU near peak while the tensor pipe is not
+    the limiter means softmax/normalisation is the critical path."""
+
+    _XU = "sm__inst_executed_pipe_xu.avg.pct_of_peak_sustained_active"
+    _TENSOR = "sm__pipe_tensor_cycles_active.avg.pct_of_peak_sustained_active"
+
+    def test_fires_on_softmax_bound_attention_shape(self):
+        result = ncu_diagnostics.analyze_sfu_pressure(
+            ncu_diagnostics.MetricView({self._XU: 72.0, self._TENSOR: 45.0})
+        )
+        assert result["available"] is True
+        assert result["fired"] is True
+        (finding,) = result["findings"]
+        assert finding.category == "pipe_sfu_softmax_bound"
+        assert "softmax" in finding.title or "normalisation" in finding.title
+        assert any("pingpong" in a for a in finding.actions)
+        # The H100 ratio is cited in the evidence.
+        assert "989" in finding.evidence["hardware_ratio"]
+        assert "3.9" in finding.evidence["hardware_ratio"]
+
+    def test_h100_spec_quantifies_the_ratio(self):
+        spec = _h100()
+        if spec is None:
+            pytest.skip("no H100 spec")
+        result = ncu_diagnostics.analyze_sfu_pressure(
+            ncu_diagnostics.MetricView({self._XU: 72.0, self._TENSOR: 45.0}), spec
+        )
+        (finding,) = result["findings"]
+        assert finding.evidence["sfu_peak_tflops"] == pytest.approx(3.9)
+        assert finding.evidence["tensor_peak_fp16_dense_tflops"] == pytest.approx(989.4)
+        assert finding.evidence["tensor_to_sfu_ratio"] == pytest.approx(253.7, abs=0.1)
+
+    def test_ordinary_gemm_without_sfu_pressure_never_fires(self):
+        """A GEMM+RMSNorm whose rsqrt is one op per row has XU near zero."""
+        result = ncu_diagnostics.analyze_sfu_pressure(
+            ncu_diagnostics.MetricView({self._XU: 0.2, self._TENSOR: 40.6})
+        )
+        assert result["fired"] is False
+        assert not result["findings"]
+        assert "below" in result["reason"]
+
+    def test_saturated_tensor_pipe_suppresses_the_finding(self):
+        """When the MMA pipe is itself the limiter, relieving the SFU buys nothing."""
+        result = ncu_diagnostics.analyze_sfu_pressure(
+            ncu_diagnostics.MetricView({self._XU: 65.0, self._TENSOR: 85.0})
+        )
+        assert result["fired"] is False
+        assert "limiter" in result["reason"]
+
+    def test_no_tensor_activity_defers_to_instruction_mix(self):
+        """Pure transcendental kernels have no GEMM to overlap with."""
+        result = ncu_diagnostics.analyze_sfu_pressure(
+            ncu_diagnostics.MetricView({self._XU: 90.0})
+        )
+        assert result["fired"] is False
+        assert "instruction-mix" in result["reason"]
+
+    def test_absent_counter_reports_not_assessed(self):
+        result = ncu_diagnostics.analyze_sfu_pressure(
+            ncu_diagnostics.MetricView({self._TENSOR: 50.0})
+        )
+        assert result["available"] is False
+        assert "sm__inst_executed_pipe_xu" in result["reason"]
+        assert "Not assessed" in result["reason"]
+
+
+class TestInstructionRoofline:
+    """Ding & Williams 2019: warp instructions/sec against inst-per-transaction
+    catches the integer/LSU-bound kernels a FLOP roofline mislabels."""
+
+    _BASE = {
+        "smsp__inst_executed.sum": 300_000.0,
+        "gpu__time_duration.sum": 1_000.0,  # ns -> 300 G warp-inst/s
+        "device__attribute_multiprocessor_count": 100.0,
+        "sm__cycles_elapsed.avg.per_second": 1e9,  # peak = 100*4*1 GHz = 400 G/s
+    }
+
+    def test_issue_bound_kernel_is_named(self):
+        result = ncu_diagnostics.instruction_roofline(
+            ncu_diagnostics.MetricView(self._BASE)
+        )
+        assert result["available"] is True
+        assert result["achieved_warp_ginst_per_sec"] == pytest.approx(300.0)
+        assert result["peak_warp_ginst_per_sec"] == pytest.approx(400.0)
+        assert result["pct_of_peak"] == pytest.approx(75.0)
+        (finding,) = result["findings"]
+        assert finding.category == "pipe_instruction_issue_bound"
+        assert "Ding" in finding.summary
+
+    def test_low_issue_rate_defers_to_the_flop_roofline(self):
+        metrics = dict(self._BASE)
+        metrics["smsp__inst_executed.sum"] = 30_000.0  # 7.5% of peak
+        result = ncu_diagnostics.instruction_roofline(
+            ncu_diagnostics.MetricView(metrics)
+        )
+        assert not result["findings"]
+        assert "not the limiter" in result["interpretation"]
+
+    def test_intensity_is_per_32_byte_transaction(self):
+        metrics = dict(self._BASE)
+        metrics["lts__t_sectors.sum"] = 150_000.0
+        metrics["dram__bytes.sum"] = 3_200_000.0  # 100k transactions
+        result = ncu_diagnostics.instruction_roofline(
+            ncu_diagnostics.MetricView(metrics)
+        )
+        per_txn = result["warp_inst_per_transaction"]
+        assert per_txn["l2"] == pytest.approx(2.0)
+        assert per_txn["dram"] == pytest.approx(3.0)
+        assert "l1" in result["missing_levels"]
+        assert "l1tex__t_sectors" in result["missing_levels"]["l1"]
+
+    def test_missing_instruction_counter_states_absence(self):
+        result = ncu_diagnostics.instruction_roofline(
+            ncu_diagnostics.MetricView({"gpu__time_duration.sum": 1_000.0})
+        )
+        assert result["available"] is False
+        assert "smsp__inst_executed.sum" in result["reason"]
+
+    def test_missing_clock_reports_no_ceiling_not_an_invented_one(self):
+        metrics = {
+            "smsp__inst_executed.sum": 300_000.0,
+            "gpu__time_duration.sum": 1_000.0,
+        }
+        result = ncu_diagnostics.instruction_roofline(
+            ncu_diagnostics.MetricView(metrics)
+        )
+        assert result["available"] is True
+        assert result["peak_warp_ginst_per_sec"] is None
+        assert result["pct_of_peak"] is None
+        assert "unknown" in result["interpretation"]
+        assert not result["findings"]
+
+    def test_peak_states_its_assumption(self):
+        result = ncu_diagnostics.instruction_roofline(
+            ncu_diagnostics.MetricView(self._BASE)
+        )
+        assert "4 schedulers/SM" in result["peak_basis"]
+
+
+class TestHierarchicalRooflineExtensions:
+    """Missing levels are named, and the L2 ridge exposes cache-blocking room."""
+
+    _FLOPS = {"smsp__sass_thread_inst_executed_op_ffma_pred_on.sum": 1e9}
+
+    def test_absent_levels_are_named_not_omitted(self):
+        result = ncu_diagnostics.hierarchical_roofline(
+            ncu_diagnostics.MetricView(
+                {**self._FLOPS, "lts__t_sectors.sum": 1e6, "dram__bytes.sum": 1e7}
+            )
+        )
+        assert "l1" in result["missing_levels"]
+        assert "l1tex__t_bytes" in result["missing_levels"]["l1"]
+        assert "not collected: L1" in result["summary"]
+
+    def test_wide_l2_dram_gap_is_stated_as_absorption(self):
+        result = ncu_diagnostics.hierarchical_roofline(
+            ncu_diagnostics.MetricView(
+                {
+                    **self._FLOPS,
+                    "lts__t_sectors.sum": 1e6,  # AI_l2 ~ 31
+                    "dram__bytes.sum": 6.4e6,  # AI_dram ~ 156 -> ratio ~5
+                }
+            )
+        )
+        assert result["l2_to_dram_intensity_ratio"] > 4.0
+        assert "absorbing" in result["l2_dram_locality_note"]
+
+    def test_dram_compute_bound_but_l2_bandwidth_bound_flags_blocking(self):
+        """AI clears the DRAM ridge (~295 bf16) but sits under the L2 ridge (~82)."""
+        spec = _h100()
+        if spec is None:
+            pytest.skip("no H100 spec")
+        result = ncu_diagnostics.hierarchical_roofline(
+            ncu_diagnostics.MetricView(
+                {
+                    # 1e12 tensor bf16 FLOPs over 2 ms = 500 TFLOP/s (< peak).
+                    "sm__ops_path_tensor_src_bf16_dst_fp32.sum": 1e12,
+                    "gpu__time_duration.sum": 2e6,
+                    "dram__bytes.sum": 3.2e9,  # AI_dram = 312.5 > ridge 295.3
+                    "lts__t_sectors.sum": 6.25e8,  # AI_l2 = 50 < 0.8 * 82.45
+                }
+            ),
+            spec,
+        )
+        assert result["l2_ridge_point"] == pytest.approx(82.45, abs=0.1)
+        assert result["l2_roofline_side"] == "memory_bound"
+        finding = next(
+            f for f in result["findings"] if "cache-blocking" in f.title.lower()
+        )
+        assert finding.category == "poor_cache_locality"
+        assert finding.evidence["l2_ridge_point"] == pytest.approx(82.45, abs=0.1)
+        assert "L2 bandwidth" in finding.summary or "L2 line" in finding.actions[0]
+
+    def test_no_blocking_finding_when_l2_intensity_clears_its_ridge(self):
+        """The real cta_pingpong shape: AI_l2 just above the L2 ridge."""
+        spec = _h100()
+        if spec is None:
+            pytest.skip("no H100 spec")
+        result = ncu_diagnostics.hierarchical_roofline(
+            ncu_diagnostics.MetricView(
+                {
+                    "sm__ops_path_tensor_src_bf16_dst_fp32.sum": 1e12,
+                    "gpu__time_duration.sum": 2e6,
+                    "dram__bytes.sum": 3.2e9,
+                    "lts__t_sectors.sum": 3.6e8,  # AI_l2 ~ 86.8 > ridge
+                }
+            ),
+            spec,
+        )
+        assert result["l2_roofline_side"] == "compute_bound"
+        assert not any("cache-blocking" in f.title.lower() for f in result["findings"])
+
+
+class TestPrecisionAwareCeilings:
+    """The roofline states which dense per-dtype peak graded it."""
+
+    def test_bf16_kernel_is_graded_against_the_bf16_dense_peak(self):
+        spec = _h100()
+        if spec is None:
+            pytest.skip("no H100 spec")
+        result = ncu_diagnostics.compute_roofline(
+            ncu_diagnostics.MetricView(
+                {
+                    "sm__ops_path_tensor_src_bf16_dst_fp32.sum": 1e12,
+                    "gpu__time_duration.sum": 2e6,
+                    "dram__bytes.sum": 3.2e9,
+                }
+            ),
+            spec,
+        )
+        assert result["peak_tflops"] == pytest.approx(989.4)
+        assert "dense" in result["peak_tflops_basis"]
+        assert "no sparsity" in result["peak_tflops_basis"]
+
+    def test_sparse_peaks_are_never_pre_doubled_in_the_table(self):
+        spec = _h100()
+        if spec is None:
+            pytest.skip("no H100 spec")
+        # Dense datasheet halves; sparse derived on demand, exactly 2x.
+        assert spec.peak_tflops("fp16") == pytest.approx(989.4)
+        assert spec.peak_tflops("fp8") == pytest.approx(1979.0)
+        assert spec.peak_tflops("fp16", sparse=True) == pytest.approx(2 * 989.4)
+
+
+class TestRatedClocksReachTheCollectionContext:
+    """diagnose_kernel forwards measured + rated clocks so the clock-control
+    bias symptom check can run end-to-end (kHz device attributes -> Hz)."""
+
+    def test_reduced_sm_clock_with_full_dram_clock_is_flagged(self):
+        result = ncu_diagnostics.diagnose_kernel(
+            {
+                "gpu__time_duration.sum": 72_672.0,
+                "sm__cycles_elapsed.avg.per_second": 1.7445e9,  # 88% of rated
+                "dram__cycles_elapsed.avg.per_second": 2.618e9,  # ~100% of rated
+                "device__attribute_clock_rate": 1_980_000.0,  # kHz
+                "device__attribute_memory_clock_rate": 2_619_000.0,  # kHz
+            },
+            kernel_name="fused",
+        )
+        bias = result["measurement_context"]["clock_control_bias"]
+        assert bias["checked"] is True
+        assert bias["biased"] is True
+        assert bias["sm_share_of_rated"] == pytest.approx(0.881, abs=0.01)
+        assert bias["dram_share_of_rated"] == pytest.approx(1.0, abs=0.01)
+
+    def test_missing_rated_clocks_report_unassessed_not_unbiased(self):
+        result = ncu_diagnostics.diagnose_kernel(
+            {
+                "gpu__time_duration.sum": 72_672.0,
+                "sm__cycles_elapsed.avg.per_second": 1.7445e9,
+            },
+            kernel_name="fused",
+        )
+        # The context carries None for "unassessed" (assess_clock_control_bias
+        # itself distinguishes unassessed from unbiased); what matters here is
+        # that no bias claim was invented from missing rated clocks.
+        assert result["measurement_context"]["clock_control_bias"] is None

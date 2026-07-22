@@ -35,6 +35,7 @@ into a kernel-level ceiling.
 from __future__ import annotations
 
 import re
+import dataclasses
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
@@ -472,28 +473,10 @@ def _with_evidence(finding: Finding, extra: Mapping[str, Any]) -> Finding:
     """Return a copy of ``finding`` with additional evidence merged in."""
     merged = dict(finding.evidence)
     merged.update(extra)
-    return Finding(
-        category=finding.category,
-        title=finding.title,
-        summary=finding.summary,
-        severity=finding.severity,
-        confidence=finding.confidence,
-        evidence=merged,
-        actions=finding.actions,
-        speedup_ceiling=finding.speedup_ceiling,
-        source=finding.source,
-    )
+    # dataclasses.replace, so fields added to Finding later (e.g. the
+    # speedup-model annotations) survive reconciliation unchanged.
+    return dataclasses.replace(finding, evidence=merged)
 
 
 def _replace_confidence(finding: Finding, confidence: str) -> Finding:
-    return Finding(
-        category=finding.category,
-        title=finding.title,
-        summary=finding.summary,
-        severity=finding.severity,
-        confidence=confidence,
-        evidence=finding.evidence,
-        actions=finding.actions,
-        speedup_ceiling=finding.speedup_ceiling,
-        source=finding.source,
-    )
+    return dataclasses.replace(finding, confidence=confidence)

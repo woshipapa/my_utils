@@ -379,7 +379,7 @@ problems plus nine questions nobody asked.
 ```python
 cov = result["coverage"]
 print(cov["summary"])
-# 2 of 15 analyses ran. 13 could not: the required metrics are absent from this
+# 2 of 17 analyses ran. 15 could not: the required metrics are absent from this
 # report, so those questions were not asked - this is missing coverage, not a
 # clean result.
 

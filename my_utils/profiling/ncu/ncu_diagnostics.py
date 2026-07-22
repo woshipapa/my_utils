@@ -51,7 +51,9 @@ __all__ = [
     "analyze_memory_hierarchy",
     "analyze_issue_efficiency",
     "analyze_instruction_mix",
+    "analyze_sfu_pressure",
     "hierarchical_roofline",
+    "instruction_roofline",
     "diagnose_kernel",
     "analysis_coverage",
     "SOL_THRESHOLDS",
@@ -85,7 +87,25 @@ SOL_THRESHOLDS = {
     "waves_small_grid": 1.0,  # below one wave => small grid
     # CPIStall
     "issue_active_stall_gate": 0.8,
+    # Trigger for reporting a dominant stall, as a share of warp cycles per
+    # issued instruction. NVIDIA's shipped CPIStall rule uses 30%; KernelPro
+    # (arXiv:2606.26453) calibrated its general trigger at 40% but its barrier
+    # trigger at 30%. Ours stays at NVIDIA's documented 30% for all reasons --
+    # stricter than KernelPro's general trigger, with a documented source --
+    # which also matches KernelPro's barrier-specific trigger exactly.
     "stall_share_gate": 0.3,
+    # Barrier stalls hurt at lower shares, so they keep their own explicit
+    # trigger. Calibrated to KernelPro (arXiv:2606.26453), which publishes a
+    # dedicated 30% barrier trigger below its 40% general one.
+    "stall_share_gate_barrier": 0.30,
+    # Dominant-stall severity tiers, calibrated to KernelPro's published
+    # per-rule hit rates (KernelPro, arXiv:2606.26453): a stall class at 40% of
+    # issue-slots is tier "high", at 60% tier "critical". The previous high
+    # boundary here was 50% with no documented basis. The Finding severity
+    # enum stays four-valued (info|low|medium|high) because downstream sorters
+    # hard-code it; "critical" is recorded as a tier in the evidence instead.
+    "stall_share_high": 0.40,
+    "stall_share_critical": 0.60,
     # IssueSlotUtilization
     "issue_active_low": 0.6,
     "warp_ratio_gate": 0.8,
@@ -124,6 +144,12 @@ class Finding:
     # Upper bound on the win, as a multiplier (1.25 == "up to 25% faster").
     speedup_ceiling: Optional[float] = None
     source: str = "heuristic"  # heuristic | ncu_rule | expectation
+    # GPA-style bound from the closed stall stack (speedup_model.py). Only ever
+    # set on stall-backed findings, and only when the stall accounting closed;
+    # `speedup_basis` states the model and its assumptions in one sentence --
+    # or, when the bound is withheld, why.
+    estimated_speedup_upper_bound: Optional[float] = None
+    speedup_basis: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -135,6 +161,8 @@ class Finding:
             "evidence": self.evidence,
             "actions": list(self.actions),
             "speedup_ceiling": self.speedup_ceiling,
+            "estimated_speedup_upper_bound": self.estimated_speedup_upper_bound,
+            "speedup_basis": self.speedup_basis,
             "source": self.source,
         }
 
@@ -397,7 +425,16 @@ def analyze_stalls(view: MetricView, *, top_k: int = 6) -> Dict[str, Any]:
 
     for row in actionable[:top_k]:
         share = row["share_of_warp_latency"]
-        if share is None or not issue_gate_open or share <= gate_share:
+        # Barrier stalls trigger at their own, explicitly lower, gate
+        # (KernelPro, arXiv:2606.26453). Numerically it coincides with the
+        # NVIDIA CPIStall 30% general gate kept above; keeping both named
+        # means changing one cannot silently move the other.
+        gate = (
+            SOL_THRESHOLDS["stall_share_gate_barrier"]
+            if row["key"] == "barrier"
+            else gate_share
+        )
+        if share is None or not issue_gate_open or share <= gate:
             continue
         # Stall-elimination ceiling: removing a stall that occupies `share` of
         # warp latency can at best speed the kernel by 1/(1-share). This assumes
@@ -412,6 +449,17 @@ def analyze_stalls(view: MetricView, *, top_k: int = 6) -> Dict[str, Any]:
         # author after memory latency that is really pipeline sync.
         confounded = row["key"] == "long_scoreboard" and (
             view.get("inst_pipe_gmma") or view.get("pipe_tma_util")
+        )
+        # Severity tiers calibrated to KernelPro (arXiv:2606.26453):
+        # >=40% of issue-slots is "high", >=60% "critical". The severity enum
+        # has no "critical" level, so that tier maps to severity "high" and is
+        # recorded in the evidence.
+        tier = (
+            "critical"
+            if share >= SOL_THRESHOLDS["stall_share_critical"]
+            else "high"
+            if share >= SOL_THRESHOLDS["stall_share_high"]
+            else "moderate"
         )
         findings.append(
             Finding(
@@ -431,7 +479,9 @@ def analyze_stalls(view: MetricView, *, top_k: int = 6) -> Dict[str, Any]:
                     )
                 ),
                 severity=(
-                    "medium" if confounded else ("high" if share > 0.5 else "medium")
+                    "medium"
+                    if confounded
+                    else ("high" if tier in ("high", "critical") else "medium")
                 ),
                 confidence="high",
                 evidence={
@@ -440,6 +490,10 @@ def analyze_stalls(view: MetricView, *, top_k: int = 6) -> Dict[str, Any]:
                     "share_of_warp_latency": share,
                     "warp_cycles_per_issued_inst": total_latency,
                     "issue_active": issue_active,
+                    # KernelPro (arXiv:2606.26453) tier; "critical" has no
+                    # severity level of its own, so it lives here.
+                    "severity_tier": tier,
+                    "severity_tier_source": "KernelPro, arXiv:2606.26453",
                 },
                 actions=(
                     tuple(
@@ -811,6 +865,11 @@ def compute_roofline(view: MetricView, gpu_spec: Any = None) -> Dict[str, Any]:
     result["ridge_point"] = ridge
     result["dtype_basis"] = dtype
     result["dtype_basis_source"] = dtype_source
+    # The precision-specific ceiling actually applied, stated so a reader can
+    # check the grading basis without re-deriving it. Always the dense figure:
+    # sparsity-doubled peaks are derived on demand and never used here.
+    result["peak_tflops"] = gpu_spec.peak_tflops(dtype)
+    result["peak_tflops_basis"] = f"{dtype} dense peak, no sparsity ({dtype_source})"
 
     # When the precision is ambiguous, report the spread rather than picking one
     # and presenting it as fact. A reader who sees a single number will use it.
@@ -1022,6 +1081,73 @@ def _latency_hiding_is_failing(view: MetricView) -> Optional[bool]:
     return None
 
 
+# Catalog keys resolving to sm__pipe_* utilisation metrics, with the short pipe
+# name to use in prose. Used by the occupancy-advice suppression guard.
+_PIPE_UTIL_KEYS: Tuple[Tuple[str, str], ...] = (
+    ("pipe_tensor_util", "tensor"),
+    ("pipe_fma_util", "fma"),
+    ("pipe_alu_util", "alu"),
+    ("pipe_fp64_util", "fp64"),
+    ("pipe_tensor_hmma_util", "tensor (hmma)"),
+    ("pipe_tensor_imma_util", "tensor (imma)"),
+    ("pipe_tma_util", "tma"),
+    ("pipe_tc_util", "tc"),
+    ("shared_pipe_util", "shared"),
+    ("pipe_lsu_util", "lsu"),
+)
+
+# A pipe at or above this share of its peak is treated as saturated for the
+# purpose of occupancy advice.
+_PIPE_SATURATION_PCT = 80.0
+
+
+def _occupancy_advice_suppressor(view: MetricView) -> Optional[Dict[str, Any]]:
+    """Why "increase occupancy" advice would be wrong for this kernel, if it would.
+
+    ILP substitutes for occupancy (Volkov, GTC 2010: CUBLAS got *faster* as
+    occupancy fell from 67% to 33%): once an execution pipe is saturated, or
+    the issue slots are already busy, additional resident warps have nothing to
+    add -- they would queue behind the same saturated unit. Returns a dict
+    naming the saturated pipe (or the issue slots) and its utilisation, plus
+    the sentence a finding should carry in place of the suppressed advice; or
+    ``None`` when nothing is saturated and occupancy advice may stand.
+    """
+    saturated: List[Tuple[str, float]] = []
+    for key, label in _PIPE_UTIL_KEYS:
+        value = view.get(key)
+        if value is not None and value >= _PIPE_SATURATION_PCT:
+            saturated.append((label, float(value)))
+    if saturated:
+        pipe, pct = max(saturated, key=lambda kv: kv[1])
+        return {
+            "pipe": pipe,
+            "utilization_pct": pct,
+            "reason": (
+                f"occupancy is low but the {pipe} pipe is already ~{pct:.0f}% "
+                "utilized, so more warps would not increase throughput (ILP is "
+                "substituting for occupancy -- Volkov, GTC 2010)"
+            ),
+        }
+    issue_slot = view.get("issue_slot_util")
+    issue_active = view.get("issue_active")
+    issue_pct = (
+        issue_slot
+        if issue_slot is not None
+        else (issue_active * 100.0 if issue_active is not None else None)
+    )
+    if issue_pct is not None and issue_pct >= _PIPE_SATURATION_PCT:
+        return {
+            "pipe": "issue",
+            "utilization_pct": float(issue_pct),
+            "reason": (
+                f"occupancy is low but the schedulers already issue in "
+                f"~{issue_pct:.0f}% of slots, so more warps would not increase "
+                "throughput (ILP is substituting for occupancy -- Volkov, GTC 2010)"
+            ),
+        }
+    return None
+
+
 def _is_warp_specialized(view: MetricView) -> bool:
     """Detect a kernel that reallocates registers between warpgroups.
 
@@ -1083,6 +1209,14 @@ def analyze_occupancy(view: MetricView) -> Dict[str, Any]:
             "findings": [],
         }
 
+    # Occupancy-advice suppression guard. Independent of the SOL-based
+    # `_latency_hiding_is_failing` gate: the SOL figures use the _elapsed
+    # denominator and can sit low while a pipe is saturated whenever the SM is
+    # active. A saturated pipe means more warps cannot help (Volkov, GTC 2010),
+    # so the advice is replaced with a statement of why -- the finding must not
+    # vanish silently.
+    suppressor = _occupancy_advice_suppressor(view)
+
     if (
         theoretical is not None
         and theoretical < t["theoretical_occupancy_low"]
@@ -1098,6 +1232,17 @@ def analyze_occupancy(view: MetricView) -> Dict[str, Any]:
                 "design point rather than a defect."
             )
         )
+        severity = "medium" if theoretical < 50 else "low"
+        if suppressor is not None:
+            hedge += (
+                f" However, {suppressor['reason']}. The occupancy advice this "
+                "finding would normally carry is suppressed for that reason."
+            )
+            actions = (
+                "Do not raise occupancy: reduce the work landing in the "
+                f"saturated {suppressor['pipe']} pipe instead.",
+            )
+            severity = "info"
         findings.append(
             Finding(
                 category=f"occupancy_limited_{binding}",
@@ -1106,7 +1251,7 @@ def analyze_occupancy(view: MetricView) -> Dict[str, Any]:
                     f"{title} The launch configuration alone caps occupancy at {theoretical:.0f}%; "
                     f"the binding resource allows {present[binding]:.0f} warps.{hedge}"
                 ),
-                severity="medium" if theoretical < 50 else "low",
+                severity=severity,
                 confidence="high" if latency_failing else "low",
                 evidence={
                     "theoretical_occupancy_pct": theoretical,
@@ -1116,6 +1261,11 @@ def analyze_occupancy(view: MetricView) -> Dict[str, Any]:
                     "registers_per_thread": view.get("registers_per_thread"),
                     "shared_mem_per_block": view.get("shared_mem_per_block"),
                     "block_size": view.get("block_size"),
+                    **(
+                        {"occupancy_advice_suppressed": suppressor}
+                        if suppressor is not None
+                        else {}
+                    ),
                 },
                 actions=actions,
                 source="ncu_rule",
@@ -1125,6 +1275,11 @@ def analyze_occupancy(view: MetricView) -> Dict[str, Any]:
     if achieved is not None and theoretical is not None:
         gap = theoretical - achieved
         if gap > t["achieved_vs_theoretical_gap_pp"]:
+            gap_note = ""
+            if suppressor is not None:
+                gap_note = (
+                    f" Closing the gap would not pay here: {suppressor['reason']}."
+                )
             findings.append(
                 Finding(
                     category="occupancy_achieved_gap",
@@ -1133,6 +1288,7 @@ def analyze_occupancy(view: MetricView) -> Dict[str, Any]:
                         f"Achieved {achieved:.0f}% against a theoretical {theoretical:.0f}% "
                         f"({gap:.0f} points short). The launch config is not the constraint - "
                         "this is scheduling overhead, a tail wave, or imbalance between warps."
+                        + gap_note
                     ),
                     severity="medium",
                     confidence="high",
@@ -1141,12 +1297,23 @@ def analyze_occupancy(view: MetricView) -> Dict[str, Any]:
                         "theoretical_occupancy_pct": theoretical,
                         "gap_pp": gap,
                         "waves_per_sm": view.get("waves_per_sm"),
+                        **(
+                            {"occupancy_advice_suppressed": suppressor}
+                            if suppressor is not None
+                            else {}
+                        ),
                     },
                     actions=(
                         "Check waves per SM for a partial tail wave.",
                         "Look for per-block work imbalance (variable-length sequences, ragged batches).",
                     ),
-                    speedup_ceiling=(theoretical / achieved) if achieved > 0 else None,
+                    # A saturated pipe caps what closing the occupancy gap can
+                    # buy at nothing, so no ceiling is claimed for it.
+                    speedup_ceiling=(
+                        (theoretical / achieved)
+                        if achieved > 0 and suppressor is None
+                        else None
+                    ),
                     source="ncu_rule",
                 )
             )
@@ -1987,6 +2154,135 @@ _PIPE_ACTIONS: Dict[str, str] = {
 }
 
 
+# Gates for the special-function pressure rule. Both calibrated to the shape of
+# the FlashAttention-3 problem (arXiv:2407.08608): softmax's exp2 saturating the
+# SFU while the tensor pipe sits below its own limit.
+#
+# * The XU gate reuses the 60% "a pipe this busy is a limit" bar that
+#   analyze_instruction_mix already applies to every pipe -- one bar, not two.
+# * The tensor gate (20%) asks only that MMA work is a meaningful part of the
+#   kernel, so the FA3 remedy (overlap softmax with GEMM) has a GEMM to overlap
+#   with. Pure-elementwise transcendental kernels stay with the generic
+#   pipe_saturated finding, whose remedy (fewer transcendentals) is the right
+#   one for them.
+SFU_XU_NEAR_PEAK_PCT = 60.0
+SFU_TENSOR_MEANINGFUL_PCT = 20.0
+
+
+def analyze_sfu_pressure(view: MetricView, gpu_spec: Any = None) -> Dict[str, Any]:
+    """Special-function (XU/SFU) pressure in tensor-pipe kernels.
+
+    The FlashAttention-3 lesson: on H100 the dense FP16 tensor peak is ~989
+    TFLOP/s while the SFU special-function rate is ~3.9 TFLOP/s, so softmax's
+    exp (or a normalisation's rsqrt) can gate a kernel whose FLOP count is
+    overwhelmingly MMA work. The SpeedOfLight compute rollup hides this -- the
+    XU pipe is not what "compute throughput" measures -- and a FLOP roofline
+    never sees it at all, because the transcendental op count is noise next to
+    the GEMM FLOPs.
+
+    Fires only when all three hold: the tensor pipe shows meaningful activity
+    (there is a GEMM to overlap with), the XU pipe is near its peak (real
+    pressure, not an epilogue's stray rsqrt), and the tensor pipe is not itself
+    saturated (when it is, the MMA pipe is the limiter and relieving the SFU
+    buys nothing). An ordinary GEMM has XU at a few percent and never fires;
+    a fused GEMM+RMSNorm whose rsqrt is one op per row does not either.
+    """
+    findings: List[Finding] = []
+    result: Dict[str, Any] = {"findings": findings, "fired": False}
+
+    xu = view.get("inst_pipe_xu")
+    if xu is None:
+        result["available"] = False
+        result["reason"] = (
+            "sm__inst_executed_pipe_xu was not collected, so special-function "
+            "pressure was not assessed. Not assessed is not the same as absent."
+        )
+        return result
+
+    tensor = view.get("pipe_tensor_util")
+    result["available"] = True
+    result["xu_pct_of_peak_active"] = xu
+    result["tensor_pct_of_peak_active"] = tensor
+
+    if tensor is None or tensor < SFU_TENSOR_MEANINGFUL_PCT:
+        result["reason"] = (
+            f"Tensor pipe activity is "
+            f"{'absent from this report' if tensor is None else f'{tensor:.1f}% of peak'}, "
+            f"below the {SFU_TENSOR_MEANINGFUL_PCT:.0f}% gate: there is no GEMM to "
+            "overlap softmax/normalisation with, so this rule does not apply. "
+            "Transcendental pressure in non-tensor kernels is covered by the "
+            "instruction-mix pipe analysis."
+        )
+        return result
+    if xu < SFU_XU_NEAR_PEAK_PCT:
+        result["reason"] = (
+            f"XU/SFU pipe at {xu:.1f}% of peak is below the "
+            f"{SFU_XU_NEAR_PEAK_PCT:.0f}% gate: no special-function pressure. "
+            "The special-function share of this kernel (e.g. an RMSNorm "
+            "epilogue's rsqrt) is not on the critical path."
+        )
+        return result
+    if tensor >= SOL_THRESHOLDS["saturated"]:
+        result["reason"] = (
+            f"XU/SFU pipe is at {xu:.1f}% of peak, but the tensor pipe is itself "
+            f"saturated ({tensor:.1f}% >= {SOL_THRESHOLDS['saturated']:.0f}%): the "
+            "MMA pipe is the limiter, and relieving the SFU cannot buy time the "
+            "tensor pipe is already spending."
+        )
+        return result
+
+    # Real pressure. Quantify the imbalance against the hardware where we can;
+    # cite the canonical H100 figures where we cannot.
+    evidence: Dict[str, Any] = {
+        "inst_pipe_xu_pct_active": xu,
+        "pipe_tensor_util_pct_active": tensor,
+        "denominator": "active (not comparable with _elapsed SOL figures)",
+        "hardware_ratio": (
+            "H100 SXM: ~989 TFLOP/s dense FP16 tensor vs ~3.9 TFLOP/s SFU "
+            "special-function throughput, a ~254x gap (H100 datasheet, dense, "
+            "no sparsity; FlashAttention-3, arXiv:2407.08608)."
+        ),
+    }
+    sfu_peak = getattr(gpu_spec, "sfu_tflops", 0.0) or 0.0
+    tensor_peak = gpu_spec.peak_tflops("fp16") if gpu_spec is not None else None
+    if sfu_peak and tensor_peak:
+        evidence["gpu"] = gpu_spec.name
+        evidence["tensor_peak_fp16_dense_tflops"] = tensor_peak
+        evidence["sfu_peak_tflops"] = sfu_peak
+        evidence["tensor_to_sfu_ratio"] = round(tensor_peak / sfu_peak, 1)
+
+    result["fired"] = True
+    findings.append(
+        Finding(
+            category="pipe_sfu_softmax_bound",
+            title="Special-function (exp/rsqrt) bound - likely softmax or "
+            "normalisation critical path",
+            summary=(
+                f"The XU/SFU pipe runs at {xu:.0f}% of its peak while the tensor "
+                f"pipe sits at {tensor:.0f}% and is not the limiter. The "
+                "special-function rate is orders of magnitude below the tensor "
+                "peak, so the exp/rsqrt chain of a softmax or normalisation is "
+                "gating the MMA work rather than hiding behind it. Neither the "
+                "compute SOL rollup nor a FLOP roofline shows this: the "
+                "transcendental op count is noise next to the GEMM FLOPs."
+            ),
+            severity="high" if xu >= 80.0 else "medium",
+            confidence="medium",
+            evidence=evidence,
+            actions=(
+                "Overlap softmax/normalisation with GEMM via warpgroup pingpong "
+                "scheduling (FlashAttention-3): while one warpgroup evaluates its "
+                "exp/rsqrt chain, the other's GEMM keeps the tensor pipe busy.",
+                "Cut the transcendental count itself: use __expf/exp2f and "
+                "__frsqrt_rn where accuracy allows, and hoist repeated "
+                "evaluations out of the inner loop.",
+            ),
+            source="heuristic",
+        )
+    )
+    return result
+
+
 # A sector is 32 bytes on every architecture Nsight Compute supports. Used to
 # derive byte counts from the sector counters, which sections do collect, when
 # the direct byte counters (which they do not) are absent.
@@ -2078,6 +2374,18 @@ def hierarchical_roofline(view: MetricView, gpu_spec: Any = None) -> Dict[str, A
     result["available"] = bool(levels)
     result["total_flops"] = flops
     result["levels"] = levels
+    # Name each absent level and the counter that would supply it. An AI table
+    # with a silently missing row reads as a two-level hierarchy, which is a
+    # different (and wrong) locality story.
+    missing_levels: Dict[str, str] = {}
+    for name, remedy_metric in (
+        ("l1", "l1tex__t_bytes.sum (or l1tex__t_sectors.sum)"),
+        ("l2", "lts__t_bytes.sum (or lts__t_sectors.sum)"),
+        ("dram", "dram__bytes.sum (or dram__bytes_read/write.sum)"),
+    ):
+        if name not in levels:
+            missing_levels[name] = f"not collected; needs {remedy_metric}"
+    result["missing_levels"] = missing_levels
     if not levels:
         result["reason"] = (
             "No traffic counters at any level. Collect --section MemoryWorkloadAnalysis."
@@ -2143,6 +2451,14 @@ def hierarchical_roofline(view: MetricView, gpu_spec: Any = None) -> Dict[str, A
     if ai_l2 and ai_dram:
         ratio = ai_dram / ai_l2
         result["l2_to_dram_intensity_ratio"] = ratio
+        if ratio >= 4.0:
+            # The good case, stated so a reader does not have to infer it from
+            # a ratio: a wide L2-to-DRAM gap means the cache is absorbing the
+            # traffic. Not a finding -- nothing to fix.
+            result["l2_dram_locality_note"] = (
+                f"L2-to-DRAM intensity ratio is {ratio:.1f}x: the L2 cache is "
+                "absorbing most of the traffic that reaches it."
+            )
         if ratio < 1.5:
             findings.append(
                 Finding(
@@ -2164,6 +2480,70 @@ def hierarchical_roofline(view: MetricView, gpu_spec: Any = None) -> Dict[str, A
                     source="heuristic",
                 )
             )
+
+    # Per-level ceiling check: the DRAM roofline verdict stays the headline,
+    # but a kernel can clear the DRAM ridge (compute bound out there) while
+    # sitting below the *L2* ridge -- it demands more L2 bandwidth per FLOP
+    # than the machine has. That combination is the cache-blocking signature:
+    # raising reuse in L1/shared raises the L2-level AI directly. Only stated
+    # when the signal is clear (below 80% of the L2 ridge), because the L2
+    # bandwidth figure is a measured aggregate, not a datasheet number.
+    if gpu_spec is not None and ai_l2:
+        l2_bw_gbps = getattr(gpu_spec, "l2_bandwidth_gbps", 0.0) or 0.0
+        dtype = roofline.get("dtype_basis")
+        peak = gpu_spec.peak_tflops(dtype) if dtype else None
+        if l2_bw_gbps > 0 and peak:
+            l2_ridge = (peak * 1e12) / (l2_bw_gbps * 1e9)
+            result["l2_ridge_point"] = l2_ridge
+            result["l2_roofline_side"] = (
+                "compute_bound" if ai_l2 > l2_ridge else "memory_bound"
+            )
+            if (
+                roofline.get("roofline_side") == "compute_bound"
+                and ai_l2 < 0.8 * l2_ridge
+                and not roofline.get("flops_undercounted")
+            ):
+                findings.append(
+                    Finding(
+                        category="poor_cache_locality",
+                        title="Compute-bound at DRAM but L2-bandwidth-bound: "
+                        "cache-blocking opportunity",
+                        summary=(
+                            f"Against DRAM the kernel clears the ridge "
+                            f"(AI {ai_dram:.1f} > {roofline.get('ridge_point'):.1f} "
+                            f"FLOP/byte), but at L2 its intensity is {ai_l2:.1f} "
+                            f"against an L2 ridge of {l2_ridge:.1f}: it asks more "
+                            "L2 bandwidth per FLOP than the machine has. Blocking "
+                            "for L1/shared memory raises the L2-level intensity "
+                            "directly; more DRAM bandwidth changes nothing."
+                        )
+                        if ai_dram and roofline.get("ridge_point")
+                        else (
+                            f"The DRAM roofline says compute bound, but the L2-level "
+                            f"intensity {ai_l2:.1f} FLOP/byte is below the L2 ridge of "
+                            f"{l2_ridge:.1f}: L2 bandwidth, not math, caps this kernel. "
+                            "Cache-blocking (more reuse in L1/shared memory) is the lever."
+                        ),
+                        severity="medium",
+                        confidence="medium",
+                        evidence={
+                            "ai_l2": ai_l2,
+                            "ai_dram": ai_dram,
+                            "l2_ridge_point": l2_ridge,
+                            "dram_ridge_point": roofline.get("ridge_point"),
+                            "dtype_basis": dtype,
+                            "l2_bandwidth_gbps": l2_bw_gbps,
+                            "l2_bandwidth_source": "measured aggregate from the GPU "
+                            "spec table, not a datasheet figure",
+                        },
+                        actions=(
+                            "Block for L1/shared memory so each L2 line is reused "
+                            "before eviction; the L2-level AI must rise above "
+                            f"{l2_ridge:.0f} FLOP/byte before the math peak is reachable.",
+                        ),
+                        source="heuristic",
+                    )
+                )
 
     if ai_l1 and ai_dram and ai_dram / ai_l1 >= 4.0:
         result["locality_verdict"] = "healthy"
@@ -2193,6 +2573,164 @@ def hierarchical_roofline(view: MetricView, gpu_spec: Any = None) -> Dict[str, A
         f"{name.upper()} AI={info['arithmetic_intensity']:.2f} FLOP/byte"
         for name, info in levels.items()
     )
+    if missing_levels:
+        result["summary"] += " | not collected: " + ", ".join(
+            name.upper() for name in sorted(missing_levels)
+        )
+    return result
+
+
+# Warp-instruction issue slots per SM per cycle: four schedulers, each able to
+# issue one warp instruction per cycle, on every architecture since Volta
+# (CC >= 7.0). Stated as an assumption in the output because the instruction
+# ceiling is derived from it, not measured.
+_WARP_ISSUE_SLOTS_PER_SM = 4.0
+
+
+def instruction_roofline(view: MetricView, gpu_spec: Any = None) -> Dict[str, Any]:
+    """Instruction roofline: warp instructions/sec against instructions per transaction.
+
+    Following Ding & Williams, "An Instruction Roofline Model for GPUs"
+    (PMBS/SC 2019; the model behind GPU-Roofline-Python): plot warp-level
+    instruction throughput against warp instructions per 32-byte transaction,
+    the way the FLOP roofline plots FLOP/s against FLOP/byte. The point is the
+    kernels the FLOP roofline mislabels: an integer- or LSU-heavy kernel scores
+    near-zero FLOP intensity and reads as "low intensity, memory bound" while
+    its instruction throughput is at the issue ceiling -- the limiter is
+    instruction issue, and no memory fix will move it.
+
+    Everything here is derived from counters already extracted: warp
+    instructions from ``smsp__inst_executed.sum``, transactions from the
+    l1tex/lts sector counters (a sector is one 32B transaction) and DRAM bytes
+    / 32. The ceiling is ``SMs x 4 issue slots x measured SM clock``; when the
+    clock or SM count is absent the achieved rate is reported without a ceiling
+    rather than against an invented one.
+    """
+    findings: List[Finding] = []
+    result: Dict[str, Any] = {"findings": findings}
+
+    warp_inst = view.get("inst_executed")
+    duration_ns = view.get("duration_ns")
+    if warp_inst is None or not duration_ns:
+        result["available"] = False
+        missing = []
+        if warp_inst is None:
+            missing.append("smsp__inst_executed.sum")
+        if not duration_ns:
+            missing.append("gpu__time_duration.sum")
+        result["reason"] = (
+            f"Not computed: {', '.join(missing)} absent from this report. The "
+            "instruction roofline needs both; nothing was inferred in their place."
+        )
+        return result
+
+    result["available"] = True
+    result["warp_inst_executed"] = warp_inst
+    # inst / ns == G inst / s.
+    achieved_gips = warp_inst / duration_ns
+    result["achieved_warp_ginst_per_sec"] = achieved_gips
+
+    # Ceiling from first principles, cross-checkable against
+    # sm__inst_executed.avg.pct_of_peak_sustained_elapsed when collected.
+    sm_count = view.get("device_sm_count") or view.get("sm_count")
+    if not sm_count and gpu_spec is not None:
+        sm_count = getattr(gpu_spec, "sm_count", 0) or None
+    sm_clock_hz = view.get("sm_clock_hz")
+    pct_of_peak: Optional[float] = None
+    if sm_count and sm_clock_hz:
+        peak_gips = sm_count * _WARP_ISSUE_SLOTS_PER_SM * sm_clock_hz / 1e9
+        result["peak_warp_ginst_per_sec"] = peak_gips
+        result["peak_basis"] = (
+            f"{sm_count:.0f} SMs x {_WARP_ISSUE_SLOTS_PER_SM:.0f} issue slots x "
+            f"measured SM clock {sm_clock_hz / 1e9:.2f} GHz (4 schedulers/SM "
+            "assumed, true for CC >= 7.0)"
+        )
+        pct_of_peak = 100.0 * achieved_gips / peak_gips
+        result["pct_of_peak"] = pct_of_peak
+    else:
+        result["peak_warp_ginst_per_sec"] = None
+        result["pct_of_peak"] = None
+        result["peak_basis"] = (
+            "no ceiling: needs the SM count and the measured SM clock "
+            "(sm__cycles_elapsed.avg.per_second), at least one of which is absent"
+        )
+
+    # Instruction intensity per memory level: warp instructions per 32B
+    # transaction. Same fixed numerator at every level, like the AI hierarchy.
+    intensities: Dict[str, float] = {}
+    missing_levels: Dict[str, str] = {}
+    l1_sectors = view.get("l1_sectors_total")
+    if l1_sectors:
+        intensities["l1"] = warp_inst / l1_sectors
+    else:
+        missing_levels["l1"] = "needs l1tex__t_sectors.sum"
+    l2_sectors = view.get("l2_sectors_total")
+    if l2_sectors:
+        intensities["l2"] = warp_inst / l2_sectors
+    else:
+        missing_levels["l2"] = "needs lts__t_sectors.sum"
+    dram_bytes = view.get("dram_bytes")
+    if dram_bytes is None:
+        read, write = view.get("dram_bytes_read"), view.get("dram_bytes_write")
+        if read is not None or write is not None:
+            dram_bytes = (read or 0.0) + (write or 0.0)
+    if dram_bytes:
+        intensities["dram"] = warp_inst / (dram_bytes / _BYTES_PER_SECTOR)
+    else:
+        missing_levels["dram"] = "needs dram__bytes.sum"
+    result["warp_inst_per_transaction"] = intensities
+    result["missing_levels"] = missing_levels
+
+    if pct_of_peak is None:
+        result["interpretation"] = (
+            f"Achieved {achieved_gips:.1f} G warp-inst/s; no issue ceiling could "
+            "be derived, so whether instruction issue is the limiter is unknown."
+        )
+    elif pct_of_peak >= 60.0:
+        result["interpretation"] = (
+            f"Warp-instruction throughput is {pct_of_peak:.0f}% of the issue "
+            "ceiling: this kernel is instruction-issue bound. A FLOP roofline "
+            "cannot see this limit."
+        )
+        findings.append(
+            Finding(
+                category="pipe_instruction_issue_bound",
+                title="Instruction roofline: warp-instruction issue is the limit",
+                summary=(
+                    f"The kernel executes {achieved_gips:.1f} G warp-inst/s, "
+                    f"{pct_of_peak:.0f}% of the "
+                    f"{result['peak_warp_ginst_per_sec']:.0f} G/s issue ceiling. "
+                    "A FLOP roofline scores non-FLOP work (integer, address, "
+                    "load/store instructions) at zero intensity and mislabels a "
+                    "kernel like this as low-intensity/memory bound; the actual "
+                    "limiter is instruction issue (Ding & Williams, instruction "
+                    "roofline model, 2019)."
+                ),
+                severity="medium" if pct_of_peak < 80.0 else "high",
+                confidence="medium",
+                evidence={
+                    "achieved_warp_ginst_per_sec": achieved_gips,
+                    "peak_warp_ginst_per_sec": result["peak_warp_ginst_per_sec"],
+                    "pct_of_peak": pct_of_peak,
+                    "peak_basis": result["peak_basis"],
+                    "warp_inst_per_transaction": intensities,
+                },
+                actions=(
+                    "Execute fewer instructions for the same work: vectorise "
+                    "loads/stores to 128-bit, strength-reduce and hoist index "
+                    "arithmetic, and unroll to amortise loop overhead.",
+                    "Check the instruction-mix section for which pipe the "
+                    "instructions land in; the busiest pipe names the fix.",
+                ),
+                source="heuristic",
+            )
+        )
+    else:
+        result["interpretation"] = (
+            f"Warp-instruction throughput is {pct_of_peak:.0f}% of the issue "
+            "ceiling: instruction issue is not the limiter, and the FLOP "
+            "roofline verdict stands."
+        )
     return result
 
 
@@ -2408,6 +2946,33 @@ def analyze_issue_efficiency(view: MetricView) -> Dict[str, Any]:
                 "the resident warps are stalled rather than absent. Raising occupancy "
                 "would add more stalled warps."
             )
+        # Suppression guard (Volkov, GTC 2010): with a pipe saturated, the
+        # "increase occupancy" arm of the advice would be wrong regardless of
+        # how low occupancy is, so it is replaced with the reason -- stated,
+        # not silently dropped.
+        suppressor = _occupancy_advice_suppressor(view)
+        if suppressor is not None and not detail:
+            detail = (
+                f" Note: {suppressor['reason']}, so the occupancy arm of the "
+                "usual advice is suppressed."
+            )
+        action: str
+        if (active or 0) > 4.0:
+            action = (
+                "Read the stall breakdown before changing occupancy: it names what the "
+                "resident warps are waiting on."
+            )
+        elif suppressor is not None:
+            action = (
+                "Do not increase occupancy: shorten the dependency chains that make "
+                f"each warp ineligible, or move work off the saturated "
+                f"{suppressor['pipe']} pipe."
+            )
+        else:
+            action = (
+                "Increase occupancy so the scheduler has warps to switch to, or shorten "
+                "the dependency chains that make each warp ineligible."
+            )
         findings.append(
             Finding(
                 category="occupancy",
@@ -2424,14 +2989,13 @@ def analyze_issue_efficiency(view: MetricView) -> Dict[str, Any]:
                     "warps_eligible_per_scheduler": eligible,
                     "warps_active_per_scheduler": active,
                     "issue_slot_util_pct": issue,
+                    **(
+                        {"occupancy_advice_suppressed": suppressor}
+                        if suppressor is not None
+                        else {}
+                    ),
                 },
-                actions=(
-                    "Read the stall breakdown before changing occupancy: it names what the "
-                    "resident warps are waiting on."
-                    if (active or 0) > 4.0
-                    else "Increase occupancy so the scheduler has warps to switch to, or shorten "
-                    "the dependency chains that make each warp ineligible.",
-                ),
+                actions=(action,),
                 source="ncu_rule",
             )
         )
@@ -2724,6 +3288,8 @@ _ANALYSIS_REQUIREMENTS: Dict[str, Tuple[Tuple[str, ...], str]] = {
         ("l1_sectors_total", "l2_sectors_total", "l1_bytes_total"),
         "MemoryWorkloadAnalysis + FLOP counters",
     ),
+    "sfu_pressure": (("inst_pipe_xu",), "ComputeWorkloadAnalysis"),
+    "instruction_roofline": (("inst_executed",), "InstructionStats"),
 }
 
 
@@ -2853,7 +3419,9 @@ def diagnose_kernel(
     hierarchy = analyze_memory_hierarchy(view)
     issue = analyze_issue_efficiency(view)
     inst_mix = analyze_instruction_mix(view)
+    sfu = analyze_sfu_pressure(view, gpu_spec)
     hier_roofline = hierarchical_roofline(view, gpu_spec)
+    inst_roofline = instruction_roofline(view, gpu_spec)
 
     sections = {
         "bottleneck": bottleneck,
@@ -2870,7 +3438,9 @@ def diagnose_kernel(
         "memory_hierarchy": hierarchy,
         "issue_efficiency": issue,
         "instruction_mix": inst_mix,
+        "sfu_pressure": sfu,
         "hierarchical_roofline": hier_roofline,
+        "instruction_roofline": inst_roofline,
     }
 
     findings: List[Finding] = []
@@ -3009,10 +3579,25 @@ def diagnose_kernel(
     )
     findings = list(reconciliation["findings"])
 
+    # GPA-style speedup upper bounds for the stall-backed findings, from the
+    # closed stall stack. Withheld (with the reason stated) when the stack
+    # failed its closure check; never emitted for non-stall findings.
+    from .speedup_model import annotate_stall_speedup_bounds  # local: avoid cycle
+
+    annotate_stall_speedup_bounds(
+        findings,
+        stalls=stalls,
+        view=view,
+        gpu_spec=gpu_spec,
+        occupancy=occupancy,
+    )
+
+    # Rank by expected payoff where a bound exists (the GPA-style estimated
+    # bound outranks the older heuristic ceiling), within severity.
     findings.sort(
         key=lambda f: (
             _SEVERITY_ORDER.get(f.severity, 9),
-            -(f.speedup_ceiling or 1.0),
+            -(f.estimated_speedup_upper_bound or f.speedup_ceiling or 1.0),
         )
     )
 
@@ -3068,6 +3653,17 @@ def diagnose_kernel(
             # pair of reports half an apparent 12.4% speedup was the clock.
             "sm_clock_hz": view.get("sm_clock_hz"),
             "gpc_clock_hz": view.get("gpc_clock_hz"),
+            "dram_clock_hz": view.get("dram_clock_hz"),
+            # Rated (peak) clocks, so the clock-control bias check can compare
+            # the measured clocks against what the device is capable of. The
+            # device attributes are reported in kHz; the context wants Hz.
+            "rated_sm_clock_hz": (view.raw("device__attribute_clock_rate") or 0) * 1e3
+            or None,
+            "rated_dram_clock_hz": (
+                view.raw("device__attribute_memory_clock_rate") or 0
+            )
+            * 1e3
+            or None,
             **dict(collection or {}),
         }
     )
