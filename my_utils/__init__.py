@@ -361,6 +361,14 @@ class _LegacyAliasFinder(_importlib_abc.MetaPathFinder):
         target_name = _LEGACY_MODULE_ALIASES.get(fullname)
         if target_name is None:
             return None
+        import warnings
+
+        warnings.warn(
+            f"'{fullname}' is a legacy alias for '{target_name}' and will be "
+            f"removed in 0.3.0; import '{target_name}' instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         return _importlib_machinery.ModuleSpec(fullname, _LegacyAliasLoader(target_name))
 
 

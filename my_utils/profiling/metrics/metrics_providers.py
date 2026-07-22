@@ -7,6 +7,7 @@ import pstats
 import re
 import sqlite3
 import time
+import warnings
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
@@ -632,6 +633,13 @@ class _LegacyNsysSqliteMetricsProvider(BaseMetricsProvider):
     )
 
     def __init__(self, sqlite_path: str, *, provider_id: Optional[str] = None, enabled: bool = True) -> None:
+        warnings.warn(
+            "_LegacyNsysSqliteMetricsProvider is deprecated and will be removed "
+            "in 0.3.0; use NsysSqliteMetricsProvider "
+            "(my_utils.profiling.NsysSqliteMetricsProvider) instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         super().__init__(enabled=enabled)
         if provider_id:
             self.provider_id = str(provider_id)

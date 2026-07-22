@@ -1,5 +1,8 @@
+from importlib import abc as _importlib_abc
 from importlib import import_module
+from importlib import machinery as _importlib_machinery
 import sys
+import warnings
 
 from .adapters import (
     DEFAULT_ADAPTER_REGISTRY,
@@ -239,7 +242,13 @@ if VISUALIZATION_AVAILABLE:
     )
 
 
-# Compatibility aliases for legacy flat module paths under my_utils.profiling.
+# Deprecated compatibility aliases for legacy flat module paths under
+# my_utils.profiling.  Resolved lazily (PEP 562 module __getattr__ for
+# attribute access, plus a meta-path finder for statement-form imports such as
+# `from my_utils.profiling.metrics_types import MetricEvent`).  Accessing any
+# of these emits a DeprecationWarning; plain `import my_utils.profiling` and
+# the modern public API emit no warnings.  These aliases will be removed in
+# 0.3.0.
 _LEGACY_MODULE_ALIASES = {
     "my_utils.profiling.analysis_rules": "my_utils.profiling.analyzers.analysis_rules",
     "my_utils.profiling.distributed_alignment": "my_utils.profiling.analyzers.distributed_alignment",
@@ -275,14 +284,80 @@ _LEGACY_MODULE_ALIASES = {
 }
 
 
+# Attribute-access view of the same mapping: flat name -> (legacy path, target path).
+_LEGACY_ATTR_ALIASES = {
+    legacy_name.rsplit(".", 1)[1]: (legacy_name, target_name)
+    for legacy_name, target_name in _LEGACY_MODULE_ALIASES.items()
+}
+
+
+def _warn_legacy_alias(legacy_name: str, target_name: str, *, stacklevel: int = 2) -> None:
+    warnings.warn(
+        f"{legacy_name} is deprecated and will be removed in 0.3.0; "
+        f"import {target_name} instead.",
+        DeprecationWarning,
+        stacklevel=stacklevel,
+    )
+
+
+def __getattr__(name: str):
+    """PEP 562 hook serving deprecated flat-module aliases on attribute access.
+
+    Fires only when a legacy flat name is accessed (e.g.
+    ``my_utils.profiling.metrics_types``); never on plain
+    ``import my_utils.profiling`` or on modern public API access.
+    """
+    entry = _LEGACY_ATTR_ALIASES.get(name)
+    if entry is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    legacy_name, target_name = entry
+    _warn_legacy_alias(legacy_name, target_name)
+    module = import_module(target_name)
+    sys.modules.setdefault(legacy_name, module)
+    return module
+
+
+def __dir__():
+    return sorted(set(globals()) | set(_LEGACY_ATTR_ALIASES))
+
+
+class _LegacyAliasLoader(_importlib_abc.Loader):
+    """Loader resolving a deprecated legacy alias by importing its target.
+
+    ``exec_module`` swaps the freshly created placeholder for the real target
+    module in ``sys.modules``; the import machinery re-reads ``sys.modules``
+    after execution, so the legacy name ends up bound to the target module.
+    """
+
+    def __init__(self, target_name: str) -> None:
+        self._target_name = target_name
+
+    def create_module(self, spec):
+        return None  # use default module creation
+
+    def exec_module(self, module) -> None:
+        sys.modules[module.__name__] = import_module(self._target_name)
+
+
+class _LegacyAliasFinder(_importlib_abc.MetaPathFinder):
+    """Meta-path finder serving `my_utils.profiling.<flat_name>` aliases lazily.
+
+    Handles statement-form imports (``import my_utils.profiling.metrics_types``
+    or ``from my_utils.profiling.metrics_types import X``) that module-level
+    ``__getattr__`` cannot intercept, emitting the same DeprecationWarning.
+    """
+
+    def find_spec(self, fullname, path=None, target=None):
+        target_name = _LEGACY_MODULE_ALIASES.get(fullname)
+        if target_name is None:
+            return None
+        _warn_legacy_alias(fullname, target_name)
+        return _importlib_machinery.ModuleSpec(fullname, _LegacyAliasLoader(target_name))
+
+
 def _register_legacy_module_aliases() -> None:
-    for legacy_name, target_name in _LEGACY_MODULE_ALIASES.items():
-        if legacy_name in sys.modules:
-            continue
-        try:
-            sys.modules[legacy_name] = import_module(target_name)
-        except Exception:
-            continue
+    if not any(isinstance(finder, _LegacyAliasFinder) for finder in sys.meta_path):
+        sys.meta_path.append(_LegacyAliasFinder())
 
 
 _register_legacy_module_aliases()

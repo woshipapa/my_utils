@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass
 from typing import Optional
 
@@ -52,13 +53,13 @@ class NsysLaunchConfig:
 
     # Preferred field for modern nsys; retained legacy alias below for compatibility.
     gpu_metrics_devices: str = ""
-    # Legacy alias retained so old configs still work.
+    # Deprecated legacy alias (warns when set; removed in 0.3.0). Use gpu_metrics_devices.
     gpu_metrics_device: str = ""
 
     sample: str = ""
     cudabacktrace: bool = False
 
-    # Legacy boolean toggle retained for compatibility.
+    # Deprecated legacy boolean toggle (warns when set; removed in 0.3.0). Use nic_metrics_mode.
     nic_metrics: bool = False
     # Preferred explicit mode: lf | hf | none (or legacy true/false strings).
     nic_metrics_mode: str = ""
@@ -72,3 +73,21 @@ class NsysLaunchConfig:
     nvtx_capture: str = ""
     nvtx_domain_include: str = ""
     nvtx_domain_exclude: str = ""
+
+    def __post_init__(self) -> None:
+        # Deprecation shims: warn only when a legacy field is actually used, so
+        # default construction and modern configs stay warning-free.
+        if self.gpu_metrics_device:
+            warnings.warn(
+                "NsysLaunchConfig.gpu_metrics_device is deprecated and will be "
+                "removed in 0.3.0; use gpu_metrics_devices instead.",
+                DeprecationWarning,
+                stacklevel=3,
+            )
+        if self.nic_metrics:
+            warnings.warn(
+                "NsysLaunchConfig.nic_metrics is deprecated and will be removed "
+                "in 0.3.0; use nic_metrics_mode ('lf', 'hf', or 'none') instead.",
+                DeprecationWarning,
+                stacklevel=3,
+            )
