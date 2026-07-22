@@ -369,7 +369,9 @@ class _LegacyAliasFinder(_importlib_abc.MetaPathFinder):
             DeprecationWarning,
             stacklevel=2,
         )
-        return _importlib_machinery.ModuleSpec(fullname, _LegacyAliasLoader(target_name))
+        return _importlib_machinery.ModuleSpec(
+            fullname, _LegacyAliasLoader(target_name)
+        )
 
 
 def _register_legacy_module_aliases() -> None:

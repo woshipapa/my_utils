@@ -5,7 +5,6 @@ import ast
 import argparse
 import inspect
 import json
-import os
 import re
 import urllib.request
 from datetime import datetime, timezone
@@ -71,7 +70,9 @@ def _extract_top_level_assignments_from_source(source: str, filename: str) -> li
     return names
 
 
-def _split_backends(all_backends: list[str], stable_backends: list[str]) -> dict[str, list[str]]:
+def _split_backends(
+    all_backends: list[str], stable_backends: list[str]
+) -> dict[str, list[str]]:
     stable = sorted(stable_backends)
     stable_set = set(stable)
     experimental = sorted([name for name in all_backends if name not in stable_set])
@@ -110,7 +111,9 @@ def _build_payload() -> dict[str, Any]:
             "inductor_option_count": len(inductor_option_names),
         },
         "source_discovery": {
-            "dynamo_config_flags": sorted(set(_extract_top_level_assignments(dynamo_config))),
+            "dynamo_config_flags": sorted(
+                set(_extract_top_level_assignments(dynamo_config))
+            ),
             "dynamo_env_vars": _extract_env_vars(dynamo_config),
             "inductor_env_vars": _extract_env_vars(inductor_config),
         },
@@ -169,9 +172,14 @@ def _extract_mode_options_from_source(source: str) -> dict[str, Any]:
                 if isinstance(target, ast.Name) and target.id == "mode_options":
                     if isinstance(node.value, ast.Dict):
                         result: dict[str, Any] = {}
-                        for key_node, value_node in zip(node.value.keys, node.value.values):
+                        for key_node, value_node in zip(
+                            node.value.keys, node.value.values
+                        ):
                             key = ast.literal_eval(key_node)
-                            if isinstance(value_node, ast.Name) and value_node.id in dict_assignments:
+                            if (
+                                isinstance(value_node, ast.Name)
+                                and value_node.id in dict_assignments
+                            ):
                                 result[key] = dict_assignments[value_node.id]
                             else:
                                 result[key] = ast.literal_eval(value_node)
@@ -183,7 +191,10 @@ def _extract_mode_options_from_source(source: str) -> dict[str, Any]:
                     result: dict[str, Any] = {}
                     for key_node, value_node in zip(node.value.keys, node.value.values):
                         key = ast.literal_eval(key_node)
-                        if isinstance(value_node, ast.Name) and value_node.id in dict_assignments:
+                        if (
+                            isinstance(value_node, ast.Name)
+                            and value_node.id in dict_assignments
+                        ):
                             result[key] = dict_assignments[value_node.id]
                         else:
                             result[key] = ast.literal_eval(value_node)
@@ -196,17 +207,31 @@ def _build_upstream_payload(version: str) -> dict[str, Any]:
     dynamo_config_url = f"https://raw.githubusercontent.com/pytorch/pytorch/{tag}/torch/_dynamo/config.py"
     inductor_config_url = f"https://raw.githubusercontent.com/pytorch/pytorch/{tag}/torch/_inductor/config.py"
     inductor_init_url = f"https://raw.githubusercontent.com/pytorch/pytorch/{tag}/torch/_inductor/__init__.py"
-    compile_doc_url = "https://docs.pytorch.org/docs/stable/generated/torch.compile.html"
+    compile_doc_url = (
+        "https://docs.pytorch.org/docs/stable/generated/torch.compile.html"
+    )
     dynamic_doc_url = "https://docs.pytorch.org/docs/stable/user_guide/torch_compiler/torch.compiler_dynamic_shapes.html"
-    troubleshooting_doc_url = "https://docs.pytorch.org/docs/stable/torch.compiler_troubleshooting.html"
+    troubleshooting_doc_url = (
+        "https://docs.pytorch.org/docs/stable/torch.compiler_troubleshooting.html"
+    )
 
     dynamo_source = _http_get_text(dynamo_config_url)
     inductor_source = _http_get_text(inductor_config_url)
     inductor_init_source = _http_get_text(inductor_init_url)
 
     mode_options = _extract_mode_options_from_source(inductor_init_source)
-    inductor_option_names = sorted(set(_extract_top_level_assignments_from_source(inductor_source, inductor_config_url)))
-    dynamo_flag_names = sorted(set(_extract_top_level_assignments_from_source(dynamo_source, dynamo_config_url)))
+    inductor_option_names = sorted(
+        set(
+            _extract_top_level_assignments_from_source(
+                inductor_source, inductor_config_url
+            )
+        )
+    )
+    dynamo_flag_names = sorted(
+        set(
+            _extract_top_level_assignments_from_source(dynamo_source, dynamo_config_url)
+        )
+    )
 
     payload: dict[str, Any] = {
         "metadata": {
@@ -267,7 +292,11 @@ def _yaml_scalar(value: Any) -> str:
     if isinstance(value, (int, float)):
         return str(value)
     text = str(value)
-    if text == "" or any(ch in text for ch in [":", "#", "{", "}", "[", "]", ",", "\n", '"']) or text.strip() != text:
+    if (
+        text == ""
+        or any(ch in text for ch in [":", "#", "{", "}", "[", "]", ",", "\n", '"'])
+        or text.strip() != text
+    ):
         return json.dumps(text, ensure_ascii=False)
     return text
 
@@ -313,21 +342,37 @@ def _load_existing_yaml_like(path: Path) -> dict[str, Any]:
 def _update_version_index(entry: dict[str, Any]) -> None:
     payload = _load_existing_yaml_like(VERSION_INDEX_OUTPUT)
     payload.setdefault("catalogs", [])
-    catalogs = [item for item in payload["catalogs"] if not (item.get("catalog_kind") == entry["catalog_kind"] and item.get("torch_version") == entry["torch_version"])]
+    catalogs = [
+        item
+        for item in payload["catalogs"]
+        if not (
+            item.get("catalog_kind") == entry["catalog_kind"]
+            and item.get("torch_version") == entry["torch_version"]
+        )
+    ]
     catalogs.append(entry)
-    catalogs.sort(key=lambda item: (str(item.get("catalog_kind", "")), str(item.get("torch_version", ""))))
+    catalogs.sort(
+        key=lambda item: (
+            str(item.get("catalog_kind", "")),
+            str(item.get("torch_version", "")),
+        )
+    )
     payload["catalogs"] = catalogs
     VERSION_INDEX_OUTPUT.write_text(_dump_yaml(payload), encoding="utf-8")
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Generate torch.compile config catalogs.")
+    parser = argparse.ArgumentParser(
+        description="Generate torch.compile config catalogs."
+    )
     parser.add_argument(
         "--catalog-kind",
         choices=("runtime", "upstream", "latest-upstream"),
         default="runtime",
     )
-    parser.add_argument("--torch-version", default=None, help="Used with --catalog-kind=upstream.")
+    parser.add_argument(
+        "--torch-version", default=None, help="Used with --catalog-kind=upstream."
+    )
     parser.add_argument("--output", default=None)
     args = parser.parse_args()
 
@@ -335,15 +380,30 @@ def main() -> None:
         payload = _build_payload()
         version = payload["metadata"]["torch_version"]
         output_path = Path(args.output) if args.output else DEFAULT_OUTPUT
-        versioned_output = THIS_DIR / f"torch_compile_catalog.torch-{_sanitize_version(version)}.snapshot.yaml"
+        versioned_output = (
+            THIS_DIR
+            / f"torch_compile_catalog.torch-{_sanitize_version(version)}.snapshot.yaml"
+        )
     else:
         version = args.torch_version or _fetch_latest_pypi_version()
         payload = _build_upstream_payload(version)
         if args.catalog_kind == "latest-upstream":
-            output_path = Path(args.output) if args.output else THIS_DIR / "torch_compile_catalog.latest-upstream.snapshot.yaml"
+            output_path = (
+                Path(args.output)
+                if args.output
+                else THIS_DIR / "torch_compile_catalog.latest-upstream.snapshot.yaml"
+            )
         else:
-            output_path = Path(args.output) if args.output else THIS_DIR / f"torch_compile_catalog.upstream-{_sanitize_version(version)}.snapshot.yaml"
-        versioned_output = THIS_DIR / f"torch_compile_catalog.upstream-{_sanitize_version(version)}.snapshot.yaml"
+            output_path = (
+                Path(args.output)
+                if args.output
+                else THIS_DIR
+                / f"torch_compile_catalog.upstream-{_sanitize_version(version)}.snapshot.yaml"
+            )
+        versioned_output = (
+            THIS_DIR
+            / f"torch_compile_catalog.upstream-{_sanitize_version(version)}.snapshot.yaml"
+        )
 
     text = _dump_yaml(payload)
     output_path.write_text(text, encoding="utf-8")
@@ -351,7 +411,9 @@ def main() -> None:
         versioned_output.write_text(text, encoding="utf-8")
     _update_version_index(
         {
-            "catalog_kind": payload["metadata"].get("catalog_kind", "runtime_generated"),
+            "catalog_kind": payload["metadata"].get(
+                "catalog_kind", "runtime_generated"
+            ),
             "torch_version": version,
             "primary_file": str(output_path.name),
             "versioned_file": str(versioned_output.name),

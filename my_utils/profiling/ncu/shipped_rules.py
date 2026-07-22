@@ -34,7 +34,7 @@ into a kernel-level ceiling.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 from .ncu_diagnostics import Finding
@@ -65,6 +65,7 @@ def _norm(text: Any) -> str:
 def _classify_identifier(*candidates: Any) -> str:
     """Map a shipped rule onto an axis id, or "" when unrecognised."""
     from ..analyzers.axes import axis_for_shipped_rule  # local: avoid a cycle
+
     return axis_for_shipped_rule(*candidates)
 
 
@@ -89,10 +90,10 @@ class ShippedRule:
     message_title: str = ""
     message_type: str = ""
     speedup: Optional[float] = None
-    speedup_type: str = ""          # "global" | "local" | ""
+    speedup_type: str = ""  # "global" | "local" | ""
     focus_metrics: Tuple[Dict[str, Any], ...] = ()
     kernel_name: str = ""
-    axis: str = ""                  # canonical axis id, or "" when unrecognised
+    axis: str = ""  # canonical axis id, or "" when unrecognised
 
     @property
     def is_actionable(self) -> bool:
@@ -186,19 +187,21 @@ def normalize_shipped_rules(raw_rules: Iterable[Any]) -> List[ShippedRule]:
         name = str(item.get("rule_name", item.get("name", "")) or "")
         section = str(item.get("section_identifier", "") or "")
 
-        out.append(ShippedRule(
-            rule_identifier=identifier,
-            rule_name=name,
-            section_identifier=section,
-            message=str(message or ""),
-            message_title=str(title or ""),
-            message_type=str(msg_type or ""),
-            speedup=speedup,
-            speedup_type=str(speedup_type or ""),
-            focus_metrics=tuple(focus),
-            kernel_name=str(item.get("kernel_name", "") or ""),
-            axis=_classify_identifier(identifier, name, section),
-        ))
+        out.append(
+            ShippedRule(
+                rule_identifier=identifier,
+                rule_name=name,
+                section_identifier=section,
+                message=str(message or ""),
+                message_title=str(title or ""),
+                message_type=str(msg_type or ""),
+                speedup=speedup,
+                speedup_type=str(speedup_type or ""),
+                focus_metrics=tuple(focus),
+                kernel_name=str(item.get("kernel_name", "") or ""),
+                axis=_classify_identifier(identifier, name, section),
+            )
+        )
     return out
 
 
@@ -226,7 +229,11 @@ def shipped_rules_to_findings(rules: Sequence[ShippedRule]) -> List[Finding]:
             evidence["ncu_speedup_scope"] = rule.speedup_type or "unspecified"
 
         actions: List[str] = []
-        if rule.speedup is not None and rule.speedup_ceiling is None and rule.speedup > 0:
+        if (
+            rule.speedup is not None
+            and rule.speedup_ceiling is None
+            and rule.speedup > 0
+        ):
             # The trap worth naming: a large LOCAL number on a small section.
             actions.append(
                 "Nsight Compute reported this speedup as LOCAL to its section, not "
@@ -234,17 +241,20 @@ def shipped_rules_to_findings(rules: Sequence[ShippedRule]) -> List[Finding]:
                 "before treating it as a kernel-level win."
             )
 
-        findings.append(Finding(
-            category=rule.axis or "ncu_shipped_rule",
-            title=rule.message_title or (rule.rule_identifier or "Nsight Compute rule"),
-            summary=rule.message or "(the rule fired but carried no message text)",
-            severity="medium",
-            confidence="high",
-            evidence=evidence,
-            actions=tuple(actions),
-            speedup_ceiling=rule.speedup_ceiling,
-            source="ncu_rule",
-        ))
+        findings.append(
+            Finding(
+                category=rule.axis or "ncu_shipped_rule",
+                title=rule.message_title
+                or (rule.rule_identifier or "Nsight Compute rule"),
+                summary=rule.message or "(the rule fired but carried no message text)",
+                severity="medium",
+                confidence="high",
+                evidence=evidence,
+                actions=tuple(actions),
+                speedup_ceiling=rule.speedup_ceiling,
+                source="ncu_rule",
+            )
+        )
     return findings
 
 
@@ -253,7 +263,10 @@ def shipped_rules_to_findings(rules: Sequence[ShippedRule]) -> List[Finding]:
 # are genuinely exclusive; elsewhere two rules firing is not a conflict.
 _BOTTLENECK_TERMS: Tuple[Tuple[str, Tuple[str, ...]], ...] = (
     ("compute", ("computebound", "smbound", "computethroughput", "compute_bound")),
-    ("memory", ("memorybound", "membound", "drambound", "memorythroughput", "memory_bound")),
+    (
+        "memory",
+        ("memorybound", "membound", "drambound", "memorythroughput", "memory_bound"),
+    ),
     ("latency", ("latencybound", "latency_bound", "lowutilization", "unusedwarps")),
 )
 
@@ -332,20 +345,28 @@ def reconcile_with_shipped_rules(
                 adjusted.append(finding)
             else:
                 uncorroborated.append(axis)
-                adjusted.append(_with_evidence(finding, {
-                    "corroboration": (
-                        f"No Nsight Compute rule fired on the '{axis}' axis in this "
-                        "report. That is weaker support, not a contradiction."
-                    ),
-                }))
+                adjusted.append(
+                    _with_evidence(
+                        finding,
+                        {
+                            "corroboration": (
+                                f"No Nsight Compute rule fired on the '{axis}' axis in this "
+                                "report. That is weaker support, not a contradiction."
+                            ),
+                        },
+                    )
+                )
             continue
 
         corroborated.append(axis)
         names = [m.rule_identifier or m.rule_name or "(unnamed)" for m in matches]
-        promoted = _with_evidence(finding, {
-            "corroborated_by_ncu_rule": names,
-            "corroborating_message": matches[0].message[:400],
-        })
+        promoted = _with_evidence(
+            finding,
+            {
+                "corroborated_by_ncu_rule": names,
+                "corroborating_message": matches[0].message[:400],
+            },
+        )
         # Independent agreement is exactly what should move confidence up.
         if promoted.confidence != "high":
             promoted = _replace_confidence(promoted, "high")
@@ -357,21 +378,23 @@ def reconcile_with_shipped_rules(
 
     conflicts = _bottleneck_conflicts(our_verdict, actionable)
     for conflict in conflicts:
-        adjusted.append(Finding(
-            category="evidence_conflict",
-            title="Our bottleneck verdict disagrees with Nsight Compute's own rule",
-            summary=conflict["summary"],
-            severity="high",
-            confidence="high",
-            evidence=conflict,
-            actions=(
-                "Do not act on either verdict yet. Read the SpeedOfLight section "
-                "directly: check whether Compute and Memory throughput were read "
-                "from the same denominator (_elapsed for both), and whether the "
-                "report has the counters both verdicts depend on.",
-            ),
-            source="evidence",
-        ))
+        adjusted.append(
+            Finding(
+                category="evidence_conflict",
+                title="Our bottleneck verdict disagrees with Nsight Compute's own rule",
+                summary=conflict["summary"],
+                severity="high",
+                confidence="high",
+                evidence=conflict,
+                actions=(
+                    "Do not act on either verdict yet. Read the SpeedOfLight section "
+                    "directly: check whether Compute and Memory throughput were read "
+                    "from the same denominator (_elapsed for both), and whether the "
+                    "report has the counters both verdicts depend on.",
+                ),
+                source="evidence",
+            )
+        )
 
     return {
         "shipped_rules_available": True,
@@ -391,20 +414,23 @@ def reconcile_with_shipped_rules(
 # Analyses we implement that Nsight Compute does not ship a rule for. Their
 # absence from the shipped rules says nothing, so they are not marked
 # uncorroborated -- doing so would read as doubt where none is warranted.
-_NEVER_SHIPPED_BY_NVIDIA = frozenset({
-    "roofline",              # placement against an absolute ceiling needs a GPU spec
-    "workload_expectation",  # "a GEMM should hit tensor cores" is our rule
-    "tile_quantization",
-    "wave_quantization",
-    "measurement_caveat",
-    "evidence_conflict",
-    "uninformative_name",
-    "coverage",
-})
+_NEVER_SHIPPED_BY_NVIDIA = frozenset(
+    {
+        "roofline",  # placement against an absolute ceiling needs a GPU spec
+        "workload_expectation",  # "a GEMM should hit tensor cores" is our rule
+        "tile_quantization",
+        "wave_quantization",
+        "measurement_caveat",
+        "evidence_conflict",
+        "uninformative_name",
+        "coverage",
+    }
+)
 
 
 def _bottleneck_conflicts(
-    our_verdict: str, actionable: Sequence[ShippedRule],
+    our_verdict: str,
+    actionable: Sequence[ShippedRule],
 ) -> List[Dict[str, Any]]:
     """Find genuine compute-vs-memory disagreements, ignoring vocabulary noise."""
     ours = _bottleneck_terms(our_verdict)
@@ -420,21 +446,24 @@ def _bottleneck_conflicts(
             continue
         # Only compute-vs-memory is exclusive. Latency coexists with either:
         # a memory-bound kernel is usually also latency bound.
-        if ("compute" in ours and "memory" in theirs and "compute" not in theirs) or \
-           ("memory" in ours and "compute" in theirs and "memory" not in theirs):
-            conflicts.append({
-                "summary": (
-                    f"Our engine classified this kernel as {sorted(ours)} bound; "
-                    f"Nsight Compute's own rule "
-                    f"'{rule.rule_identifier or rule.rule_name}' reported "
-                    f"{sorted(theirs)} bound. One of the two is reading the wrong "
-                    "number -- most often a Speed-Of-Light comparison that mixes "
-                    "the _active and _elapsed denominators."
-                ),
-                "our_verdict": our_verdict,
-                "ncu_rule": rule.rule_identifier or rule.rule_name,
-                "ncu_message": rule.message[:400],
-            })
+        if ("compute" in ours and "memory" in theirs and "compute" not in theirs) or (
+            "memory" in ours and "compute" in theirs and "memory" not in theirs
+        ):
+            conflicts.append(
+                {
+                    "summary": (
+                        f"Our engine classified this kernel as {sorted(ours)} bound; "
+                        f"Nsight Compute's own rule "
+                        f"'{rule.rule_identifier or rule.rule_name}' reported "
+                        f"{sorted(theirs)} bound. One of the two is reading the wrong "
+                        "number -- most often a Speed-Of-Light comparison that mixes "
+                        "the _active and _elapsed denominators."
+                    ),
+                    "our_verdict": our_verdict,
+                    "ncu_rule": rule.rule_identifier or rule.rule_name,
+                    "ncu_message": rule.message[:400],
+                }
+            )
     return conflicts
 
 

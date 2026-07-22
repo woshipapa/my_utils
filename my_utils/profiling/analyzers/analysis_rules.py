@@ -3,7 +3,7 @@ from __future__ import annotations
 import statistics
 from abc import ABC, abstractmethod
 from collections import defaultdict
-from typing import Dict, Iterable, List, Optional
+from typing import Dict, List, Optional
 
 from .distributed_alignment import analyze_rank_skew
 from ..metrics.metrics_types import Bottleneck, Finding, MetricEvent
@@ -65,7 +65,9 @@ class AnalysisRule(ABC):
     rule_id = "rule"
 
     @abstractmethod
-    def apply(self, events: List[MetricEvent], context: Dict[str, object]) -> Optional[Finding]:
+    def apply(
+        self, events: List[MetricEvent], context: Dict[str, object]
+    ) -> Optional[Finding]:
         raise NotImplementedError
 
     def recommendations(self, finding: Finding) -> List[str]:
@@ -78,7 +80,9 @@ class LatencyBottleneckRule(AnalysisRule):
     def __init__(self, share_threshold: float = 0.10) -> None:
         self.share_threshold = float(share_threshold)
 
-    def apply(self, events: List[MetricEvent], context: Dict[str, object]) -> Optional[Finding]:
+    def apply(
+        self, events: List[MetricEvent], context: Dict[str, object]
+    ) -> Optional[Finding]:
         grouped: Dict[str, List[float]] = defaultdict(list)
         total_ms = 0.0
         for event in events:
@@ -139,11 +143,15 @@ class MemoryGrowthRule(AnalysisRule):
     def __init__(self, growth_bytes_per_step: float = 10 * 1024 * 1024) -> None:
         self.growth_bytes_per_step = float(growth_bytes_per_step)
 
-    def apply(self, events: List[MetricEvent], context: Dict[str, object]) -> Optional[Finding]:
+    def apply(
+        self, events: List[MetricEvent], context: Dict[str, object]
+    ) -> Optional[Finding]:
         step_series: Dict[str, List[tuple[int, float]]] = defaultdict(list)
         peaks: Dict[str, float] = {}
         for event in events:
-            if not (event.name.startswith("memory.") or str(event.unit).lower() == "bytes"):
+            if not (
+                event.name.startswith("memory.") or str(event.unit).lower() == "bytes"
+            ):
                 continue
             value = _to_float(event.value)
             if value is None:
@@ -182,7 +190,9 @@ class MemoryGrowthRule(AnalysisRule):
             finding_type="memory",
             severity=severity,
             title="Memory Growth Analysis",
-            description="Detected memory growth trends across steps." if growth_items else "Memory metrics collected.",
+            description="Detected memory growth trends across steps."
+            if growth_items
+            else "Memory metrics collected.",
             data={
                 "growth_threshold_bytes_per_step": self.growth_bytes_per_step,
                 "growth_items": growth_items,
@@ -207,7 +217,9 @@ class LatencyVarianceRule(AnalysisRule):
         self.cv_threshold = float(cv_threshold)
         self.min_samples = int(min_samples)
 
-    def apply(self, events: List[MetricEvent], context: Dict[str, object]) -> Optional[Finding]:
+    def apply(
+        self, events: List[MetricEvent], context: Dict[str, object]
+    ) -> Optional[Finding]:
         grouped: Dict[str, List[float]] = defaultdict(list)
         for event in events:
             if not event.name.startswith("latency."):
@@ -262,7 +274,9 @@ class LatencyOutlierRule(AnalysisRule):
         self.z_threshold = float(z_threshold)
         self.min_samples = int(min_samples)
 
-    def apply(self, events: List[MetricEvent], context: Dict[str, object]) -> Optional[Finding]:
+    def apply(
+        self, events: List[MetricEvent], context: Dict[str, object]
+    ) -> Optional[Finding]:
         grouped: Dict[str, List[float]] = defaultdict(list)
         for event in events:
             if not event.name.startswith("latency."):
@@ -312,7 +326,9 @@ class CommunicationImbalanceRule(AnalysisRule):
     def __init__(self, imbalance_ratio_threshold: float = 1.25) -> None:
         self.imbalance_ratio_threshold = float(imbalance_ratio_threshold)
 
-    def apply(self, events: List[MetricEvent], context: Dict[str, object]) -> Optional[Finding]:
+    def apply(
+        self, events: List[MetricEvent], context: Dict[str, object]
+    ) -> Optional[Finding]:
         by_rank: Dict[str, List[float]] = defaultdict(list)
         for event in events:
             if not (event.name.startswith("comm.") or "nccl" in event.name.lower()):
@@ -329,7 +345,9 @@ class CommunicationImbalanceRule(AnalysisRule):
             by_rank[str(rank)].append(value_ms)
         if len(by_rank) < 2:
             return None
-        rank_means = {rank: statistics.mean(values) for rank, values in by_rank.items() if values}
+        rank_means = {
+            rank: statistics.mean(values) for rank, values in by_rank.items() if values
+        }
         if len(rank_means) < 2:
             return None
         vals = list(rank_means.values())
@@ -366,7 +384,9 @@ class PipelineBubbleRule(AnalysisRule):
     def __init__(self, bubble_ratio_threshold: float = 0.15) -> None:
         self.bubble_ratio_threshold = float(bubble_ratio_threshold)
 
-    def apply(self, events: List[MetricEvent], context: Dict[str, object]) -> Optional[Finding]:
+    def apply(
+        self, events: List[MetricEvent], context: Dict[str, object]
+    ) -> Optional[Finding]:
         bubble_ms = 0.0
         total_ms = 0.0
         for event in events:
@@ -409,7 +429,9 @@ class DataloaderStallRule(AnalysisRule):
     def __init__(self, stall_ratio_threshold: float = 0.20) -> None:
         self.stall_ratio_threshold = float(stall_ratio_threshold)
 
-    def apply(self, events: List[MetricEvent], context: Dict[str, object]) -> Optional[Finding]:
+    def apply(
+        self, events: List[MetricEvent], context: Dict[str, object]
+    ) -> Optional[Finding]:
         data_ms = 0.0
         step_ms = 0.0
         for event in events:
@@ -423,7 +445,10 @@ class DataloaderStallRule(AnalysisRule):
             stage_l = str(event.tags.get("stage", "")).lower()
             if "dataloader" in name_l or "dataloader" in stage_l:
                 data_ms += value_ms
-            if event.name.startswith("latency.step") or stage_l in ("step", "iteration"):
+            if event.name.startswith("latency.step") or stage_l in (
+                "step",
+                "iteration",
+            ):
                 step_ms += value_ms
         if data_ms <= 0 or step_ms <= 0:
             return None
@@ -452,7 +477,9 @@ class GpuUtilizationThroughputRule(AnalysisRule):
     def __init__(self, utilization_threshold: float = 0.40) -> None:
         self.utilization_threshold = float(utilization_threshold)
 
-    def apply(self, events: List[MetricEvent], context: Dict[str, object]) -> Optional[Finding]:
+    def apply(
+        self, events: List[MetricEvent], context: Dict[str, object]
+    ) -> Optional[Finding]:
         utils: List[float] = []
         throughput: List[float] = []
         for event in events:
@@ -467,7 +494,10 @@ class GpuUtilizationThroughputRule(AnalysisRule):
                 if value > 1.0:
                     value = value / 100.0
                 utils.append(max(0.0, min(1.0, value)))
-            if event.name in ("compute.throughput.samples_per_sec", "compute.throughput.tokens_per_sec"):
+            if event.name in (
+                "compute.throughput.samples_per_sec",
+                "compute.throughput.tokens_per_sec",
+            ):
                 value = _to_float(event.value)
                 if value is not None:
                     throughput.append(value)
@@ -502,8 +532,12 @@ class DistributedSkewRule(AnalysisRule):
     def __init__(self, skew_ratio_threshold: float = 1.20) -> None:
         self.skew_ratio_threshold = float(skew_ratio_threshold)
 
-    def apply(self, events: List[MetricEvent], context: Dict[str, object]) -> Optional[Finding]:
-        result = analyze_rank_skew(events, skew_ratio_threshold=self.skew_ratio_threshold)
+    def apply(
+        self, events: List[MetricEvent], context: Dict[str, object]
+    ) -> Optional[Finding]:
+        result = analyze_rank_skew(
+            events, skew_ratio_threshold=self.skew_ratio_threshold
+        )
         if not result.get("has_skew"):
             return None
         return Finding(
@@ -539,7 +573,9 @@ class CommunicationHealthRule(AnalysisRule):
         self.rank_imbalance_threshold = float(rank_imbalance_threshold)
         self.min_good_busbw_gbps = float(min_good_busbw_gbps)
 
-    def apply(self, events: List[MetricEvent], context: Dict[str, object]) -> Optional[Finding]:
+    def apply(
+        self, events: List[MetricEvent], context: Dict[str, object]
+    ) -> Optional[Finding]:
         latencies_ms: List[float] = []
         busbw_values: List[float] = []
         by_rank_latency: Dict[str, List[float]] = defaultdict(list)
@@ -549,12 +585,24 @@ class CommunicationHealthRule(AnalysisRule):
             name_l = str(event.name or "").lower()
             level = str(event.tags.get("level", "")).lower()
             severity = str(event.tags.get("severity", "")).lower()
-            if "nccl" in name_l or name_l.startswith("comm.") or name_l.startswith("ras."):
-                if any(token in name_l for token in ("error", "fault", "timeout", "issue")):
+            if (
+                "nccl" in name_l
+                or name_l.startswith("comm.")
+                or name_l.startswith("ras.")
+            ):
+                if any(
+                    token in name_l for token in ("error", "fault", "timeout", "issue")
+                ):
                     numeric = _to_float(event.value)
                     if numeric is not None and numeric > 0:
                         issue_count += int(max(1.0, numeric))
-                if level in ("warn", "warning", "error", "fatal") or severity in ("warn", "warning", "error", "critical", "fatal"):
+                if level in ("warn", "warning", "error", "fatal") or severity in (
+                    "warn",
+                    "warning",
+                    "error",
+                    "critical",
+                    "fatal",
+                ):
                     issue_count += 1
 
             value = _to_float(event.value)
@@ -666,7 +714,9 @@ class RooflineGapRule(AnalysisRule):
     def __init__(self, *, gap_threshold: float = 0.20) -> None:
         self.gap_threshold = float(gap_threshold)
 
-    def apply(self, events: List[MetricEvent], context: Dict[str, object]) -> Optional[Finding]:
+    def apply(
+        self, events: List[MetricEvent], context: Dict[str, object]
+    ) -> Optional[Finding]:
         compute_utils: List[float] = []
         memory_utils: List[float] = []
         total_flops = 0.0
@@ -676,9 +726,27 @@ class RooflineGapRule(AnalysisRule):
             name_l = str(event.name or "").lower()
             ratio = _to_ratio(event.value)
             if ratio is not None:
-                if any(token in name_l for token in ("sm.active", "sm.util", "tensor.active", "compute.gpu", "warps in flight")):
+                if any(
+                    token in name_l
+                    for token in (
+                        "sm.active",
+                        "sm.util",
+                        "tensor.active",
+                        "compute.gpu",
+                        "warps in flight",
+                    )
+                ):
                     compute_utils.append(ratio)
-                if any(token in name_l for token in ("dram", "hbm", "memory_throughput", "mem_bw", "bandwidth")):
+                if any(
+                    token in name_l
+                    for token in (
+                        "dram",
+                        "hbm",
+                        "memory_throughput",
+                        "mem_bw",
+                        "bandwidth",
+                    )
+                ):
                     memory_utils.append(ratio)
 
             value = _to_float(event.value)
@@ -695,7 +763,9 @@ class RooflineGapRule(AnalysisRule):
         compute_avg = statistics.mean(compute_utils) if compute_utils else 0.0
         memory_avg = statistics.mean(memory_utils) if memory_utils else 0.0
         gap = max(0.0, memory_avg - compute_avg)
-        bottleneck_hint = "memory_bound" if memory_avg >= compute_avg else "compute_bound"
+        bottleneck_hint = (
+            "memory_bound" if memory_avg >= compute_avg else "compute_bound"
+        )
 
         if total_flops > 0 and total_bytes > 0:
             arithmetic_intensity = total_flops / max(total_bytes, 1.0)
@@ -745,7 +815,9 @@ class CrossLayerConsistencyRule(AnalysisRule):
         self.min_step_coverage = float(min_step_coverage)
         self.min_tag_alignment_ratio = float(min_tag_alignment_ratio)
 
-    def apply(self, events: List[MetricEvent], context: Dict[str, object]) -> Optional[Finding]:
+    def apply(
+        self, events: List[MetricEvent], context: Dict[str, object]
+    ) -> Optional[Finding]:
         step_latency_ms: Dict[str, float] = defaultdict(float)
         component_latency_ms: Dict[str, float] = defaultdict(float)
         step_tagged = 0
@@ -803,7 +875,9 @@ class CrossLayerConsistencyRule(AnalysisRule):
 
         issues: List[str] = []
         if coverage_items:
-            mean_cov = statistics.mean(float(item["coverage"]) for item in coverage_items)
+            mean_cov = statistics.mean(
+                float(item["coverage"]) for item in coverage_items
+            )
             if mean_cov < self.min_step_coverage:
                 issues.append(
                     f"Cross-layer step coverage is low ({mean_cov:.1%}); step latency is insufficiently explained by component layers."
@@ -817,7 +891,9 @@ class CrossLayerConsistencyRule(AnalysisRule):
                 f"Only {tag_alignment_ratio:.1%} of step-tagged events are aligned to component layers; missing step tags reduce correlation quality."
             )
         if has_rank_comm and not has_rank_compute:
-            issues.append("Communication events have rank tags, but compute events do not; cross-rank attribution is incomplete.")
+            issues.append(
+                "Communication events have rank tags, but compute events do not; cross-rank attribution is incomplete."
+            )
 
         if not issues:
             return None

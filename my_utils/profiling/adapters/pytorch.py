@@ -4,7 +4,11 @@ from typing import Any, Dict, List, Mapping
 
 from ..metrics.provider_registry import ProviderSpec
 from .base import FrameworkAdapter
-from .common import build_standard_training_specs, is_framework_mismatch, normalize_framework_name
+from .common import (
+    build_standard_training_specs,
+    is_framework_mismatch,
+    normalize_framework_name,
+)
 
 
 class PyTorchAdapter(FrameworkAdapter):

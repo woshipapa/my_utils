@@ -110,7 +110,9 @@ def test_cli_alias_entry_forwards_subcommand(monkeypatch) -> None:
         return 0
 
     monkeypatch.setattr(profiling_cli, "main", _fake_main)
-    monkeypatch.setattr(sys, "argv", ["nsys-sql-skill", "--sqlite", "x.sqlite", "--list-skills"])
+    monkeypatch.setattr(
+        sys, "argv", ["nsys-sql-skill", "--sqlite", "x.sqlite", "--list-skills"]
+    )
     rc = profiling_cli.entry_nsys_sql_skill()
     assert rc == 0
     assert captured["argv"][0] == "nsys-sql-skill"
@@ -121,10 +123,10 @@ def test_cli_alias_entry_forwards_subcommand(monkeypatch) -> None:
 def test_nsys_panel_generate_command_without_execute(monkeypatch, capsys) -> None:
     answers = iter(
         [
-            "nsys-sql-skill",   # choose command by name
-            "demo.sqlite",      # required --sqlite
-            "n",                # skip optional args
-            "n",                # do not execute
+            "nsys-sql-skill",  # choose command by name
+            "demo.sqlite",  # required --sqlite
+            "n",  # skip optional args
+            "n",  # do not execute
         ]
     )
     monkeypatch.setattr("builtins.input", lambda _: next(answers))
@@ -144,11 +146,11 @@ def test_nsys_panel_execute_selected_command(monkeypatch) -> None:
 
     answers = iter(
         [
-            "nsys-export",      # choose command
-            "trace.sqlite",     # required --sqlite
-            "out.json",         # required --output
-            "n",                # skip optional args
-            "y",                # execute now
+            "nsys-export",  # choose command
+            "trace.sqlite",  # required --sqlite
+            "out.json",  # required --output
+            "n",  # skip optional args
+            "y",  # execute now
         ]
     )
     monkeypatch.setattr("builtins.input", lambda _: next(answers))
@@ -193,13 +195,20 @@ def test_nsys_panel_bool_conflict_groups_and_semantic_skip(monkeypatch, capsys) 
     rc = main(["nsys-panel"])
     assert rc == 0
     out = capsys.readouterr().out
-    assert "myutils-profile nsys-timeline-html --sqlite demo.sqlite --output out.html --include-metrics --no-default-focus-metrics --no-debug" in out
+    assert (
+        "myutils-profile nsys-timeline-html --sqlite demo.sqlite --output out.html --include-metrics --no-default-focus-metrics --no-debug"
+        in out
+    )
     assert "--debug --no-debug" not in out
     assert "--default-focus-metrics --no-default-focus-metrics" not in out
 
     debug_prompts = [p for p in prompts if "--debug" in p or "--no-debug" in p]
     assert len(debug_prompts) == 1, debug_prompts
-    focus_prompts = [p for p in prompts if "--default-focus-metrics" in p or "--no-default-focus-metrics" in p]
+    focus_prompts = [
+        p
+        for p in prompts
+        if "--default-focus-metrics" in p or "--no-default-focus-metrics" in p
+    ]
     assert len(focus_prompts) == 1, focus_prompts
     debug_rows_prompts = [p for p in prompts if "--debug-rows" in p]
     assert len(debug_rows_prompts) == 0, debug_rows_prompts
@@ -230,7 +239,10 @@ def test_nsys_panel_respects_list_skills_short_circuit(monkeypatch, capsys) -> N
     rc = main(["nsys-panel"])
     assert rc == 0
     out = capsys.readouterr().out
-    assert "myutils-profile nsys-sql-skill --sqlite skills.sqlite --list-skills --pretty" in out
+    assert (
+        "myutils-profile nsys-sql-skill --sqlite skills.sqlite --list-skills --pretty"
+        in out
+    )
     assert "--skill" not in out.split("Generated command:")[-1]
     assert "--param" not in out.split("Generated command:")[-1]
 
@@ -296,7 +308,9 @@ def test_ncu_alias_entry_forwards_subcommand(monkeypatch) -> None:
         return 0
 
     monkeypatch.setattr(profiling_cli, "main", _fake_main)
-    monkeypatch.setattr(sys, "argv", ["ncu-csv-skill", "--csv", "x.csv", "--list-skills"])
+    monkeypatch.setattr(
+        sys, "argv", ["ncu-csv-skill", "--csv", "x.csv", "--list-skills"]
+    )
     rc = profiling_cli.entry_ncu_csv_skill()
     assert rc == 0
     assert captured["argv"][0] == "ncu-csv-skill"

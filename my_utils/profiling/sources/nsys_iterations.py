@@ -56,7 +56,9 @@ def _kernel_name_expr(schema: NsightSchema, kernel_alias: str = "k") -> Tuple[st
         name_expr = "s_short.value"
     if demangled_col:
         joins += f" LEFT JOIN {sid_table} s_dem ON {kernel_alias}.{demangled_col} = s_dem.id "
-        name_expr = "COALESCE(s_dem.value, s_short.value)" if short_col else "s_dem.value"
+        name_expr = (
+            "COALESCE(s_dem.value, s_short.value)" if short_col else "s_dem.value"
+        )
     return name_expr, joins
 
 
@@ -84,16 +86,24 @@ def detect_iterations(
     required_nvtx = {"start", "end"}
     required_runtime = {"start", "end", "correlationId"}
     required_kernel = {"start", "end", "correlationId"}
-    if not (required_nvtx.issubset(nvtx_cols) and required_runtime.issubset(runtime_cols) and required_kernel.issubset(kernel_cols)):
+    if not (
+        required_nvtx.issubset(nvtx_cols)
+        and required_runtime.issubset(runtime_cols)
+        and required_kernel.issubset(kernel_cols)
+    ):
         return []
 
     text_expr = "n.text"
     nvtx_join = ""
     if resolved_schema.string_table and "textId" in nvtx_cols:
-        nvtx_join = f" LEFT JOIN {resolved_schema.string_table} s_nvtx ON n.textId = s_nvtx.id "
+        nvtx_join = (
+            f" LEFT JOIN {resolved_schema.string_table} s_nvtx ON n.textId = s_nvtx.id "
+        )
         text_expr = "COALESCE(n.text, s_nvtx.value)"
     elif "nameId" in nvtx_cols and resolved_schema.string_table:
-        nvtx_join = f" LEFT JOIN {resolved_schema.string_table} s_nvtx ON n.nameId = s_nvtx.id "
+        nvtx_join = (
+            f" LEFT JOIN {resolved_schema.string_table} s_nvtx ON n.nameId = s_nvtx.id "
+        )
         text_expr = "COALESCE(n.text, s_nvtx.value)"
 
     kernel_name_expr, kernel_name_join = _kernel_name_expr(resolved_schema, "k")
@@ -123,7 +133,11 @@ def detect_iterations(
 
     query_nvtx = (
         f"SELECT {text_expr} AS nvtx_text, n.start AS start_ns, n.[end] AS end_ns, "
-        + ("n.globalTid AS global_tid, " if "globalTid" in nvtx_cols else "NULL AS global_tid, ")
+        + (
+            "n.globalTid AS global_tid, "
+            if "globalTid" in nvtx_cols
+            else "NULL AS global_tid, "
+        )
         + "n.rowid AS _rowid "
         + f"FROM {nvtx_table} n "
         + nvtx_join
@@ -160,7 +174,11 @@ def detect_iterations(
 
     query_kernels = (
         "SELECT k.start AS start_ns, k.[end] AS end_ns, "
-        + ("k.streamId AS stream_id, " if "streamId" in kernel_cols else "NULL AS stream_id, ")
+        + (
+            "k.streamId AS stream_id, "
+            if "streamId" in kernel_cols
+            else "NULL AS stream_id, "
+        )
         + f"{kernel_name_expr} AS kernel_name "
         + f"FROM {kernel_table} k "
         + kernel_name_join
@@ -184,7 +202,9 @@ def detect_iterations(
             + " AND ".join(runtime_where)
             + " ORDER BY r.start ASC"
         )
-        runtime_rows = [dict(row) for row in conn.execute(query_runtime, params).fetchall()]
+        runtime_rows = [
+            dict(row) for row in conn.execute(query_runtime, params).fetchall()
+        ]
 
     runtime_by_tid: Dict[int, List[Dict[str, object]]] = {}
     corr_to_kernel: Dict[int, List[Dict[str, object]]] = {}
@@ -196,7 +216,11 @@ def detect_iterations(
         if "correlationId" in kernel_cols:
             query_k_corr = (
                 "SELECT k.correlationId AS correlation_id, k.start AS start_ns, k.[end] AS end_ns, "
-                + ("k.streamId AS stream_id, " if "streamId" in kernel_cols else "NULL AS stream_id, ")
+                + (
+                    "k.streamId AS stream_id, "
+                    if "streamId" in kernel_cols
+                    else "NULL AS stream_id, "
+                )
                 + f"{kernel_name_expr} AS kernel_name "
                 + f"FROM {kernel_table} k "
                 + kernel_name_join
@@ -269,7 +293,9 @@ def detect_iterations(
             "comm_ms": round(comm_ns / 1e6, 6),
             "gpu_start_ns": int(gpu_min_start or iter_start),
             "gpu_end_ns": int(gpu_max_end or iter_end),
-            "gpu_duration_ms": round(((gpu_max_end or iter_end) - (gpu_min_start or iter_start)) / 1e6, 6),
+            "gpu_duration_ms": round(
+                ((gpu_max_end or iter_end) - (gpu_min_start or iter_start)) / 1e6, 6
+            ),
         }
         item.update(_extract_step_rank(text))
         results.append(item)

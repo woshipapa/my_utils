@@ -96,6 +96,7 @@ def _mac_install(root: Path) -> Path:
 # nsight_paths: install-dir normalization and precedence
 # ---------------------------------------------------------------------------
 
+
 def test_unset_env_vars_yield_no_candidates():
     assert nsight_paths.nsight_install_dirs({}) == []
     assert nsight_paths.sections_dir_candidates({}) == []
@@ -275,6 +276,7 @@ def test_bogus_env_vars_fall_through_to_legacy(tmp_path, monkeypatch):
 # ncu_report_tools.find_ncu_report_dir
 # ---------------------------------------------------------------------------
 
+
 def test_unset_env_vars_reproduce_legacy_python_lookup():
     assert ncu_report_tools.find_ncu_report_dir() == _legacy_find_ncu_report_dir()
 
@@ -312,6 +314,7 @@ def test_ncu_python_dir_stays_the_most_specific_override(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 # metric_catalog.verify_catalog_coverage
 # ---------------------------------------------------------------------------
+
 
 def test_verify_catalog_coverage_honours_ncu_path(tmp_path, monkeypatch):
     install = _linux_install(tmp_path)

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, Iterable, Mapping, MutableMapping, Optional
+from typing import Any, Callable, Dict, Mapping, Optional
 
 from .metrics_provider import MetricsProvider
 
@@ -67,7 +67,9 @@ def _require_context_obj(context: Mapping[str, Any], *keys: str) -> Any:
     raise KeyError(f"Provider requires context object, expected one of: {joined}")
 
 
-def register_builtin_providers(registry: MetricsProviderRegistry) -> MetricsProviderRegistry:
+def register_builtin_providers(
+    registry: MetricsProviderRegistry,
+) -> MetricsProviderRegistry:
     from .metrics_providers import (
         CProfileStatsProvider,
         DcgmCsvMetricsProvider,
@@ -81,9 +83,13 @@ def register_builtin_providers(registry: MetricsProviderRegistry) -> MetricsProv
         TorchProfilerMetricsProvider,
     )
 
-    def make_my_timer(provider_id: str, params: Mapping[str, Any], context: Mapping[str, Any]) -> MetricsProvider:
+    def make_my_timer(
+        provider_id: str, params: Mapping[str, Any], context: Mapping[str, Any]
+    ) -> MetricsProvider:
         timer = _require_context_obj(context, "my_timer", "timer")
-        return MyTimerMetricsProvider(timer=timer, provider_id=provider_id, **dict(params))
+        return MyTimerMetricsProvider(
+            timer=timer, provider_id=provider_id, **dict(params)
+        )
 
     def make_torch_profiler(
         provider_id: str,
@@ -91,7 +97,9 @@ def register_builtin_providers(registry: MetricsProviderRegistry) -> MetricsProv
         context: Mapping[str, Any],
     ) -> MetricsProvider:
         profiler = _require_context_obj(context, "torch_profiler", "profiler")
-        return TorchProfilerMetricsProvider(profiler=profiler, provider_id=provider_id, **dict(params))
+        return TorchProfilerMetricsProvider(
+            profiler=profiler, provider_id=provider_id, **dict(params)
+        )
 
     def make_module_profiler(
         provider_id: str,
@@ -99,19 +107,27 @@ def register_builtin_providers(registry: MetricsProviderRegistry) -> MetricsProv
         context: Mapping[str, Any],
     ) -> MetricsProvider:
         module_profiler = _require_context_obj(context, "module_profiler")
-        return ModuleProfilerMetricsProvider(module_profiler=module_profiler, provider_id=provider_id, **dict(params))
+        return ModuleProfilerMetricsProvider(
+            module_profiler=module_profiler, provider_id=provider_id, **dict(params)
+        )
 
-    def make_table_csv(provider_id: str, params: Mapping[str, Any], context: Mapping[str, Any]) -> MetricsProvider:
+    def make_table_csv(
+        provider_id: str, params: Mapping[str, Any], context: Mapping[str, Any]
+    ) -> MetricsProvider:
         payload = dict(params)
         payload["provider_id"] = provider_id
         return TableCsvMetricsProvider(**payload)
 
-    def make_ncu_csv(provider_id: str, params: Mapping[str, Any], context: Mapping[str, Any]) -> MetricsProvider:
+    def make_ncu_csv(
+        provider_id: str, params: Mapping[str, Any], context: Mapping[str, Any]
+    ) -> MetricsProvider:
         payload = dict(params)
         payload["provider_id"] = provider_id
         return NcuCsvMetricsProvider(**payload)
 
-    def make_nsys_sqlite(provider_id: str, params: Mapping[str, Any], context: Mapping[str, Any]) -> MetricsProvider:
+    def make_nsys_sqlite(
+        provider_id: str, params: Mapping[str, Any], context: Mapping[str, Any]
+    ) -> MetricsProvider:
         payload = dict(params)
         payload["provider_id"] = provider_id
         sqlite_glob = str(payload.get("sqlite_glob", "") or "").strip()
@@ -128,27 +144,37 @@ def register_builtin_providers(registry: MetricsProviderRegistry) -> MetricsProv
 
         return NsysSqliteMetricsProvider(**payload)
 
-    def make_cprofile(provider_id: str, params: Mapping[str, Any], context: Mapping[str, Any]) -> MetricsProvider:
+    def make_cprofile(
+        provider_id: str, params: Mapping[str, Any], context: Mapping[str, Any]
+    ) -> MetricsProvider:
         payload = dict(params)
         payload["provider_id"] = provider_id
         return CProfileStatsProvider(**payload)
 
-    def make_perf_stat(provider_id: str, params: Mapping[str, Any], context: Mapping[str, Any]) -> MetricsProvider:
+    def make_perf_stat(
+        provider_id: str, params: Mapping[str, Any], context: Mapping[str, Any]
+    ) -> MetricsProvider:
         payload = dict(params)
         payload["provider_id"] = provider_id
         return PerfStatTextProvider(**payload)
 
-    def make_dcgm_csv(provider_id: str, params: Mapping[str, Any], context: Mapping[str, Any]) -> MetricsProvider:
+    def make_dcgm_csv(
+        provider_id: str, params: Mapping[str, Any], context: Mapping[str, Any]
+    ) -> MetricsProvider:
         payload = dict(params)
         payload["provider_id"] = provider_id
         return DcgmCsvMetricsProvider(**payload)
 
-    def make_nccl_log(provider_id: str, params: Mapping[str, Any], context: Mapping[str, Any]) -> MetricsProvider:
+    def make_nccl_log(
+        provider_id: str, params: Mapping[str, Any], context: Mapping[str, Any]
+    ) -> MetricsProvider:
         payload = dict(params)
         payload["provider_id"] = provider_id
         return NcclLogMetricsProvider(**payload)
 
-    def make_ras_json(provider_id: str, params: Mapping[str, Any], context: Mapping[str, Any]) -> MetricsProvider:
+    def make_ras_json(
+        provider_id: str, params: Mapping[str, Any], context: Mapping[str, Any]
+    ) -> MetricsProvider:
         payload = dict(params)
         payload["provider_id"] = provider_id
         return RasJsonMetricsProvider(**payload)

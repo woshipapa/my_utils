@@ -4,7 +4,11 @@ from typing import Any, Dict, List, Mapping
 
 from ..metrics.provider_registry import ProviderSpec
 from .base import FrameworkAdapter
-from .common import build_standard_training_specs, is_framework_mismatch, normalize_framework_name
+from .common import (
+    build_standard_training_specs,
+    is_framework_mismatch,
+    normalize_framework_name,
+)
 
 
 class MegatronAdapter(FrameworkAdapter):
@@ -19,7 +23,10 @@ class MegatronAdapter(FrameworkAdapter):
             return True
         if "megatron_args" in context:
             return True
-        return bool(context.get("model_provider_func") is not None and context.get("forward_step_func") is not None)
+        return bool(
+            context.get("model_provider_func") is not None
+            and context.get("forward_step_func") is not None
+        )
 
     def build_provider_specs(self, context: Mapping[str, Any]) -> List[ProviderSpec]:
         return build_standard_training_specs(context)

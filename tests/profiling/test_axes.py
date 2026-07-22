@@ -23,7 +23,10 @@ class TestCoverageKeysAreReal:
         catalog = set(metric_catalog.METRIC_CATALOG)
         bad = [
             (analysis, key)
-            for analysis, (keys, _section) in ncu_diagnostics._ANALYSIS_REQUIREMENTS.items()
+            for analysis, (
+                keys,
+                _section,
+            ) in ncu_diagnostics._ANALYSIS_REQUIREMENTS.items()
             for key in keys
             if key not in catalog
         ]
@@ -47,6 +50,7 @@ class TestCoverageKeysAreReal:
         is not sufficient on its own.
         """
         import re
+
         source = (Path(ncu_diagnostics.__file__)).read_text()
         emitted = set(re.findall(r'category="([a-z0-9_]+)"', source))
         unmapped = sorted(c for c in emitted if not axes.axis_for_category(c))
@@ -69,8 +73,10 @@ class TestCoverageKeysAreReal:
         """
         emitted = (
             [f"stall_{key}" for key in metric_catalog.STALL_REASONS]
-            + [f"occupancy_limited_{b}" for b in
-               ("registers", "shared_mem", "blocks", "warps", "barriers")]
+            + [
+                f"occupancy_limited_{b}"
+                for b in ("registers", "shared_mem", "blocks", "warps", "barriers")
+            ]
             # The interpolated labels are "load"/"store" here, not "ld"/"st";
             # the first version of this test asserted values the code never
             # emits, so it passed while proving nothing about the real ones.
@@ -85,10 +91,11 @@ class TestCoverageKeysAreReal:
     def test_fstring_category_sites_are_all_covered(self):
         """Fail when a new f-string category site is added upstream."""
         import re
+
         source = (Path(ncu_diagnostics.__file__)).read_text()
         sites = set(re.findall(r'category=f"([^"]+)"', source))
         known = {
-            'stall_{row[\'key\']}',
+            "stall_{row['key']}",
             "occupancy_limited_{binding}",
             "uncoalesced_global_{label}",
             "sparse_global_{label}",
@@ -113,7 +120,7 @@ class TestCoverageKeysAreReal:
         assert axes.axis_for_category("stall_selected") == "stall"
         # A category that genuinely belongs nowhere must still return "".
         assert axes.axis_for_category("zzz_unrelated_thing") == ""
-        assert axes.axis_for_category("") == ''
+        assert axes.axis_for_category("") == ""
 
 
 class TestAxisCoverage:
@@ -126,7 +133,8 @@ class TestAxisCoverage:
 
     def test_findings_mark_their_axis_examined(self):
         result = axes.axis_coverage(
-            [{"category": "uncoalesced_global_access"}], metric_present=lambda key: False,
+            [{"category": "uncoalesced_global_access"}],
+            metric_present=lambda key: False,
         )
         mem = next(a for a in result["axes"] if a["axis"] == "memory_bandwidth")
         assert mem["examined"] is True and mem["finding_count"] == 1

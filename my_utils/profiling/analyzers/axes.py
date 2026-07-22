@@ -24,8 +24,8 @@ whether an analysis was complete.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
-from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
+from dataclasses import dataclass
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 __all__ = [
     "Axis",
@@ -65,32 +65,61 @@ AXES: Tuple[Axis, ...] = (
         title="Compute throughput",
         question="Are the math pipes the limit, and is the right pipe being used?",
         categories=(
-            "bottleneck", "compute_bound_kernel_below_expectation", "pipe_saturated",
-            "tensor_cores_idle", "unexpected_fp64", "below_roofline",
+            "bottleneck",
+            "compute_bound_kernel_below_expectation",
+            "pipe_saturated",
+            "tensor_cores_idle",
+            "unexpected_fp64",
+            "below_roofline",
             "roofline_needs_tensor_counters",
         ),
-        shipped_rule_hints=("solbottleneck", "speedoflight", "sol", "compute", "pipe",
-                            "tensor", "fp64", "fp16", "roofline", "fproofline"),
+        shipped_rule_hints=(
+            "solbottleneck",
+            "speedoflight",
+            "sol",
+            "compute",
+            "pipe",
+            "tensor",
+            "fp64",
+            "fp16",
+            "roofline",
+            "fproofline",
+        ),
         metric_groups=(
             ("compute_sol",),
             ("pipe_tensor_util", "pipe_fma_util"),
             ("flop_ffma", "duration_ns"),
         ),
         remedy="--section SpeedOfLight --section ComputeWorkloadAnalysis",
-        implemented_by=("ncu_diagnostics.classify_bottleneck",
-                        "ncu_diagnostics.analyze_pipes",
-                        "ncu_diagnostics.compute_roofline"),
+        implemented_by=(
+            "ncu_diagnostics.classify_bottleneck",
+            "ncu_diagnostics.analyze_pipes",
+            "ncu_diagnostics.compute_roofline",
+        ),
     ),
     Axis(
         axis_id="memory_bandwidth",
         title="Memory bandwidth and cache behaviour",
         question="Is DRAM, L2 or L1 the limit, and is the traffic avoidable?",
         categories=(
-            "memory_bound_kernel_below_expectation", "uncoalesced_global_access",
-            "poor_cache_locality", "memory", "memcpy_bound",
+            "memory_bound_kernel_below_expectation",
+            "uncoalesced_global_access",
+            "poor_cache_locality",
+            "memory",
+            "memcpy_bound",
         ),
-        shipped_rule_hints=("memory", "dram", "l2", "l1", "tex", "uncoalesced",
-                            "coalesc", "aperture", "sector", "cache"),
+        shipped_rule_hints=(
+            "memory",
+            "dram",
+            "l2",
+            "l1",
+            "tex",
+            "uncoalesced",
+            "coalesc",
+            "aperture",
+            "sector",
+            "cache",
+        ),
         metric_groups=(
             ("memory_sol",),
             ("dram_sol",),
@@ -98,9 +127,11 @@ AXES: Tuple[Axis, ...] = (
             ("dram_bytes", "duration_ns"),
         ),
         remedy="--section MemoryWorkloadAnalysis --section SpeedOfLight",
-        implemented_by=("ncu_diagnostics.classify_bottleneck",
-                        "ncu_diagnostics.analyze_coalescing",
-                        "ncu_diagnostics.compute_roofline"),
+        implemented_by=(
+            "ncu_diagnostics.classify_bottleneck",
+            "ncu_diagnostics.analyze_coalescing",
+            "ncu_diagnostics.compute_roofline",
+        ),
     ),
     Axis(
         axis_id="shared_memory",
@@ -120,21 +151,38 @@ AXES: Tuple[Axis, ...] = (
         title="Scheduler, occupancy and quantisation",
         question="Do the schedulers have warps to issue, and is the grid the right shape?",
         categories=(
-            "occupancy_achieved_gap", "small_grid", "tail_wave_quantization",
-            "block_size_not_warp_multiple", "occupancy", "launch_config",
-            "tile_quantization", "wave_quantization", "imbalance",
+            "occupancy_achieved_gap",
+            "small_grid",
+            "tail_wave_quantization",
+            "block_size_not_warp_multiple",
+            "occupancy",
+            "launch_config",
+            "tile_quantization",
+            "wave_quantization",
+            "imbalance",
         ),
-        shipped_rule_hints=("occupancy", "launch", "gridsize", "wave", "tail",
-                            "issueslot", "scheduler", "imbalance", "balance"),
+        shipped_rule_hints=(
+            "occupancy",
+            "launch",
+            "gridsize",
+            "wave",
+            "tail",
+            "issueslot",
+            "scheduler",
+            "imbalance",
+            "balance",
+        ),
         metric_groups=(
             ("achieved_occupancy", "theoretical_occupancy"),
             ("warps_active_per_scheduler", "warps_eligible_per_scheduler"),
             ("grid_size", "block_size"),
         ),
         remedy="--section Occupancy --section LaunchStats --section SchedulerStats",
-        implemented_by=("ncu_diagnostics.analyze_occupancy",
-                        "ncu_diagnostics.analyze_launch_config",
-                        "ncu_diagnostics.analyze_imbalance"),
+        implemented_by=(
+            "ncu_diagnostics.analyze_occupancy",
+            "ncu_diagnostics.analyze_launch_config",
+            "ncu_diagnostics.analyze_imbalance",
+        ),
     ),
     Axis(
         axis_id="stall",
@@ -164,7 +212,7 @@ AXES: Tuple[Axis, ...] = (
         shipped_rule_hints=("spill", "register", "localmemory"),
         metric_groups=(("registers_per_thread",), ("local_ld_inst", "local_st_inst")),
         remedy="--section LaunchStats --section MemoryWorkloadAnalysis_Tables, "
-               "and build with -Xptxas -v",
+        "and build with -Xptxas -v",
         implemented_by=("ncu_diagnostics.analyze_spilling",),
     ),
     Axis(
@@ -172,13 +220,17 @@ AXES: Tuple[Axis, ...] = (
         title="Collective communication",
         question="Are collectives at achievable bus bandwidth, and who is late?",
         categories=(
-            "communication", "nccl", "collective_bandwidth", "straggler",
-            "comm_bound", "comm_exposed",
+            "communication",
+            "nccl",
+            "collective_bandwidth",
+            "straggler",
+            "comm_bound",
+            "comm_exposed",
         ),
         shipped_rule_hints=("nvlink", "pcie", "systemmemory", "interconnect"),
-        metric_groups=(),   # nsys-side, not an ncu per-kernel axis
+        metric_groups=(),  # nsys-side, not an ncu per-kernel axis
         remedy="nsys profile --trace=cuda,nvtx,nccl (and NCCL flight recorder "
-               "for entry timestamps)",
+        "for entry timestamps)",
         implemented_by=("analyzers.nccl_bandwidth", "analyzers.distributed_alignment"),
     ),
     Axis(
@@ -186,11 +238,15 @@ AXES: Tuple[Axis, ...] = (
         title="Launch overhead and gaps",
         question="Is the GPU idle waiting for the host to launch work?",
         categories=(
-            "launch_overhead", "launch_storm", "gpu_idle", "host_bound",
-            "small_kernel", "cuda_graph",
+            "launch_overhead",
+            "launch_storm",
+            "gpu_idle",
+            "host_bound",
+            "small_kernel",
+            "cuda_graph",
         ),
         shipped_rule_hints=(),
-        metric_groups=(),   # needs a timeline, not per-kernel counters
+        metric_groups=(),  # needs a timeline, not per-kernel counters
         remedy="nsys profile --trace=cuda,osrt,nvtx",
         implemented_by=("analyzers.triage", "sources.nsys_auto_analysis"),
     ),
@@ -198,13 +254,21 @@ AXES: Tuple[Axis, ...] = (
         axis_id="host_pipeline",
         title="Host-side pipeline",
         question="Is the input pipeline or Python the limit rather than the GPU?",
-        categories=("dataloader", "host_pipeline", "h2d", "d2h", "pageable_memcpy",
-                    "sync_blocking"),
+        categories=(
+            "dataloader",
+            "host_pipeline",
+            "h2d",
+            "d2h",
+            "pageable_memcpy",
+            "sync_blocking",
+        ),
         shipped_rule_hints=(),
         metric_groups=(),
         remedy="nsys profile --trace=cuda,osrt,nvtx --python-sampling=true",
-        implemented_by=("analyzers.trace_quality.check_dataloader_attribution",
-                        "sources.nsys_auto_analysis"),
+        implemented_by=(
+            "analyzers.trace_quality.check_dataloader_attribution",
+            "sources.nsys_auto_analysis",
+        ),
     ),
     Axis(
         axis_id="power_clock",
@@ -217,7 +281,7 @@ AXES: Tuple[Axis, ...] = (
         # group is what makes it show up as an honest gap rather than as clean.
         metric_groups=(),
         remedy="Sample nvmlDeviceGetCurrentClocksEventReasons or DCGM fields "
-               "100/112/155/240/241 during the run",
+        "100/112/155/240/241 during the run",
         implemented_by=("hardware.throttling.analyze_throttling",),
     ),
     Axis(
@@ -228,8 +292,10 @@ AXES: Tuple[Axis, ...] = (
         shipped_rule_hints=("fp16", "fp8", "tf32", "bf16", "sparsity", "precision"),
         metric_groups=(("pipe_tensor_util",), ("tensor_ops_fp16", "tensor_ops_bf16")),
         remedy="--section ComputeWorkloadAnalysis --section InstructionStats",
-        implemented_by=("ncu_diagnostics._expectation_findings",
-                        "sources.kernel_taxonomy"),
+        implemented_by=(
+            "ncu_diagnostics._expectation_findings",
+            "sources.kernel_taxonomy",
+        ),
     ),
     Axis(
         axis_id="multi_gpu",
@@ -239,22 +305,33 @@ AXES: Tuple[Axis, ...] = (
         shipped_rule_hints=(),
         metric_groups=(),
         remedy="Profile every rank, and align traces on a common clock before "
-               "comparing across hosts",
-        implemented_by=("analyzers.distributed_alignment",
-                        "analyzers.trace_quality.check_clock_alignment"),
+        "comparing across hosts",
+        implemented_by=(
+            "analyzers.distributed_alignment",
+            "analyzers.trace_quality.check_clock_alignment",
+        ),
     ),
     Axis(
         axis_id="measurement",
         title="Measurement validity",
         question="Is this data trustworthy enough to draw any conclusion from?",
-        categories=("measurement_caveat", "measurement_above_physical_limit",
-                    "evidence_conflict", "uninformative_name", "unattributable_kernel",
-                    "coverage", "trace_quality"),
+        categories=(
+            "measurement_caveat",
+            "measurement_above_physical_limit",
+            "evidence_conflict",
+            "uninformative_name",
+            "unattributable_kernel",
+            "coverage",
+            "trace_quality",
+        ),
         shipped_rule_hints=(),
         metric_groups=(),
         remedy="Always available: this axis is checked from whatever data exists",
-        implemented_by=("analyzers.trace_quality", "analyzers.evidence",
-                        "ncu_diagnostics.analysis_coverage"),
+        implemented_by=(
+            "analyzers.trace_quality",
+            "analyzers.evidence",
+            "ncu_diagnostics.analysis_coverage",
+        ),
     ),
 )
 
@@ -446,18 +523,20 @@ def axis_coverage(
             else:
                 reason = "no metrics were supplied, so presence could not be checked"
 
-        statuses.append(AxisStatus(
-            axis_id=axis.axis_id,
-            title=axis.title,
-            question=axis.question,
-            examined=examined,
-            finding_count=len(by_axis[axis.axis_id]),
-            categories_seen=categories,
-            corroborated_by_ncu=axis.axis_id in shipped_axes,
-            reason_not_examined=reason,
-            remedy="" if examined else axis.remedy,
-            implemented_by=axis.implemented_by,
-        ))
+        statuses.append(
+            AxisStatus(
+                axis_id=axis.axis_id,
+                title=axis.title,
+                question=axis.question,
+                examined=examined,
+                finding_count=len(by_axis[axis.axis_id]),
+                categories_seen=categories,
+                corroborated_by_ncu=axis.axis_id in shipped_axes,
+                reason_not_examined=reason,
+                remedy="" if examined else axis.remedy,
+                implemented_by=axis.implemented_by,
+            )
+        )
 
     examined_ids = [s.axis_id for s in statuses if s.examined]
     gaps = [s for s in statuses if not s.examined]

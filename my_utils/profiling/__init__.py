@@ -30,7 +30,11 @@ from .analyzers.workload_profiles import (
     list_workload_profiles,
     resolve_workload_profile,
 )
-from .metrics.metrics_provider import BaseMetricsProvider, MetricsProvider, ProviderCapabilities
+from .metrics.metrics_provider import (
+    BaseMetricsProvider,
+    MetricsProvider,
+    ProviderCapabilities,
+)
 from .metrics.metrics_providers import (
     CProfileStatsProvider,
     DcgmCsvMetricsProvider,
@@ -53,8 +57,18 @@ from .metrics.metrics_schema import (
     validate_event,
 )
 from .metrics.metrics_store import MetricsStore
-from .metrics.metrics_taxonomy import CANONICAL_METRIC_PREFIXES, TOOL_METRIC_ALIASES, normalize_external_metric
-from .metrics.metrics_types import AnalysisReport, Bottleneck, Finding, MetricEvent, PROFILE_SCHEMA_VERSION
+from .metrics.metrics_taxonomy import (
+    CANONICAL_METRIC_PREFIXES,
+    TOOL_METRIC_ALIASES,
+    normalize_external_metric,
+)
+from .metrics.metrics_types import (
+    AnalysisReport,
+    Bottleneck,
+    Finding,
+    MetricEvent,
+    PROFILE_SCHEMA_VERSION,
+)
 from .metrics.provider_registry import (
     DEFAULT_PROVIDER_REGISTRY,
     MetricsProviderRegistry,
@@ -73,7 +87,12 @@ from .output.metrics_trace import (
 from .pipeline.metrics_collector import MetricsCollector
 from .runtime.backends import CaptureBackend, CudaProfilerBackend, NoOpBackend
 from .runtime.capture_controller import CaptureController, HookEvent
-from .runtime.config import NsysLaunchConfig, NsysProfilerConfig, ProfilingEnvConfig, TorchProfilerConfig
+from .runtime.config import (
+    NsysLaunchConfig,
+    NsysProfilerConfig,
+    ProfilingEnvConfig,
+    TorchProfilerConfig,
+)
 from .runtime.frameworkless import (
     apply_profiling_environment,
     build_nsys_launch_prefix,
@@ -81,13 +100,20 @@ from .runtime.frameworkless import (
 )
 from .runtime.meta_adapters import extract_meta_from_call
 from .runtime.ProfileManager import ProfileManager
-from .runtime.template_utils import get_profiling_template_path, get_profiling_templates_dir
+from .runtime.template_utils import (
+    get_profiling_template_path,
+    get_profiling_templates_dir,
+)
 from .sources.nsys_analyze import analyze_nsys_sqlite, analyze_to_markdown
 from .sources.nsys_diff import diff_nsys_sqlite, diff_to_markdown
 from .sources.nsys_flat_export import collect_kernel_rows, export_kernels_flat
 from .sources.nsys_iterations import detect_iterations
 from .sources.nsys_mfu import compute_mfu_compare, compute_mfu_single, infer_peak_tflops
-from .sources.nsys_schema_adapter import NsightSchema, NsysVersionInfo, detect_nsys_version
+from .sources.nsys_schema_adapter import (
+    NsightSchema,
+    NsysVersionInfo,
+    detect_nsys_version,
+)
 from .sources.nsys_sql_skills import NsysSqlSkillEngine, SqlSkill, SqlSkillParam
 from .sources.nsys_timeline_html import export_timeline_html
 from .nccl.nccl_inspector_tools import (
@@ -291,7 +317,9 @@ _LEGACY_ATTR_ALIASES = {
 }
 
 
-def _warn_legacy_alias(legacy_name: str, target_name: str, *, stacklevel: int = 2) -> None:
+def _warn_legacy_alias(
+    legacy_name: str, target_name: str, *, stacklevel: int = 2
+) -> None:
     warnings.warn(
         f"{legacy_name} is deprecated and will be removed in 0.3.0; "
         f"import {target_name} instead.",
@@ -352,7 +380,9 @@ class _LegacyAliasFinder(_importlib_abc.MetaPathFinder):
         if target_name is None:
             return None
         _warn_legacy_alias(fullname, target_name)
-        return _importlib_machinery.ModuleSpec(fullname, _LegacyAliasLoader(target_name))
+        return _importlib_machinery.ModuleSpec(
+            fullname, _LegacyAliasLoader(target_name)
+        )
 
 
 def _register_legacy_module_aliases() -> None:

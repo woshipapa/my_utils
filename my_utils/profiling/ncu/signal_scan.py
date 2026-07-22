@@ -36,9 +36,7 @@ metrics, so a rule that is merely usually right produces more noise than signal.
 
 from __future__ import annotations
 
-import re
-from dataclasses import dataclass
-from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 
 from .ncu_diagnostics import Finding
 
@@ -85,7 +83,9 @@ def _unit_label(unit: str) -> str:
     return text.split(" - ")[0].split(".")[0] if text else unit
 
 
-def _traffic_behind(hit_rate_metric: str, traffic: Mapping[str, float]) -> Optional[float]:
+def _traffic_behind(
+    hit_rate_metric: str, traffic: Mapping[str, float]
+) -> Optional[float]:
     """Requests or sectors behind a hit-rate metric, or None if undeterminable.
 
     `l1tex__t_sector_pipe_lsu_mem_global_op_st_hit_rate.pct` pairs with
@@ -94,8 +94,11 @@ def _traffic_behind(hit_rate_metric: str, traffic: Mapping[str, float]) -> Optio
     a hit rate whose volume is unknown cannot be judged, and guessing that it
     matters is how a scan over thousands of metrics turns into noise.
     """
-    stem = hit_rate_metric[: -len("_hit_rate.pct")] if hit_rate_metric.endswith(
-        "_hit_rate.pct") else None
+    stem = (
+        hit_rate_metric[: -len("_hit_rate.pct")]
+        if hit_rate_metric.endswith("_hit_rate.pct")
+        else None
+    )
     if not stem:
         return None
     for counter in ("t_requests", "t_sectors"):
@@ -122,7 +125,7 @@ def scan_all_signals(
     covered = frozenset(covered_units)
     findings: List[Finding] = []
 
-    elapsed: Dict[str, Tuple[str, float]] = {}   # counter -> (raw name, value)
+    elapsed: Dict[str, Tuple[str, float]] = {}  # counter -> (raw name, value)
     active: Dict[str, Tuple[str, float]] = {}
     hit_rates: List[Tuple[str, str, float]] = []
     traffic: Dict[str, float] = {}
@@ -133,7 +136,7 @@ def scan_all_signals(
             number = float(value)
         except (TypeError, ValueError):
             continue
-        if number != number:            # NaN
+        if number != number:  # NaN
             continue
         name = str(raw)
         parts = _decode(name)
@@ -157,41 +160,53 @@ def scan_all_signals(
             traffic[name] = number
 
         # A percentage above 100 is a measurement fault wherever it appears.
-        if (name.endswith(_PCT_ELAPSED) or name.endswith(_PCT_ACTIVE)
-                or low.endswith(".pct")) and number > 100.5:
+        if (
+            name.endswith(_PCT_ELAPSED)
+            or name.endswith(_PCT_ACTIVE)
+            or low.endswith(".pct")
+        ) and number > 100.5:
             impossible.append((name, number))
 
     # ---- saturated units the curated rules do not cover --------------------
     saturated = sorted(
-        ((k, n, v) for k, (n, v) in elapsed.items()
-         if v >= SATURATED_PCT
-         and k.split("__")[0] not in covered
-         and not any(t in n.lower() for t in _NON_UTILISATION)),
-        key=lambda item: item[2], reverse=True,
+        (
+            (k, n, v)
+            for k, (n, v) in elapsed.items()
+            if v >= SATURATED_PCT
+            and k.split("__")[0] not in covered
+            and not any(t in n.lower() for t in _NON_UTILISATION)
+        ),
+        key=lambda item: item[2],
+        reverse=True,
     )
     for key, name, value in saturated[:5]:
         unit = key.split("__")[0]
-        findings.append(Finding(
-            # Deliberately NOT `pipe_saturated`: that category means the math
-            # pipe, and the linkage layer joins it to MATH_PIPE_THROTTLE
-            # samples. A saturated constant cache linked to the math pipe would
-            # be a fabricated connection presented with full confidence.
-            category="unit_saturated",
-            title=f"{_unit_label(unit)} is at {value:.0f}% of peak",
-            summary=(
-                f"`{name}` reads {value:.1f}% of peak over elapsed cycles. No curated "
-                f"rule covers the {unit} unit, so this was found by scanning the "
-                "report rather than by a rule that knows what to do about it -- "
-                "treat it as a pointer to the right section, not a diagnosis."
-            ),
-            severity="medium",
-            confidence="medium",
-            evidence={"metric": name, "pct_of_peak_elapsed": value,
-                      "threshold": SATURATED_PCT,
-                      "threshold_source": "matches NVIDIA's SOL saturation bar"},
-            actions=(f"Read the section that owns `{name}` before acting.",),
-            source="heuristic",
-        ))
+        findings.append(
+            Finding(
+                # Deliberately NOT `pipe_saturated`: that category means the math
+                # pipe, and the linkage layer joins it to MATH_PIPE_THROTTLE
+                # samples. A saturated constant cache linked to the math pipe would
+                # be a fabricated connection presented with full confidence.
+                category="unit_saturated",
+                title=f"{_unit_label(unit)} is at {value:.0f}% of peak",
+                summary=(
+                    f"`{name}` reads {value:.1f}% of peak over elapsed cycles. No curated "
+                    f"rule covers the {unit} unit, so this was found by scanning the "
+                    "report rather than by a rule that knows what to do about it -- "
+                    "treat it as a pointer to the right section, not a diagnosis."
+                ),
+                severity="medium",
+                confidence="medium",
+                evidence={
+                    "metric": name,
+                    "pct_of_peak_elapsed": value,
+                    "threshold": SATURATED_PCT,
+                    "threshold_source": "matches NVIDIA's SOL saturation bar",
+                },
+                actions=(f"Read the section that owns `{name}` before acting.",),
+                source="heuristic",
+            )
+        )
 
     # ---- duty cycle: the same counter seen two ways ------------------------
     bursty: List[Dict[str, Any]] = []
@@ -203,33 +218,43 @@ def scan_all_signals(
         ratio = active_value / elapsed_value
         if ratio < BURSTY_DUTY_CYCLE:
             continue
-        bursty.append({
-            "counter": key, "active_pct": active_value,
-            "elapsed_pct": elapsed_value, "duty_cycle": 1.0 / ratio,
-        })
-        findings.append(Finding(
-            category="unit_duty_cycle",
-            title=f"{_unit_label(key.split('__')[0])} is bursty, not idle",
-            summary=(
-                f"`{key}` reads {active_value:.0f}% of peak over ACTIVE cycles but "
-                f"{elapsed_value:.0f}% over ELAPSED cycles. The unit is saturated "
-                f"whenever it runs and runs for roughly {100.0 / ratio:.0f}% of the "
-                "kernel. Reading only the elapsed figure makes it look idle; reading "
-                "only the active figure makes it look like the bottleneck. Both "
-                "numbers are correct."
-            ),
-            severity="low",
-            confidence="high",
-            evidence={"active_metric": active_name, "active_pct": active_value,
-                      "elapsed_metric": elapsed_name, "elapsed_pct": elapsed_value,
-                      "duty_cycle_pct": 100.0 / ratio},
-            actions=(
-                "Decide which question you are asking: the elapsed figure answers "
-                "'is this unit the kernel's limit', the active figure answers 'is "
-                "this unit efficient when used'.",
-            ),
-            source="heuristic",
-        ))
+        bursty.append(
+            {
+                "counter": key,
+                "active_pct": active_value,
+                "elapsed_pct": elapsed_value,
+                "duty_cycle": 1.0 / ratio,
+            }
+        )
+        findings.append(
+            Finding(
+                category="unit_duty_cycle",
+                title=f"{_unit_label(key.split('__')[0])} is bursty, not idle",
+                summary=(
+                    f"`{key}` reads {active_value:.0f}% of peak over ACTIVE cycles but "
+                    f"{elapsed_value:.0f}% over ELAPSED cycles. The unit is saturated "
+                    f"whenever it runs and runs for roughly {100.0 / ratio:.0f}% of the "
+                    "kernel. Reading only the elapsed figure makes it look idle; reading "
+                    "only the active figure makes it look like the bottleneck. Both "
+                    "numbers are correct."
+                ),
+                severity="low",
+                confidence="high",
+                evidence={
+                    "active_metric": active_name,
+                    "active_pct": active_value,
+                    "elapsed_metric": elapsed_name,
+                    "elapsed_pct": elapsed_value,
+                    "duty_cycle_pct": 100.0 / ratio,
+                },
+                actions=(
+                    "Decide which question you are asking: the elapsed figure answers "
+                    "'is this unit the kernel's limit', the active figure answers 'is "
+                    "this unit efficient when used'.",
+                ),
+                source="heuristic",
+            )
+        )
 
     # ---- low hit rates, weighed by whether that path carried traffic -------
     #
@@ -255,62 +280,80 @@ def scan_all_signals(
         if unit in reported_units:
             continue
         reported_units.add(unit)
-        findings.append(Finding(
-            # Not `poor_cache_locality`: that category is linked to source lines
-            # via memory stall reasons, and this finding is about one specific
-            # path (atomics, stores, surface ops) whose lines the scan cannot
-            # identify. Linking it reproduced the top LONG_SCOREBOARD lines
-            # verbatim under a different heading -- duplication wearing the
-            # costume of a second piece of evidence.
-            category="unit_hit_rate",
-            title=f"{_unit_label(unit)} hit rate is {value:.0f}%",
-            summary=(
-                f"`{name}` reads {value:.1f}%, so {100.0 - value:.0f}% of the "
-                f"{volume:,.0f} requests on this path miss and go further out."
-            ),
-            severity="medium" if value < 15.0 else "low",
-            confidence="medium",
-            evidence={"metric": name, "hit_rate_pct": value,
-                      "requests_behind_it": volume,
-                      "threshold": LOW_HIT_RATE_PCT, "threshold_source": "ours"},
-            actions=("Compare this against the traffic volume: a low hit rate on a "
-                     "small number of requests costs little.",),
-            source="heuristic",
-        ))
+        findings.append(
+            Finding(
+                # Not `poor_cache_locality`: that category is linked to source lines
+                # via memory stall reasons, and this finding is about one specific
+                # path (atomics, stores, surface ops) whose lines the scan cannot
+                # identify. Linking it reproduced the top LONG_SCOREBOARD lines
+                # verbatim under a different heading -- duplication wearing the
+                # costume of a second piece of evidence.
+                category="unit_hit_rate",
+                title=f"{_unit_label(unit)} hit rate is {value:.0f}%",
+                summary=(
+                    f"`{name}` reads {value:.1f}%, so {100.0 - value:.0f}% of the "
+                    f"{volume:,.0f} requests on this path miss and go further out."
+                ),
+                severity="medium" if value < 15.0 else "low",
+                confidence="medium",
+                evidence={
+                    "metric": name,
+                    "hit_rate_pct": value,
+                    "requests_behind_it": volume,
+                    "threshold": LOW_HIT_RATE_PCT,
+                    "threshold_source": "ours",
+                },
+                actions=(
+                    "Compare this against the traffic volume: a low hit rate on a "
+                    "small number of requests costs little.",
+                ),
+                source="heuristic",
+            )
+        )
         if len(reported_units) >= 3:
             break
 
     # ---- internal contradictions ------------------------------------------
     for name, value in impossible[:5]:
-        findings.append(Finding(
-            category="measurement_above_physical_limit",
-            title="A percentage metric exceeds 100%",
-            summary=(
-                f"`{name}` reads {value:.1f}%. A percentage of peak cannot exceed "
-                "100, so this is a measurement fault -- a counter multiplexed across "
-                "replay passes that did not agree, or a peak the tool could not "
-                "determine for this part."
-            ),
-            severity="high",
-            confidence="high",
-            evidence={"metric": name, "value": value},
-            actions=("Re-collect this metric on its own, without multiplexing, "
-                     "before using it or anything derived from it.",),
-            source="heuristic",
-        ))
+        findings.append(
+            Finding(
+                category="measurement_above_physical_limit",
+                title="A percentage metric exceeds 100%",
+                summary=(
+                    f"`{name}` reads {value:.1f}%. A percentage of peak cannot exceed "
+                    "100, so this is a measurement fault -- a counter multiplexed across "
+                    "replay passes that did not agree, or a peak the tool could not "
+                    "determine for this part."
+                ),
+                severity="high",
+                confidence="high",
+                evidence={"metric": name, "value": value},
+                actions=(
+                    "Re-collect this metric on its own, without multiplexing, "
+                    "before using it or anything derived from it.",
+                ),
+                source="heuristic",
+            )
+        )
 
     # ---- utilisation profile ----------------------------------------------
     # "Underutilised" only means something relative to what is busy, so the
     # profile is reported rather than a finding emitted per idle unit.
     profile = sorted(
-        ((name, value) for name, value in
-         ((n, v) for _k, (n, v) in elapsed.items())
-         if not any(t in name.lower() for t in _NON_UTILISATION)),
-        key=lambda item: item[1], reverse=True,
+        (
+            (name, value)
+            for name, value in ((n, v) for _k, (n, v) in elapsed.items())
+            if not any(t in name.lower() for t in _NON_UTILISATION)
+        ),
+        key=lambda item: item[1],
+        reverse=True,
     )
 
-    findings.sort(key=lambda f: ({"high": 0, "medium": 1, "low": 2, "info": 3}
-                                 .get(f.severity, 9),))
+    findings.sort(
+        key=lambda f: (
+            {"high": 0, "medium": 1, "low": 2, "info": 3}.get(f.severity, 9),
+        )
+    )
     return {
         "findings": findings[: int(max_findings)],
         "finding_count": len(findings),
@@ -328,10 +371,14 @@ def scan_all_signals(
         "hit_rates_skipped_no_traffic": no_traffic,
         "hit_rates_skipped_unknown_traffic": unknown_traffic,
         "note": (
-            (f"{no_traffic} low hit rate(s) were skipped because nothing went "
-             "through that path, and "
-             f"{unknown_traffic} because their traffic volume could not be "
-             "established. " if (no_traffic or unknown_traffic) else "")
+            (
+                f"{no_traffic} low hit rate(s) were skipped because nothing went "
+                "through that path, and "
+                f"{unknown_traffic} because their traffic volume could not be "
+                "established. "
+                if (no_traffic or unknown_traffic)
+                else ""
+            )
             + f"Scanned {len(metrics or {})} metrics by name grammar. Thresholds here "
             "are ours, not NVIDIA's, and deliberately conservative: a rule applied to "
             "thousands of metrics produces noise unless it is nearly always right. "

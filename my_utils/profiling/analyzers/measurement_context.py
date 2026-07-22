@@ -31,8 +31,8 @@ None of these degrade a conclusion. Each one inverts it.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
+from dataclasses import dataclass
+from typing import Any, Dict, List, Optional, Tuple
 
 __all__ = [
     "CacheState",
@@ -51,8 +51,8 @@ NCU_DEFAULT_CACHE_CONTROL = "all"
 class CacheState:
     """Cache state a measurement was taken under."""
 
-    COLD = "cold"          # caches flushed before the kernel (ncu default)
-    WARM = "warm"          # whatever the preceding work left behind
+    COLD = "cold"  # caches flushed before the kernel (ncu default)
+    WARM = "warm"  # whatever the preceding work left behind
     UNKNOWN = "unknown"
 
 
@@ -60,16 +60,16 @@ class CacheState:
 class MeasurementContext:
     """Everything about how a number was produced that changes what it means."""
 
-    source: str = ""                       # "ncu" | "nsys" | "wallclock" | ...
+    source: str = ""  # "ncu" | "nsys" | "wallclock" | ...
     cache_state: str = CacheState.UNKNOWN
     #: ncu serialises kernels to profile them; overlap cannot be observed.
     serialized_execution: bool = False
     #: Replays re-run the kernel; side-effecting kernels measure differently.
-    replay_mode: str = ""                  # kernel | application | range
+    replay_mode: str = ""  # kernel | application | range
     iterations: Optional[int] = None
     warmup_iterations: Optional[int] = None
     clocks_locked: Optional[bool] = None
-    input_distribution: str = ""           # "real" | "random" | "ones" | ...
+    input_distribution: str = ""  # "real" | "random" | "ones" | ...
     #: Measured SM clock, Hz. Nsight Compute defaults to --clock-control=base
     #: but the clock it *achieves* still varies run to run, and a duration
     #: measured at one clock is not comparable with one measured at another.
@@ -146,7 +146,8 @@ class MeasurementContext:
         if not self.sm_clock_hz or not self.gpc_clock_hz:
             return None
         return max(self.sm_clock_hz, self.gpc_clock_hz) / min(
-            self.sm_clock_hz, self.gpc_clock_hz)
+            self.sm_clock_hz, self.gpc_clock_hz
+        )
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -267,8 +268,17 @@ def describe_collection_mode(
 # How a metric responds to the clock. Anything not recognised is treated as
 # clock-independent, because inventing a correction is worse than omitting one.
 _DURATION_HINTS = ("duration", "time", "latency", "elapsed_ns", "_ns", "us", "ms")
-_RATE_HINTS = ("throughput", "flops", "flop_s", "tflop", "bandwidth", "per_second",
-               "gbps", "bytes_per", "rate")
+_RATE_HINTS = (
+    "throughput",
+    "flops",
+    "flop_s",
+    "tflop",
+    "bandwidth",
+    "per_second",
+    "gbps",
+    "bytes_per",
+    "rate",
+)
 
 
 def _metric_kind(metric: str) -> str:
@@ -316,8 +326,11 @@ def compare_measurements(
             "difference includes overlap that only one of them could observe"
         )
 
-    if (baseline.input_distribution and candidate.input_distribution
-            and baseline.input_distribution != candidate.input_distribution):
+    if (
+        baseline.input_distribution
+        and candidate.input_distribution
+        and baseline.input_distribution != candidate.input_distribution
+    ):
         blockers.append(
             f"input distributions differ ('{baseline.input_distribution}' vs "
             f"'{candidate.input_distribution}'), which alone can move throughput by "
@@ -341,7 +354,7 @@ def compare_measurements(
     if baseline.sm_clock_hz and candidate.sm_clock_hz:
         clock_ratio = candidate.sm_clock_hz / baseline.sm_clock_hz
         if kind == "clock_independent":
-            pass    # bytes, counts, cycles: the clock does not enter
+            pass  # bytes, counts, cycles: the clock does not enter
         elif abs(clock_ratio - 1.0) > 0.01:
             blockers.append(
                 f"the two measurements ran at different SM clocks "
@@ -351,7 +364,10 @@ def compare_measurements(
                 "code with the change in the clock; compare cycles, or lock the "
                 "clock and re-measure"
             )
-    elif not (baseline.sm_clock_hz and candidate.sm_clock_hz) and kind != "clock_independent":
+    elif (
+        not (baseline.sm_clock_hz and candidate.sm_clock_hz)
+        and kind != "clock_independent"
+    ):
         # Failing open here let a comparison through with no clock evidence at
         # all, which is the case most likely to be confounded.
         blockers.append(
@@ -384,7 +400,8 @@ def compare_measurements(
             result["clock_ratio"] = clock_ratio
             result["metric_kind"] = kind
             result["clock_normalised_ratio"] = (
-                ratio * clock_ratio if kind == "duration" else ratio / clock_ratio)
+                ratio * clock_ratio if kind == "duration" else ratio / clock_ratio
+            )
             result["verdict"] += (
                 f" Normalising for the clock leaves "
                 f"{ratio * clock_ratio:.3f}x of the {ratio:.3f}x observed."
@@ -393,8 +410,7 @@ def compare_measurements(
         result["ratio"] = ratio
         result["verdict"] = (
             f"Comparable: both measured {baseline.cache_state}-cache from "
-            f"{baseline.source}."
-            + (f" Ratio {ratio:.2f}x." if ratio else "")
+            f"{baseline.source}." + (f" Ratio {ratio:.2f}x." if ratio else "")
         )
 
     # Warnings that do not block but change how much the difference means.

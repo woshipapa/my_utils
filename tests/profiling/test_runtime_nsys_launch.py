@@ -22,7 +22,9 @@ def _load_frameworkless():
             sys.modules[name] = mod
 
     backends_name = "my_utils.profiling.runtime.backends"
-    backends_spec = importlib.util.spec_from_file_location(backends_name, root / "backends.py")
+    backends_spec = importlib.util.spec_from_file_location(
+        backends_name, root / "backends.py"
+    )
     assert backends_spec is not None and backends_spec.loader is not None
     backends_mod = importlib.util.module_from_spec(backends_spec)
     sys.modules[backends_name] = backends_mod
@@ -88,13 +90,17 @@ def test_nic_metrics_mode_hf_on_2026() -> None:
 
 
 def test_trace_syscall_is_mapped_to_switch_on_2026() -> None:
-    cmd = build_nsys_launch_prefix(_cfg(trace="cuda,nvtx,syscall", version_hint="2026.2"))
+    cmd = build_nsys_launch_prefix(
+        _cfg(trace="cuda,nvtx,syscall", version_hint="2026.2")
+    )
     assert "--trace=cuda,nvtx" in cmd
     assert "--syscall=process-tree" in cmd
 
 
 def test_trace_syscall_kept_for_2024() -> None:
-    cmd = build_nsys_launch_prefix(_cfg(trace="cuda,nvtx,syscall", version_hint="2024.7"))
+    cmd = build_nsys_launch_prefix(
+        _cfg(trace="cuda,nvtx,syscall", version_hint="2024.7")
+    )
     assert "--trace=cuda,nvtx,syscall" in cmd
     assert all(not item.startswith("--syscall=") for item in cmd)
 
@@ -105,5 +111,7 @@ def test_explicit_syscall_switch_for_2026() -> None:
 
 
 def test_legacy_gpu_metrics_device_alias_is_supported() -> None:
-    cmd = build_nsys_launch_prefix(_cfg(gpu_metrics_device="all", version_hint="2026.2"))
+    cmd = build_nsys_launch_prefix(
+        _cfg(gpu_metrics_device="all", version_hint="2026.2")
+    )
     assert "--gpu-metrics-devices=all" in cmd

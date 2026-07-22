@@ -23,7 +23,9 @@ class RollAdapter(FrameworkAdapter):
             return False
         if framework == "roll":
             return True
-        if context_has_any_key(context, ("roll_config", "roll_pipeline", "roll_runner")):
+        if context_has_any_key(
+            context, ("roll_config", "roll_pipeline", "roll_runner")
+        ):
             return True
 
         command = context_command_text(context)

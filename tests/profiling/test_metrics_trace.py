@@ -70,4 +70,3 @@ def test_write_chrome_trace(tmp_path: Path) -> None:
     payload = json.loads(Path(path).read_text(encoding="utf-8"))
     assert "traceEvents" in payload
     assert any(item.get("ph") == "X" for item in payload["traceEvents"])
-

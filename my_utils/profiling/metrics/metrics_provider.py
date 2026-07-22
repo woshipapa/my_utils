@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Dict, List, Protocol, runtime_checkable
+from typing import List, Protocol, runtime_checkable
 
 from .metrics_types import MetricEvent
 
@@ -24,20 +24,15 @@ class MetricsProvider(Protocol):
 
     provider_id: str
 
-    def get_metrics(self) -> List[MetricEvent]:
-        ...
+    def get_metrics(self) -> List[MetricEvent]: ...
 
-    def start_collection(self) -> None:
-        ...
+    def start_collection(self) -> None: ...
 
-    def stop_collection(self) -> None:
-        ...
+    def stop_collection(self) -> None: ...
 
-    def is_enabled(self) -> bool:
-        ...
+    def is_enabled(self) -> bool: ...
 
-    def capabilities(self) -> ProviderCapabilities:
-        ...
+    def capabilities(self) -> ProviderCapabilities: ...
 
 
 class BaseMetricsProvider:

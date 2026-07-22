@@ -3,6 +3,8 @@ import os
 import sys
 import threading
 import time
+
+
 # --------------------------------------------------
 # 1. 单例元类 (保持不变)
 # --------------------------------------------------
@@ -17,9 +19,11 @@ class SingletonMeta(type):
                 cls._instances[cls] = instance
         return cls._instances[cls]
 
+
 # --------------------------------------------------
 # 2. 重构后的 GlobalLogger 类
 # --------------------------------------------------
+
 
 # 定义一个强制刷新的 Handler
 class FlushingFileHandler(logging.FileHandler):
@@ -27,10 +31,10 @@ class FlushingFileHandler(logging.FileHandler):
         super().emit(record)
         self.flush()  # <--- 关键：每条日志写完立刻刷盘
 
+
 # 在你的 setup 函数中替换：
 # 原代码: file_handler = logging.FileHandler(log_file, mode="a")
 # 修改为:
-
 
 
 class GlobalLogger(metaclass=SingletonMeta):
@@ -39,6 +43,7 @@ class GlobalLogger(metaclass=SingletonMeta):
 
     通过单例模式，确保在整个应用程序中只有一个实例。
     """
+
     _GLOBAL_LOGGER_NAME = "MySystemGlobalLogger"
 
     def __init__(self):
@@ -52,15 +57,21 @@ class GlobalLogger(metaclass=SingletonMeta):
         self.profile_file = None
         self.machine_id = "Unknown"
         self.profile_enabled = False
-        self.time_offset = 0.0 # [新增] 默认为 0
+        self.time_offset = 0.0  # [新增] 默认为 0
 
     def set_time_offset(self, offset: float):
-            """ [新增] 设置时间偏移量 """
-            self.time_offset = offset
-            self.logger.info(f"GlobalLogger time offset set to: {offset:.6f}s")
+        """[新增] 设置时间偏移量"""
+        self.time_offset = offset
+        self.logger.info(f"GlobalLogger time offset set to: {offset:.6f}s")
 
-
-    def setup(self, log_dir: str, level: int = logging.INFO, rank: int = 0, world_size: int = 1, **kwargs):
+    def setup(
+        self,
+        log_dir: str,
+        level: int = logging.INFO,
+        rank: int = 0,
+        world_size: int = 1,
+        **kwargs,
+    ):
         """
         从外部接收配置并完成日志器的设置。
 
@@ -75,9 +86,11 @@ class GlobalLogger(metaclass=SingletonMeta):
         """
         # 1. 防止重复配置
         if self.is_configured:
-            self.logger.warning("Logger is already configured. Ignoring subsequent setup call.")
+            self.logger.warning(
+                "Logger is already configured. Ignoring subsequent setup call."
+            )
             return
-        
+
         # 健壮性：在添加新 handler 之前，清空可能存在的旧 handler
         if self.logger.hasHandlers():
             self.logger.handlers.clear()
@@ -89,18 +102,18 @@ class GlobalLogger(metaclass=SingletonMeta):
         log_format = f"[%(asctime)s] [Rank {rank}/{world_size}]"
 
         # 检查 kwargs 中是否有可选的 Megatron mpu 信息
-        dp_rank = kwargs.get('data_parallel_rank')
+        dp_rank = kwargs.get("data_parallel_rank")
         if dp_rank is not None:
-            dp_size = kwargs.get('data_parallel_world_size', '?')
+            dp_size = kwargs.get("data_parallel_world_size", "?")
             log_format += f" [DP_Rank {dp_rank}/{dp_size}]"
-        
+
         # 检查 kwargs 中是否有自定义的标签
-        extra_label = kwargs.get('extra_log_label')
+        extra_label = kwargs.get("extra_log_label")
         if extra_label:
             log_format += f" [{extra_label}]"
 
         log_format += " [%(levelname)s] [%(funcName)s:%(lineno)d] - %(message)s"
-        
+
         formatter = logging.Formatter(log_format, datefmt="%Y-%m-%d %H:%M:%S")
 
         # 4. 配置 StreamHandler (输出到控制台)
@@ -119,60 +132,73 @@ class GlobalLogger(metaclass=SingletonMeta):
 
         # 6. 禁止向上传播日志，防止 root logger 重复打印
         self.logger.propagate = False
-        
+
         # 配置机器高精度日志
         self.machine_id = extra_label if extra_label else f"Rank_{rank}"
-        
+
         csv_path = os.path.join(log_dir, f"profile_rank_{rank}.csv")
-        
+
         # buffering=1 表示行缓冲 (Line Buffered)，每写一行自动 flush
         # 这对 Profile 至关重要，防止程序崩溃时丢失最近的数据
         self.profile_file = open(csv_path, "a", buffering=1, encoding="utf-8")
-        
+
         # 如果是新文件，写入 CSV Header
         if os.path.getsize(csv_path) == 0:
             header = "timestamp_unix,readable_time,machine_id,step,event_name,event_type,duration_ms,metadata\n"
             self.profile_file.write(header)
         # 7. 标记为已配置
-    
+
         self.profile_enabled = True
         self.is_configured = True
-        
+
         if rank == 0:
-            self.logger.info(f"GlobalLogger ready. Human logs: {log_file}, Machine logs: {csv_path}")
+            self.logger.info(
+                f"GlobalLogger ready. Human logs: {log_file}, Machine logs: {csv_path}"
+            )
 
+    def log_profile_event(
+        self,
+        timestamp: float,
+        step: int,
+        event_name: str,
+        event_type: str,
+        duration_ms: float = 0.0,
+        metadata: str = "",
+    ):
+        """
+        Args:
+            timestamp (float): 必须是 time.time() 获取的高精度浮点数
+            step (int): 当前迭代步数
+            event_name (str): 操作名称 (如 "GPU_Encode")
+            event_type (str): "START" 或 "END"
+            duration_ms (float): 仅在 END 事件时记录 GPU 耗时，START 时为 0
+        """
+        if not self.profile_enabled:
+            return
 
-    def log_profile_event(self, timestamp: float, step: int, event_name: str, event_type: str, duration_ms: float = 0.0, metadata: str = ""):
-            """
-            Args:
-                timestamp (float): 必须是 time.time() 获取的高精度浮点数
-                step (int): 当前迭代步数
-                event_name (str): 操作名称 (如 "GPU_Encode")
-                event_type (str): "START" 或 "END"
-                duration_ms (float): 仅在 END 事件时记录 GPU 耗时，START 时为 0
-            """
-            if not self.profile_enabled:
-                return
-            
-            timestamp = timestamp + self.time_offset  # 应用时间偏移调整
+        timestamp = timestamp + self.time_offset  # 应用时间偏移调整
 
-            # 1. 生成人类可读的辅助时间 (方便 grep，但不用于画图)
-            # 我们只取 timestamp 的小数部分
-            readable = time.strftime("%H:%M:%S", time.localtime(timestamp)) + f".{int(timestamp % 1 * 1000):03d}"
-            
-            # 2. 拼接 CSV 行 (避免使用 csv 库，手动拼接更快且依赖少)
-            # 格式: timestamp, readable, machine, step, name, type, duration, meta
-            line = f"{timestamp:.6f},{readable},{self.machine_id},{step},{event_name},{event_type},{duration_ms:.3f},{metadata}\n"
-            
-            # 3. 写入 (由于 buffering=1，会自动 flush)
-            try:
-                self.profile_file.write(line)
-            except Exception:
-                pass # 绝不让 profile 逻辑导致训练中断
+        # 1. 生成人类可读的辅助时间 (方便 grep，但不用于画图)
+        # 我们只取 timestamp 的小数部分
+        readable = (
+            time.strftime("%H:%M:%S", time.localtime(timestamp))
+            + f".{int(timestamp % 1 * 1000):03d}"
+        )
+
+        # 2. 拼接 CSV 行 (避免使用 csv 库，手动拼接更快且依赖少)
+        # 格式: timestamp, readable, machine, step, name, type, duration, meta
+        line = f"{timestamp:.6f},{readable},{self.machine_id},{step},{event_name},{event_type},{duration_ms:.3f},{metadata}\n"
+
+        # 3. 写入 (由于 buffering=1，会自动 flush)
+        try:
+            self.profile_file.write(line)
+        except Exception:
+            pass  # 绝不让 profile 逻辑导致训练中断
 
     def close(self):
         if self.profile_file:
             self.profile_file.close()
+
     def get_logger(self) -> logging.Logger:
         """
         获取全局 logger 实例。
@@ -181,21 +207,25 @@ class GlobalLogger(metaclass=SingletonMeta):
         """
         if not self.is_configured:
             # 提供一个后备的、安全的默认配置，防止在 setup 调用前使用时程序崩溃
-            self.logger.warning("GlobalLogger is being used before it was properly configured. "
-                               "Applying a basic default configuration.")
-            
+            self.logger.warning(
+                "GlobalLogger is being used before it was properly configured. "
+                "Applying a basic default configuration."
+            )
+
             # 仅配置一个简单的控制台输出，避免静默失败
             if not self.logger.hasHandlers():
                 handler = logging.StreamHandler(sys.stdout)
-                formatter = logging.Formatter("[%(asctime)s] [UNCONFIGURED] - %(message)s")
+                formatter = logging.Formatter(
+                    "[%(asctime)s] [UNCONFIGURED] - %(message)s"
+                )
                 handler.setFormatter(formatter)
                 self.logger.addHandler(handler)
                 self.logger.setLevel(logging.INFO)
             # 标记为已配置(基础配置)，防止重复打印警告
-            self.is_configured = True 
+            self.is_configured = True
 
         return self.logger
-    
+
 
 # ==========================================================
 # === NEW: Lightweight Global Accessor Function ===

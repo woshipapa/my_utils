@@ -11,7 +11,11 @@ from ..metrics.metrics_schema import MetricSchemaValidator
 from ..metrics.metrics_store import MetricsStore
 from ..output.metrics_trace import ChromeTraceExportConfig, write_chrome_trace
 from ..metrics.metrics_types import AnalysisReport, MetricEvent
-from ..metrics.provider_registry import DEFAULT_PROVIDER_REGISTRY, MetricsProviderRegistry, ProviderSpec
+from ..metrics.provider_registry import (
+    DEFAULT_PROVIDER_REGISTRY,
+    MetricsProviderRegistry,
+    ProviderSpec,
+)
 
 
 class MetricsCollector:
@@ -108,7 +112,9 @@ class MetricsCollector:
             except Exception:
                 continue
 
-    def collect(self, *, step: Optional[int] = None, tags: Optional[Dict[str, str]] = None) -> int:
+    def collect(
+        self, *, step: Optional[int] = None, tags: Optional[Dict[str, str]] = None
+    ) -> int:
         if not self._enabled:
             return 0
 
@@ -135,7 +141,9 @@ class MetricsCollector:
                     if self._validate_events:
                         verdict = self._validator.validate(event)
                         self._validation_stats["validated_events"] += 1
-                        self._validation_stats["validation_warnings"] += len(verdict.warnings)
+                        self._validation_stats["validation_warnings"] += len(
+                            verdict.warnings
+                        )
                         if not verdict.is_valid:
                             self._validation_stats["invalid_events"] += 1
                             if self._drop_invalid_events:
@@ -154,7 +162,9 @@ class MetricsCollector:
         return self._store.read_all_events(prefer_disk=True)
 
     def analyze(self, events: Optional[Iterable[MetricEvent]] = None) -> AnalysisReport:
-        report = self._analyzer.analyze(events if events is not None else self.get_events())
+        report = self._analyzer.analyze(
+            events if events is not None else self.get_events()
+        )
         report.metadata.setdefault("collector", {})
         report.metadata["collector"].update(
             {
@@ -209,7 +219,9 @@ class MetricsCollector:
         for item in provider_specs:
             spec = ProviderSpec.from_dict(item)
             try:
-                provider = self._provider_registry.create(spec, context=provider_context or {})
+                provider = self._provider_registry.create(
+                    spec, context=provider_context or {}
+                )
                 self.register_provider(provider)
             except Exception as exc:
                 message = f"Failed to register provider '{spec.provider_id}' ({spec.provider_type}): {exc}"
@@ -248,7 +260,9 @@ class MetricsCollector:
         schema_cfg = payload.get("schema", {}) or {}
 
         analyzer = MetricsAnalyzer(
-            bottleneck_share_threshold=float(analyzer_cfg.get("bottleneck_threshold", 0.10)),
+            bottleneck_share_threshold=float(
+                analyzer_cfg.get("bottleneck_threshold", 0.10)
+            ),
             cv_threshold=float(analyzer_cfg.get("cv_threshold", 0.50)),
             memory_growth_bytes_per_step=float(
                 analyzer_cfg.get("memory_growth_bytes_per_step", 10 * 1024 * 1024)
@@ -259,7 +273,9 @@ class MetricsCollector:
         validator = MetricSchemaValidator(
             strict=bool(schema_cfg.get("strict", False)),
             enforce_known_prefix=bool(schema_cfg.get("enforce_known_prefix", False)),
-            enforce_recommended_units=bool(schema_cfg.get("enforce_recommended_units", False)),
+            enforce_recommended_units=bool(
+                schema_cfg.get("enforce_recommended_units", False)
+            ),
         )
 
         collector = cls(

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import csv
 import json
-import os
 import pstats
 import re
 import sqlite3
@@ -418,7 +417,13 @@ class ModuleProfilerMetricsProvider(BaseMetricsProvider):
         supports_incremental=False,
     )
 
-    def __init__(self, module_profiler, *, provider_id: Optional[str] = None, enabled: bool = True) -> None:
+    def __init__(
+        self,
+        module_profiler,
+        *,
+        provider_id: Optional[str] = None,
+        enabled: bool = True,
+    ) -> None:
         super().__init__(enabled=enabled)
         if provider_id:
             self.provider_id = str(provider_id)
@@ -534,9 +539,17 @@ class TableCsvMetricsProvider(BaseMetricsProvider):
             if value is None:
                 continue
 
-            raw_name = row.get(self.name_column, self.value_column) if self.name_column else self.value_column
+            raw_name = (
+                row.get(self.name_column, self.value_column)
+                if self.name_column
+                else self.value_column
+            )
             event_name = f"{self.event_name_prefix}.{_normalize_name(raw_name)}"
-            tags = {col: str(row.get(col, "")) for col in self.tag_columns if row.get(col) is not None}
+            tags = {
+                col: str(row.get(col, ""))
+                for col in self.tag_columns
+                if row.get(col) is not None
+            }
             events.append(
                 MetricEvent(
                     timestamp=now,
@@ -632,7 +645,13 @@ class _LegacyNsysSqliteMetricsProvider(BaseMetricsProvider):
         supports_incremental=True,
     )
 
-    def __init__(self, sqlite_path: str, *, provider_id: Optional[str] = None, enabled: bool = True) -> None:
+    def __init__(
+        self,
+        sqlite_path: str,
+        *,
+        provider_id: Optional[str] = None,
+        enabled: bool = True,
+    ) -> None:
         warnings.warn(
             "_LegacyNsysSqliteMetricsProvider is deprecated and will be removed "
             "in 0.3.0; use NsysSqliteMetricsProvider "
@@ -692,7 +711,9 @@ class _LegacyNsysSqliteMetricsProvider(BaseMetricsProvider):
         if not self._table_exists(conn, table):
             return []
 
-        columns = [row[1] for row in conn.execute(f"PRAGMA table_info({table});").fetchall()]
+        columns = [
+            row[1] for row in conn.execute(f"PRAGMA table_info({table});").fetchall()
+        ]
         required = {"rowid", "start", "end", "bytes"}
         if not {"start", "end", "bytes"}.issubset(set(columns)):
             return []
@@ -790,7 +811,13 @@ class CProfileStatsProvider(BaseMetricsProvider):
         supports_incremental=True,
     )
 
-    def __init__(self, stats_path: str, *, provider_id: Optional[str] = None, enabled: bool = True) -> None:
+    def __init__(
+        self,
+        stats_path: str,
+        *,
+        provider_id: Optional[str] = None,
+        enabled: bool = True,
+    ) -> None:
         super().__init__(enabled=enabled)
         if provider_id:
             self.provider_id = str(provider_id)
@@ -860,7 +887,9 @@ class PerfStatTextProvider(BaseMetricsProvider):
     )
     _LINE = re.compile(r"^\s*([0-9][0-9,\.]*)\s+([A-Za-z0-9_\-.:/]+).*$")
 
-    def __init__(self, stat_path: str, *, provider_id: Optional[str] = None, enabled: bool = True) -> None:
+    def __init__(
+        self, stat_path: str, *, provider_id: Optional[str] = None, enabled: bool = True
+    ) -> None:
         super().__init__(enabled=enabled)
         if provider_id:
             self.provider_id = str(provider_id)
@@ -926,7 +955,15 @@ class DcgmCsvMetricsProvider(BaseMetricsProvider):
         "key",
     )
     _DEFAULT_TS_COLUMNS = ("timestamp", "ts", "time", "timestamp_ns", "timestamp_ms")
-    _DEFAULT_GPU_COLUMNS = ("gpu", "gpu_id", "device_id", "device", "entityid", "entity_id", "uuid")
+    _DEFAULT_GPU_COLUMNS = (
+        "gpu",
+        "gpu_id",
+        "device_id",
+        "device",
+        "entityid",
+        "entity_id",
+        "uuid",
+    )
     _DEFAULT_UNIT_COLUMNS = ("unit", "metric_unit")
     _DEFAULT_RANK_COLUMNS = ("rank", "global_rank", "local_rank")
 
@@ -957,8 +994,12 @@ class DcgmCsvMetricsProvider(BaseMetricsProvider):
         self.rank_column = str(rank_column or "").strip()
         self.unit_column = str(unit_column or "").strip()
         self.tag_columns = [str(col) for col in (tag_columns or []) if str(col).strip()]
-        self.metric_allowlist = {str(name).strip() for name in (metric_allowlist or []) if str(name).strip()}
-        self.event_name_prefix = str(event_name_prefix or "gpu.dcgm").strip().rstrip(".")
+        self.metric_allowlist = {
+            str(name).strip() for name in (metric_allowlist or []) if str(name).strip()
+        }
+        self.event_name_prefix = (
+            str(event_name_prefix or "gpu.dcgm").strip().rstrip(".")
+        )
         self._file_pos = 0
         self._csv_fieldnames: Optional[List[str]] = None
 
@@ -992,8 +1033,12 @@ class DcgmCsvMetricsProvider(BaseMetricsProvider):
         now = time.time()
         events: List[MetricEvent] = []
         for row in rows:
-            value_col = self._pick_column(row, self.value_column, self._DEFAULT_VALUE_COLUMNS)
-            metric_col = self._pick_column(row, self.metric_column, self._DEFAULT_METRIC_COLUMNS)
+            value_col = self._pick_column(
+                row, self.value_column, self._DEFAULT_VALUE_COLUMNS
+            )
+            metric_col = self._pick_column(
+                row, self.metric_column, self._DEFAULT_METRIC_COLUMNS
+            )
             if not value_col or not metric_col:
                 continue
 
@@ -1010,10 +1055,16 @@ class DcgmCsvMetricsProvider(BaseMetricsProvider):
             if value is None:
                 continue
 
-            ts_col = self._pick_column(row, self.timestamp_column, self._DEFAULT_TS_COLUMNS)
-            unit_col = self._pick_column(row, self.unit_column, self._DEFAULT_UNIT_COLUMNS)
+            ts_col = self._pick_column(
+                row, self.timestamp_column, self._DEFAULT_TS_COLUMNS
+            )
+            unit_col = self._pick_column(
+                row, self.unit_column, self._DEFAULT_UNIT_COLUMNS
+            )
             gpu_col = self._pick_column(row, self.gpu_column, self._DEFAULT_GPU_COLUMNS)
-            rank_col = self._pick_column(row, self.rank_column, self._DEFAULT_RANK_COLUMNS)
+            rank_col = self._pick_column(
+                row, self.rank_column, self._DEFAULT_RANK_COLUMNS
+            )
 
             tags: Dict[str, str] = {}
             if gpu_col and row.get(gpu_col) not in (None, ""):
@@ -1024,7 +1075,11 @@ class DcgmCsvMetricsProvider(BaseMetricsProvider):
                 if col in row and row.get(col) not in (None, ""):
                     tags[col] = str(row.get(col))
 
-            timestamp = _parse_timestamp_seconds(row.get(ts_col), default_now=now) if ts_col else now
+            timestamp = (
+                _parse_timestamp_seconds(row.get(ts_col), default_now=now)
+                if ts_col
+                else now
+            )
             unit = str(row.get(unit_col) or "") if unit_col else ""
             events.append(
                 MetricEvent(
@@ -1081,8 +1136,13 @@ class NcclLogMetricsProvider(BaseMetricsProvider):
         if provider_id:
             self.provider_id = str(provider_id)
         self.log_path = Path(log_path)
-        self.event_name_prefix = str(event_name_prefix or "comm.nccl").strip().rstrip(".")
-        self.levels = {str(level).upper() for level in (levels or ["INFO", "WARN", "WARNING", "ERROR", "FATAL"])}
+        self.event_name_prefix = (
+            str(event_name_prefix or "comm.nccl").strip().rstrip(".")
+        )
+        self.levels = {
+            str(level).upper()
+            for level in (levels or ["INFO", "WARN", "WARNING", "ERROR", "FATAL"])
+        }
         self._file_pos = 0
         self._tail = ""
         self._path_rank: Optional[int] = None
@@ -1133,7 +1193,11 @@ class NcclLogMetricsProvider(BaseMetricsProvider):
                 tags["op"] = _normalize_name(op_match.group(1))
 
             ts_match = self._ISO_TS.search(line)
-            timestamp = _parse_timestamp_seconds(ts_match.group(1), default_now=now) if ts_match else now
+            timestamp = (
+                _parse_timestamp_seconds(ts_match.group(1), default_now=now)
+                if ts_match
+                else now
+            )
 
             duration_match = self._DURATION.search(line)
             if duration_match:
@@ -1229,7 +1293,14 @@ class RasJsonMetricsProvider(BaseMetricsProvider):
         supports_rank_scope=True,
     )
 
-    _DEFAULT_TIMESTAMP_KEYS = ("timestamp", "ts", "time", "time_ns", "event_time", "created_at")
+    _DEFAULT_TIMESTAMP_KEYS = (
+        "timestamp",
+        "ts",
+        "time",
+        "time_ns",
+        "event_time",
+        "created_at",
+    )
     _DEFAULT_SEVERITY_KEYS = ("severity", "level", "priority")
     _DEFAULT_COMPONENT_KEYS = ("component", "subsystem", "module", "source")
     _DEFAULT_RANK_KEYS = ("rank", "global_rank", "local_rank")
@@ -1267,7 +1338,9 @@ class RasJsonMetricsProvider(BaseMetricsProvider):
         self._seen_event_keys: set[str] = set()
 
     @staticmethod
-    def _pick_key(payload: Dict[str, object], explicit: str, defaults: Sequence[str]) -> Optional[str]:
+    def _pick_key(
+        payload: Dict[str, object], explicit: str, defaults: Sequence[str]
+    ) -> Optional[str]:
         if explicit and explicit in payload:
             return explicit
         for key in defaults:
@@ -1301,14 +1374,24 @@ class RasJsonMetricsProvider(BaseMetricsProvider):
         ]
         return "|".join(signature)
 
-    def _record_to_events(self, record: Dict[str, object], *, now: float) -> List[MetricEvent]:
-        ts_key = self._pick_key(record, self.timestamp_key, self._DEFAULT_TIMESTAMP_KEYS)
+    def _record_to_events(
+        self, record: Dict[str, object], *, now: float
+    ) -> List[MetricEvent]:
+        ts_key = self._pick_key(
+            record, self.timestamp_key, self._DEFAULT_TIMESTAMP_KEYS
+        )
         sev_key = self._pick_key(record, self.severity_key, self._DEFAULT_SEVERITY_KEYS)
-        comp_key = self._pick_key(record, self.component_key, self._DEFAULT_COMPONENT_KEYS)
+        comp_key = self._pick_key(
+            record, self.component_key, self._DEFAULT_COMPONENT_KEYS
+        )
         rank_key = self._pick_key(record, self.rank_key, self._DEFAULT_RANK_KEYS)
         gpu_key = self._pick_key(record, self.gpu_key, self._DEFAULT_GPU_KEYS)
 
-        timestamp = _parse_timestamp_seconds(record.get(ts_key), default_now=now) if ts_key else now
+        timestamp = (
+            _parse_timestamp_seconds(record.get(ts_key), default_now=now)
+            if ts_key
+            else now
+        )
         severity = str(record.get(sev_key, "")).strip().lower() if sev_key else ""
         component = str(record.get(comp_key, "")).strip() if comp_key else ""
 
@@ -1342,7 +1425,21 @@ class RasJsonMetricsProvider(BaseMetricsProvider):
             )
         else:
             for key, value in sorted(numeric_fields.items()):
-                unit = "count" if any(token in key for token in ("count", "error", "fault", "fail", "retry", "timeout")) else ""
+                unit = (
+                    "count"
+                    if any(
+                        token in key
+                        for token in (
+                            "count",
+                            "error",
+                            "fault",
+                            "fail",
+                            "retry",
+                            "timeout",
+                        )
+                    )
+                    else ""
+                )
                 events.append(
                     MetricEvent(
                         timestamp=timestamp,
@@ -1416,7 +1513,9 @@ class RasJsonMetricsProvider(BaseMetricsProvider):
         else:
             is_json_lines = bool(self.json_lines)
 
-        records = self._parse_json_lines() if is_json_lines else self._parse_json_document()
+        records = (
+            self._parse_json_lines() if is_json_lines else self._parse_json_document()
+        )
         if not records:
             return []
 

@@ -14,7 +14,9 @@ def _load_yaml_payload(path: str) -> dict[str, Any]:
     try:
         import yaml
     except ImportError as exc:
-        raise RuntimeError("PyYAML is required. Install with: pip install pyyaml") from exc
+        raise RuntimeError(
+            "PyYAML is required. Install with: pip install pyyaml"
+        ) from exc
 
     payload = yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
     if not isinstance(payload, dict):
@@ -30,7 +32,9 @@ def _coerce_command(value: Any) -> list[str]:
         if not parts:
             return []
         return parts
-    if isinstance(value, list) and all(isinstance(item, (str, int, float)) for item in value):
+    if isinstance(value, list) and all(
+        isinstance(item, (str, int, float)) for item in value
+    ):
         return [str(item) for item in value]
     raise ValueError("command must be a string or list.")
 
@@ -105,7 +109,9 @@ def _serialize_switches(switches: dict[str, Any]) -> list[str]:
                 else:
                     args.append(f"{opt}={text}")
             continue
-        raise ValueError(f"Unsupported value type for switch '{name}': {type(value).__name__}")
+        raise ValueError(
+            f"Unsupported value type for switch '{name}': {type(value).__name__}"
+        )
     return args
 
 
@@ -148,7 +154,9 @@ def _resolve_default_export(payload: dict[str, Any], ncu_cfg: dict[str, Any]) ->
     if str(ncu_cfg.get("export", "")).strip():
         return str(ncu_cfg["export"]).strip()
     output_dir = str(payload.get("output_dir", "./logs/ncu")).strip() or "./logs/ncu"
-    output_prefix = str(payload.get("output_prefix", "ncu_profile")).strip() or "ncu_profile"
+    output_prefix = (
+        str(payload.get("output_prefix", "ncu_profile")).strip() or "ncu_profile"
+    )
     if output_prefix.endswith(".ncu-rep"):
         file_name = output_prefix
     else:
@@ -227,7 +235,11 @@ def build_command_from_payload(
     if not isinstance(ncu_cfg_raw, dict):
         raise ValueError("ncu (or ncu_launch) must be a mapping.")
 
-    command = override_command if override_command else _coerce_command(payload.get("command"))
+    command = (
+        override_command
+        if override_command
+        else _coerce_command(payload.get("command"))
+    )
     env_updates = _coerce_env(payload.get("env"))
 
     ncu_cfg = dict(ncu_cfg_raw)
@@ -239,7 +251,9 @@ def build_command_from_payload(
     profile_switch_args = _serialize_switches(profile_switches)
     extra_args = _coerce_extra_args(ncu_cfg.get("extra_args"))
 
-    overriding_names = {name for name in (_option_name(item) for item in profile_switch_args) if name}
+    overriding_names = {
+        name for name in (_option_name(item) for item in profile_switch_args) if name
+    }
     if overriding_names:
         core_args = _drop_duplicate_options(core_args, overriding_names)
 
@@ -250,16 +264,26 @@ def build_command_from_payload(
 
     has_import = any(_option_name(item) == "import" for item in ncu_cmd)
     if not command and not has_import:
-        raise ValueError("command is required unless an import-based ncu command is configured.")
+        raise ValueError(
+            "command is required unless an import-based ncu command is configured."
+        )
 
     return (ncu_cmd + command, env_updates)
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Run command with ncu wrapper from YAML config.")
+    parser = argparse.ArgumentParser(
+        description="Run command with ncu wrapper from YAML config."
+    )
     parser.add_argument("--config", required=True, help="YAML config path.")
-    parser.add_argument("--dry-run", action="store_true", help="Print final command and exit.")
-    parser.add_argument("command", nargs=argparse.REMAINDER, help="Optional command override after '--'.")
+    parser.add_argument(
+        "--dry-run", action="store_true", help="Print final command and exit."
+    )
+    parser.add_argument(
+        "command",
+        nargs=argparse.REMAINDER,
+        help="Optional command override after '--'.",
+    )
     return parser
 
 

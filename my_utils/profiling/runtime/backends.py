@@ -4,11 +4,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional
 
 
 class CaptureBackend:
     """Backend interface for starting/stopping capture."""
+
     def start(self) -> None:
         raise NotImplementedError
 
@@ -19,6 +19,7 @@ class CaptureBackend:
 @dataclass
 class NoOpBackend(CaptureBackend):
     """Does nothing; safe when CUDA/cudart is unavailable."""
+
     def start(self) -> None:
         return
 
@@ -32,10 +33,12 @@ class CudaProfilerBackend(CaptureBackend):
     Uses cudart cudaProfilerStart/Stop via torch.cuda.cudart().
     Note: start/stop must happen in the process you want to profile (actor process).
     """
+
     synchronize: bool = True
 
     def start(self) -> None:
         import torch
+
         if self.synchronize and torch.cuda.is_available():
             torch.cuda.synchronize()
         # cudart API
@@ -43,6 +46,7 @@ class CudaProfilerBackend(CaptureBackend):
 
     def stop(self) -> None:
         import torch
+
         if self.synchronize and torch.cuda.is_available():
             torch.cuda.synchronize()
         torch.cuda.cudart().cudaProfilerStop()

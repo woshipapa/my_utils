@@ -34,12 +34,25 @@ def test_all_skills_register_and_execute(tmp_path: Path) -> None:
         print(f"  - {s}")
 
     EXPECTED_21 = {
-        "aggregate_kernels", "top_kernels", "aggregate_nvtx_ranges",
-        "memcpy_in_window", "kernel_map", "gpu_idle_gaps",
-        "kernel_launch_overhead", "nccl_breakdown", "nvtx_kernel_map",
-        "schema_inspect", "gpu_metrics_aggregate", "thread_utilization",
-        "memcpy_bandwidth_analysis", "sync_breakdown", "memset_breakdown",
-        "kernel_occupancy_estimate", "stream_parallelism", "nvtx_memcpy_breakdown", "nvtx_gpu_metrics_breakdown",
+        "aggregate_kernels",
+        "top_kernels",
+        "aggregate_nvtx_ranges",
+        "memcpy_in_window",
+        "kernel_map",
+        "gpu_idle_gaps",
+        "kernel_launch_overhead",
+        "nccl_breakdown",
+        "nvtx_kernel_map",
+        "schema_inspect",
+        "gpu_metrics_aggregate",
+        "thread_utilization",
+        "memcpy_bandwidth_analysis",
+        "sync_breakdown",
+        "memset_breakdown",
+        "kernel_occupancy_estimate",
+        "stream_parallelism",
+        "nvtx_memcpy_breakdown",
+        "nvtx_gpu_metrics_breakdown",
         "nvtx_kernel_sm_detail",
         "nvtx_ranges_hierarchy",
     }
@@ -73,7 +86,9 @@ def test_new_skill_outputs(tmp_path: Path) -> None:
     conn.row_factory = sqlite3.Row
     engine = NsysSqlSkillEngine(conn)
 
-    rows = engine.execute("gpu_metrics_aggregate", metric_name_like="%active%", start_ns=-1, end_ns=-1)
+    rows = engine.execute(
+        "gpu_metrics_aggregate", metric_name_like="%active%", start_ns=-1, end_ns=-1
+    )
     _show("Skill 11 - gpu_metrics_aggregate", rows)
     assert len(rows) >= 2
     names = {r["metric_name"] for r in rows}
@@ -85,7 +100,9 @@ def test_new_skill_outputs(tmp_path: Path) -> None:
         assert "min_value" in r
         assert "max_value" in r
     # Default source filter should exclude non-GpuMetrics rows.
-    sm_row = next((r for r in rows if "sm__active" in str(r.get("metric_name", ""))), None)
+    sm_row = next(
+        (r for r in rows if "sm__active" in str(r.get("metric_name", ""))), None
+    )
     assert sm_row is not None
     assert sm_row["sample_count"] == 2
 
@@ -96,7 +113,9 @@ def test_new_skill_outputs(tmp_path: Path) -> None:
         end_ns=-1,
         include_all_sources=1,
     )
-    sm_rows_all = [r for r in rows_all_sources if "sm__active" in str(r.get("metric_name", ""))]
+    sm_rows_all = [
+        r for r in rows_all_sources if "sm__active" in str(r.get("metric_name", ""))
+    ]
     assert sm_rows_all
     assert sum(int(r.get("sample_count") or 0) for r in sm_rows_all) == 3
 
@@ -116,7 +135,10 @@ def test_new_skill_outputs(tmp_path: Path) -> None:
     assert "avg_value" in r0
     assert "min_value" in r0
     assert "max_value" in r0
-    sm_nvtx = next((r for r in rows_nvtx_metrics if "sm__active" in str(r.get("metric_name", ""))), None)
+    sm_nvtx = next(
+        (r for r in rows_nvtx_metrics if "sm__active" in str(r.get("metric_name", ""))),
+        None,
+    )
     assert sm_nvtx is not None
     assert sm_nvtx["sample_count"] == 2
 
@@ -183,11 +205,11 @@ def test_new_skill_outputs(tmp_path: Path) -> None:
     # 鈹€鈹€ Skill 16: stream_parallelism 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
     rows = engine.execute("stream_parallelism", device_id=0, bucket_ns=5000)
     _show("Skill 16 鈥?stream_parallelism", rows)
-    assert len(rows) == 1           # single aggregate row
+    assert len(rows) == 1  # single aggregate row
     r = rows[0]
     assert "max_concurrent_streams" in r
     assert "pct_time_multi_stream" in r
-    assert r["max_concurrent_streams"] >= 2   # we have 3 streams
+    assert r["max_concurrent_streams"] >= 2  # we have 3 streams
     # With cross-bucket expansion, long kernels should contribute beyond start bucket.
     assert r["total_buckets"] >= 5
 
@@ -218,7 +240,9 @@ def test_new_skill_outputs(tmp_path: Path) -> None:
     assert r["occupancy_pct_estimate"] is not None
 
     # Python-side H100 occupancy estimation
-    rows_h100 = engine.execute_nvtx_kernel_sm_detail_h100(nvtx_text="%sample_0%", device_id=0)
+    rows_h100 = engine.execute_nvtx_kernel_sm_detail_h100(
+        nvtx_text="%sample_0%", device_id=0
+    )
     _show("Skill 18 + H100 occupancy", rows_h100)
     assert len(rows_h100) == len(rows)
     assert "occupancy_pct_estimate" in rows_h100[0]
@@ -236,14 +260,18 @@ def test_new_skill_outputs(tmp_path: Path) -> None:
 
     # forward-only filter: based on runtime launch in NVTX window, not kernel end-time containment.
     # In fixture, NCCL launch runtime [7000,9000] is inside forward [0,10000], so comm can appear.
-    rows_fwd = engine.execute("nvtx_kernel_sm_detail", nvtx_text="%forward%", device_id=0)
+    rows_fwd = engine.execute(
+        "nvtx_kernel_sm_detail", nvtx_text="%forward%", device_id=0
+    )
     _show("Skill 18 鈥?nvtx_kernel_sm_detail (%forward%)", rows_fwd)
     assert len(rows_fwd) >= 1
     assert all((r["nvtx_text"] == "forward") for r in rows_fwd)
     assert any((r["kind"] == "comm") for r in rows_fwd)
 
     # 鈹€鈹€ Skill 19: nvtx_ranges_hierarchy 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
-    rows_all_nvtx = engine.execute("nvtx_ranges_hierarchy", nvtx_text="%", top_level_only=False, limit=100)
+    rows_all_nvtx = engine.execute(
+        "nvtx_ranges_hierarchy", nvtx_text="%", top_level_only=False, limit=100
+    )
     _show("Skill 19 鈥?nvtx_ranges_hierarchy (all)", rows_all_nvtx)
     assert len(rows_all_nvtx) >= 4
     by_text = {r["nvtx_text"]: r for r in rows_all_nvtx}
@@ -256,7 +284,9 @@ def test_new_skill_outputs(tmp_path: Path) -> None:
     assert by_text["forward"]["depth"] >= 1
     assert by_text["backward"]["depth"] >= 1
 
-    rows_root_nvtx = engine.execute("nvtx_ranges_hierarchy", nvtx_text="%", top_level_only=True, limit=100)
+    rows_root_nvtx = engine.execute(
+        "nvtx_ranges_hierarchy", nvtx_text="%", top_level_only=True, limit=100
+    )
     _show("Skill 19 鈥?nvtx_ranges_hierarchy (top-level)", rows_root_nvtx)
     assert len(rows_root_nvtx) >= 1
     assert all((r["depth"] == 0) for r in rows_root_nvtx)
@@ -264,7 +294,9 @@ def test_new_skill_outputs(tmp_path: Path) -> None:
     conn.close()
 
 
-def test_nvtx_gpu_metrics_breakdown_uses_correlation_gpu_windows(tmp_path: Path) -> None:
+def test_nvtx_gpu_metrics_breakdown_uses_correlation_gpu_windows(
+    tmp_path: Path,
+) -> None:
     db = tmp_path / "nvtx_gpu_window.sqlite"
     _init_sqlite(db)
 
@@ -309,7 +341,9 @@ def test_nvtx_gpu_metrics_breakdown_uses_correlation_gpu_windows(tmp_path: Path)
     conn.close()
 
 
-def test_nvtx_gpu_metrics_breakdown_overlapping_kernel_windows_no_double_count(tmp_path: Path) -> None:
+def test_nvtx_gpu_metrics_breakdown_overlapping_kernel_windows_no_double_count(
+    tmp_path: Path,
+) -> None:
     db = tmp_path / "nvtx_gpu_overlap_dedup.sqlite"
     _init_sqlite(db)
 
@@ -430,13 +464,9 @@ def test_gpu_metrics_source_nameid_chain_maps_device(tmp_path: Path) -> None:
         "metricId INTEGER, typeId INTEGER, sourceId INTEGER, metricName TEXT)"
     )
     cur.execute(
-        "CREATE TABLE CUPTI_ACTIVITY_KIND_KERNEL ("
-        "start INTEGER, [end] INTEGER)"
+        "CREATE TABLE CUPTI_ACTIVITY_KIND_KERNEL (start INTEGER, [end] INTEGER)"
     )
-    cur.execute(
-        "CREATE TABLE GENERIC_EVENT_SOURCES ("
-        "sourceId INTEGER, nameId INTEGER)"
-    )
+    cur.execute("CREATE TABLE GENERIC_EVENT_SOURCES (sourceId INTEGER, nameId INTEGER)")
     cur.execute(
         "INSERT INTO TARGET_INFO_GPU_METRICS(metricId, typeId, sourceId, metricName) VALUES (?, ?, ?, ?)",
         (101, 1, 7, "sm__active.avg.pct_of_peak_sustained_elapsed"),
@@ -492,7 +522,9 @@ def test_gpu_metrics_split_by_device_dimension(tmp_path: Path) -> None:
 
     conn = sqlite3.connect(str(db))
     cur = conn.cursor()
-    cur.execute("ALTER TABLE CUPTI_ACTIVITY_KIND_GPU_METRIC ADD COLUMN deviceId INTEGER")
+    cur.execute(
+        "ALTER TABLE CUPTI_ACTIVITY_KIND_GPU_METRIC ADD COLUMN deviceId INTEGER"
+    )
     cur.execute("UPDATE CUPTI_ACTIVITY_KIND_GPU_METRIC SET deviceId = 0")
     cur.executemany(
         "INSERT INTO CUPTI_ACTIVITY_KIND_GPU_METRIC(timestamp, metricId, value, sourceId, deviceId) VALUES (?, ?, ?, ?, ?)",
@@ -578,7 +610,9 @@ def test_new_engine_methods(tmp_path: Path) -> None:
 
     # 鈹€鈹€ detect_iteration_outliers 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
     result = engine.detect_iteration_outliers(
-        marker="sample_0", device_id=0, threshold_sigma=0.0  # sigma=0 鈫?all are outliers
+        marker="sample_0",
+        device_id=0,
+        threshold_sigma=0.0,  # sigma=0 鈫?all are outliers
     )
     _show("Engine: detect_iteration_outliers (sigma=0)", result)
     assert "stats" in result

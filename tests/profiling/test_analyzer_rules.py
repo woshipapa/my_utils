@@ -21,8 +21,26 @@ def test_analyzer_pretrain_profile_findings() -> None:
 
     # Rank-skewed stage latency
     for step in range(3):
-        events.append(_evt("latency.stage", 20 + step, "ms", step=str(step), rank="0", stage="forward"))
-        events.append(_evt("latency.stage", 40 + step, "ms", step=str(step), rank="1", stage="forward"))
+        events.append(
+            _evt(
+                "latency.stage",
+                20 + step,
+                "ms",
+                step=str(step),
+                rank="0",
+                stage="forward",
+            )
+        )
+        events.append(
+            _evt(
+                "latency.stage",
+                40 + step,
+                "ms",
+                step=str(step),
+                rank="1",
+                stage="forward",
+            )
+        )
 
     # Memory growth trend
     for step in range(3):
@@ -38,8 +56,12 @@ def test_analyzer_pretrain_profile_findings() -> None:
 
     # Communication events
     for step in range(3):
-        events.append(_evt("comm.nccl.all_reduce", 8 + step, "ms", step=str(step), rank="0"))
-        events.append(_evt("comm.nccl.all_reduce", 18 + step, "ms", step=str(step), rank="1"))
+        events.append(
+            _evt("comm.nccl.all_reduce", 8 + step, "ms", step=str(step), rank="0")
+        )
+        events.append(
+            _evt("comm.nccl.all_reduce", 18 + step, "ms", step=str(step), rank="1")
+        )
 
     analyzer = MetricsAnalyzer(workload_profile="pretrain", enable_advanced_rules=True)
     report = analyzer.analyze(events)
@@ -49,4 +71,3 @@ def test_analyzer_pretrain_profile_findings() -> None:
     assert "bottleneck" in finding_types
     assert "distributed" in finding_types or "communication" in finding_types
     assert report.overall_score is not None
-

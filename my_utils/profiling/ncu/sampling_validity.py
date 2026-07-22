@@ -38,7 +38,7 @@ sampled data is used with nothing flagging that it is unusable.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 __all__ = [
     "SamplingIssue",
@@ -58,8 +58,8 @@ PM_SAMPLING_MIN_CC = 75
 
 # Interval floors below which NVIDIA's rule stops advising a smaller interval,
 # because it is already at the practical minimum.
-_PM_MIN_INTERVAL_TIME = 1000        # CC > 8.0, time-based
-_PM_MIN_INTERVAL_CYCLES = 20000     # CC 7.5-8.0, cycle-based
+_PM_MIN_INTERVAL_TIME = 1000  # CC > 8.0, time-based
+_PM_MIN_INTERVAL_CYCLES = 20000  # CC 7.5-8.0, cycle-based
 
 
 @dataclass
@@ -69,7 +69,7 @@ class SamplingIssue:
     key: str
     title: str
     detail: str
-    severity: str = "medium"        # high | medium | low | info
+    severity: str = "medium"  # high | medium | low | info
     #: True when the data must not be used for the listed conclusions at all.
     blocks: bool = False
     invalidates: Tuple[str, ...] = ()
@@ -135,36 +135,52 @@ def check_pc_sampling_validity(
         }
 
     if dropped:
-        issues.append(SamplingIssue(
-            key="pcsamp_dropped_samples",
-            title="PC samples were dropped under backpressure",
-            detail=(
-                f"{dropped:,.0f} bytes of samples were dropped at a sampling interval "
-                f"of {interval:,.0f} cycles. The surviving samples are not a uniform "
-                "sample of the kernel: drops correlate with the busiest periods, so "
-                "the hottest code is the most likely to be under-represented."
-            ),
-            severity="high",
-            blocks=True,
-            invalidates=("stall_attribution", "hot_line_ranking", "pc_sampling_timeline"),
-            remedy="Increase --warp-sampling-interval so fewer samples are produced.",
-        ))
+        issues.append(
+            SamplingIssue(
+                key="pcsamp_dropped_samples",
+                title="PC samples were dropped under backpressure",
+                detail=(
+                    f"{dropped:,.0f} bytes of samples were dropped at a sampling interval "
+                    f"of {interval:,.0f} cycles. The surviving samples are not a uniform "
+                    "sample of the kernel: drops correlate with the busiest periods, so "
+                    "the hottest code is the most likely to be under-represented."
+                ),
+                severity="high",
+                blocks=True,
+                invalidates=(
+                    "stall_attribution",
+                    "hot_line_ranking",
+                    "pc_sampling_timeline",
+                ),
+                remedy="Increase --warp-sampling-interval so fewer samples are produced.",
+            )
+        )
 
     if overflow:
-        issues.append(SamplingIssue(
-            key="pcsamp_buffer_overflow",
-            title="The PC-sampling buffer overflowed",
-            detail=(
-                "A buffer overflow occurred"
-                + (f" with a buffer of {buffer_size:,.0f} bytes" if buffer_size else "")
-                + ". Samples after the overflow point are missing, which biases the "
-                "distribution toward whatever ran early in the kernel."
-            ),
-            severity="high",
-            blocks=True,
-            invalidates=("stall_attribution", "hot_line_ranking", "pc_sampling_timeline"),
-            remedy="Increase --warp-sampling-buffer-size.",
-        ))
+        issues.append(
+            SamplingIssue(
+                key="pcsamp_buffer_overflow",
+                title="The PC-sampling buffer overflowed",
+                detail=(
+                    "A buffer overflow occurred"
+                    + (
+                        f" with a buffer of {buffer_size:,.0f} bytes"
+                        if buffer_size
+                        else ""
+                    )
+                    + ". Samples after the overflow point are missing, which biases the "
+                    "distribution toward whatever ran early in the kernel."
+                ),
+                severity="high",
+                blocks=True,
+                invalidates=(
+                    "stall_attribution",
+                    "hot_line_ranking",
+                    "pc_sampling_timeline",
+                ),
+                remedy="Increase --warp-sampling-buffer-size.",
+            )
+        )
 
     if count is not None and count == 0:
         detail = "The PC sampler ran against this kernel and came back empty."
@@ -175,36 +191,44 @@ def check_pc_sampling_validity(
                 f"{interval:,.0f}-cycle sampling interval, so there was no opportunity "
                 "to take a sample."
             )
-        issues.append(SamplingIssue(
-            key="pcsamp_no_samples",
-            title="No PC samples were collected",
-            detail=detail,
-            severity="high",
-            blocks=True,
-            invalidates=("stall_attribution", "hot_line_ranking", "pc_sampling_timeline",
-                         "sampled_stall_distribution"),
-            remedy=remedy,
-        ))
+        issues.append(
+            SamplingIssue(
+                key="pcsamp_no_samples",
+                title="No PC samples were collected",
+                detail=detail,
+                severity="high",
+                blocks=True,
+                invalidates=(
+                    "stall_attribution",
+                    "hot_line_ranking",
+                    "pc_sampling_timeline",
+                    "sampled_stall_distribution",
+                ),
+                remedy=remedy,
+            )
+        )
     elif count is not None and 0 < count < MIN_SAMPLES_FOR_RANKING:
         # Not NVIDIA's check. Their rule is silent here, but this package ranks
         # source lines against each other, and that claim needs a sample floor.
-        issues.append(SamplingIssue(
-            key="pcsamp_too_few_for_ranking",
-            title="Too few PC samples to rank source lines",
-            detail=(
-                f"{count:,.0f} samples were collected. That is enough to see which "
-                "stall reason dominates overall, but not to say one source line is "
-                f"hotter than another -- below roughly {MIN_SAMPLES_FOR_RANKING} "
-                "samples the per-line counts are dominated by sampling noise."
-            ),
-            severity="medium",
-            blocks=True,
-            invalidates=("hot_line_ranking",),
-            remedy=(
-                "Reduce --warp-sampling-interval, or profile more launches of the "
-                "same kernel, to raise the sample count."
-            ),
-        ))
+        issues.append(
+            SamplingIssue(
+                key="pcsamp_too_few_for_ranking",
+                title="Too few PC samples to rank source lines",
+                detail=(
+                    f"{count:,.0f} samples were collected. That is enough to see which "
+                    "stall reason dominates overall, but not to say one source line is "
+                    f"hotter than another -- below roughly {MIN_SAMPLES_FOR_RANKING} "
+                    "samples the per-line counts are dominated by sampling noise."
+                ),
+                severity="medium",
+                blocks=True,
+                invalidates=("hot_line_ranking",),
+                remedy=(
+                    "Reduce --warp-sampling-interval, or profile more launches of the "
+                    "same kernel, to raise the sample count."
+                ),
+            )
+        )
 
     blocked: set = set()
     for issue in issues:
@@ -219,12 +243,9 @@ def check_pc_sampling_validity(
         "issues": [i.to_dict() for i in issues],
         "blocked_conclusions": sorted(blocked),
         "note": (
-            f"{count:,.0f} samples collected."
-            if count else "Sample count unavailable."
-        ) + (
-            "" if not blocked else
-            f" Blocked: {', '.join(sorted(blocked))}."
-        ),
+            f"{count:,.0f} samples collected." if count else "Sample count unavailable."
+        )
+        + ("" if not blocked else f" Blocked: {', '.join(sorted(blocked))}."),
     }
 
 
@@ -258,19 +279,21 @@ def check_pm_sampling_validity(
             "checked": True,
             "usable": False,
             "supported": False,
-            "issues": [SamplingIssue(
-                key="pm_sampling_unsupported",
-                title="PM sampling is not supported on this architecture",
-                detail=(
-                    f"PM sampling requires compute capability {PM_SAMPLING_MIN_CC / 10:.1f} "
-                    f"or later; this device reports {cc / 10:.1f}. No timeline data can "
-                    "be collected here by any configuration."
-                ),
-                severity="info",
-                blocks=True,
-                invalidates=("pm_sampling_timeline",),
-                remedy="",
-            ).to_dict()],
+            "issues": [
+                SamplingIssue(
+                    key="pm_sampling_unsupported",
+                    title="PM sampling is not supported on this architecture",
+                    detail=(
+                        f"PM sampling requires compute capability {PM_SAMPLING_MIN_CC / 10:.1f} "
+                        f"or later; this device reports {cc / 10:.1f}. No timeline data can "
+                        "be collected here by any configuration."
+                    ),
+                    severity="info",
+                    blocks=True,
+                    invalidates=("pm_sampling_timeline",),
+                    remedy="",
+                ).to_dict()
+            ],
             "blocked_conclusions": ["pm_sampling_timeline"],
             "note": "PM sampling unsupported on this architecture.",
         }
@@ -328,15 +351,17 @@ def check_pm_sampling_validity(
                 f"The interval is already at the practical floor ({min_interval}); "
                 "profile a longer-running workload instead."
             )
-        issues.append(SamplingIssue(
-            key="pm_sampling_interval_too_coarse",
-            title="PM-sampling interval is too coarse for this workload",
-            detail=detail,
-            severity=severity,
-            blocks=blocks,
-            invalidates=("pm_sampling_timeline", "phase_detection"),
-            remedy=remedy,
-        ))
+        issues.append(
+            SamplingIssue(
+                key="pm_sampling_interval_too_coarse",
+                title="PM-sampling interval is too coarse for this workload",
+                detail=detail,
+                severity=severity,
+                blocks=blocks,
+                invalidates=("pm_sampling_timeline", "phase_detection"),
+                remedy=remedy,
+            )
+        )
 
     blocked: set = set()
     for issue in issues:

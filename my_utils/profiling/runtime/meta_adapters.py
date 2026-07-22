@@ -4,11 +4,9 @@
 from __future__ import annotations
 from typing import Any, Dict, Optional, Tuple
 
+
 def extract_meta_from_call(
-    args: Tuple[Any, ...],
-    kwargs: Dict[str, Any],
-    *,
-    default_iter: Optional[int] = None
+    args: Tuple[Any, ...], kwargs: Dict[str, Any], *, default_iter: Optional[int] = None
 ) -> Dict[str, Any]:
     """
     Best-effort extraction:

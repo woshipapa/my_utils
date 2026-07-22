@@ -23,7 +23,9 @@ class TorchTitanAdapter(FrameworkAdapter):
             return False
         if framework in ("torchtitan", "torch_titan", "titan"):
             return True
-        if context_has_any_key(context, ("torchtitan_config", "torchtitan_job_config", "job_config")):
+        if context_has_any_key(
+            context, ("torchtitan_config", "torchtitan_job_config", "job_config")
+        ):
             return True
 
         command = context_command_text(context)
@@ -31,7 +33,9 @@ class TorchTitanAdapter(FrameworkAdapter):
             return False
         if "torchtitan" in command:
             return True
-        if "run_train.sh" in command and ("module=" in command or "config=" in command or "--job.config" in command):
+        if "run_train.sh" in command and (
+            "module=" in command or "config=" in command or "--job.config" in command
+        ):
             return True
         return False
 

@@ -3,20 +3,22 @@ class ProfileManager:
         self.cfg = profile_cfg or {}
         self.logger = logger
 
-        prof = (self.cfg.get("profile", {}) or {})
+        prof = self.cfg.get("profile", {}) or {}
         self._enabled = bool(prof.get("enabled", False))
-        self._features = (prof.get("features", {}) or {})
-        self._capture_features = (self._features.get("capture", {}) or {})
+        self._features = prof.get("features", {}) or {}
+        self._capture_features = self._features.get("capture", {}) or {}
         self._capture_enabled = bool(self._capture_features.get("enabled", True))
-        self._capture_nvtx_window = bool(self._capture_features.get("nvtx_window", False))
+        self._capture_nvtx_window = bool(
+            self._capture_features.get("nvtx_window", False)
+        )
         self._default_stop_policy = self._normalize_stop_policy(
             self._capture_features.get("default_stop_policy", "ON_TRIGGER_FUNC_EXIT")
         )
 
-        cap = (prof.get("capture", {}) or {})
+        cap = prof.get("capture", {}) or {}
         self._cap_cfg = cap
-        self._schedule = (cap.get("schedule", {}) or {})
-        self._windows = (cap.get("windows", []) or [])
+        self._schedule = cap.get("schedule", {}) or {}
+        self._windows = cap.get("windows", []) or []
 
         self.debug_watch = bool(cap.get("debug_watch", False))
         self._steps = set(map(int, self._schedule.get("steps", []) or []))
@@ -30,7 +32,7 @@ class ProfileManager:
                 self._arm_iters.add(int(si))
 
         self.metrics_collector = None
-        metrics_cfg = (prof.get("metrics", {}) or {})
+        metrics_cfg = prof.get("metrics", {}) or {}
         if bool(metrics_cfg.get("enabled", False)):
             try:
                 from ..pipeline.metrics_collector import MetricsCollector
@@ -40,7 +42,9 @@ class ProfileManager:
                 )
             except Exception as exc:
                 if self.logger:
-                    self.logger.warning(f"[ProfileManager] failed to init MetricsCollector: {exc}")
+                    self.logger.warning(
+                        f"[ProfileManager] failed to init MetricsCollector: {exc}"
+                    )
 
     def enabled(self) -> bool:
         return self._enabled and self._capture_enabled
@@ -92,12 +96,21 @@ class ProfileManager:
 
             has_explicit_stop = any(
                 k in w and w.get(k) is not None
-                for k in ("stop_iter", "stop_profile_names", "stop_mb_selector", "stop_edge")
+                for k in (
+                    "stop_iter",
+                    "stop_profile_names",
+                    "stop_mb_selector",
+                    "stop_edge",
+                )
             )
 
             stop_policy = w.get("stop_policy", None)
             if not stop_policy:
-                stop_policy = "ON_STOP_PROFILE_NAME" if has_explicit_stop else self._default_stop_policy
+                stop_policy = (
+                    "ON_STOP_PROFILE_NAME"
+                    if has_explicit_stop
+                    else self._default_stop_policy
+                )
 
             stop_policy = self._normalize_stop_policy(stop_policy)
             stop_edge = w.get("stop_edge", None) or "EXIT"
@@ -119,7 +132,9 @@ class ProfileManager:
                 "expected_role": role,
                 "ranks_filter": w.get("ranks_filter", None),
                 "debug_match": bool(getattr(self, "debug_watch", False)),
-                "enable_nvtx_window": bool(w.get("enable_nvtx_window", self._capture_nvtx_window)),
+                "enable_nvtx_window": bool(
+                    w.get("enable_nvtx_window", self._capture_nvtx_window)
+                ),
             }
             specs.append(spec)
 
@@ -141,10 +156,14 @@ class ProfileManager:
 
         if self.metrics_collector is not None:
             try:
-                self.metrics_collector.collect(step=int(it), tags={"phase": "capture_arm"})
+                self.metrics_collector.collect(
+                    step=int(it), tags={"phase": "capture_arm"}
+                )
             except Exception as exc:
                 if self.logger:
-                    self.logger.warning(f"[ProfileManager] metrics collect failed at iter={it}: {exc}")
+                    self.logger.warning(
+                        f"[ProfileManager] metrics collect failed at iter={it}: {exc}"
+                    )
 
     def attach_metrics_provider(self, provider) -> bool:
         if self.metrics_collector is None:

@@ -53,7 +53,9 @@ def _extract_rank(event: MetricEvent) -> Optional[str]:
 
 
 def _event_name_for_trace(event: MetricEvent) -> str:
-    tag_name = _first_str(event.tags, ("stage", "op", "kernel", "module", "func", "api", "name"))
+    tag_name = _first_str(
+        event.tags, ("stage", "op", "kernel", "module", "func", "api", "name")
+    )
     if tag_name:
         device = event.tags.get("device")
         if device:
@@ -221,8 +223,12 @@ def metric_events_to_chrome_trace(
     cfg = config or ChromeTraceExportConfig()
     event_list = list(events)
 
-    include_prefixes = {str(item) for item in (cfg.include_metric_prefixes or ["latency"])}
-    rank_offsets = {str(k): float(v) for k, v in (cfg.rank_clock_offsets_sec or {}).items()}
+    include_prefixes = {
+        str(item) for item in (cfg.include_metric_prefixes or ["latency"])
+    }
+    rank_offsets = {
+        str(k): float(v) for k, v in (cfg.rank_clock_offsets_sec or {}).items()
+    }
     if cfg.auto_align_ranks:
         estimated = estimate_rank_time_offsets(
             event_list,
@@ -244,7 +250,9 @@ def metric_events_to_chrome_trace(
             try:
                 pid = int(rank)
             except Exception:
-                pid = process_id_map.setdefault(f"rank:{rank}", 10_000 + len(process_id_map))
+                pid = process_id_map.setdefault(
+                    f"rank:{rank}", 10_000 + len(process_id_map)
+                )
             process_name_map[pid] = f"rank_{rank}"
             return pid, rank
         tag_pid = _first_str(event.tags, ("pid", "global_pid"))
@@ -252,7 +260,9 @@ def metric_events_to_chrome_trace(
             try:
                 pid = int(tag_pid)
             except Exception:
-                pid = process_id_map.setdefault(f"pid:{tag_pid}", 20_000 + len(process_id_map))
+                pid = process_id_map.setdefault(
+                    f"pid:{tag_pid}", 20_000 + len(process_id_map)
+                )
             process_name_map.setdefault(pid, f"pid_{tag_pid}")
             return pid, None
         provider_key = f"provider:{event.provider_id or 'unknown'}"
@@ -261,7 +271,12 @@ def metric_events_to_chrome_trace(
         return pid, None
 
     def resolve_tid(pid: int, event: MetricEvent) -> int:
-        label = _first_str(event.tags, ("stage", "op", "kernel", "module", "func", "api", "device")) or event.name
+        label = (
+            _first_str(
+                event.tags, ("stage", "op", "kernel", "module", "func", "api", "device")
+            )
+            or event.name
+        )
         key = (pid, label)
         if key not in thread_id_map:
             thread_id = int(pid_next_tid.get(pid, 1))
@@ -331,7 +346,9 @@ def metric_events_to_chrome_trace(
                 "args": {"name": process_name},
             }
         )
-    for (pid, tid), thread_name in sorted(thread_name_map.items(), key=lambda item: (item[0][0], item[0][1])):
+    for (pid, tid), thread_name in sorted(
+        thread_name_map.items(), key=lambda item: (item[0][0], item[0][1])
+    ):
         metadata_events.append(
             {
                 "name": "thread_name",
@@ -342,7 +359,9 @@ def metric_events_to_chrome_trace(
             }
         )
 
-    trace_events.sort(key=lambda item: (item.get("ts", 0.0), item.get("pid", 0), item.get("tid", 0)))
+    trace_events.sort(
+        key=lambda item: (item.get("ts", 0.0), item.get("pid", 0), item.get("tid", 0))
+    )
     payload = {
         "traceEvents": metadata_events + trace_events,
         "displayTimeUnit": "ms",

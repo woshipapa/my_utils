@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Dict, Iterable, List, Tuple
 
 from .metrics_types import MetricEvent, PROFILE_SCHEMA_VERSION
 
@@ -96,16 +96,22 @@ class MetricSchemaValidator:
                 else:
                     warnings.append(message)
 
-        return EventValidationResult(is_valid=not errors, errors=errors, warnings=warnings)
+        return EventValidationResult(
+            is_valid=not errors, errors=errors, warnings=warnings
+        )
 
     def normalize(self, event: MetricEvent) -> MetricEvent:
         event.unit = _normalize_unit(event.unit)
-        event.tags = {str(k): "" if v is None else str(v) for k, v in (event.tags or {}).items()}
+        event.tags = {
+            str(k): "" if v is None else str(v) for k, v in (event.tags or {}).items()
+        }
         event.provider_id = str(event.provider_id or "")
         event.name = str(event.name or "").strip()
         return event
 
-    def validate_many(self, events: Iterable[MetricEvent]) -> List[EventValidationResult]:
+    def validate_many(
+        self, events: Iterable[MetricEvent]
+    ) -> List[EventValidationResult]:
         return [self.validate(event) for event in events]
 
 
@@ -126,4 +132,3 @@ def validate_event(
         enforce_recommended_units=enforce_recommended_units,
     )
     return validator.validate(event)
-

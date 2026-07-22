@@ -125,4 +125,3 @@ def analyze_rank_skew(
         "has_skew": bool(items),
         "worst_skew_ratio": float(items[0]["skew_ratio"]) if items else 0.0,
     }
-

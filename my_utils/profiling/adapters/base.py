@@ -24,4 +24,3 @@ class FrameworkAdapter:
 
     def build_runtime_tags(self, context: Mapping[str, Any]) -> Dict[str, str]:
         return {"framework": self.name}
-

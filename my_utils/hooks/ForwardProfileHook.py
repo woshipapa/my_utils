@@ -23,9 +23,13 @@ class ForwardProfilerHook:
         self._hook_handle = None
         self.nvtx_range = nvtx_range
         self._nvtx_token = None
-        self._labeler = labeler if labeler is not None else create_labeler(
-            enabled=bool(nvtx_range),
-            default_domain=nvtx_domain,
+        self._labeler = (
+            labeler
+            if labeler is not None
+            else create_labeler(
+                enabled=bool(nvtx_range),
+                default_domain=nvtx_domain,
+            )
         )
 
     def attach(self, module: torch.nn.Module):
@@ -37,14 +41,18 @@ class ForwardProfilerHook:
             return
 
         if self.iter_count == self.start_iter:
-            print(f"[ProfilerHook] Rank {rank} START profiling at iter {self.iter_count}")
+            print(
+                f"[ProfilerHook] Rank {rank} START profiling at iter {self.iter_count}"
+            )
             if torch.cuda.is_available():
                 torch.cuda.cudart().cudaProfilerStart()
             if self.nvtx_range:
                 self._nvtx_token = self._labeler.start(self.nvtx_range)
 
         if self.iter_count == self.stop_iter:
-            print(f"[ProfilerHook] Rank {rank} STOP profiling at iter {self.iter_count}")
+            print(
+                f"[ProfilerHook] Rank {rank} STOP profiling at iter {self.iter_count}"
+            )
             if self._nvtx_token is not None:
                 self._labeler.stop(self._nvtx_token)
                 self._nvtx_token = None

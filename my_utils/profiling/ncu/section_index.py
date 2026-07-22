@@ -206,8 +206,11 @@ class SectionIndex:
     def search(self, pattern: str) -> List[MetricEntry]:
         """Metrics whose name or label matches a regular expression."""
         regex = re.compile(pattern, re.IGNORECASE)
-        return [m for m in self.metrics.values()
-                if regex.search(m.name) or (m.label and regex.search(m.label))]
+        return [
+            m
+            for m in self.metrics.values()
+            if regex.search(m.name) or (m.label and regex.search(m.label))
+        ]
 
     def explain(self, metric_name: str) -> Optional[MetricEntry]:
         """Look up one metric, tolerating a missing or differing submetric suffix."""
@@ -247,11 +250,13 @@ def _nsight_paths_module():
     """
     try:
         from . import nsight_paths
+
         return nsight_paths
     except ImportError:
         pass
     import importlib.util
     import sys
+
     name = "_my_utils_profiling_ncu_nsight_paths"
     module = sys.modules.get(name)
     if module is None:
@@ -470,7 +475,9 @@ def audit_catalog_against_sections(
 
     return {
         "available": True,
-        "sections_dir": str(index.sections_dir) if hasattr(index, "sections_dir") else "",
+        "sections_dir": str(index.sections_dir)
+        if hasattr(index, "sections_dir")
+        else "",
         "shipped_metric_count": len(known),
         "section_backed": sorted(set(section_backed)),
         "explicit_only": sorted(set(explicit_only)),
@@ -586,8 +593,8 @@ def group_report_metrics(
             f"{total} metrics present. {interpreted} are interpreted by a rule; "
             f"{len(uncatalogued)} are decoded and placed on an axis but carry no "
             f"threshold, so nothing judged them."
-            if catalog else
-            f"{total} metrics across {len(by_unit)} hardware units."
+            if catalog
+            else f"{total} metrics across {len(by_unit)} hardware units."
         ),
     }
 
@@ -629,7 +636,14 @@ def build_section_index(sections_dir: str = "") -> Optional[SectionIndex]:
         for label, name in _METRIC_BLOCK_RE.findall(text):
             # Skip protobuf field values that are not metric names.
             if "__" not in name and not name.startswith(
-                ("derived__", "memory_", "sass__", "pmsampling:", "group:", "breakdown:")
+                (
+                    "derived__",
+                    "memory_",
+                    "sass__",
+                    "pmsampling:",
+                    "group:",
+                    "breakdown:",
+                )
             ):
                 continue
             names_here += 1
@@ -638,8 +652,8 @@ def build_section_index(sections_dir: str = "") -> Optional[SectionIndex]:
             )
             if label and not slot["label"]:
                 slot["label"] = label
-            slot["sections"].add(identifier)          # type: ignore[union-attr]
-            slot["sets"].update(sets)                 # type: ignore[union-attr]
+            slot["sections"].add(identifier)  # type: ignore[union-attr]
+            slot["sets"].update(sets)  # type: ignore[union-attr]
 
         index.sections[identifier] = SectionInfo(
             identifier=identifier,
@@ -655,8 +669,8 @@ def build_section_index(sections_dir: str = "") -> Optional[SectionIndex]:
         index.metrics[name] = MetricEntry(
             name=name,
             label=str(slot["label"]),
-            sections=tuple(sorted(slot["sections"])),      # type: ignore[arg-type]
-            sets=tuple(sorted(slot["sets"])),              # type: ignore[arg-type]
+            sections=tuple(sorted(slot["sections"])),  # type: ignore[arg-type]
+            sets=tuple(sorted(slot["sets"])),  # type: ignore[arg-type]
             unit=decoded["unit"],
             quantity=decoded["quantity"],
             rollup=decoded["rollup"],

@@ -1,6 +1,7 @@
 import torch
 from megatron.core import mpu
 
+
 def pad_for_sequence_parallel(tensor, padding_value, dim=-1):
     print(f"before padding tensor shape: {tensor.shape}")
     length = tensor.shape[dim]
@@ -18,6 +19,7 @@ def pad_for_sequence_parallel(tensor, padding_value, dim=-1):
     tensor = torch.cat([tensor, pad], dim=dim)
     print(f"after padding tensor shape: {tensor.shape}")
     return tensor
+
 
 def remove_pad_by_value(tensor, padding_value, dim=-1):
     # Move the target dim to the last, so we can work easily
@@ -40,6 +42,8 @@ def remove_pad_by_value(tensor, padding_value, dim=-1):
 
     # Reshape back and transpose to original
     new_shape = shape[:-1] + (max_len,)
-    tensor = trimmed.reshape(new_shape).transpose(dim if dim != -1 else len(new_shape) - 1, -1)
+    tensor = trimmed.reshape(new_shape).transpose(
+        dim if dim != -1 else len(new_shape) - 1, -1
+    )
     print(f"after removing padding tensor shape: {tensor.shape}")
     return tensor

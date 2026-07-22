@@ -22,7 +22,7 @@ people hunting a bottleneck that is not there.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence
 
 __all__ = [
     "InterconnectCeiling",
@@ -41,6 +41,7 @@ __all__ = [
 # ---------------------------------------------------------------------------
 # Ceilings
 # ---------------------------------------------------------------------------
+
 
 @dataclass(frozen=True)
 class InterconnectCeiling:
@@ -61,29 +62,37 @@ class InterconnectCeiling:
 
 INTERCONNECT_CEILINGS: Dict[str, InterconnectCeiling] = {
     "h100_nvlink4_8gpu": InterconnectCeiling(
-        "8x H100 NVLink4", ring_gbps=360.0, nvls_gbps=480.0,
-        notes="NVLS busbw exceeds the 450 GB/s link spec by design - it is a normalised figure."),
+        "8x H100 NVLink4",
+        ring_gbps=360.0,
+        nvls_gbps=480.0,
+        notes="NVLS busbw exceeds the 450 GB/s link spec by design - it is a normalised figure.",
+    ),
     "h800_nvlink_8gpu": InterconnectCeiling(
-        "8x H800 NVLink (export)", ring_gbps=160.0, nvls_gbps=0.0,
-        notes="NVLink cut to 400 GB/s per direction on the export SKU."),
+        "8x H800 NVLink (export)",
+        ring_gbps=160.0,
+        nvls_gbps=0.0,
+        notes="NVLink cut to 400 GB/s per direction on the export SKU.",
+    ),
     "a100_nvlink3_8gpu": InterconnectCeiling(
-        "8x A100 NVLink3", ring_gbps=235.0, nvls_gbps=0.0,
-        notes="No NVLink SHARP on Ampere."),
+        "8x A100 NVLink3",
+        ring_gbps=235.0,
+        nvls_gbps=0.0,
+        notes="No NVLink SHARP on Ampere.",
+    ),
     "a800_nvlink_8gpu": InterconnectCeiling(
-        "8x A800 NVLink (export)", ring_gbps=155.0, nvls_gbps=0.0),
-    "ib_ndr_per_rail": InterconnectCeiling(
-        "InfiniBand NDR (per rail)", ring_gbps=50.0),
-    "ib_hdr_per_rail": InterconnectCeiling(
-        "InfiniBand HDR (per rail)", ring_gbps=25.0),
+        "8x A800 NVLink (export)", ring_gbps=155.0, nvls_gbps=0.0
+    ),
+    "ib_ndr_per_rail": InterconnectCeiling("InfiniBand NDR (per rail)", ring_gbps=50.0),
+    "ib_hdr_per_rail": InterconnectCeiling("InfiniBand HDR (per rail)", ring_gbps=25.0),
     "pcie5": InterconnectCeiling("PCIe Gen5 x16", ring_gbps=55.0),
 }
 
 # Protocol behaviour, from NCCL's own tuning model.
 PROTOCOL_NOTES: Dict[str, str] = {
     "ll": "LL: ~2 us latency but roughly half the bandwidth (8-byte flag per 4 bytes of data). "
-          "Correct for small messages, wrong for large ones.",
+    "Correct for small messages, wrong for large ones.",
     "ll128": "LL128: ~2 us latency at ~95% of bandwidth (120 useful bytes per 128). "
-             "The usual sweet spot on NVLink.",
+    "The usual sweet spot on NVLink.",
     "simple": "Simple: full bandwidth at ~6 us latency. Correct for large messages.",
 }
 
@@ -97,14 +106,15 @@ ALGORITHM_NOTES: Dict[str, str] = {
 
 # Below this many bytes a collective is latency-bound and bandwidth is the wrong
 # yardstick; NCCL's own tuner switches protocols around here.
-LATENCY_REGIME_BYTES = 1 << 20          # 1 MiB
-BANDWIDTH_REGIME_BYTES = 128 << 20      # 128 MiB
-EFFICIENCY_WARN = 0.70                  # below 70% of ceiling is worth a finding
+LATENCY_REGIME_BYTES = 1 << 20  # 1 MiB
+BANDWIDTH_REGIME_BYTES = 128 << 20  # 128 MiB
+EFFICIENCY_WARN = 0.70  # below 70% of ceiling is worth a finding
 
 
 # ---------------------------------------------------------------------------
 # Measurement
 # ---------------------------------------------------------------------------
+
 
 @dataclass
 class CollectiveMeasurement:
@@ -133,7 +143,7 @@ class CollectiveAnalysis:
     busbw_factor: Optional[float] = None
     ceiling_gbps: Optional[float] = None
     efficiency: Optional[float] = None
-    regime: str = ""                     # latency | transition | bandwidth
+    regime: str = ""  # latency | transition | bandwidth
     findings: List[Dict[str, Any]] = field(default_factory=list)
     notes: List[str] = field(default_factory=list)
 
@@ -183,7 +193,9 @@ def analyze_collective(
     )
 
     if measurement.duration_ns > 0 and measurement.message_bytes > 0:
-        result.algbw_gbps = measurement.message_bytes / (measurement.duration_ns * 1e-9) / 1e9
+        result.algbw_gbps = (
+            measurement.message_bytes / (measurement.duration_ns * 1e-9) / 1e9
+        )
 
     factor = _busbw_factor(measurement.collective, measurement.num_ranks)
     result.busbw_factor = factor
@@ -192,8 +204,10 @@ def analyze_collective(
 
     size = measurement.message_bytes
     result.regime = (
-        "latency" if size < LATENCY_REGIME_BYTES
-        else "bandwidth" if size >= BANDWIDTH_REGIME_BYTES
+        "latency"
+        if size < LATENCY_REGIME_BYTES
+        else "bandwidth"
+        if size >= BANDWIDTH_REGIME_BYTES
         else "transition"
     )
 
@@ -204,7 +218,11 @@ def analyze_collective(
 
     if ceiling is not None and result.busbw_gbps is not None:
         uses_nvls = measurement.algorithm.lower() == "nvls"
-        limit = ceiling.nvls_gbps if (uses_nvls and ceiling.nvls_gbps) else ceiling.ring_gbps
+        limit = (
+            ceiling.nvls_gbps
+            if (uses_nvls and ceiling.nvls_gbps)
+            else ceiling.ring_gbps
+        )
         result.ceiling_gbps = limit
         if limit > 0:
             result.efficiency = result.busbw_gbps / limit
@@ -212,46 +230,60 @@ def analyze_collective(
             result.notes.append(ceiling.notes)
 
     # -- findings ------------------------------------------------------
-    if result.regime == "bandwidth" and result.efficiency is not None and result.efficiency < EFFICIENCY_WARN:
-        result.findings.append({
-            "category": "low_bus_bandwidth",
-            "severity": "high" if result.efficiency < 0.5 else "medium",
-            "title": f"{measurement.collective} reaches {result.efficiency * 100:.0f}% of the fabric ceiling",
-            "summary": (
-                f"{result.busbw_gbps:.0f} GB/s bus bandwidth against a practical ceiling of "
-                f"{result.ceiling_gbps:.0f} GB/s on a {size / (1 << 20):.0f} MiB message. At this "
-                "size the collective should be bandwidth bound, so the gap is real."
-            ),
-            "actions": [
-                "Check the topology: an NVLink group crossing a host bridge collapses to PCIe.",
-                "Confirm the protocol and algorithm NCCL chose (NCCL_DEBUG=INFO, NCCL_DEBUG_SUBSYS=TUNING).",
-                "Rule out a straggler first - a late rank stretches every rank's collective.",
-            ],
-        })
+    if (
+        result.regime == "bandwidth"
+        and result.efficiency is not None
+        and result.efficiency < EFFICIENCY_WARN
+    ):
+        result.findings.append(
+            {
+                "category": "low_bus_bandwidth",
+                "severity": "high" if result.efficiency < 0.5 else "medium",
+                "title": f"{measurement.collective} reaches {result.efficiency * 100:.0f}% of the fabric ceiling",
+                "summary": (
+                    f"{result.busbw_gbps:.0f} GB/s bus bandwidth against a practical ceiling of "
+                    f"{result.ceiling_gbps:.0f} GB/s on a {size / (1 << 20):.0f} MiB message. At this "
+                    "size the collective should be bandwidth bound, so the gap is real."
+                ),
+                "actions": [
+                    "Check the topology: an NVLink group crossing a host bridge collapses to PCIe.",
+                    "Confirm the protocol and algorithm NCCL chose (NCCL_DEBUG=INFO, NCCL_DEBUG_SUBSYS=TUNING).",
+                    "Rule out a straggler first - a late rank stretches every rank's collective.",
+                ],
+            }
+        )
 
     if result.regime == "latency" and measurement.protocol.lower() == "simple":
-        result.findings.append({
-            "category": "protocol_mismatch_small_message",
-            "severity": "low",
-            "title": "Simple protocol on a latency-regime message",
-            "summary": (
-                f"A {size / 1024:.0f} KiB message ran the Simple protocol (~6 us latency). "
-                "LL or LL128 would trade bandwidth you cannot use for latency you can."
-            ),
-            "actions": ["Usually NCCL's tuner is right; only override with NCCL_PROTO if measured."],
-        })
+        result.findings.append(
+            {
+                "category": "protocol_mismatch_small_message",
+                "severity": "low",
+                "title": "Simple protocol on a latency-regime message",
+                "summary": (
+                    f"A {size / 1024:.0f} KiB message ran the Simple protocol (~6 us latency). "
+                    "LL or LL128 would trade bandwidth you cannot use for latency you can."
+                ),
+                "actions": [
+                    "Usually NCCL's tuner is right; only override with NCCL_PROTO if measured."
+                ],
+            }
+        )
 
     if result.regime == "bandwidth" and measurement.protocol.lower() == "ll":
-        result.findings.append({
-            "category": "protocol_mismatch_large_message",
-            "severity": "medium",
-            "title": "LL protocol on a bandwidth-regime message",
-            "summary": (
-                f"A {size / (1 << 20):.0f} MiB message ran the LL protocol, which spends roughly "
-                "half the wire on flags. LL128 or Simple would move the same data faster."
-            ),
-            "actions": ["Check why the tuner chose LL; NCCL_PROTO=LL128 to test the hypothesis."],
-        })
+        result.findings.append(
+            {
+                "category": "protocol_mismatch_large_message",
+                "severity": "medium",
+                "title": "LL protocol on a bandwidth-regime message",
+                "summary": (
+                    f"A {size / (1 << 20):.0f} MiB message ran the LL protocol, which spends roughly "
+                    "half the wire on flags. LL128 or Simple would move the same data faster."
+                ),
+                "actions": [
+                    "Check why the tuner chose LL; NCCL_PROTO=LL128 to test the hypothesis."
+                ],
+            }
+        )
 
     return result
 
@@ -294,6 +326,7 @@ def analyze_collectives(
 # ---------------------------------------------------------------------------
 # Straggler vs bandwidth
 # ---------------------------------------------------------------------------
+
 
 def detect_straggler(
     per_rank_arrival_ns: Mapping[int, float],
@@ -367,6 +400,7 @@ def detect_straggler(
 # PyTorch Flight Recorder
 # ---------------------------------------------------------------------------
 
+
 def arrivals_from_flight_recorder(
     entries: Iterable[Mapping[str, Any]],
     *,
@@ -388,9 +422,14 @@ def arrivals_from_flight_recorder(
     for entry in entries or ():
         if not isinstance(entry, Mapping):
             continue
-        if collective_seq_id is not None and entry.get("collective_seq_id") != collective_seq_id:
+        if (
+            collective_seq_id is not None
+            and entry.get("collective_seq_id") != collective_seq_id
+        ):
             continue
-        if process_group is not None and str(entry.get("pg_id", "")) != str(process_group):
+        if process_group is not None and str(entry.get("pg_id", "")) != str(
+            process_group
+        ):
             continue
         rank = entry.get("rank")
         created = entry.get("time_created_ns")
@@ -418,9 +457,14 @@ def detect_straggler_from_traces(
     collective runs 0.1-5 ms. Under that alignment the error exceeds the effect,
     so "rank 3 arrived 4 ms late" is indistinguishable from clock skew.
     """
-    arrivals = arrivals_from_flight_recorder(entries, collective_seq_id=collective_seq_id)
+    arrivals = arrivals_from_flight_recorder(
+        entries, collective_seq_id=collective_seq_id
+    )
     if len(arrivals) < 2:
-        return {"conclusive": False, "reason": "need entry timestamps from at least two ranks"}
+        return {
+            "conclusive": False,
+            "reason": "need entry timestamps from at least two ranks",
+        }
 
     spread_ms = (max(arrivals.values()) - min(arrivals.values())) / 1e6
 
@@ -442,7 +486,9 @@ def detect_straggler_from_traces(
 
     result = detect_straggler(arrivals)
     result["arrival_spread_ms"] = spread_ms
-    result["clock_alignment"] = "TSC/same-host" if aligned_by_tsc else str(clock_alignment or "unknown")
+    result["clock_alignment"] = (
+        "TSC/same-host" if aligned_by_tsc else str(clock_alignment or "unknown")
+    )
 
     # Compare against the median, not the mean: the straggler poisons the mean it
     # is being compared against, which shrinks its own apparent lateness.

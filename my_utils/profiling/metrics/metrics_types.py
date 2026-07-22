@@ -160,7 +160,9 @@ class AnalysisReport:
             generated_at=str(payload.get("generated_at", utc_now_iso())),
             summary=_to_any_dict(payload.get("summary", {})),
             findings=findings,
-            recommendations=[str(x) for x in (payload.get("recommendations", []) or [])],
+            recommendations=[
+                str(x) for x in (payload.get("recommendations", []) or [])
+            ],
             metadata=_to_any_dict(payload.get("metadata", {})),
             schema_version=str(payload.get("schema_version", PROFILE_SCHEMA_VERSION)),
             overall_score=payload.get("overall_score"),

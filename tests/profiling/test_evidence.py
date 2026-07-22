@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 
-
-
 from _synthetic_loader import evidence
 
 
@@ -16,7 +14,9 @@ class TestEvidenceFusion:
         ev = evidence
         fused, warnings = ev.attribute_kernel(
             "ampere_sgemm_128x64_nn",
-            metrics={"sm__pipe_tensor_cycles_active.avg.pct_of_peak_sustained_elapsed": 0.0},
+            metrics={
+                "sm__pipe_tensor_cycles_active.avg.pct_of_peak_sustained_elapsed": 0.0
+            },
         )
         assert fused["uses_tensor_cores"].value is False
         assert fused["uses_tensor_cores"].provenance == ev.Provenance.HW_COUNTER

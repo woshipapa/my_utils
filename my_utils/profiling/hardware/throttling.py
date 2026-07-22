@@ -102,13 +102,13 @@ THROTTLING_MASK = 0x4 | 0x8 | 0x10 | 0x20 | 0x40 | 0x80 | 0x100
 DCGM_FIELDS: Dict[str, int] = {
     "SM_CLOCK": 100,
     "MEM_CLOCK": 101,
-    "CLOCKS_EVENT_REASONS": 112,       # was CLOCK_THROTTLE_REASONS, same id
+    "CLOCKS_EVENT_REASONS": 112,  # was CLOCK_THROTTLE_REASONS, same id
     "MEMORY_TEMP_CELSIUS": 140,
     "GPU_TEMP_CELSIUS": 150,
-    "BOARD_POWER_WATTS": 155,          # NOT "POWER_USAGE" - that name does not exist
+    "BOARD_POWER_WATTS": 155,  # NOT "POWER_USAGE" - that name does not exist
     "GPU_TEMP_SLOWDOWN_CELSIUS": 158,
     "BOARD_POWER_LIMIT_ENFORCED_WATTS": 164,
-    "POWER_VIOLATION": 240,            # accumulating duration, not a sample
+    "POWER_VIOLATION": 240,  # accumulating duration, not a sample
     "THERMAL_VIOLATION": 241,
 }
 
@@ -188,7 +188,10 @@ def analyze_throttling(
 
     # Violation counters are durations, so they catch throttling that a sampled
     # mask would step over entirely.
-    for label, value in (("power", power_violation_ns), ("thermal", thermal_violation_ns)):
+    for label, value in (
+        ("power", power_violation_ns),
+        ("thermal", thermal_violation_ns),
+    ):
         if value is None or window_ns is None or window_ns <= 0:
             continue
         share = float(value) / float(window_ns)
@@ -215,8 +218,11 @@ def analyze_throttling(
         # A throttled run cannot be compared against an unthrottled baseline, and
         # every percent-of-peak is measured against a peak that was unavailable.
         result["invalidates"] = [
-            "mfu", "achieved_tflops", "achieved_bandwidth",
-            "pct_of_peak", "regression_comparison",
+            "mfu",
+            "achieved_tflops",
+            "achieved_bandwidth",
+            "pct_of_peak",
+            "regression_comparison",
         ]
         result["notes"].append(
             "The GPU was clock-limited during this run. Percent-of-peak figures are computed "

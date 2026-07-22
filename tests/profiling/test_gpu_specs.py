@@ -51,7 +51,9 @@ def test_ridge_points_match_published_values(gpu, dtype, expected_ridge):
 
 def test_sparsity_doubles_tensor_peaks_but_not_vector_peaks():
     h100 = gpu_specs.lookup_gpu_spec("H100 SXM5")
-    assert h100.peak_tflops("bf16", sparse=True) == pytest.approx(2 * h100.peak_tflops("bf16"))
+    assert h100.peak_tflops("bf16", sparse=True) == pytest.approx(
+        2 * h100.peak_tflops("bf16")
+    )
     # Structured sparsity does not apply to the FP32/FP64 vector pipes.
     assert h100.peak_tflops("fp32", sparse=True) is None
 

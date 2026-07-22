@@ -5,7 +5,7 @@
 """
 
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any
 import numpy as np
 from collections import defaultdict
 
@@ -13,10 +13,11 @@ from collections import defaultdict
 @dataclass
 class MetricEvent:
     """统一的指标事件格式"""
-    timestamp: float          # Unix时间戳(秒)
-    name: str                 # 指标名称
-    value: float              # 指标值
-    unit: str = ""            # 单位
+
+    timestamp: float  # Unix时间戳(秒)
+    name: str  # 指标名称
+    value: float  # 指标值
+    unit: str = ""  # 单位
     tags: dict[str, Any] = None  # 额外标签
 
     def __post_init__(self):
@@ -69,13 +70,15 @@ class DataTransformer:
 
             return {
                 "labels": steps,
-                "datasets": [{
-                    "label": metric_name or "value",
-                    "data": values,
-                    "borderColor": "rgb(75, 192, 192)",
-                    "backgroundColor": "rgba(75, 192, 192, 0.2)",
-                    "fill": True,
-                }]
+                "datasets": [
+                    {
+                        "label": metric_name or "value",
+                        "data": values,
+                        "borderColor": "rgb(75, 192, 192)",
+                        "backgroundColor": "rgba(75, 192, 192, 0.2)",
+                        "fill": True,
+                    }
+                ],
             }
         else:
             # 按时间排序
@@ -85,13 +88,15 @@ class DataTransformer:
 
             return {
                 "labels": timestamps,
-                "datasets": [{
-                    "label": metric_name or "value",
-                    "data": values,
-                    "borderColor": "rgb(75, 192, 192)",
-                    "backgroundColor": "rgba(75, 192, 192, 0.2)",
-                    "fill": True,
-                }]
+                "datasets": [
+                    {
+                        "label": metric_name or "value",
+                        "data": values,
+                        "borderColor": "rgb(75, 192, 192)",
+                        "backgroundColor": "rgba(75, 192, 192, 0.2)",
+                        "fill": True,
+                    }
+                ],
             }
 
     @staticmethod
@@ -136,14 +141,16 @@ class DataTransformer:
             values = [np.mean(by_step[s]) if s in by_step else None for s in steps]
 
             color = colors[idx % len(colors)]
-            datasets.append({
-                "label": metric_name,
-                "data": values,
-                "borderColor": color[0],
-                "backgroundColor": color[1],
-                "fill": False,
-                "steplabels": steps,  # 保存每个值的对应step
-            })
+            datasets.append(
+                {
+                    "label": metric_name,
+                    "data": values,
+                    "borderColor": color[0],
+                    "backgroundColor": color[1],
+                    "fill": False,
+                    "steplabels": steps,  # 保存每个值的对应step
+                }
+            )
 
         # 合并所有steps作为x轴
         sorted_steps = sorted(all_steps)
@@ -188,16 +195,18 @@ class DataTransformer:
 
         return {
             "labels": labels,
-            "datasets": [{
-                "label": metric_name,
-                "data": values,
-                "backgroundColor": [
-                    "rgba(255, 99, 132, 0.7)",
-                    "rgba(54, 162, 235, 0.7)",
-                    "rgba(255, 206, 86, 0.7)",
-                    "rgba(75, 192, 192, 0.7)",
-                ][:len(labels)],
-            }],
+            "datasets": [
+                {
+                    "label": metric_name,
+                    "data": values,
+                    "backgroundColor": [
+                        "rgba(255, 99, 132, 0.7)",
+                        "rgba(54, 162, 235, 0.7)",
+                        "rgba(255, 206, 86, 0.7)",
+                        "rgba(75, 192, 192, 0.7)",
+                    ][: len(labels)],
+                }
+            ],
             "errors": errors,  # 误差条
         }
 
@@ -226,16 +235,18 @@ class DataTransformer:
         hist, bin_edges = np.histogram(filtered, bins=bins)
 
         # bin中心作为标签
-        labels = [(bin_edges[i] + bin_edges[i+1]) / 2 for i in range(len(hist))]
+        labels = [(bin_edges[i] + bin_edges[i + 1]) / 2 for i in range(len(hist))]
 
         return {
             "labels": labels,
-            "datasets": [{
-                "label": f"{metric_name} distribution",
-                "data": hist.tolist(),
-                "backgroundColor": "rgba(75, 192, 192, 0.7)",
-                "borderColor": "rgb(75, 192, 192)",
-            }]
+            "datasets": [
+                {
+                    "label": f"{metric_name} distribution",
+                    "data": hist.tolist(),
+                    "backgroundColor": "rgba(75, 192, 192, 0.7)",
+                    "borderColor": "rgb(75, 192, 192)",
+                }
+            ],
         }
 
     @staticmethod
@@ -288,10 +299,12 @@ class DataTransformer:
 
         return {
             "labels": labels,
-            "datasets": [{
-                "data": values,
-                "backgroundColor": colors[:len(labels)],
-            }]
+            "datasets": [
+                {
+                    "data": values,
+                    "backgroundColor": colors[: len(labels)],
+                }
+            ],
         }
 
     @staticmethod
@@ -334,12 +347,14 @@ class DataTransformer:
         y_values = [y_by_step[s] for s in sorted(common_steps)]
 
         return {
-            "datasets": [{
-                "label": f"{y_metric} vs {x_metric}",
-                "data": [{"x": x, "y": y} for x, y in zip(x_values, y_values)],
-                "backgroundColor": "rgba(75, 192, 192, 0.7)",
-                "borderColor": "rgb(75, 192, 192)",
-            }]
+            "datasets": [
+                {
+                    "label": f"{y_metric} vs {x_metric}",
+                    "data": [{"x": x, "y": y} for x, y in zip(x_values, y_values)],
+                    "backgroundColor": "rgba(75, 192, 192, 0.7)",
+                    "borderColor": "rgb(75, 192, 192)",
+                }
+            ]
         }
 
     @staticmethod
@@ -415,17 +430,19 @@ class DataTransformer:
         stats = []
         for name, values in by_name.items():
             if values:
-                stats.append({
-                    "metric": name,
-                    "count": len(values),
-                    "mean": float(np.mean(values)),
-                    "std": float(np.std(values)),
-                    "min": float(np.min(values)),
-                    "max": float(np.max(values)),
-                    "median": float(np.median(values)),
-                    "p25": float(np.percentile(values, 25)),
-                    "p75": float(np.percentile(values, 75)),
-                })
+                stats.append(
+                    {
+                        "metric": name,
+                        "count": len(values),
+                        "mean": float(np.mean(values)),
+                        "std": float(np.std(values)),
+                        "min": float(np.min(values)),
+                        "max": float(np.max(values)),
+                        "median": float(np.median(values)),
+                        "p25": float(np.percentile(values, 25)),
+                        "p75": float(np.percentile(values, 75)),
+                    }
+                )
 
         # 按均值排序
         stats.sort(key=lambda x: x["mean"], reverse=True)
@@ -493,8 +510,7 @@ class DataTransformer:
 
                 # 找出窗口内的事件
                 window_events = [
-                    e for e in name_events
-                    if window_start <= e.timestamp < window_end
+                    e for e in name_events if window_start <= e.timestamp < window_end
                 ]
 
                 if window_events:
@@ -513,13 +529,15 @@ class DataTransformer:
                     else:
                         agg_value = np.mean(values)
 
-                    aggregated.append(MetricEvent(
-                        timestamp=window_start + window_size / 2,
-                        name=name,
-                        value=agg_value,
-                        unit=window_events[0].unit,
-                        tags={"window": f"{window_start:.1f}-{window_end:.1f}"},
-                    ))
+                    aggregated.append(
+                        MetricEvent(
+                            timestamp=window_start + window_size / 2,
+                            name=name,
+                            value=agg_value,
+                            unit=window_events[0].unit,
+                            tags={"window": f"{window_start:.1f}-{window_end:.1f}"},
+                        )
+                    )
 
                 window_start = window_end
 

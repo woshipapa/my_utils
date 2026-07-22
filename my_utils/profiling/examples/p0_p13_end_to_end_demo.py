@@ -42,10 +42,38 @@ class SyntheticDistProvider(BaseMetricsProvider):
             tags = {"step": str(self._step), "rank": str(rank)}
             result.extend(
                 [
-                    MetricEvent(ts, "latency.stage", fwd, "ms", provider_id=self.provider_id, tags={**tags, "stage": "forward"}),
-                    MetricEvent(ts, "latency.stage", bwd, "ms", provider_id=self.provider_id, tags={**tags, "stage": "backward"}),
-                    MetricEvent(ts, "memory.gpu.allocated", float(mem), "bytes", provider_id=self.provider_id, tags=tags),
-                    MetricEvent(ts, "comm.nccl.all_reduce", comm, "ms", provider_id=self.provider_id, tags=tags),
+                    MetricEvent(
+                        ts,
+                        "latency.stage",
+                        fwd,
+                        "ms",
+                        provider_id=self.provider_id,
+                        tags={**tags, "stage": "forward"},
+                    ),
+                    MetricEvent(
+                        ts,
+                        "latency.stage",
+                        bwd,
+                        "ms",
+                        provider_id=self.provider_id,
+                        tags={**tags, "stage": "backward"},
+                    ),
+                    MetricEvent(
+                        ts,
+                        "memory.gpu.allocated",
+                        float(mem),
+                        "bytes",
+                        provider_id=self.provider_id,
+                        tags=tags,
+                    ),
+                    MetricEvent(
+                        ts,
+                        "comm.nccl.all_reduce",
+                        comm,
+                        "ms",
+                        provider_id=self.provider_id,
+                        tags=tags,
+                    ),
                 ]
             )
         return result
@@ -55,7 +83,9 @@ def _append_external_csv(csv_path: Path, step: int, rng: random.Random) -> None:
     csv_path.parent.mkdir(parents=True, exist_ok=True)
     write_header = not csv_path.exists()
     with csv_path.open("a", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(handle, fieldnames=["op_name", "latency_ms", "step", "rank"])
+        writer = csv.DictWriter(
+            handle, fieldnames=["op_name", "latency_ms", "step", "rank"]
+        )
         if write_header:
             writer.writeheader()
         for rank in (0, 1):
@@ -94,10 +124,15 @@ def run_demo(output_dir: Path, steps: int, seed: int, nsys_sqlite: str = "") -> 
         )
     )
     if nsys_sqlite:
-        provider = NsysSqliteMetricsProvider(sqlite_path=nsys_sqlite, include_osrt=False)
+        provider = NsysSqliteMetricsProvider(
+            sqlite_path=nsys_sqlite, include_osrt=False
+        )
         collector.register_provider(provider)
         schema_path = output_dir / "nsys_schema_probe.json"
-        schema_path.write_text(json.dumps(provider.describe_schema(), indent=2, ensure_ascii=False), encoding="utf-8")
+        schema_path.write_text(
+            json.dumps(provider.describe_schema(), indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
 
     for step in range(steps):
         synthetic.set_step(step)
@@ -108,8 +143,16 @@ def run_demo(output_dir: Path, steps: int, seed: int, nsys_sqlite: str = "") -> 
     renderer = MetricsReportRenderer()
     pretrain_json = output_dir / "run_pretrain" / "analysis_report.json"
     renderer.write(report_pretrain, str(pretrain_json), fmt="json")
-    renderer.write(report_pretrain, str(output_dir / "run_pretrain" / "analysis_report.md"), fmt="markdown")
-    renderer.write(report_pretrain, str(output_dir / "run_pretrain" / "analysis_report.html"), fmt="html")
+    renderer.write(
+        report_pretrain,
+        str(output_dir / "run_pretrain" / "analysis_report.md"),
+        fmt="markdown",
+    )
+    renderer.write(
+        report_pretrain,
+        str(output_dir / "run_pretrain" / "analysis_report.html"),
+        fmt="html",
+    )
 
     # Re-analyze same events with another workload profile for diff demo.
     events = collector.get_events()
@@ -120,7 +163,9 @@ def run_demo(output_dir: Path, steps: int, seed: int, nsys_sqlite: str = "") -> 
 
     diff = compare_reports(str(pretrain_json), str(infer_json))
     write_diff(diff, str(output_dir / "report_diff.json"))
-    (output_dir / "report_diff.md").write_text(renderer.diff_to_markdown(diff), encoding="utf-8")
+    (output_dir / "report_diff.md").write_text(
+        renderer.diff_to_markdown(diff), encoding="utf-8"
+    )
 
     print("=== P0-P13 end-to-end demo complete ===")
     print(f"output_dir      : {output_dir}")
@@ -141,5 +186,9 @@ def parse_args() -> argparse.Namespace:
 
 if __name__ == "__main__":
     args = parse_args()
-    run_demo(Path(args.output_dir), steps=args.steps, seed=args.seed, nsys_sqlite=args.nsys_sqlite)
-
+    run_demo(
+        Path(args.output_dir),
+        steps=args.steps,
+        seed=args.seed,
+        nsys_sqlite=args.nsys_sqlite,
+    )

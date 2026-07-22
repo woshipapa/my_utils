@@ -4,28 +4,29 @@ import pandas as pd
 from pathlib import Path
 from typing import Union, Optional
 
+
 def analyze_sm_throughput_from_csv(
     csv_path: Union[str, Path],
     sm_metric: str = "sm__throughput.avg.pct_of_peak_sustained_elapsed",
     output_path: Optional[Union[str, Path]] = None,
     print_top: int = 10,
-    min_threshold: Optional[float] = None
+    min_threshold: Optional[float] = None,
 ) -> pd.DataFrame:
     """
     分析 NCU 导出的 CSV 文件中的 SM 吞吐率信息，按 kernel 聚合统计。
-    
+
     Args:
         csv_path (str or Path): NCU CSV 文件路径。
         sm_metric (str): 需要分析的指标名。
         output_path (Optional[str or Path]): 是否保存结果 CSV。
         print_top (int): 是否打印前几个聚合结果。
         min_threshold (Optional[float]): 如果设置，忽略低于该值的指标。
-        
+
     Returns:
         pd.DataFrame: 按 kernel 聚合后的统计信息。
     """
     df = pd.read_csv(csv_path)
-    
+
     # 筛选指标列
     df_sm = df[df["Metric Name"] == sm_metric].copy()
     df_sm["Metric Value"] = pd.to_numeric(df_sm["Metric Value"], errors="coerce")
@@ -56,7 +57,12 @@ def analyze_sm_throughput_from_csv(
     return result
 
 
-def compare_kernel_metrics(csv1_path, csv2_path, sm_metric="sm__throughput.avg.pct_of_peak_sustained_elapsed", print_top=20):
+def compare_kernel_metrics(
+    csv1_path,
+    csv2_path,
+    sm_metric="sm__throughput.avg.pct_of_peak_sustained_elapsed",
+    print_top=20,
+):
     def get_result(csv_path):
         df = pd.read_csv(csv_path)
         df_sm = df[df["Metric Name"] == sm_metric].copy()

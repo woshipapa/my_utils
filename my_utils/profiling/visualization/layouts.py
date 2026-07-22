@@ -5,13 +5,14 @@ HTML布局构建器
 """
 
 from dataclasses import dataclass
-from typing import Any, Dict, Optional, Callable
+from typing import Any, Dict, Optional
 from enum import Enum
 import time
 
 
 class Severity(Enum):
     """严重程度"""
+
     CRITICAL = "critical"
     HIGH = "high"
     MEDIUM = "medium"
@@ -22,6 +23,7 @@ class Severity(Enum):
 @dataclass
 class Finding:
     """分析发现"""
+
     id: str
     title: str
     description: str
@@ -35,6 +37,7 @@ class Finding:
 @dataclass
 class Recommendation:
     """优化建议"""
+
     id: str
     title: str
     description: str
@@ -48,6 +51,7 @@ class Recommendation:
 @dataclass
 class AnalysisReport:
     """分析报告"""
+
     metadata: dict[str, Any]
     findings: list[Finding]
     recommendations: list[Recommendation]
@@ -58,6 +62,7 @@ class AnalysisReport:
 @dataclass(frozen=True)
 class PanelSpec:
     """可扩展的面板定义"""
+
     panel_id: str
     title: str
     description: str = ""
@@ -69,15 +74,56 @@ class PanelSpec:
 def default_timeline_panel_specs(include_metrics: bool = True) -> list[PanelSpec]:
     """默认时间线面板顺序（含可扩展新面板）"""
     specs = [
-        PanelSpec("gpu_metrics", "GPU Metrics In Window", "Per-metric/device curves", order=10, enabled=include_metrics, min_height="300px"),
-        PanelSpec("rank_heatmap", "Rank Heatmap", "Cross-rank/device duration matrix", order=20),
-        PanelSpec("roofline_proxy", "Roofline Proxy", "Compute-vs-memory utilisation scatter", order=30),
-        PanelSpec("gil_lane", "Python GIL Lane", "Python runtime/GIL thread lanes", order=40),
-        PanelSpec("kernel_category", "Kernel Category Breakdown", "Overlap-aware category mix", order=50),
-        PanelSpec("nvtx_stability", "Per-Matched-NVTX Category Stability", "Window-level category stability", order=60),
-        PanelSpec("all_streams", "All Streams Overlap + Metrics Alignment", "Merged stream timeline", order=70),
-        PanelSpec("nvtx_scopes", "Matched NVTX Scopes", "Matched NVTX range table", order=80),
-        PanelSpec("kernel_timeline", "Kernel Timeline By Stream", "Per-stream kernel bars", order=90),
+        PanelSpec(
+            "gpu_metrics",
+            "GPU Metrics In Window",
+            "Per-metric/device curves",
+            order=10,
+            enabled=include_metrics,
+            min_height="300px",
+        ),
+        PanelSpec(
+            "rank_heatmap",
+            "Rank Heatmap",
+            "Cross-rank/device duration matrix",
+            order=20,
+        ),
+        PanelSpec(
+            "roofline_proxy",
+            "Roofline Proxy",
+            "Compute-vs-memory utilisation scatter",
+            order=30,
+        ),
+        PanelSpec(
+            "gil_lane", "Python GIL Lane", "Python runtime/GIL thread lanes", order=40
+        ),
+        PanelSpec(
+            "kernel_category",
+            "Kernel Category Breakdown",
+            "Overlap-aware category mix",
+            order=50,
+        ),
+        PanelSpec(
+            "nvtx_stability",
+            "Per-Matched-NVTX Category Stability",
+            "Window-level category stability",
+            order=60,
+        ),
+        PanelSpec(
+            "all_streams",
+            "All Streams Overlap + Metrics Alignment",
+            "Merged stream timeline",
+            order=70,
+        ),
+        PanelSpec(
+            "nvtx_scopes", "Matched NVTX Scopes", "Matched NVTX range table", order=80
+        ),
+        PanelSpec(
+            "kernel_timeline",
+            "Kernel Timeline By Stream",
+            "Per-stream kernel bars",
+            order=90,
+        ),
     ]
     return [item for item in sorted(specs, key=lambda x: x.order) if item.enabled]
 
@@ -114,17 +160,21 @@ class LayoutBuilder:
             title = self.title
 
         if subtitle is None:
-            subtitle = self.subtitle or f"Generated at {time.strftime('%Y-%m-%d %H:%M:%S')}"
+            subtitle = (
+                self.subtitle or f"Generated at {time.strftime('%Y-%m-%d %H:%M:%S')}"
+            )
 
-        self.sections.append({
-            "type": "header",
-            "content": f"""
+        self.sections.append(
+            {
+                "type": "header",
+                "content": f"""
             <div class="report-header">
                 <h1>{title}</h1>
                 <p class="subtitle">{subtitle}</p>
             </div>
-            """
-        })
+            """,
+            }
+        )
         return self
 
     def add_summary(
@@ -149,9 +199,10 @@ class LayoutBuilder:
             for key, value in details.items():
                 detail_items += f'<div class="summary-detail"><span class="detail-label">{key}:</span> <span class="detail-value">{value}</span></div>'
 
-        self.sections.append({
-            "type": "summary",
-            "content": f"""
+        self.sections.append(
+            {
+                "type": "summary",
+                "content": f"""
             <div class="summary-card score-{score_class}">
                 <div class="score-circle" style="background: {score_color};">
                     {score:.0f}
@@ -162,8 +213,9 @@ class LayoutBuilder:
                     <div class="summary-details">{detail_items}</div>
                 </div>
             </div>
-            """
-        })
+            """,
+            }
+        )
         return self
 
     def add_metrics_grid(self, metrics: dict[str, Any]) -> "LayoutBuilder":
@@ -175,17 +227,19 @@ class LayoutBuilder:
         """
         cards = ""
         for name, value in metrics.items():
-            cards += f'''
+            cards += f"""
             <div class="metric-card">
                 <div class="metric-label">{name}</div>
                 <div class="metric-value">{value}</div>
             </div>
-            '''
+            """
 
-        self.sections.append({
-            "type": "metrics_grid",
-            "content": f'<div class="metrics-grid">{cards}</div>'
-        })
+        self.sections.append(
+            {
+                "type": "metrics_grid",
+                "content": f'<div class="metrics-grid">{cards}</div>',
+            }
+        )
         return self
 
     def add_chart(
@@ -212,17 +266,19 @@ class LayoutBuilder:
 
         title_html = f"<h3>{title}</h3>" if title else ""
 
-        self.sections.append({
-            "type": "chart",
-            "content": f"""
+        self.sections.append(
+            {
+                "type": "chart",
+                "content": f"""
             <div class="chart-section" style="{style}">
                 {title_html}
                 <div class="chart-wrapper">
                     {chart_html}
                 </div>
             </div>
-            """
-        })
+            """,
+            }
+        )
         return self
 
     def add_two_column_charts(
@@ -244,9 +300,10 @@ class LayoutBuilder:
         left_title_html = f"<h3>{left_title}</h3>" if left_title else ""
         right_title_html = f"<h3>{right_title}</h3>" if right_title else ""
 
-        self.sections.append({
-            "type": "two_column_charts",
-            "content": f"""
+        self.sections.append(
+            {
+                "type": "two_column_charts",
+                "content": f"""
             <div class="two-column-layout">
                 <div class="column">
                     {left_title_html}
@@ -261,8 +318,9 @@ class LayoutBuilder:
                     </div>
                 </div>
             </div>
-            """
-        })
+            """,
+            }
+        )
         return self
 
     def add_panel_grid(
@@ -286,7 +344,11 @@ class LayoutBuilder:
             panel_html = panel_html_map.get(spec.panel_id)
             if not panel_html:
                 continue
-            subtitle = f'<div class="panel-subtitle">{spec.description}</div>' if spec.description else ""
+            subtitle = (
+                f'<div class="panel-subtitle">{spec.description}</div>'
+                if spec.description
+                else ""
+            )
             cards.append(
                 f"""
                 <div class="panel-card" style="min-height: {spec.min_height};">
@@ -302,20 +364,24 @@ class LayoutBuilder:
         if not cards:
             return self
 
-        self.sections.append({
-            "type": "panel_grid",
-            "content": f"""
+        self.sections.append(
+            {
+                "type": "panel_grid",
+                "content": f"""
             <div class="panel-grid-section">
                 <h2>{title}</h2>
                 <div class="panel-grid">
-                    {''.join(cards)}
+                    {"".join(cards)}
                 </div>
             </div>
-            """
-        })
+            """,
+            }
+        )
         return self
 
-    def add_findings(self, findings: list[Finding], title: str = "Findings") -> "LayoutBuilder":
+    def add_findings(
+        self, findings: list[Finding], title: str = "Findings"
+    ) -> "LayoutBuilder":
         """
         添加发现列表
 
@@ -329,17 +395,19 @@ class LayoutBuilder:
 
         findings_html = "\n".join(items)
 
-        self.sections.append({
-            "type": "findings",
-            "content": f"""
+        self.sections.append(
+            {
+                "type": "findings",
+                "content": f"""
             <div class="findings-section">
                 <h2>{title}</h2>
                 <div class="findings-list">
                     {findings_html}
                 </div>
             </div>
-            """
-        })
+            """,
+            }
+        )
         return self
 
     def add_recommendations(
@@ -360,17 +428,19 @@ class LayoutBuilder:
 
         rec_html = "\n".join(items)
 
-        self.sections.append({
-            "type": "recommendations",
-            "content": f"""
+        self.sections.append(
+            {
+                "type": "recommendations",
+                "content": f"""
             <div class="recommendations-section">
                 <h2>{title}</h2>
                 <div class="recommendations-list">
                     {rec_html}
                 </div>
             </div>
-            """
-        })
+            """,
+            }
+        )
         return self
 
     def add_table(
@@ -403,9 +473,10 @@ class LayoutBuilder:
 
         title_html = f"<h3>{title}</h3>" if title else ""
 
-        self.sections.append({
-            "type": "table",
-            "content": f"""
+        self.sections.append(
+            {
+                "type": "table",
+                "content": f"""
             <div class="table-section">
                 {title_html}
                 <table class="data-table" {sortable_attr}>
@@ -417,8 +488,9 @@ class LayoutBuilder:
                     </tbody>
                 </table>
             </div>
-            """
-        })
+            """,
+            }
+        )
         return self
 
     def add_code_block(self, code: str, language: str = "python") -> "LayoutBuilder":
@@ -433,14 +505,16 @@ class LayoutBuilder:
 
         escaped_code = html.escape(code)
 
-        self.sections.append({
-            "type": "code_block",
-            "content": f"""
+        self.sections.append(
+            {
+                "type": "code_block",
+                "content": f"""
             <div class="code-block">
                 <pre><code class="language-{language}">{escaped_code}</code></pre>
             </div>
-            """
-        })
+            """,
+            }
+        )
         return self
 
     def add_section(self, html: str) -> "LayoutBuilder":
@@ -450,18 +524,14 @@ class LayoutBuilder:
         Args:
             html: HTML内容
         """
-        self.sections.append({
-            "type": "custom",
-            "content": html
-        })
+        self.sections.append({"type": "custom", "content": html})
         return self
 
     def add_divider(self) -> "LayoutBuilder":
         """添加分隔线"""
-        self.sections.append({
-            "type": "divider",
-            "content": '<hr class="section-divider">'
-        })
+        self.sections.append(
+            {"type": "divider", "content": '<hr class="section-divider">'}
+        )
         return self
 
     def add_script(self, script: str) -> "LayoutBuilder":
@@ -506,7 +576,7 @@ class LayoutBuilder:
 
         scripts = "\n".join(self.scripts)
 
-        template = f'''
+        template = f"""
         <!DOCTYPE html>
         <html lang="zh-CN">
         <head>
@@ -527,7 +597,7 @@ class LayoutBuilder:
             </script>
         </body>
         </html>
-        '''
+        """
 
         return template
 
@@ -561,9 +631,13 @@ class LayoutBuilder:
                 else:
                     evidence_items += f'<div class="evidence-item"><span class="evidence-key">{key}:</span> <span class="evidence-value">{value}</span></div>'
 
-        components = ", ".join(finding.affected_components) if finding.affected_components else finding.category
+        components = (
+            ", ".join(finding.affected_components)
+            if finding.affected_components
+            else finding.category
+        )
 
-        return f'''
+        return f"""
         <div class="finding-item severity-{finding.severity.value}">
             <div class="finding-header">
                 <span class="finding-title">{finding.title}</span>
@@ -573,17 +647,19 @@ class LayoutBuilder:
             <div class="finding-meta">
                 <span class="finding-component">Component: {components}</span>
             </div>
-            {f'<div class="finding-evidence">{evidence_items}</div>' if evidence_items else ''}
+            {f'<div class="finding-evidence">{evidence_items}</div>' if evidence_items else ""}
         </div>
-        '''
+        """
 
     def _render_recommendation(self, rec: Recommendation) -> str:
         """渲染单个建议"""
-        priority_class = "high" if rec.priority >= 8 else "medium" if rec.priority >= 5 else "low"
+        priority_class = (
+            "high" if rec.priority >= 8 else "medium" if rec.priority >= 5 else "low"
+        )
 
         actions_html = "".join(f"<li>{action}</li>" for action in rec.actions)
 
-        return f'''
+        return f"""
         <div class="recommendation-item priority-{priority_class}">
             <div class="rec-header">
                 <span class="rec-title">{rec.title}</span>
@@ -598,13 +674,13 @@ class LayoutBuilder:
                 <strong>建议操作:</strong>
                 <ul>{actions_html}</ul>
             </div>
-            {f'<div class="rec-references"><strong>参考:</strong> {", ".join(f"<a href={ref} target=_blank>{ref}</a>" for ref in rec.references)}</div>' if rec.references else ''}
+            {f'<div class="rec-references"><strong>参考:</strong> {", ".join(f"<a href={ref} target=_blank>{ref}</a>" for ref in rec.references)}</div>' if rec.references else ""}
         </div>
-        '''
+        """
 
     def _get_builtin_css(self) -> str:
         """获取内置CSS样式"""
-        return '''
+        return """
         * {
             margin: 0;
             padding: 0;
@@ -1019,4 +1095,4 @@ class LayoutBuilder:
                 grid-template-columns: repeat(2, 1fr);
             }
         }
-        '''
+        """

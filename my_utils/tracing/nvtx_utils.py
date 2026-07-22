@@ -94,8 +94,7 @@ class LabelerProtocol(Protocol):
         color: str = "blue",
         domain_name: Optional[str] = None,
         category: Optional[Any] = None,
-    ) -> None:
-        ...
+    ) -> None: ...
 
     def start(
         self,
@@ -103,11 +102,9 @@ class LabelerProtocol(Protocol):
         color: str = "blue",
         domain_name: Optional[str] = None,
         category: Optional[Any] = None,
-    ) -> object | None:
-        ...
+    ) -> object | None: ...
 
-    def stop(self, token: object | None = None) -> None:
-        ...
+    def stop(self, token: object | None = None) -> None: ...
 
     def mark(
         self,
@@ -115,8 +112,7 @@ class LabelerProtocol(Protocol):
         color: str = "blue",
         domain_name: Optional[str] = None,
         category: Optional[Any] = None,
-    ) -> None:
-        ...
+    ) -> None: ...
 
     def range(
         self,
@@ -124,8 +120,7 @@ class LabelerProtocol(Protocol):
         color: str = "blue",
         domain_name: Optional[str] = None,
         category: Optional[Any] = None,
-    ) -> Iterator[None]:
-        ...
+    ) -> Iterator[None]: ...
 
 
 class NoOpLabeler:
@@ -198,14 +193,18 @@ class NvtxLabeler:
 
     backend_name = "nvtx"
 
-    def __init__(self, enabled: Optional[bool] = None, default_domain: Optional[str] = None):
+    def __init__(
+        self, enabled: Optional[bool] = None, default_domain: Optional[str] = None
+    ):
         if enabled is None:
             enabled = _env_enabled()
 
         self.enabled = bool(enabled and NVTX_AVAILABLE)
         self.default_domain = default_domain
         self._domains: dict[str, Any] = {}
-        self._registered_attrs: dict[tuple[str, Optional[str], Hashable], tuple[Any, Any]] = {}
+        self._registered_attrs: dict[
+            tuple[str, Optional[str], Hashable], tuple[Any, Any]
+        ] = {}
         self._active_stack: list[tuple[Any, Any]] = []
 
     def _get_domain(self, domain_name: Optional[str]) -> Any | None:
@@ -227,11 +226,18 @@ class NvtxLabeler:
 
         effective_domain = domain_name or self.default_domain
         if effective_domain is None:
-            raise ValueError("register_label requires `domain_name` or `default_domain`.")
+            raise ValueError(
+                "register_label requires `domain_name` or `default_domain`."
+            )
 
         domain = self._get_domain(effective_domain)
-        attrs = domain.get_event_attributes(message=label, color=color, category=category)
-        self._registered_attrs[_registry_key(label, effective_domain, category)] = (domain, attrs)
+        attrs = domain.get_event_attributes(
+            message=label, color=color, category=category
+        )
+        self._registered_attrs[_registry_key(label, effective_domain, category)] = (
+            domain,
+            attrs,
+        )
 
     def _start_dynamic_range(
         self,
@@ -270,7 +276,10 @@ class NvtxLabeler:
             domain, attrs = self._registered_attrs[cache_key]
             token = (domain, domain.start_range(attributes=attrs))
         else:
-            token = (None, self._start_dynamic_range(label, color, effective_domain, category))
+            token = (
+                None,
+                self._start_dynamic_range(label, color, effective_domain, category),
+            )
 
         self._active_stack.append(token)
         return token
@@ -326,7 +335,9 @@ class NvtxLabeler:
                 _nvtx.mark(**kwargs)
                 return
 
-        token = self.start(label, color=color, domain_name=effective_domain, category=category)
+        token = self.start(
+            label, color=color, domain_name=effective_domain, category=category
+        )
         self.stop(token)
 
     @contextmanager
@@ -337,7 +348,9 @@ class NvtxLabeler:
         domain_name: Optional[str] = None,
         category: Optional[Any] = None,
     ) -> Iterator[None]:
-        token = self.start(label, color=color, domain_name=domain_name, category=category)
+        token = self.start(
+            label, color=color, domain_name=domain_name, category=category
+        )
         try:
             yield
         finally:
@@ -354,7 +367,9 @@ class TorchNvtxLabeler:
 
     backend_name = "torch_nvtx"
 
-    def __init__(self, enabled: Optional[bool] = None, default_domain: Optional[str] = None):
+    def __init__(
+        self, enabled: Optional[bool] = None, default_domain: Optional[str] = None
+    ):
         if enabled is None:
             enabled = _env_enabled()
 
@@ -391,10 +406,12 @@ class TorchNvtxLabeler:
             return
 
         effective_domain = domain_name or self.default_domain
-        self._registered_messages[_registry_key(label, effective_domain, category)] = self._compose_message(
-            label,
-            domain_name=effective_domain,
-            category=category,
+        self._registered_messages[_registry_key(label, effective_domain, category)] = (
+            self._compose_message(
+                label,
+                domain_name=effective_domain,
+                category=category,
+            )
         )
 
     def start(
@@ -408,7 +425,9 @@ class TorchNvtxLabeler:
             return None
 
         effective_domain = domain_name or self.default_domain
-        message = self._registered_messages.get(_registry_key(label, effective_domain, category))
+        message = self._registered_messages.get(
+            _registry_key(label, effective_domain, category)
+        )
         if message is None:
             message = self._compose_message(
                 label,
@@ -459,7 +478,9 @@ class TorchNvtxLabeler:
             )
             return
 
-        token = self.start(label, color=color, domain_name=domain_name, category=category)
+        token = self.start(
+            label, color=color, domain_name=domain_name, category=category
+        )
         self.stop(token)
 
     def push(
@@ -492,7 +513,9 @@ class TorchNvtxLabeler:
         domain_name: Optional[str] = None,
         category: Optional[Any] = None,
     ) -> Iterator[None]:
-        token = self.start(label, color=color, domain_name=domain_name, category=category)
+        token = self.start(
+            label, color=color, domain_name=domain_name, category=category
+        )
         try:
             yield
         finally:

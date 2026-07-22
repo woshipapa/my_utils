@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Dict, Iterable, List, Mapping, Optional
+from typing import Dict, List, Mapping, Optional
 
 from .analysis_rules import (
     AnalysisRule,
@@ -33,7 +33,12 @@ WORKLOAD_PROFILES: Dict[str, WorkloadProfile] = {
     "default": WorkloadProfile(
         name="default",
         description="Generic workload profile for mixed training/inference pipelines.",
-        rule_ids=["latency_bottleneck", "memory_growth", "latency_variance", "latency_outlier"],
+        rule_ids=[
+            "latency_bottleneck",
+            "memory_growth",
+            "latency_variance",
+            "latency_outlier",
+        ],
         kpi_metrics=["latency.stage", "memory.gpu.allocated"],
     ),
     "pretrain": WorkloadProfile(
@@ -70,12 +75,22 @@ WORKLOAD_PROFILES: Dict[str, WorkloadProfile] = {
             "dataloader_stall",
             "gpu_utilization",
         ],
-        kpi_metrics=["latency.step", "latency.stage", "memory.gpu.allocated", "compute.throughput.samples_per_sec"],
+        kpi_metrics=[
+            "latency.step",
+            "latency.stage",
+            "memory.gpu.allocated",
+            "compute.throughput.samples_per_sec",
+        ],
     ),
     "inference": WorkloadProfile(
         name="inference",
         description="Inference/serving profile focused on tail latency and utilization.",
-        rule_ids=["latency_bottleneck", "latency_variance", "latency_outlier", "gpu_utilization"],
+        rule_ids=[
+            "latency_bottleneck",
+            "latency_variance",
+            "latency_outlier",
+            "gpu_utilization",
+        ],
         kpi_metrics=["latency.request", "latency.stage", "compute.gpu.sm.utilization"],
     ),
     "data_pipeline": WorkloadProfile(
@@ -89,35 +104,77 @@ WORKLOAD_PROFILES: Dict[str, WorkloadProfile] = {
 
 def _build_rule(rule_id: str, thresholds: Mapping[str, float]) -> AnalysisRule:
     if rule_id == "latency_bottleneck":
-        return LatencyBottleneckRule(share_threshold=float(thresholds.get("bottleneck_threshold", 0.10)))
+        return LatencyBottleneckRule(
+            share_threshold=float(thresholds.get("bottleneck_threshold", 0.10))
+        )
     if rule_id == "memory_growth":
-        return MemoryGrowthRule(growth_bytes_per_step=float(thresholds.get("memory_growth_bytes_per_step", 10 * 1024 * 1024)))
+        return MemoryGrowthRule(
+            growth_bytes_per_step=float(
+                thresholds.get("memory_growth_bytes_per_step", 10 * 1024 * 1024)
+            )
+        )
     if rule_id == "latency_variance":
-        return LatencyVarianceRule(cv_threshold=float(thresholds.get("cv_threshold", 0.50)))
+        return LatencyVarianceRule(
+            cv_threshold=float(thresholds.get("cv_threshold", 0.50))
+        )
     if rule_id == "latency_outlier":
-        return LatencyOutlierRule(z_threshold=float(thresholds.get("outlier_z_threshold", 3.0)))
+        return LatencyOutlierRule(
+            z_threshold=float(thresholds.get("outlier_z_threshold", 3.0))
+        )
     if rule_id == "comm_imbalance":
-        return CommunicationImbalanceRule(imbalance_ratio_threshold=float(thresholds.get("comm_imbalance_ratio_threshold", 1.25)))
+        return CommunicationImbalanceRule(
+            imbalance_ratio_threshold=float(
+                thresholds.get("comm_imbalance_ratio_threshold", 1.25)
+            )
+        )
     if rule_id == "pipeline_bubble":
-        return PipelineBubbleRule(bubble_ratio_threshold=float(thresholds.get("pipeline_bubble_ratio_threshold", 0.15)))
+        return PipelineBubbleRule(
+            bubble_ratio_threshold=float(
+                thresholds.get("pipeline_bubble_ratio_threshold", 0.15)
+            )
+        )
     if rule_id == "dataloader_stall":
-        return DataloaderStallRule(stall_ratio_threshold=float(thresholds.get("dataloader_stall_ratio_threshold", 0.20)))
+        return DataloaderStallRule(
+            stall_ratio_threshold=float(
+                thresholds.get("dataloader_stall_ratio_threshold", 0.20)
+            )
+        )
     if rule_id == "gpu_utilization":
-        return GpuUtilizationThroughputRule(utilization_threshold=float(thresholds.get("gpu_utilization_threshold", 0.40)))
+        return GpuUtilizationThroughputRule(
+            utilization_threshold=float(
+                thresholds.get("gpu_utilization_threshold", 0.40)
+            )
+        )
     if rule_id == "distributed_skew":
-        return DistributedSkewRule(skew_ratio_threshold=float(thresholds.get("distributed_skew_ratio_threshold", 1.20)))
+        return DistributedSkewRule(
+            skew_ratio_threshold=float(
+                thresholds.get("distributed_skew_ratio_threshold", 1.20)
+            )
+        )
     if rule_id == "comm_health":
         return CommunicationHealthRule(
-            p95_ratio_threshold=float(thresholds.get("comm_health_p95_ratio_threshold", 2.0)),
-            rank_imbalance_threshold=float(thresholds.get("comm_health_rank_imbalance_threshold", 1.30)),
-            min_good_busbw_gbps=float(thresholds.get("comm_health_min_busbw_gbps", 20.0)),
+            p95_ratio_threshold=float(
+                thresholds.get("comm_health_p95_ratio_threshold", 2.0)
+            ),
+            rank_imbalance_threshold=float(
+                thresholds.get("comm_health_rank_imbalance_threshold", 1.30)
+            ),
+            min_good_busbw_gbps=float(
+                thresholds.get("comm_health_min_busbw_gbps", 20.0)
+            ),
         )
     if rule_id == "roofline_gap":
-        return RooflineGapRule(gap_threshold=float(thresholds.get("roofline_gap_threshold", 0.20)))
+        return RooflineGapRule(
+            gap_threshold=float(thresholds.get("roofline_gap_threshold", 0.20))
+        )
     if rule_id == "cross_layer_consistency":
         return CrossLayerConsistencyRule(
-            min_step_coverage=float(thresholds.get("cross_layer_min_step_coverage", 0.40)),
-            min_tag_alignment_ratio=float(thresholds.get("cross_layer_min_tag_alignment_ratio", 0.60)),
+            min_step_coverage=float(
+                thresholds.get("cross_layer_min_step_coverage", 0.40)
+            ),
+            min_tag_alignment_ratio=float(
+                thresholds.get("cross_layer_min_tag_alignment_ratio", 0.60)
+            ),
         )
     raise KeyError(f"Unknown rule id: {rule_id}")
 

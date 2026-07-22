@@ -16,8 +16,6 @@ if my_utils_dir not in sys.path:
 
 from my_utils.profiling.visualization import (
     ChartConfig,
-    ChartJsRenderer,
-    PlotlyRenderer,
     create_chart_renderer,
     DataTransformer,
     LayoutBuilder,
@@ -42,18 +40,20 @@ def example_1_basic_chart():
         title="Performance Over Time",
         data={
             "labels": [0, 1, 2, 3, 4, 5],
-            "datasets": [{
-                "label": "Loss",
-                "data": [2.5, 2.1, 1.8, 1.5, 1.3, 1.1],
-                "borderColor": "rgb(75, 192, 192)",
-                "backgroundColor": "rgba(75, 192, 192, 0.2)",
-                "fill": True,
-            }]
+            "datasets": [
+                {
+                    "label": "Loss",
+                    "data": [2.5, 2.1, 1.8, 1.5, 1.3, 1.1],
+                    "borderColor": "rgb(75, 192, 192)",
+                    "backgroundColor": "rgba(75, 192, 192, 0.2)",
+                    "fill": True,
+                }
+            ],
         },
         options={
             "responsive": True,
             "maintainAspectRatio": False,
-        }
+        },
     )
 
     # 渲染为HTML
@@ -88,35 +88,42 @@ def example_2_data_transformer():
 
     # 创建模拟数据
     import time
+
     events = []
 
     for step in range(10):
         # 模拟训练损失
-        events.append(MetricEvent(
-            timestamp=time.time() + step,
-            name="loss",
-            value=2.5 - step * 0.15,
-            unit="",
-            tags={"step": str(step)}
-        ))
+        events.append(
+            MetricEvent(
+                timestamp=time.time() + step,
+                name="loss",
+                value=2.5 - step * 0.15,
+                unit="",
+                tags={"step": str(step)},
+            )
+        )
 
         # 模拟forward时间
-        events.append(MetricEvent(
-            timestamp=time.time() + step,
-            name="timer.forward",
-            value=100 + step * 2,
-            unit="ms",
-            tags={"step": str(step)}
-        ))
+        events.append(
+            MetricEvent(
+                timestamp=time.time() + step,
+                name="timer.forward",
+                value=100 + step * 2,
+                unit="ms",
+                tags={"step": str(step)},
+            )
+        )
 
         # 模拟backward时间
-        events.append(MetricEvent(
-            timestamp=time.time() + step,
-            name="timer.backward",
-            value=150 + step * 3,
-            unit="ms",
-            tags={"step": str(step)}
-        ))
+        events.append(
+            MetricEvent(
+                timestamp=time.time() + step,
+                name="timer.backward",
+                value=150 + step * 3,
+                unit="ms",
+                tags={"step": str(step)},
+            )
+        )
 
     print(f"创建了 {len(events)} 个模拟事件")
 
@@ -125,23 +132,22 @@ def example_2_data_transformer():
 
     # 转换为时间序列
     time_series = transformer.to_time_series(events, metric_name="loss")
-    print(f"\n时间序列数据:")
+    print("\n时间序列数据:")
     print(f"  Labels: {time_series['labels']}")
     print(f"  Data points: {len(time_series['datasets'][0]['data'])}")
 
     # 多条时间序列
     multi_series = transformer.to_multiple_time_series(
-        events,
-        metric_names=["timer.forward", "timer.backward"]
+        events, metric_names=["timer.forward", "timer.backward"]
     )
-    print(f"\n多条时间序列:")
+    print("\n多条时间序列:")
     print(f"  Datasets: {len(multi_series['datasets'])}")
-    for ds in multi_series['datasets']:
+    for ds in multi_series["datasets"]:
         print(f"    - {ds['label']}")
 
     # 计算统计
     stats = transformer.compute_statistics(events)
-    print(f"\n统计信息:")
+    print("\n统计信息:")
     for stat in stats[:3]:
         print(f"  {stat['metric']}: mean={stat['mean']:.2f}, std={stat['std']:.2f}")
 
@@ -155,10 +161,7 @@ def example_3_layout_builder():
     builder = LayoutBuilder()
 
     # 添加标题
-    builder.add_header(
-        title="My Training Report",
-        subtitle="Generated on 2024-01-15"
-    )
+    builder.add_header(title="My Training Report", subtitle="Generated on 2024-01-15")
 
     # 添加摘要
     builder.add_summary(
@@ -168,15 +171,17 @@ def example_3_layout_builder():
             "Total Steps": "1000",
             "Final Loss": "0.25",
             "Training Time": "2.5 hours",
-        }
+        },
     )
 
     # 添加指标网格
-    builder.add_metrics_grid({
-        "Throughput": "128 samples/s",
-        "GPU Memory": "8.5 GB",
-        "Utilization": "92%",
-    })
+    builder.add_metrics_grid(
+        {
+            "Throughput": "128 samples/s",
+            "GPU Memory": "8.5 GB",
+            "Utilization": "92%",
+        }
+    )
 
     # 添加表格
     table_data = [
@@ -206,47 +211,58 @@ def example_4_full_report():
     # 创建模拟数据
     import time
     from my_utils.profiling.visualization.layouts import (
-        Finding, Recommendation, AnalysisReport, Severity
+        Finding,
+        Recommendation,
+        AnalysisReport,
+        Severity,
     )
 
     events = []
 
     for step in range(20):
         # 损失
-        events.append(MetricEvent(
-            timestamp=time.time() + step,
-            name="loss",
-            value=2.0 * (0.95 ** step),
-            unit="",
-            tags={"step": str(step)}
-        ))
+        events.append(
+            MetricEvent(
+                timestamp=time.time() + step,
+                name="loss",
+                value=2.0 * (0.95**step),
+                unit="",
+                tags={"step": str(step)},
+            )
+        )
 
         # Forward时间
-        events.append(MetricEvent(
-            timestamp=time.time() + step,
-            name="timer.forward",
-            value=100 + step * 0.5,
-            unit="ms",
-            tags={"step": str(step)}
-        ))
+        events.append(
+            MetricEvent(
+                timestamp=time.time() + step,
+                name="timer.forward",
+                value=100 + step * 0.5,
+                unit="ms",
+                tags={"step": str(step)},
+            )
+        )
 
         # Backward时间
-        events.append(MetricEvent(
-            timestamp=time.time() + step,
-            name="timer.backward",
-            value=150 + step * 0.8,
-            unit="ms",
-            tags={"step": str(step)}
-        ))
+        events.append(
+            MetricEvent(
+                timestamp=time.time() + step,
+                name="timer.backward",
+                value=150 + step * 0.8,
+                unit="ms",
+                tags={"step": str(step)},
+            )
+        )
 
         # 内存
-        events.append(MetricEvent(
-            timestamp=time.time() + step,
-            name="memory.allocated",
-            value=8.0 + step * 0.01,
-            unit="GB",
-            tags={"step": str(step)}
-        ))
+        events.append(
+            MetricEvent(
+                timestamp=time.time() + step,
+                name="memory.allocated",
+                value=8.0 + step * 0.01,
+                unit="GB",
+                tags={"step": str(step)},
+            )
+        )
 
     # 创建模拟分析报告
     report = AnalysisReport(
@@ -268,7 +284,7 @@ def example_4_full_report():
                     "ratio": 1.5,
                 },
                 affected_components=["model.backward"],
-                metrics={"bottleneck_ratio": 0.6}
+                metrics={"bottleneck_ratio": 0.6},
             ),
             Finding(
                 id="f2",
@@ -281,7 +297,7 @@ def example_4_full_report():
                     "growth_rate_mb_per_step": 0.01,
                 },
                 affected_components=["memory_allocator"],
-                metrics={"memory_stability": 0.95}
+                metrics={"memory_stability": 0.95},
             ),
         ],
         recommendations=[
@@ -297,7 +313,7 @@ def example_4_full_report():
                     "Consider using mixed precision training",
                     "Profile individual layer backward times",
                 ],
-                references=[]
+                references=[],
             ),
             Recommendation(
                 id="r2",
@@ -311,7 +327,7 @@ def example_4_full_report():
                     "Monitor memory usage",
                     "Adjust learning rate accordingly",
                 ],
-                references=[]
+                references=[],
             ),
         ],
         summary="Training shows good convergence with minor optimization opportunities",
@@ -321,17 +337,15 @@ def example_4_full_report():
     # 生成报告
     generator = HTMLReportGenerator()
     html = generator.generate(
-        report=report,
-        events=events,
-        output_path="example_full_report.html"
+        report=report, events=events, output_path="example_full_report.html"
     )
 
-    print(f"完整报告已生成")
+    print("完整报告已生成")
     print(f"  总事件数: {len(events)}")
     print(f"  发现数: {len(report.findings)}")
     print(f"  建议数: {len(report.recommendations)}")
     print(f"  得分: {report.overall_score:.0f}/100")
-    print(f"\n已保存到: example_full_report.html")
+    print("\n已保存到: example_full_report.html")
 
 
 def example_5_quick_report_from_timer():
@@ -355,6 +369,7 @@ def example_5_quick_report_from_timer():
 
         # 模拟训练
         import time as time_module
+
         for step in range(5):
             timer.set_step(step)
             timer.start("forward")
@@ -368,8 +383,7 @@ def example_5_quick_report_from_timer():
         # 生成报告
         quick_gen = QuickReportGenerator()
         html = quick_gen.generate_from_timer(
-            timer=timer,
-            output_path="example_timer_report.html"
+            timer=timer, output_path="example_timer_report.html"
         )
 
         print("已从MyTimer生成报告")
@@ -390,12 +404,13 @@ def example_6_from_csv():
     with open(csv_path, "w") as f:
         f.write("timestamp_unix,readable_time,step,event_name,event_type,duration_ms\n")
         import time as time_module
+
         for step in range(5):
             ts = time_module.time()
             f.write(f"{ts},2024-01-15 12:00:0{step},{step},forward,START,0\n")
-            f.write(f"{ts+0.1},2024-01-15 12:00:0{step},{step},forward,END,100\n")
-            f.write(f"{ts+0.1},2024-01-15 12:00:0{step},{step},backward,START,0\n")
-            f.write(f"{ts+0.3},2024-01-15 12:00:0{step},{step},backward,END,200\n")
+            f.write(f"{ts + 0.1},2024-01-15 12:00:0{step},{step},forward,END,100\n")
+            f.write(f"{ts + 0.1},2024-01-15 12:00:0{step},{step},backward,START,0\n")
+            f.write(f"{ts + 0.3},2024-01-15 12:00:0{step},{step},backward,END,200\n")
 
     print(f"已创建示例CSV: {csv_path}")
 
@@ -403,8 +418,7 @@ def example_6_from_csv():
     try:
         quick_gen = QuickReportGenerator()
         html = quick_gen.generate_from_csv(
-            csv_path=csv_path,
-            output_path="example_csv_report.html"
+            csv_path=csv_path, output_path="example_csv_report.html"
         )
         print("已从CSV生成报告")
         print("已保存到: example_csv_report.html")

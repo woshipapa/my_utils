@@ -18,7 +18,9 @@ class DumpTensorIO:
 
     def _tensor_path(self, dump_id, tag, rank):
         safe_tag = self._safe_tag(tag)
-        return os.path.join(self.tensor_dir, f"{int(dump_id):04d}_{safe_tag}_rank{int(rank)}.pt")
+        return os.path.join(
+            self.tensor_dir, f"{int(dump_id):04d}_{safe_tag}_rank{int(rank)}.pt"
+        )
 
     def tensor_path(self, dump_id, tag, rank):
         return self._tensor_path(dump_id, tag, rank)
@@ -69,12 +71,7 @@ class DumpTensorIO:
         }
 
 
-
-
-
-import os
 import re
-import json
 import time
 import pickle
 from dataclasses import dataclass
@@ -99,7 +96,7 @@ except Exception:
 
 def _now_ts():
     # e.g. 20260123_142355_123456
-    return time.strftime("%Y%m%d_%H%M%S") + f"_{int((time.time()%1)*1e6):06d}"
+    return time.strftime("%Y%m%d_%H%M%S") + f"_{int((time.time() % 1) * 1e6):06d}"
 
 
 def _safe_name(s: str, max_len: int = 80) -> str:
@@ -140,12 +137,12 @@ class DumpConfig:
     root_dir: str = "./dump_dataset"
     enable: bool = True
     # 控制避免 dump 太大
-    max_list_elems: int = 64          # list/tuple 最多保存前 N 个元素
-    max_dict_items: int = 128         # dict 最多保存前 N 个键
-    max_str_len: int = 10_000         # 超长字符串截断写入
-    save_tensor_cpu: bool = False     # True: tensor先搬到cpu再保存，降低GPU占用/失败风险
-    tensor_save_format: str = "pt"    # "pt" 或 "pt+np"
-    image_format: str = "png"         # "png" / "jpg"
+    max_list_elems: int = 64  # list/tuple 最多保存前 N 个元素
+    max_dict_items: int = 128  # dict 最多保存前 N 个键
+    max_str_len: int = 10_000  # 超长字符串截断写入
+    save_tensor_cpu: bool = False  # True: tensor先搬到cpu再保存，降低GPU占用/失败风险
+    tensor_save_format: str = "pt"  # "pt" 或 "pt+np"
+    image_format: str = "png"  # "png" / "jpg"
     print_summary: bool = True
     # 每次 dump 是否附带一个 summary.json
     write_summary_json: bool = True
@@ -162,6 +159,7 @@ class UniversalDumper:
             manifest.json
             data/...
     """
+
     def __init__(self, cfg: DumpConfig):
         self.cfg = cfg
         os.makedirs(self.cfg.root_dir, exist_ok=True)
@@ -222,14 +220,22 @@ class UniversalDumper:
         return dump_dir
 
     def _format_log_prefix(self, manifest: Dict[str, Any]) -> str:
-        b = f", branch={manifest['branch']}" if manifest.get("branch") is not None else ""
+        b = (
+            f", branch={manifest['branch']}"
+            if manifest.get("branch") is not None
+            else ""
+        )
         return f"[DUMP] id={manifest['data_id']}{b}, stage={manifest['stage']}: "
 
     def _brief(self, obj: Any) -> str:
         # lightweight structure summary for printing
         try:
             if _is_primitive(obj):
-                s = obj if not isinstance(obj, str) else (obj[:200] + ("..." if len(obj) > 200 else ""))
+                s = (
+                    obj
+                    if not isinstance(obj, str)
+                    else (obj[:200] + ("..." if len(obj) > 200 else ""))
+                )
                 return f"type={_short_type(obj)}, value={repr(s)}"
             if Image is not None and isinstance(obj, Image.Image):
                 return f"type=PIL.Image, meta={_pil_meta(obj)}"
@@ -261,7 +267,12 @@ class UniversalDumper:
             if isinstance(val, str) and len(val) > self.cfg.max_str_len:
                 val = val[: self.cfg.max_str_len] + "...<TRUNCATED>"
             with open(path, "w", encoding="utf-8") as f:
-                json.dump({"value": val, "type": _short_type(obj)}, f, ensure_ascii=False, indent=2)
+                json.dump(
+                    {"value": val, "type": _short_type(obj)},
+                    f,
+                    ensure_ascii=False,
+                    indent=2,
+                )
             return {"kind": "primitive_json", "path": path}
 
         # 2) PIL Image -> image file
@@ -283,7 +294,9 @@ class UniversalDumper:
             path = os.path.join(out_dir, f"{safe}.{ext}")
             try:
                 if ext in ("jpg", "jpeg"):
-                    obj.save(path, format="JPEG", quality=95)  # 有损，不适合 strict compare
+                    obj.save(
+                        path, format="JPEG", quality=95
+                    )  # 有损，不适合 strict compare
                 else:
                     obj.save(path, format="PNG")
             except Exception:
@@ -292,10 +305,14 @@ class UniversalDumper:
 
             meta_path = os.path.join(out_dir, f"{safe}__meta.json")
             with open(meta_path, "w", encoding="utf-8") as f:
-                json.dump({"type": "PIL.Image", "meta": _pil_meta(obj)}, f, ensure_ascii=False, indent=2)
+                json.dump(
+                    {"type": "PIL.Image", "meta": _pil_meta(obj)},
+                    f,
+                    ensure_ascii=False,
+                    indent=2,
+                )
 
             return {"kind": "pil_image", "path": path, "meta": meta_path}
-
 
         # 3) torch.Tensor -> pt (and optional npy)
         if torch is not None and isinstance(obj, torch.Tensor):
@@ -315,7 +332,12 @@ class UniversalDumper:
             torch.save(t, pt_path)
             meta_path = os.path.join(out_dir, f"{safe}__meta.json")
             with open(meta_path, "w", encoding="utf-8") as f:
-                json.dump({"type": "torch.Tensor", "meta": _tensor_meta(t)}, f, ensure_ascii=False, indent=2)
+                json.dump(
+                    {"type": "torch.Tensor", "meta": _tensor_meta(t)},
+                    f,
+                    ensure_ascii=False,
+                    indent=2,
+                )
 
             saved = {"kind": "torch_tensor", "pt": pt_path, "meta": meta_path}
 
@@ -334,7 +356,12 @@ class UniversalDumper:
             np.save(path, obj)
             meta_path = os.path.join(out_dir, f"{safe}__meta.json")
             with open(meta_path, "w", encoding="utf-8") as f:
-                json.dump({"type": "np.ndarray", "meta": _np_meta(obj)}, f, ensure_ascii=False, indent=2)
+                json.dump(
+                    {"type": "np.ndarray", "meta": _np_meta(obj)},
+                    f,
+                    ensure_ascii=False,
+                    indent=2,
+                )
             return {"kind": "numpy", "path": path, "meta": meta_path}
 
         # 5) dict -> folder of entries + index
@@ -350,7 +377,12 @@ class UniversalDumper:
             dir_path = os.path.join(out_dir, f"{safe}__dict")
             os.makedirs(dir_path, exist_ok=True)
 
-            index = {"kind": "dict", "truncated": truncated, "nkeys_total": len(d), "items": []}
+            index = {
+                "kind": "dict",
+                "truncated": truncated,
+                "nkeys_total": len(d),
+                "items": [],
+            }
             for k, v in items:
                 k_safe = _safe_name(k)
                 child = self._save_any(v, dir_path, name=k_safe)
@@ -363,9 +395,15 @@ class UniversalDumper:
             if self.cfg.write_summary_json:
                 # also write a quick "keys + types"
                 summary = {str(k): _short_type(v) for k, v in items}
-                with open(os.path.join(dir_path, "_summary.json"), "w", encoding="utf-8") as f:
+                with open(
+                    os.path.join(dir_path, "_summary.json"), "w", encoding="utf-8"
+                ) as f:
                     json.dump(
-                        {"truncated": truncated, "nkeys_total": len(d), "key_types": summary},
+                        {
+                            "truncated": truncated,
+                            "nkeys_total": len(d),
+                            "key_types": summary,
+                        },
                         f,
                         ensure_ascii=False,
                         indent=2,
@@ -412,17 +450,18 @@ class UniversalDumper:
             # worst-case: write repr
             txt_path = os.path.join(out_dir, f"{safe}__repr.txt")
             with open(txt_path, "w", encoding="utf-8") as f:
-                f.write(f"type={_short_type(obj)}\nerror={repr(e)}\n\nrepr:\n{repr(obj)}\n")
+                f.write(
+                    f"type={_short_type(obj)}\nerror={repr(e)}\n\nrepr:\n{repr(obj)}\n"
+                )
             return {"kind": "repr_txt", "path": txt_path, "type": _short_type(obj)}
 
 
-
-import os
 import threading
 from typing import Optional
 
 # 假设你原来这两个类在同一个文件里
 # from dump_utils import UniversalDumper, DumpConfig
+
 
 class DumperSingleton:
     """
@@ -430,6 +469,7 @@ class DumperSingleton:
     - In one process: always returns the same dumper instance.
     - In multi-process (DataLoader workers / torchrun): each process has its own singleton.
     """
+
     _lock = threading.Lock()
     _instance: Optional["UniversalDumper"] = None
     _cfg_fingerprint: Optional[str] = None
@@ -484,15 +524,6 @@ def get_dumper(cfg=None):
     return DumperSingleton.get(cfg)
 
 
-
-
-
-
-import os
-import json
-import glob
-import pickle
-
 try:
     import torch
 except Exception:
@@ -523,10 +554,16 @@ class UniversalLoader:
         if not os.path.isdir(sample_dir):
             return []
         dirs = [os.path.join(sample_dir, d) for d in os.listdir(sample_dir)]
-        dirs = [d for d in dirs if os.path.isdir(d) and os.path.isfile(os.path.join(d, "manifest.json"))]
+        dirs = [
+            d
+            for d in dirs
+            if os.path.isdir(d) and os.path.isfile(os.path.join(d, "manifest.json"))
+        ]
         return sorted(dirs)
 
-    def find_dump(self, data_id: int, stage: str, branch: str = None, pick: str = "latest"):
+    def find_dump(
+        self, data_id: int, stage: str, branch: str = None, pick: str = "latest"
+    ):
         """
         Find a dump directory for (data_id, stage, branch).
         pick: "latest" or "earliest"
@@ -561,10 +598,14 @@ class UniversalLoader:
         saved_root = manifest["saved_root"]
         return self._load_saved(saved_root)
 
-    def load_stage(self, data_id: int, stage: str, branch: str = None, pick: str = "latest"):
+    def load_stage(
+        self, data_id: int, stage: str, branch: str = None, pick: str = "latest"
+    ):
         dump_dir = self.find_dump(data_id, stage=stage, branch=branch, pick=pick)
         if dump_dir is None:
-            raise FileNotFoundError(f"No dump found for data_id={data_id}, stage={stage}, branch={branch}")
+            raise FileNotFoundError(
+                f"No dump found for data_id={data_id}, stage={stage}, branch={branch}"
+            )
         return self.load(dump_dir)
 
     # ---------- internals ----------
@@ -585,7 +626,9 @@ class UniversalLoader:
 
         if kind == "torch_tensor":
             if torch is None:
-                raise RuntimeError("torch not available but trying to load torch_tensor")
+                raise RuntimeError(
+                    "torch not available but trying to load torch_tensor"
+                )
             return torch.load(saved["pt"], map_location="cpu")
 
         if kind == "numpy":

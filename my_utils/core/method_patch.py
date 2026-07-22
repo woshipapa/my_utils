@@ -12,7 +12,9 @@ _PATCH_TAG = "_my_utils_method_patch_tag"
 
 
 WrapperFactory = Callable[[Callable[..., Any]], Callable[..., Any]]
-ContextFactory = Callable[[Callable[..., Any], tuple[Any, ...], dict[str, Any]], ContextManager[Any]]
+ContextFactory = Callable[
+    [Callable[..., Any], tuple[Any, ...], dict[str, Any]], ContextManager[Any]
+]
 
 
 @dataclass
@@ -162,4 +164,3 @@ class MethodPatcher:
 
     def clear(self) -> int:
         return self.unpatch_all()
-

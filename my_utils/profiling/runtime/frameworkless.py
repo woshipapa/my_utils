@@ -48,7 +48,9 @@ def create_nsys_capture_backend(synchronize: bool = True) -> tuple[Any, str]:
     Fall back to torch cudart backend when needed.
     """
     try:
-        return CudaProfilerBackend(synchronize=synchronize), "my_utils.CudaProfilerBackend"
+        return CudaProfilerBackend(
+            synchronize=synchronize
+        ), "my_utils.CudaProfilerBackend"
     except Exception as err:
         return TorchCudaProfilerBackend(synchronize=synchronize), (
             f"torch.cuda.cudart (fallback: {type(err).__name__})"
@@ -183,9 +185,13 @@ def build_nsys_launch_prefix(nsys_launch_cfg: Any) -> list[str]:
         f"--capture-range-end={str(getattr(nsys_launch_cfg, 'capture_range_end', 'stop'))}",
     ]
 
-    gpu_metrics_devices = str(getattr(nsys_launch_cfg, "gpu_metrics_devices", "")).strip()
+    gpu_metrics_devices = str(
+        getattr(nsys_launch_cfg, "gpu_metrics_devices", "")
+    ).strip()
     if not gpu_metrics_devices:
-        gpu_metrics_devices = str(getattr(nsys_launch_cfg, "gpu_metrics_device", "")).strip()
+        gpu_metrics_devices = str(
+            getattr(nsys_launch_cfg, "gpu_metrics_device", "")
+        ).strip()
     if gpu_metrics_devices:
         cmd.append(f"--gpu-metrics-devices={gpu_metrics_devices}")
 
@@ -208,11 +214,15 @@ def build_nsys_launch_prefix(nsys_launch_cfg: Any) -> list[str]:
     if capture_range == "nvtx" and nvtx_capture:
         cmd.append(f"--nvtx-capture={nvtx_capture}")
 
-    nvtx_domain_include = str(getattr(nsys_launch_cfg, "nvtx_domain_include", "")).strip()
+    nvtx_domain_include = str(
+        getattr(nsys_launch_cfg, "nvtx_domain_include", "")
+    ).strip()
     if nvtx_domain_include:
         cmd.append(f"--nvtx-domain-include={nvtx_domain_include}")
 
-    nvtx_domain_exclude = str(getattr(nsys_launch_cfg, "nvtx_domain_exclude", "")).strip()
+    nvtx_domain_exclude = str(
+        getattr(nsys_launch_cfg, "nvtx_domain_exclude", "")
+    ).strip()
     if nvtx_domain_exclude:
         cmd.append(f"--nvtx-domain-exclude={nvtx_domain_exclude}")
 

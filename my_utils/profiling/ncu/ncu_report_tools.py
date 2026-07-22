@@ -6,7 +6,7 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import ModuleType
-from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
 
 def _like_match(text: str, pattern: str) -> bool:
@@ -112,11 +112,13 @@ def _nsight_paths_module():
     """
     try:
         from . import nsight_paths
+
         return nsight_paths
     except ImportError:
         pass
     import importlib.util
     import sys
+
     name = "_my_utils_profiling_ncu_nsight_paths"
     module = sys.modules.get(name)
     if module is None:
@@ -301,7 +303,9 @@ class ReportSkill:
     run_fn: Optional[Callable[..., object]] = None
 
 
-def _focus_metrics_summary(focus_metrics: object, top_k: int = 5) -> List[Dict[str, object]]:
+def _focus_metrics_summary(
+    focus_metrics: object, top_k: int = 5
+) -> List[Dict[str, object]]:
     out: List[Dict[str, object]] = []
     if not isinstance(focus_metrics, list):
         return out
@@ -324,7 +328,9 @@ def _rule_row_sort_key(row: Dict[str, object]) -> Tuple[float, int]:
     focus = row.get("focus_metrics", [])
     severity_boost = 0
     if isinstance(focus, list):
-        sev = " ".join(str(x.get("severity", "")).lower() for x in focus if isinstance(x, dict))
+        sev = " ".join(
+            str(x.get("severity", "")).lower() for x in focus if isinstance(x, dict)
+        )
         if "high" in sev:
             severity_boost = 2
         elif "medium" in sev:
@@ -332,7 +338,9 @@ def _rule_row_sort_key(row: Dict[str, object]) -> Tuple[float, int]:
     return (float(speedup), int(severity_boost))
 
 
-def _build_rule_summary(rule_rows: List[Dict[str, object]], *, top_k: int) -> Dict[str, object]:
+def _build_rule_summary(
+    rule_rows: List[Dict[str, object]], *, top_k: int
+) -> Dict[str, object]:
     sorted_rows = sorted(rule_rows, key=_rule_row_sort_key, reverse=True)
     by_rule: Dict[str, int] = {}
     for row in rule_rows:
@@ -341,7 +349,9 @@ def _build_rule_summary(rule_rows: List[Dict[str, object]], *, top_k: int) -> Di
     return {
         "total_rows": len(rule_rows),
         "top_rows": sorted_rows[: int(top_k)],
-        "top_rules": sorted(by_rule.items(), key=lambda x: x[1], reverse=True)[: int(top_k)],
+        "top_rules": sorted(by_rule.items(), key=lambda x: x[1], reverse=True)[
+            : int(top_k)
+        ],
     }
 
 
@@ -438,10 +448,18 @@ def _ratio_signal(
 
 
 def _detect_architecture(metric_stats: List[Dict[str, object]]) -> Dict[str, object]:
-    cc_major = _find_metric_value(metric_stats, ("device__attribute_compute_capability_major",))
-    cc_minor = _find_metric_value(metric_stats, ("device__attribute_compute_capability_minor",))
-    num_sms = _find_metric_value(metric_stats, ("device__attribute_multiprocessor_count",))
-    max_warps = _find_metric_value(metric_stats, ("device__attribute_max_warps_per_multiprocessor",))
+    cc_major = _find_metric_value(
+        metric_stats, ("device__attribute_compute_capability_major",)
+    )
+    cc_minor = _find_metric_value(
+        metric_stats, ("device__attribute_compute_capability_minor",)
+    )
+    num_sms = _find_metric_value(
+        metric_stats, ("device__attribute_multiprocessor_count",)
+    )
+    max_warps = _find_metric_value(
+        metric_stats, ("device__attribute_max_warps_per_multiprocessor",)
+    )
     major = _signal_value(cc_major)
     minor = _signal_value(cc_minor)
     sms = _signal_value(num_sms)
@@ -466,7 +484,9 @@ def _detect_architecture(metric_stats: List[Dict[str, object]]) -> Dict[str, obj
     return {
         "family": family,
         "alias": alias,
-        "compute_capability": f"{int(major)}.{int(minor or 0)}" if major is not None else "",
+        "compute_capability": f"{int(major)}.{int(minor or 0)}"
+        if major is not None
+        else "",
         "num_sms": sms,
         "signals": {
             "compute_capability_major": cc_major,
@@ -535,14 +555,22 @@ def _dimension_entry(
         "signals": present_signals,
         "findings": findings,
         "actions": actions,
-        "status": "needs_attention" if findings else ("covered" if present_signals else "missing_metrics"),
+        "status": "needs_attention"
+        if findings
+        else ("covered" if present_signals else "missing_metrics"),
     }
 
 
-def _build_dimension_report(metric_stats: List[Dict[str, object]], *, top_k: int = 10) -> Dict[str, object]:
+def _build_dimension_report(
+    metric_stats: List[Dict[str, object]], *, top_k: int = 10
+) -> Dict[str, object]:
     architecture = _detect_architecture(metric_stats)
-    grid_size = _find_metric_value(metric_stats, ("launch__grid_size",), token_groups=(("launch", "grid_size"),))
-    block_size = _find_metric_value(metric_stats, ("launch__block_size",), token_groups=(("launch", "block_size"),))
+    grid_size = _find_metric_value(
+        metric_stats, ("launch__grid_size",), token_groups=(("launch", "grid_size"),)
+    )
+    block_size = _find_metric_value(
+        metric_stats, ("launch__block_size",), token_groups=(("launch", "block_size"),)
+    )
     waves_per_sm = _find_metric_value(
         metric_stats,
         ("launch__waves_per_multiprocessor",),
@@ -553,11 +581,21 @@ def _build_dimension_report(metric_stats: List[Dict[str, object]], *, top_k: int
         ("device__attribute_multiprocessor_count",),
         token_groups=(("device", "multiprocessor", "count"),),
     )
-    occ_limit_blocks = _find_metric_value(metric_stats, ("launch__occupancy_limit_blocks",))
-    occ_limit_regs = _find_metric_value(metric_stats, ("launch__occupancy_limit_registers",))
-    occ_limit_smem = _find_metric_value(metric_stats, ("launch__occupancy_limit_shared_mem",))
-    occ_limit_warps = _find_metric_value(metric_stats, ("launch__occupancy_limit_warps",))
-    regs_per_thread = _find_metric_value(metric_stats, ("launch__registers_per_thread",))
+    occ_limit_blocks = _find_metric_value(
+        metric_stats, ("launch__occupancy_limit_blocks",)
+    )
+    occ_limit_regs = _find_metric_value(
+        metric_stats, ("launch__occupancy_limit_registers",)
+    )
+    occ_limit_smem = _find_metric_value(
+        metric_stats, ("launch__occupancy_limit_shared_mem",)
+    )
+    occ_limit_warps = _find_metric_value(
+        metric_stats, ("launch__occupancy_limit_warps",)
+    )
+    regs_per_thread = _find_metric_value(
+        metric_stats, ("launch__registers_per_thread",)
+    )
     smem_per_block = _find_metric_value(metric_stats, ("launch__shared_mem_per_block",))
     theoretical_occ = _find_metric_value(
         metric_stats,
@@ -603,19 +641,39 @@ def _build_dimension_report(metric_stats: List[Dict[str, object]], *, top_k: int
                 "evidence": {"waves_per_sm": waves_per_sm},
             }
         )
-    if theoretical_val is not None and achieved_val is not None and theoretical_val >= 50.0 and achieved_val < 0.6 * theoretical_val:
+    if (
+        theoretical_val is not None
+        and achieved_val is not None
+        and theoretical_val >= 50.0
+        and achieved_val < 0.6 * theoretical_val
+    ):
         occ_findings.append(
             {
                 "category": "achieved_vs_theoretical_gap",
                 "title": "Achieved occupancy is far below theoretical occupancy",
                 "summary": "Look at stall reasons and tail effect; launch limits alone do not explain utilization.",
-                "evidence": {"theoretical_occupancy": theoretical_occ, "achieved_occupancy": achieved_occ},
+                "evidence": {
+                    "theoretical_occupancy": theoretical_occ,
+                    "achieved_occupancy": achieved_occ,
+                },
             }
         )
 
-    sm_cycles_avg = _find_metric_value(metric_stats, ("sm__cycles_active.avg",), token_groups=(("sm", "cycles_active", "avg"),))
-    sm_cycles_max = _find_metric_value(metric_stats, ("sm__cycles_active.max",), token_groups=(("sm", "cycles_active", "max"),))
-    sm_cycles_min = _find_metric_value(metric_stats, ("sm__cycles_active.min",), token_groups=(("sm", "cycles_active", "min"),))
+    sm_cycles_avg = _find_metric_value(
+        metric_stats,
+        ("sm__cycles_active.avg",),
+        token_groups=(("sm", "cycles_active", "avg"),),
+    )
+    sm_cycles_max = _find_metric_value(
+        metric_stats,
+        ("sm__cycles_active.max",),
+        token_groups=(("sm", "cycles_active", "max"),),
+    )
+    sm_cycles_min = _find_metric_value(
+        metric_stats,
+        ("sm__cycles_active.min",),
+        token_groups=(("sm", "cycles_active", "min"),),
+    )
     tail_findings: List[Dict[str, object]] = []
     avg_cycles = _signal_value(sm_cycles_avg)
     max_cycles = _signal_value(sm_cycles_max)
@@ -626,7 +684,10 @@ def _build_dimension_report(metric_stats: List[Dict[str, object]], *, top_k: int
                 "category": "sm_active_cycle_imbalance",
                 "title": "Some SMs run much longer than average",
                 "summary": "This often indicates load imbalance or variable per-CTA work.",
-                "evidence": {"sm_cycles_avg": sm_cycles_avg, "sm_cycles_max": sm_cycles_max},
+                "evidence": {
+                    "sm_cycles_avg": sm_cycles_avg,
+                    "sm_cycles_max": sm_cycles_max,
+                },
             }
         )
     if avg_cycles and min_cycles is not None and min_cycles < 0.5 * avg_cycles:
@@ -635,7 +696,10 @@ def _build_dimension_report(metric_stats: List[Dict[str, object]], *, top_k: int
                 "category": "idle_sm_tail",
                 "title": "Some SMs have much lower active cycles than average",
                 "summary": "The kernel may have a tail effect or uneven block scheduling.",
-                "evidence": {"sm_cycles_avg": sm_cycles_avg, "sm_cycles_min": sm_cycles_min},
+                "evidence": {
+                    "sm_cycles_avg": sm_cycles_avg,
+                    "sm_cycles_min": sm_cycles_min,
+                },
             }
         )
 
@@ -656,7 +720,9 @@ def _build_dimension_report(metric_stats: List[Dict[str, object]], *, top_k: int
         top = stall_ratios[0]
         top_pct = _to_number(top.get("pct_of_pcsamp_samples"))
         top_value = _to_number(top.get("value"))
-        if (top_pct is not None and top_pct >= 20.0) or (sample_count is None and top_value is not None and top_value > 0):
+        if (top_pct is not None and top_pct >= 20.0) or (
+            sample_count is None and top_value is not None and top_value > 0
+        ):
             stall_findings.append(
                 {
                     "category": "dominant_stall",
@@ -691,7 +757,12 @@ def _build_dimension_report(metric_stats: List[Dict[str, object]], *, top_k: int
     tensor_val = _signal_value(tensor_active)
     fma_val = _signal_value(fma_active)
     fp64_val = _signal_value(fp64_active)
-    if tensor_val is not None and tensor_val == 0.0 and fma_val is not None and fma_val >= 30.0:
+    if (
+        tensor_val is not None
+        and tensor_val == 0.0
+        and fma_val is not None
+        and fma_val >= 30.0
+    ):
         tensor_findings.append(
             {
                 "category": "scalar_fma_no_tensor_core",
@@ -741,15 +812,26 @@ def _build_dimension_report(metric_stats: List[Dict[str, object]], *, top_k: int
             "dram__bytes_read.sum.pct_of_peak_sustained_elapsed",
             "dram__throughput.avg.pct_of_peak_sustained_elapsed",
         ),
-        token_groups=(("dram", "read", "pct_of_peak"), ("dram", "throughput", "pct_of_peak")),
+        token_groups=(
+            ("dram", "read", "pct_of_peak"),
+            ("dram", "throughput", "pct_of_peak"),
+        ),
     )
     dram_write_pct = _find_metric_value(
         metric_stats,
         ("dram__bytes_write.sum.pct_of_peak_sustained_elapsed",),
         token_groups=(("dram", "write", "pct_of_peak"),),
     )
-    l1_hit = _find_metric_value(metric_stats, ("l1tex__t_sector_hit_rate.pct",), token_groups=(("l1tex", "hit_rate"),))
-    l2_hit = _find_metric_value(metric_stats, ("lts__t_sector_hit_rate.pct",), token_groups=(("lts", "hit_rate"),))
+    l1_hit = _find_metric_value(
+        metric_stats,
+        ("l1tex__t_sector_hit_rate.pct",),
+        token_groups=(("l1tex", "hit_rate"),),
+    )
+    l2_hit = _find_metric_value(
+        metric_stats,
+        ("lts__t_sector_hit_rate.pct",),
+        token_groups=(("lts", "hit_rate"),),
+    )
     global_ld_sectors = _find_metric_value(
         metric_stats,
         ("l1tex__t_sectors_pipe_lsu_mem_global_op_ld.sum",),
@@ -779,7 +861,9 @@ def _build_dimension_report(metric_stats: List[Dict[str, object]], *, top_k: int
         sectors_per_ld_request = dict(sectors_per_ld_request)
         sectors_per_ld_request["ideal"] = 4.0
         value = _signal_value(sectors_per_ld_request)
-        sectors_per_ld_request["over_ideal"] = value / 4.0 if value is not None else None
+        sectors_per_ld_request["over_ideal"] = (
+            value / 4.0 if value is not None else None
+        )
 
     global_ld_inst = _find_metric_value(
         metric_stats,
@@ -807,12 +891,18 @@ def _build_dimension_report(metric_stats: List[Dict[str, object]], *, top_k: int
     )
     local_ld = _find_metric_value(
         metric_stats,
-        ("smsp__sass_inst_executed_op_local_ld.sum", "smsp__inst_executed_op_local_ld.sum"),
+        (
+            "smsp__sass_inst_executed_op_local_ld.sum",
+            "smsp__inst_executed_op_local_ld.sum",
+        ),
         token_groups=(("local_ld",), ("op_local_ld",)),
     )
     local_st = _find_metric_value(
         metric_stats,
-        ("smsp__sass_inst_executed_op_local_st.sum", "smsp__inst_executed_op_local_st.sum"),
+        (
+            "smsp__sass_inst_executed_op_local_st.sum",
+            "smsp__inst_executed_op_local_st.sum",
+        ),
         token_groups=(("local_st",), ("op_local_st",)),
     )
     memory_findings: List[Dict[str, object]] = []
@@ -842,7 +932,11 @@ def _build_dimension_report(metric_stats: List[Dict[str, object]], *, top_k: int
                 "category": "register_spill",
                 "title": "Local memory load/store instructions detected",
                 "summary": "Local memory operations often indicate register spill.",
-                "evidence": {"local_ld": local_ld, "local_st": local_st, "registers_per_thread": regs_per_thread},
+                "evidence": {
+                    "local_ld": local_ld,
+                    "local_st": local_st,
+                    "registers_per_thread": regs_per_thread,
+                },
             }
         )
 
@@ -888,7 +982,10 @@ def _build_dimension_report(metric_stats: List[Dict[str, object]], *, top_k: int
         _dimension_entry(
             "stall_breakdown",
             "Stall reason breakdown",
-            {"pcsamp_sample_count": pcsamp_samples, "top_stalls": stall_ratios[: int(top_k)]},
+            {
+                "pcsamp_sample_count": pcsamp_samples,
+                "top_stalls": stall_ratios[: int(top_k)],
+            },
             stall_findings,
             [
                 "Use source counters with -lineinfo to map dominant stalls to source lines.",
@@ -898,7 +995,11 @@ def _build_dimension_report(metric_stats: List[Dict[str, object]], *, top_k: int
         _dimension_entry(
             "tensor_core_compute",
             "Tensor core / compute pipeline",
-            {"tensor_active": tensor_active, "fma_active": fma_active, "fp64_active": fp64_active},
+            {
+                "tensor_active": tensor_active,
+                "fma_active": fma_active,
+                "fp64_active": fp64_active,
+            },
             tensor_findings,
             [
                 "For matmul-like work with no tensor activity, consider CUTLASS/cuBLAS or MMA kernels.",
@@ -938,18 +1039,29 @@ def _build_dimension_report(metric_stats: List[Dict[str, object]], *, top_k: int
             ],
         ),
     ]
-    findings = [finding for dim in dimensions for finding in dim.get("findings", []) if isinstance(finding, dict)]
+    findings = [
+        finding
+        for dim in dimensions
+        for finding in dim.get("findings", [])
+        if isinstance(finding, dict)
+    ]
     return {
         "architecture": architecture,
         "dimensions": dimensions,
-        "needs_attention": [dim["key"] for dim in dimensions if dim.get("status") == "needs_attention"],
-        "missing_metric_dimensions": [dim["key"] for dim in dimensions if dim.get("status") == "missing_metrics"],
+        "needs_attention": [
+            dim["key"] for dim in dimensions if dim.get("status") == "needs_attention"
+        ],
+        "missing_metric_dimensions": [
+            dim["key"] for dim in dimensions if dim.get("status") == "missing_metrics"
+        ],
         "top_findings": findings[: int(top_k)],
     }
 
 
 def _build_metric_coverage(metric_stats: List[Dict[str, object]]) -> Dict[str, object]:
-    metric_names = [str(row.get("metric_name", "")) for row in metric_stats if isinstance(row, dict)]
+    metric_names = [
+        str(row.get("metric_name", "")) for row in metric_stats if isinstance(row, dict)
+    ]
 
     def has_any(groups: Sequence[Sequence[str]]) -> bool:
         for name in metric_names:
@@ -961,12 +1073,18 @@ def _build_metric_coverage(metric_stats: List[Dict[str, object]]) -> Dict[str, o
     categories: List[Tuple[str, Sequence[Sequence[str]], str]] = [
         (
             "speed_of_light_compute",
-            (("sm", "throughput", "pct_of_peak"), ("smsp", "throughput", "pct_of_peak")),
+            (
+                ("sm", "throughput", "pct_of_peak"),
+                ("smsp", "throughput", "pct_of_peak"),
+            ),
             "SM throughput vs peak (compute saturation)",
         ),
         (
             "speed_of_light_memory",
-            (("dram", "throughput", "pct_of_peak"), ("memory", "throughput", "pct_of_peak")),
+            (
+                ("dram", "throughput", "pct_of_peak"),
+                ("memory", "throughput", "pct_of_peak"),
+            ),
             "DRAM throughput vs peak (memory bandwidth saturation)",
         ),
         (
@@ -1054,11 +1172,18 @@ def _build_metric_coverage(metric_stats: List[Dict[str, object]]) -> Dict[str, o
     }
 
 
-def _build_rule_findings(rule_rows: List[Dict[str, object]], *, top_k: int) -> List[Dict[str, object]]:
+def _build_rule_findings(
+    rule_rows: List[Dict[str, object]], *, top_k: int
+) -> List[Dict[str, object]]:
     findings: List[Dict[str, object]] = []
     sorted_rows = sorted(rule_rows, key=_rule_row_sort_key, reverse=True)
     for row in sorted_rows[: int(top_k)]:
-        title = str(row.get("rule_message_title") or row.get("rule_name") or row.get("rule_identifier") or "")
+        title = str(
+            row.get("rule_message_title")
+            or row.get("rule_name")
+            or row.get("rule_identifier")
+            or ""
+        )
         message = str(row.get("rule_message") or "")
         findings.append(
             {
@@ -1069,14 +1194,18 @@ def _build_rule_findings(rule_rows: List[Dict[str, object]], *, top_k: int) -> L
                 "kernel_name": str(row.get("kernel_name") or ""),
                 "speedup_estimate": _to_number(row.get("speedup")),
                 "speedup_type": str(row.get("speedup_type") or ""),
-                "focus_metrics": _focus_metrics_summary(row.get("focus_metrics", []), top_k=3),
+                "focus_metrics": _focus_metrics_summary(
+                    row.get("focus_metrics", []), top_k=3
+                ),
                 "confidence": "high",
             }
         )
     return findings
 
 
-def _build_heuristic_findings(metric_stats: List[Dict[str, object]], *, top_k: int) -> Dict[str, object]:
+def _build_heuristic_findings(
+    metric_stats: List[Dict[str, object]], *, top_k: int
+) -> Dict[str, object]:
     sm = _find_signal(
         metric_stats,
         (
@@ -1161,19 +1290,35 @@ def _build_heuristic_findings(metric_stats: List[Dict[str, object]], *, top_k: i
     occ_val = _to_number(occ.get("value")) if isinstance(occ, dict) else None
     issue_val = _to_number(issue.get("value")) if isinstance(issue, dict) else None
     ideal_l2_txn_global_val = (
-        _to_number(ideal_l2_txn_global.get("value")) if isinstance(ideal_l2_txn_global, dict) else None
+        _to_number(ideal_l2_txn_global.get("value"))
+        if isinstance(ideal_l2_txn_global, dict)
+        else None
     )
     actual_l2_txn_global_val = (
-        _to_number(actual_l2_txn_global.get("value")) if isinstance(actual_l2_txn_global, dict) else None
+        _to_number(actual_l2_txn_global.get("value"))
+        if isinstance(actual_l2_txn_global, dict)
+        else None
     )
     branch_divergence_val = (
-        _to_number(branch_divergence.get("value")) if isinstance(branch_divergence, dict) else None
+        _to_number(branch_divergence.get("value"))
+        if isinstance(branch_divergence, dict)
+        else None
     )
     shared_bank_conflict_val = (
-        _to_number(shared_bank_conflict.get("value")) if isinstance(shared_bank_conflict, dict) else None
+        _to_number(shared_bank_conflict.get("value"))
+        if isinstance(shared_bank_conflict, dict)
+        else None
     )
-    roofline_intensity_val = _to_number(roofline_intensity.get("value")) if isinstance(roofline_intensity, dict) else None
-    tensor_usage_val = _to_number(tensor_usage.get("value")) if isinstance(tensor_usage, dict) else None
+    roofline_intensity_val = (
+        _to_number(roofline_intensity.get("value"))
+        if isinstance(roofline_intensity, dict)
+        else None
+    )
+    tensor_usage_val = (
+        _to_number(tensor_usage.get("value"))
+        if isinstance(tensor_usage, dict)
+        else None
+    )
 
     if sm_val is not None and dram_val is not None:
         if dram_val >= 70.0 and sm_val < 70.0:
@@ -1328,7 +1473,9 @@ def _build_bottleneck_report(
     coverage = _build_metric_coverage(metric_stats)
     dimension_report = _build_dimension_report(metric_stats, top_k=max(int(top_k), 5))
     rule_findings = _build_rule_findings(rule_rows, top_k=max(int(top_k), 5))
-    heuristic_payload = _build_heuristic_findings(metric_stats, top_k=max(int(top_k), 5))
+    heuristic_payload = _build_heuristic_findings(
+        metric_stats, top_k=max(int(top_k), 5)
+    )
     heuristic_findings = list(heuristic_payload.get("findings", []))
 
     top_bottlenecks: List[Dict[str, object]] = []
@@ -1427,7 +1574,9 @@ class NcuReportSkillEngine:
         params = self._resolve_params(skill, kwargs)
         return skill.run_fn(**params)
 
-    def _resolve_params(self, skill: ReportSkill, kwargs: Dict[str, Any]) -> Dict[str, Any]:
+    def _resolve_params(
+        self, skill: ReportSkill, kwargs: Dict[str, Any]
+    ) -> Dict[str, Any]:
         out: Dict[str, Any] = {}
         for p in skill.params:
             if p.name in kwargs:
@@ -1435,7 +1584,9 @@ class NcuReportSkillEngine:
             elif p.default is not None:
                 value = p.default
             elif p.required:
-                raise ValueError(f"skill '{skill.name}' missing required param '{p.name}'")
+                raise ValueError(
+                    f"skill '{skill.name}' missing required param '{p.name}'"
+                )
             else:
                 continue
             t = str(p.type).lower()
@@ -1450,7 +1601,9 @@ class NcuReportSkillEngine:
             out[p.name] = value
         return out
 
-    def _filtered_records(self, *, metric_like: str = "%", kernel_like: str = "%") -> List[NcuReportMetricRecord]:
+    def _filtered_records(
+        self, *, metric_like: str = "%", kernel_like: str = "%"
+    ) -> List[NcuReportMetricRecord]:
         out: List[NcuReportMetricRecord] = []
         for rec in self._records:
             if not _like_match(rec.metric_name, metric_like):
@@ -1460,7 +1613,9 @@ class NcuReportSkillEngine:
             out.append(rec)
         return out
 
-    def _skill_summary(self, *, metric_like: str = "%", kernel_like: str = "%", top_k: int = 20) -> Dict[str, object]:
+    def _skill_summary(
+        self, *, metric_like: str = "%", kernel_like: str = "%", top_k: int = 20
+    ) -> Dict[str, object]:
         rows = self._filtered_records(metric_like=metric_like, kernel_like=kernel_like)
         by_metric: Dict[str, int] = {}
         by_kernel: Dict[str, int] = {}
@@ -1491,18 +1646,26 @@ class NcuReportSkillEngine:
                 "p90": _percentile(values_sorted, 90) if values else None,
                 "p99": _percentile(values_sorted, 99) if values else None,
             },
-            "top_metrics": sorted(by_metric.items(), key=lambda x: x[1], reverse=True)[: int(top_k)],
-            "top_kernels": sorted(by_kernel.items(), key=lambda x: x[1], reverse=True)[: int(top_k)],
+            "top_metrics": sorted(by_metric.items(), key=lambda x: x[1], reverse=True)[
+                : int(top_k)
+            ],
+            "top_kernels": sorted(by_kernel.items(), key=lambda x: x[1], reverse=True)[
+                : int(top_k)
+            ],
         }
 
-    def _skill_per_metric_stats(self, *, metric_like: str = "%", kernel_like: str = "%") -> List[Dict[str, object]]:
+    def _skill_per_metric_stats(
+        self, *, metric_like: str = "%", kernel_like: str = "%"
+    ) -> List[Dict[str, object]]:
         rows = self._filtered_records(metric_like=metric_like, kernel_like=kernel_like)
         grouped: Dict[str, List[NcuReportMetricRecord]] = {}
         for rec in rows:
             grouped.setdefault(rec.metric_name, []).append(rec)
         out: List[Dict[str, object]] = []
         for metric_name, recs in grouped.items():
-            values = [float(r.numeric_value) for r in recs if r.numeric_value is not None]
+            values = [
+                float(r.numeric_value) for r in recs if r.numeric_value is not None
+            ]
             values_sorted = sorted(values)
             out.append(
                 {
@@ -1588,7 +1751,9 @@ class NcuReportSkillEngine:
             )
         return out
 
-    def _rule_payload(self, *, kernel_like: str = "%", top_k: int = 200) -> Dict[str, object]:
+    def _rule_payload(
+        self, *, kernel_like: str = "%", top_k: int = 200
+    ) -> Dict[str, object]:
         rows = load_ncu_report_rule_rows(
             self.report_path,
             kernel_like=kernel_like,
@@ -1603,11 +1768,17 @@ class NcuReportSkillEngine:
             "top_rules": summary["top_rules"],
         }
 
-    def _skill_rule_results(self, *, kernel_like: str = "%", top_k: int = 200) -> Dict[str, object]:
+    def _skill_rule_results(
+        self, *, kernel_like: str = "%", top_k: int = 200
+    ) -> Dict[str, object]:
         return self._rule_payload(kernel_like=kernel_like, top_k=top_k)
 
     def _skill_source_attribution(
-        self, *, kernel_like: str = "%", top_k: int = 15, metric_like: str = "",
+        self,
+        *,
+        kernel_like: str = "%",
+        top_k: int = 15,
+        metric_like: str = "",
     ) -> Dict[str, object]:
         """Attribute stalls and instruction counts to source lines.
 
@@ -1680,10 +1851,14 @@ class NcuReportSkillEngine:
                 pm_validity = check_pm_sampling_validity(
                     cc_major=_metric("device__attribute_compute_capability_major"),
                     cc_minor=_metric("device__attribute_compute_capability_minor"),
-                    interval=(_metric("profiler__pmsampler_interval_time")
-                              or _metric("profiler__pmsampler_interval_cycles")),
-                    duration=(_metric("gpu__time_duration.sum")
-                              or _metric("gpc__cycles_elapsed.max")),
+                    interval=(
+                        _metric("profiler__pmsampler_interval_time")
+                        or _metric("profiler__pmsampler_interval_cycles")
+                    ),
+                    duration=(
+                        _metric("gpu__time_duration.sum")
+                        or _metric("gpc__cycles_elapsed.max")
+                    ),
                     pass_groups=_metric("profiler__pmsampler_pass_groups"),
                 )
 
@@ -1709,7 +1884,8 @@ class NcuReportSkillEngine:
                     }
                 else:
                     entry["stall_attribution"] = attribute_stalls_to_source(
-                        action, top_k=int(top_k))
+                        action, top_k=int(top_k)
+                    )
 
                 if "pc_sampling_timeline" in blocked:
                     entry["timeline"] = {
@@ -1721,7 +1897,8 @@ class NcuReportSkillEngine:
 
                 if metric_like:
                     entry["metric_attribution"] = correlate_metric_to_source(
-                        action, metric_like, top_k=int(top_k))
+                        action, metric_like, top_k=int(top_k)
+                    )
 
                 out.append(entry)
 
@@ -1733,7 +1910,9 @@ class NcuReportSkillEngine:
                 "kernel has no hot lines. A bare `ncu` run uses the `basic` set, which "
                 "does not include SourceCounters; use --set full or "
                 "--section SourceCounters, and build with -lineinfo."
-                if not any(k["availability"]["source_correlation_possible"] for k in out)
+                if not any(
+                    k["availability"]["source_correlation_possible"] for k in out
+                )
                 else ""
             ),
         }
@@ -1745,7 +1924,9 @@ class NcuReportSkillEngine:
         kernel_like: str = "%",
         top_k: int = 10,
     ) -> Dict[str, object]:
-        metric_stats = self._skill_per_metric_stats(metric_like=metric_like, kernel_like=kernel_like)
+        metric_stats = self._skill_per_metric_stats(
+            metric_like=metric_like, kernel_like=kernel_like
+        )
         all_rule_rows = load_ncu_report_rule_rows(
             self.report_path,
             kernel_like=kernel_like,
@@ -1768,7 +1949,9 @@ class NcuReportSkillEngine:
         kernel_like: str = "%",
         top_k: int = 10,
     ) -> Dict[str, object]:
-        metric_stats = self._skill_per_metric_stats(metric_like=metric_like, kernel_like=kernel_like)
+        metric_stats = self._skill_per_metric_stats(
+            metric_like=metric_like, kernel_like=kernel_like
+        )
         return {
             "report_path": self.report_path,
             "filters": {"metric_like": metric_like, "kernel_like": kernel_like},
@@ -1783,8 +1966,12 @@ class NcuReportSkillEngine:
                 description="Summarize parsed metric records and value stats.",
                 category="overview",
                 params=[
-                    SkillParam("metric_like", "metric LIKE pattern (%/_/*)", "str", False, "%"),
-                    SkillParam("kernel_like", "kernel LIKE pattern (%/_/*)", "str", False, "%"),
+                    SkillParam(
+                        "metric_like", "metric LIKE pattern (%/_/*)", "str", False, "%"
+                    ),
+                    SkillParam(
+                        "kernel_like", "kernel LIKE pattern (%/_/*)", "str", False, "%"
+                    ),
                     SkillParam("top_k", "top rows limit", "int", False, 20),
                 ],
                 run_fn=self._skill_summary,
@@ -1809,7 +1996,9 @@ class NcuReportSkillEngine:
                     SkillParam("metric_like", "metric LIKE pattern", "str", False, "%"),
                     SkillParam("kernel_like", "kernel LIKE pattern", "str", False, "%"),
                     SkillParam("top_k", "top rows limit", "int", False, 20),
-                    SkillParam("score", "score mode: sum|avg|max|min", "str", False, "sum"),
+                    SkillParam(
+                        "score", "score mode: sum|avg|max|min", "str", False, "sum"
+                    ),
                 ],
                 run_fn=self._skill_top_kernels,
             ),
@@ -1847,7 +2036,9 @@ class NcuReportSkillEngine:
                 params=[
                     SkillParam("kernel_like", "kernel name filter", "str", False, "%"),
                     SkillParam("top_k", "max source lines", "int", False, 15),
-                    SkillParam("metric_like", "extra metric to attribute", "str", False, ""),
+                    SkillParam(
+                        "metric_like", "extra metric to attribute", "str", False, ""
+                    ),
                 ],
                 run_fn=self._skill_source_attribution,
             ),
@@ -1939,6 +2130,7 @@ def _metric_reader(action: Any):
     `_maybe_call` takes no call arguments and `metric_by_name` needs one, so the
     attribute is read directly.
     """
+
     def read(key: str) -> Optional[float]:
         getter = getattr(action, "metric_by_name", None)
         if getter is None:
@@ -1961,7 +2153,11 @@ def _metric_reader(action: Any):
 
 
 def _rule_rows_for_action(
-    action: Any, *, range_idx: int, action_idx: int, kernel_name: str,
+    action: Any,
+    *,
+    range_idx: int,
+    action_idx: int,
+    kernel_name: str,
 ) -> List[Dict[str, object]]:
     """Normalise one action's shipped rule results into flat rows."""
     raw_rules = _maybe_call(action, "rule_results_as_dicts", None)
@@ -1985,27 +2181,33 @@ def _rule_rows_for_action(
         if not isinstance(speedup, dict):
             speedup = {}
         message_type = rule_message.get("message_type", rule_message.get("type", ""))
-        rows.append({
-            "range_index": range_idx,
-            "action_index": action_idx,
-            "kernel_name": kernel_name,
-            "rule_index": rule_idx,
-            "rule_identifier": str(item.get("rule_identifier", "") or ""),
-            "rule_name": str(item.get("name", "") or ""),
-            "section_identifier": str(item.get("section_identifier", "") or ""),
-            "parent_weights": item.get("parent_weights", {}),
-            "rule_message_title": str(rule_message.get("title", "") or ""),
-            "rule_message_type": _enum_to_text(message_type),
-            "rule_message": str(rule_message.get("message", "") or ""),
-            "speedup_type": _enum_to_text(speedup.get("type", "")),
-            "speedup": _to_number(speedup.get("speedup")),
-            "focus_metrics": _focus_metrics_summary(item.get("focus_metrics", []), top_k=20),
-        })
+        rows.append(
+            {
+                "range_index": range_idx,
+                "action_index": action_idx,
+                "kernel_name": kernel_name,
+                "rule_index": rule_idx,
+                "rule_identifier": str(item.get("rule_identifier", "") or ""),
+                "rule_name": str(item.get("name", "") or ""),
+                "section_identifier": str(item.get("section_identifier", "") or ""),
+                "parent_weights": item.get("parent_weights", {}),
+                "rule_message_title": str(rule_message.get("title", "") or ""),
+                "rule_message_type": _enum_to_text(message_type),
+                "rule_message": str(rule_message.get("message", "") or ""),
+                "speedup_type": _enum_to_text(speedup.get("type", "")),
+                "speedup": _to_number(speedup.get("speedup")),
+                "focus_metrics": _focus_metrics_summary(
+                    item.get("focus_metrics", []), top_k=20
+                ),
+            }
+        )
     return rows
 
 
 def _metrics_for_action(
-    action: Any, *, metric_like: str = "%",
+    action: Any,
+    *,
+    metric_like: str = "%",
 ) -> Tuple[Dict[str, float], Dict[str, str]]:
     """Every metric this action carries, split into numeric and string-valued.
 
@@ -2070,7 +2272,7 @@ def resolve_sol_breakdown(
     for name, listing in (string_metrics or {}).items():
         if not name.startswith("breakdown:"):
             continue
-        target = name[len("breakdown:"):]
+        target = name[len("breakdown:") :]
         parts = [p.strip() for p in str(listing).split(",") if p.strip()]
         resolved = [(p, numeric_metrics[p]) for p in parts if p in numeric_metrics]
         if not resolved:
@@ -2093,7 +2295,10 @@ def resolve_sol_breakdown(
 
 def _source_for_action(action: Any, *, top_k: int = 8) -> Dict[str, object]:
     """Source attribution for one action, gated on sampling validity."""
-    from .sampling_validity import check_pc_sampling_validity, check_pm_sampling_validity
+    from .sampling_validity import (
+        check_pc_sampling_validity,
+        check_pm_sampling_validity,
+    )
     from .source_correlation import (
         analyze_pm_sampling,
         attribute_stalls_to_source,
@@ -2119,10 +2324,13 @@ def _source_for_action(action: Any, *, top_k: int = 8) -> Dict[str, object]:
         "pm_sampling_validity": check_pm_sampling_validity(
             cc_major=read("device__attribute_compute_capability_major"),
             cc_minor=read("device__attribute_compute_capability_minor"),
-            interval=(read("profiler__pmsampler_interval_time")
-                      or read("profiler__pmsampler_interval_cycles")),
-            duration=(read("gpu__time_duration.sum")
-                      or read("gpc__cycles_elapsed.max")),
+            interval=(
+                read("profiler__pmsampler_interval_time")
+                or read("profiler__pmsampler_interval_cycles")
+            ),
+            duration=(
+                read("gpu__time_duration.sum") or read("gpc__cycles_elapsed.max")
+            ),
             pass_groups=read("profiler__pmsampler_pass_groups"),
         ),
     }
@@ -2203,8 +2411,11 @@ def walk_report_once(
                 metrics=numeric,
                 string_metrics=text,
                 rules=_rule_rows_for_action(
-                    action, range_idx=range_idx, action_idx=action_idx,
-                    kernel_name=kernel_name),
+                    action,
+                    range_idx=range_idx,
+                    action_idx=action_idx,
+                    kernel_name=kernel_name,
+                ),
                 source=source,
             )
     return bundles
@@ -2223,10 +2434,14 @@ def _collect_source_attribution(
     data from :func:`walk_report_once` without a second traversal.
     """
     bundles = walk_report_once(
-        report_path, kernel_like=kernel_like, include_source=True,
-        source_top_k=top_k, ncu_report_module=ncu_report_module,
+        report_path,
+        kernel_like=kernel_like,
+        include_source=True,
+        source_top_k=top_k,
+        ncu_report_module=ncu_report_module,
     )
     return {key: b.source for key, b in bundles.items() if b.source is not None}
+
 
 def diagnose_ncu_report(
     report_path: str,
@@ -2305,14 +2520,19 @@ def diagnose_ncu_report(
         # a Speed-of-Light rollup maxes over.
         diagnosis["string_metrics"] = dict(bundle.string_metrics)
         diagnosis["sol_breakdown"] = resolve_sol_breakdown(
-            bundle.string_metrics, metrics)
+            bundle.string_metrics, metrics
+        )
         if scan["findings"]:
             merged = list(diagnosis.get("findings") or [])
             merged.extend(f.to_dict() for f in scan["findings"])
-            merged.sort(key=lambda f: (
-                {"high": 0, "medium": 1, "low": 2, "info": 3}.get(f.get("severity"), 9),
-                -(f.get("speedup_ceiling") or 1.0),
-            ))
+            merged.sort(
+                key=lambda f: (
+                    {"high": 0, "medium": 1, "low": 2, "info": 3}.get(
+                        f.get("severity"), 9
+                    ),
+                    -(f.get("speedup_ceiling") or 1.0),
+                )
+            )
             diagnosis["findings"] = merged[: int(findings_per_kernel)]
 
         if bundle.source is not None:
@@ -2402,28 +2622,38 @@ def diagnose_result_to_markdown(payload: Dict[str, object]) -> str:
             framework = kernel.get("kernel_framework") or "-"
             arch = kernel.get("architecture", {})
             arch_alias = arch.get("alias", "?") if isinstance(arch, dict) else "?"
-            lines.append(f"- category: `{category}` | framework: `{framework}` | arch: `{arch_alias}`")
+            lines.append(
+                f"- category: `{category}` | framework: `{framework}` | arch: `{arch_alias}`"
+            )
             lines.append(f"- **verdict: {kernel.get('verdict', 'unknown')}**")
 
             sections = kernel.get("sections", {})
-            bottleneck = sections.get("bottleneck", {}) if isinstance(sections, dict) else {}
+            bottleneck = (
+                sections.get("bottleneck", {}) if isinstance(sections, dict) else {}
+            )
             if isinstance(bottleneck, dict) and bottleneck.get("explanation"):
                 lines.append(f"- {bottleneck['explanation']}")
                 if bottleneck.get("next_section"):
                     lines.append(f"- read next: `{bottleneck['next_section']}`")
 
-            roofline = sections.get("roofline", {}) if isinstance(sections, dict) else {}
+            roofline = (
+                sections.get("roofline", {}) if isinstance(sections, dict) else {}
+            )
             if isinstance(roofline, dict) and roofline.get("arithmetic_intensity"):
                 pieces = [f"AI = {roofline['arithmetic_intensity']:.1f} FLOP/byte"]
                 if roofline.get("achieved_tflops"):
                     pieces.append(f"achieved {roofline['achieved_tflops']:.1f} TFLOP/s")
                 if roofline.get("attainable_tflops"):
-                    pieces.append(f"ceiling {roofline['attainable_tflops']:.1f} TFLOP/s")
+                    pieces.append(
+                        f"ceiling {roofline['attainable_tflops']:.1f} TFLOP/s"
+                    )
                 if roofline.get("roofline_side") not in (None, "unknown"):
                     pieces.append(str(roofline["roofline_side"]))
                 lines.append(f"- roofline: {', '.join(pieces)}")
                 if roofline.get("flops_undercounted"):
-                    lines.append(f"  - NOTE: {roofline.get('flops_undercount_reason', '')}")
+                    lines.append(
+                        f"  - NOTE: {roofline.get('flops_undercount_reason', '')}"
+                    )
 
             stalls = sections.get("stalls", {}) if isinstance(sections, dict) else {}
             if isinstance(stalls, dict) and stalls.get("dominant_bucket"):
@@ -2456,9 +2686,9 @@ def diagnose_result_to_markdown(payload: Dict[str, object]) -> str:
                         for row in rows[:8]:
                             short_path = str(row.get("file_name") or "?").split("/")[-1]
                             lines.append(
-                                f"| `{short_path}:{row.get('line','?')}` "
+                                f"| `{short_path}:{row.get('line', '?')}` "
                                 f"| {row.get('samples', 0)} "
-                                f"| {row.get('dominant_stall_reason','')} "
+                                f"| {row.get('dominant_stall_reason', '')} "
                                 f"| `{(row.get('source_text') or '')[:60]}` |"
                             )
                         lines.append("")
@@ -2467,7 +2697,9 @@ def diagnose_result_to_markdown(payload: Dict[str, object]) -> str:
                             lines.append(f"_{note}_")
                             lines.append("")
                 elif isinstance(attribution, dict) and attribution.get("reason"):
-                    lines.append(f"- source attribution unavailable: {attribution['reason']}")
+                    lines.append(
+                        f"- source attribution unavailable: {attribution['reason']}"
+                    )
                     lines.append("")
                     # Only when attribution actually failed. `source_availability`
                     # reports on source-correlated *metrics*; stall attribution
@@ -2476,7 +2708,9 @@ def diagnose_result_to_markdown(payload: Dict[str, object]) -> str:
                     # source data.
                     availability = source.get("availability", {})
                     if isinstance(availability, dict):
-                        for reason in (availability.get("reasons_unavailable") or [])[:2]:
+                        for reason in (availability.get("reasons_unavailable") or [])[
+                            :2
+                        ]:
                             lines.append(f"  - {reason}")
                         if availability.get("reasons_unavailable"):
                             lines.append("")
@@ -2484,8 +2718,11 @@ def diagnose_result_to_markdown(payload: Dict[str, object]) -> str:
                 # --- PC sampling: which instruction, and is the data sound ----
                 validity = source.get("sampling_validity", {})
                 if isinstance(validity, dict) and validity.get("checked"):
-                    state = ("usable" if validity.get("usable") else
-                             "NOT usable -- see blocked conclusions")
+                    state = (
+                        "usable"
+                        if validity.get("usable")
+                        else "NOT usable -- see blocked conclusions"
+                    )
                     lines.append(f"### PC sampling ({state})")
                     lines.append("")
                     lines.append(
@@ -2494,11 +2731,14 @@ def diagnose_result_to_markdown(payload: Dict[str, object]) -> str:
                     )
                     for issue in (validity.get("issues") or [])[:3]:
                         lines.append(
-                            f"- **{issue.get('title','')}** -- {issue.get('remedy','')}")
+                            f"- **{issue.get('title', '')}** -- {issue.get('remedy', '')}"
+                        )
                     if validity.get("blocked_conclusions"):
                         lines.append(
                             "- blocked: `"
-                            + "`, `".join(validity["blocked_conclusions"]) + "`")
+                            + "`, `".join(validity["blocked_conclusions"])
+                            + "`"
+                        )
                     lines.append("")
 
                 instructions = source.get("top_instructions", {})
@@ -2523,12 +2763,12 @@ def diagnose_result_to_markdown(payload: Dict[str, object]) -> str:
                             lines.append(
                                 f"| {row.get('samples', 0)} "
                                 f"({float(row.get('share') or 0) * 100:.1f}%) "
-                                f"| {row.get('dominant_stall_reason','')} "
+                                f"| {row.get('dominant_stall_reason', '')} "
                                 f"| `{(row.get('sass') or '')[:44]}` "
                                 f"| `{where}` |"
                             )
                         lines.append("")
-                        lines.append(f"_{instructions.get('note','')}_")
+                        lines.append(f"_{instructions.get('note', '')}_")
                         lines.append("")
 
                 # --- PM sampling: when, not where -----------------------------
@@ -2540,8 +2780,11 @@ def diagnose_result_to_markdown(payload: Dict[str, object]) -> str:
                     lines.append(
                         f"- {pm.get('bucket_count', 0)} time buckets"
                         + (f" at {interval:.0f} ns" if interval else "")
-                        + (f", spanning {pm.get('sampled_span_ns', 0) / 1000.0:.1f} us"
-                           if pm.get("sampled_span_ns") else "")
+                        + (
+                            f", spanning {pm.get('sampled_span_ns', 0) / 1000.0:.1f} us"
+                            if pm.get("sampled_span_ns")
+                            else ""
+                        )
                     )
                     window = pm.get("active_window_ns")
                     if window:
@@ -2559,13 +2802,14 @@ def diagnose_result_to_markdown(payload: Dict[str, object]) -> str:
                     lines.append("")
                     lines.append(
                         "| pass | metric | peak (1 bucket) | mean over active "
-                        "window | non-zero share | mean over whole session |")
+                        "window | non-zero share | mean over whole session |"
+                    )
                     lines.append("|---|---|---|---|---|---|")
                     for entry in (pm.get("series") or [])[:8]:
                         unit = "%" if entry.get("is_percentage") else ""
                         lines.append(
                             f"| {entry.get('pass_group', 0)} "
-                            f"| `{entry.get('metric','')[:46]}` "
+                            f"| `{entry.get('metric', '')[:46]}` "
                             f"| {entry.get('peak', 0):.1f}{unit} "
                             f"| {entry.get('mean_in_active_window', 0):.1f}{unit} "
                             f"| {float(entry.get('duty_cycle') or 0) * 100:.0f}% "
@@ -2579,7 +2823,7 @@ def diagnose_result_to_markdown(payload: Dict[str, object]) -> str:
                         lines.append(f"**{pm['cross_pass_warning']}**")
                         lines.append("")
                     if pm.get("bursty"):
-                        lines.append(f"**{pm.get('note','')}**")
+                        lines.append(f"**{pm.get('note', '')}**")
                         lines.append("")
                         lines.append(
                             "_A unit that peaks high and averages low is not "
@@ -2587,8 +2831,10 @@ def diagnose_result_to_markdown(payload: Dict[str, object]) -> str:
                             "keep it busy, not to make it faster._"
                         )
                         lines.append("")
-                    if not all(e.get("is_percentage") for e in (pm.get("series") or [])):
-                        lines.append(f"_{pm.get('counts_note','')}_")
+                    if not all(
+                        e.get("is_percentage") for e in (pm.get("series") or [])
+                    ):
+                        lines.append(f"_{pm.get('counts_note', '')}_")
                         lines.append("")
                 elif isinstance(pm, dict) and pm.get("reason"):
                     lines.append(f"- PM sampling unavailable: {pm['reason']}")
@@ -2600,24 +2846,34 @@ def diagnose_result_to_markdown(payload: Dict[str, object]) -> str:
                 lines.append("### Signal to source")
                 lines.append("")
                 for item in linked[:6]:
-                    lines.append(f"**{item.get('finding_title','')}**")
+                    lines.append(f"**{item.get('finding_title', '')}**")
                     # Show what carried samples, not what the category declares.
-                    reasons = ", ".join(item.get("contributing_stall_reasons")
-                                        or item.get("matched_on_stall_reasons") or [])
+                    reasons = ", ".join(
+                        item.get("contributing_stall_reasons")
+                        or item.get("matched_on_stall_reasons")
+                        or []
+                    )
                     absent = item.get("declared_but_absent") or []
                     lines.append(
                         f"- correlated via `{reasons}`"
-                        + (f" (`{', '.join(absent)}` carried no samples in this kernel)"
-                           if absent else "")
-                        + (f" (plus `{', '.join(item['contributing_below_cut'])}` on lines "
-                           "below the cut)" if item.get("contributing_below_cut") else "")
+                        + (
+                            f" (`{', '.join(absent)}` carried no samples in this kernel)"
+                            if absent
+                            else ""
+                        )
+                        + (
+                            f" (plus `{', '.join(item['contributing_below_cut'])}` on lines "
+                            "below the cut)"
+                            if item.get("contributing_below_cut")
+                            else ""
+                        )
                         + " "
-                        f"({item.get('concentration','')}, "
+                        f"({item.get('concentration', '')}, "
                         f"{float(item.get('share_explained') or 0.0) * 100:.0f}% of those samples)"
                     )
                     for row in item.get("source_lines", [])[:3]:
                         lines.append(
-                            f"  - `{row.get('file_name','?')}:{row.get('line','?')}` "
+                            f"  - `{row.get('file_name', '?')}:{row.get('line', '?')}` "
                             f"{row.get('samples', 0)} samples "
                             f"({float(row.get('share_of_reason') or 0.0) * 100:.0f}%) "
                             f"`{(row.get('source_text') or '')[:52]}`"
@@ -2637,7 +2893,9 @@ def diagnose_result_to_markdown(payload: Dict[str, object]) -> str:
                     if not isinstance(finding, dict):
                         continue
                     ceiling = finding.get("speedup_ceiling")
-                    ceiling_text = f" _(up to {float(ceiling):.2f}x)_" if ceiling else ""
+                    ceiling_text = (
+                        f" _(up to {float(ceiling):.2f}x)_" if ceiling else ""
+                    )
                     lines.append(
                         f"- **[{finding.get('severity', 'info')}]** {finding.get('title', '')}{ceiling_text}"
                     )
@@ -2646,8 +2904,10 @@ def diagnose_result_to_markdown(payload: Dict[str, object]) -> str:
                         lines.append(f"  - fix: {action}")
                 lines.append("")
             else:
-                lines.append("_No findings: this kernel looks healthy, or the report lacks the "
-                             "metrics needed to judge it._")
+                lines.append(
+                    "_No findings: this kernel looks healthy, or the report lacks the "
+                    "metrics needed to judge it._"
+                )
                 lines.append("")
 
     return "\n".join(lines)
@@ -2703,7 +2963,9 @@ def load_ncu_report_rule_rows(
                     speedup = {}
                 focus_metrics = item.get("focus_metrics", [])
                 focus_summary = _focus_metrics_summary(focus_metrics, top_k=20)
-                message_type = rule_message.get("message_type", rule_message.get("type", ""))
+                message_type = rule_message.get(
+                    "message_type", rule_message.get("type", "")
+                )
 
                 out.append(
                     {
@@ -2713,7 +2975,9 @@ def load_ncu_report_rule_rows(
                         "rule_index": rule_idx,
                         "rule_identifier": str(item.get("rule_identifier", "") or ""),
                         "rule_name": str(item.get("name", "") or ""),
-                        "section_identifier": str(item.get("section_identifier", "") or ""),
+                        "section_identifier": str(
+                            item.get("section_identifier", "") or ""
+                        ),
                         "parent_weights": item.get("parent_weights", {}),
                         "rule_message_title": str(rule_message.get("title", "") or ""),
                         "rule_message_type": _enum_to_text(message_type),
@@ -2738,14 +3002,24 @@ def analyze_ncu_report(
 ) -> Dict[str, object]:
     engine = NcuReportSkillEngine(report_path, ncu_report_module=ncu_report_module)
     metric_pattern = str(metric_like or "").strip() or "%"
-    summary = engine.run_skill("summary", metric_like=metric_pattern, kernel_like=kernel_like, top_k=top_k)
-    per_metric_stats = engine.run_skill("per_metric_stats", metric_like=metric_pattern, kernel_like=kernel_like)
+    summary = engine.run_skill(
+        "summary", metric_like=metric_pattern, kernel_like=kernel_like, top_k=top_k
+    )
+    per_metric_stats = engine.run_skill(
+        "per_metric_stats", metric_like=metric_pattern, kernel_like=kernel_like
+    )
 
     selected_metric = metric_pattern
-    if selected_metric in {"%", "*"} and isinstance(per_metric_stats, list) and per_metric_stats:
+    if (
+        selected_metric in {"%", "*"}
+        and isinstance(per_metric_stats, list)
+        and per_metric_stats
+    ):
         preferred_keywords = ("duration", "elapsed", "time", "cycles", "throughput")
         for row in per_metric_stats:
-            name = str(row.get("metric_name", "")).lower() if isinstance(row, dict) else ""
+            name = (
+                str(row.get("metric_name", "")).lower() if isinstance(row, dict) else ""
+            )
             if any(k in name for k in preferred_keywords):
                 selected_metric = str(row.get("metric_name"))
                 break
@@ -2792,10 +3066,18 @@ def analyze_ncu_report(
 
 def analyze_ncu_report_to_markdown(payload: Dict[str, object]) -> str:
     summary = payload.get("summary", {}) if isinstance(payload, dict) else {}
-    selected_metric_like = str(payload.get("selected_metric_like", "")) if isinstance(payload, dict) else ""
+    selected_metric_like = (
+        str(payload.get("selected_metric_like", ""))
+        if isinstance(payload, dict)
+        else ""
+    )
     top_kernels = payload.get("top_kernels", []) if isinstance(payload, dict) else []
-    metric_stats = payload.get("per_metric_stats", []) if isinstance(payload, dict) else []
-    bottleneck = payload.get("bottleneck_report", {}) if isinstance(payload, dict) else {}
+    metric_stats = (
+        payload.get("per_metric_stats", []) if isinstance(payload, dict) else []
+    )
+    bottleneck = (
+        payload.get("bottleneck_report", {}) if isinstance(payload, dict) else {}
+    )
     lines: List[str] = []
     lines.append("# NCU Report Analyze")
     lines.append("")
@@ -2823,7 +3105,9 @@ def analyze_ncu_report_to_markdown(payload: Dict[str, object]) -> str:
             )
             missing = coverage.get("missing_categories", [])
             if isinstance(missing, list) and missing:
-                lines.append(f"- missing_categories: {', '.join(str(x) for x in missing)}")
+                lines.append(
+                    f"- missing_categories: {', '.join(str(x) for x in missing)}"
+                )
         top_bottlenecks = bottleneck.get("top_bottlenecks", [])
         if isinstance(top_bottlenecks, list):
             for idx, item in enumerate(top_bottlenecks[:10], 1):
@@ -2839,7 +3123,9 @@ def analyze_ncu_report_to_markdown(payload: Dict[str, object]) -> str:
         if isinstance(dimension_report, dict):
             needs_attention = dimension_report.get("needs_attention", [])
             if isinstance(needs_attention, list) and needs_attention:
-                lines.append(f"- dimensions_need_attention: {', '.join(str(x) for x in needs_attention)}")
+                lines.append(
+                    f"- dimensions_need_attention: {', '.join(str(x) for x in needs_attention)}"
+                )
             dimensions = dimension_report.get("dimensions", [])
             if isinstance(dimensions, list):
                 lines.append("")

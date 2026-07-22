@@ -41,7 +41,12 @@ class _FakeMetric:
 
 
 class _FakeAction:
-    def __init__(self, name: str, metrics: dict[str, _FakeMetric], rules: list[dict[str, object]] | None = None) -> None:
+    def __init__(
+        self,
+        name: str,
+        metrics: dict[str, _FakeMetric],
+        rules: list[dict[str, object]] | None = None,
+    ) -> None:
         self._name = name
         self._metrics = dict(metrics)
         self._rules = list(rules or [])
@@ -108,7 +113,11 @@ def _fake_module() -> _FakeNcuReportModule:
             },
             "speedup_estimation": {"type": "GLOBAL", "speedup": 21.5},
             "focus_metrics": [
-                {"name": "dram__throughput.avg.pct_of_peak_sustained_elapsed", "value": 85.0, "severity": "HIGH"}
+                {
+                    "name": "dram__throughput.avg.pct_of_peak_sustained_elapsed",
+                    "value": 85.0,
+                    "severity": "HIGH",
+                }
             ],
         }
     ]
@@ -118,15 +127,25 @@ def _fake_module() -> _FakeNcuReportModule:
                 "k1",
                 {
                     "gpu__time_duration.sum": _FakeMetric("10", "ns"),
-                    "sm__throughput.avg.pct_of_peak_sustained_elapsed": _FakeMetric("35", "%"),
-                    "dram__throughput.avg.pct_of_peak_sustained_elapsed": _FakeMetric("85", "%"),
-                    "smsp__issue_active.avg.pct_of_peak_sustained_active": _FakeMetric("40", "%"),
+                    "sm__throughput.avg.pct_of_peak_sustained_elapsed": _FakeMetric(
+                        "35", "%"
+                    ),
+                    "dram__throughput.avg.pct_of_peak_sustained_elapsed": _FakeMetric(
+                        "85", "%"
+                    ),
+                    "smsp__issue_active.avg.pct_of_peak_sustained_active": _FakeMetric(
+                        "40", "%"
+                    ),
                     "smsp__warps_eligible.avg": _FakeMetric("0.9", ""),
-                    "smsp__pcsamp_warps_issue_stalled_long_scoreboard": _FakeMetric("68", "%"),
+                    "smsp__pcsamp_warps_issue_stalled_long_scoreboard": _FakeMetric(
+                        "68", "%"
+                    ),
                     "memory_ideal_l2_transactions_global": _FakeMetric("100", ""),
                     "memory_l2_transactions_global": _FakeMetric("180", ""),
                     "smsp__branch_divergence": _FakeMetric("32", "%"),
-                    "l1tex__data_bank_conflicts_pipe_lsu_mem_shared.sum": _FakeMetric("4", ""),
+                    "l1tex__data_bank_conflicts_pipe_lsu_mem_shared.sum": _FakeMetric(
+                        "4", ""
+                    ),
                 },
                 rules=k1_rules,
             ),
@@ -134,7 +153,9 @@ def _fake_module() -> _FakeNcuReportModule:
                 "k2",
                 {
                     "gpu__time_duration.sum": _FakeMetric("30", "ns"),
-                    "dram__throughput.avg.pct_of_peak_sustained_elapsed": _FakeMetric("20", "%"),
+                    "dram__throughput.avg.pct_of_peak_sustained_elapsed": _FakeMetric(
+                        "20", "%"
+                    ),
                     "launch__occupancy_limit_registers": _FakeMetric("1", ""),
                 },
             ),
@@ -155,18 +176,34 @@ def _fake_dimension_module() -> _FakeNcuReportModule:
                     "device__attribute_multiprocessor_count": _FakeMetric("148", ""),
                     "launch__registers_per_thread": _FakeMetric("160", ""),
                     "sm__maximum_warps_per_active_cycle_pct": _FakeMetric("100", "%"),
-                    "sm__warps_active.avg.pct_of_peak_sustained_active": _FakeMetric("25", "%"),
+                    "sm__warps_active.avg.pct_of_peak_sustained_active": _FakeMetric(
+                        "25", "%"
+                    ),
                     "sm__cycles_active.avg": _FakeMetric("100", "cycle"),
                     "sm__cycles_active.max": _FakeMetric("300", "cycle"),
                     "sm__cycles_active.min": _FakeMetric("20", "cycle"),
                     "smsp__pcsamp_sample_count": _FakeMetric("100", ""),
-                    "smsp__pcsamp_warps_issue_stalled_long_scoreboard": _FakeMetric("45", ""),
-                    "sm__pipe_tensor_cycles_active.avg.pct_of_peak_sustained_elapsed": _FakeMetric("0", "%"),
-                    "sm__inst_executed_pipe_fma.avg.pct_of_peak_sustained_active": _FakeMetric("60", "%"),
-                    "sm__inst_executed_pipe_fp64.avg.pct_of_peak_sustained_active": _FakeMetric("1", "%"),
-                    "l1tex__t_sectors_pipe_lsu_mem_global_op_ld.sum": _FakeMetric("600", ""),
-                    "l1tex__t_requests_pipe_lsu_mem_global_op_ld.sum": _FakeMetric("100", ""),
-                    "smsp__sass_average_data_bytes_per_sector_mem_global_op_st.ratio": _FakeMetric("8", ""),
+                    "smsp__pcsamp_warps_issue_stalled_long_scoreboard": _FakeMetric(
+                        "45", ""
+                    ),
+                    "sm__pipe_tensor_cycles_active.avg.pct_of_peak_sustained_elapsed": _FakeMetric(
+                        "0", "%"
+                    ),
+                    "sm__inst_executed_pipe_fma.avg.pct_of_peak_sustained_active": _FakeMetric(
+                        "60", "%"
+                    ),
+                    "sm__inst_executed_pipe_fp64.avg.pct_of_peak_sustained_active": _FakeMetric(
+                        "1", "%"
+                    ),
+                    "l1tex__t_sectors_pipe_lsu_mem_global_op_ld.sum": _FakeMetric(
+                        "600", ""
+                    ),
+                    "l1tex__t_requests_pipe_lsu_mem_global_op_ld.sum": _FakeMetric(
+                        "100", ""
+                    ),
+                    "smsp__sass_average_data_bytes_per_sector_mem_global_op_st.ratio": _FakeMetric(
+                        "8", ""
+                    ),
                     "smsp__sass_inst_executed_op_local_ld.sum": _FakeMetric("2", ""),
                     "smsp__sass_inst_executed_op_local_st.sum": _FakeMetric("0", ""),
                 },
@@ -185,18 +222,30 @@ def _fake_h100_dimension_module() -> _FakeNcuReportModule:
                     "device__attribute_compute_capability_major": _FakeMetric("9", ""),
                     "device__attribute_compute_capability_minor": _FakeMetric("0", ""),
                     "device__attribute_multiprocessor_count": _FakeMetric("132", ""),
-                    "device__attribute_max_warps_per_multiprocessor": _FakeMetric("64", ""),
+                    "device__attribute_max_warps_per_multiprocessor": _FakeMetric(
+                        "64", ""
+                    ),
                     "launch__grid_size": _FakeMetric("96", ""),
                     "launch__waves_per_multiprocessor": _FakeMetric("0.75", ""),
-                    "dram__throughput.avg.pct_of_peak_sustained_elapsed": _FakeMetric("8", "%"),
-                    "l1tex__average_t_sectors_per_request_pipe_lsu_mem_global_op_ld.ratio": _FakeMetric("6.5", ""),
+                    "dram__throughput.avg.pct_of_peak_sustained_elapsed": _FakeMetric(
+                        "8", "%"
+                    ),
+                    "l1tex__average_t_sectors_per_request_pipe_lsu_mem_global_op_ld.ratio": _FakeMetric(
+                        "6.5", ""
+                    ),
                     "smsp__inst_executed_op_global_ld.sum": _FakeMetric("200", ""),
                     "smsp__inst_executed_op_global_st.sum": _FakeMetric("50", ""),
-                    "smsp__average_data_bytes_per_sector_mem_global_op_st.ratio": _FakeMetric("12", ""),
+                    "smsp__average_data_bytes_per_sector_mem_global_op_st.ratio": _FakeMetric(
+                        "12", ""
+                    ),
                     "smsp__inst_executed_op_local_ld.sum": _FakeMetric("1", ""),
                     "smsp__inst_executed_op_local_st.sum": _FakeMetric("1", ""),
-                    "smsp__average_warps_issue_stalled_long_scoreboard_per_issue_active.ratio": _FakeMetric("4.5", ""),
-                    "pmsampling:smsp__warps_issue_stalled_long_scoreboard.avg": _FakeMetric("3.0", ""),
+                    "smsp__average_warps_issue_stalled_long_scoreboard_per_issue_active.ratio": _FakeMetric(
+                        "4.5", ""
+                    ),
+                    "pmsampling:smsp__warps_issue_stalled_long_scoreboard.avg": _FakeMetric(
+                        "3.0", ""
+                    ),
                 },
             )
         ]
@@ -284,9 +333,7 @@ def test_ncu_dimension_report_detects_codex_skill_patterns(tmp_path: Path) -> No
     assert "register_spill" in findings
 
     memory_dim = next(
-        item
-        for item in report["dimensions"]
-        if item["key"] == "memory_access_cache"
+        item for item in report["dimensions"] if item["key"] == "memory_access_cache"
     )
     sectors = memory_dim["signals"]["sectors_per_ld_request"]
     assert sectors["value"] == 6.0
@@ -295,7 +342,9 @@ def test_ncu_dimension_report_detects_codex_skill_patterns(tmp_path: Path) -> No
 def test_ncu_dimension_report_supports_h100_metric_aliases(tmp_path: Path) -> None:
     rep = tmp_path / "h100.ncu-rep"
     rep.write_text("", encoding="utf-8")
-    engine = NcuReportSkillEngine(str(rep), ncu_report_module=_fake_h100_dimension_module())
+    engine = NcuReportSkillEngine(
+        str(rep), ncu_report_module=_fake_h100_dimension_module()
+    )
     report = engine.run_skill("dimension_report", top_k=20)
     assert isinstance(report, dict)
     assert report["architecture"]["family"] == "hopper"
@@ -303,13 +352,14 @@ def test_ncu_dimension_report_supports_h100_metric_aliases(tmp_path: Path) -> No
     assert report["architecture"]["compute_capability"] == "9.0"
 
     memory_dim = next(
-        item
-        for item in report["dimensions"]
-        if item["key"] == "memory_access_cache"
+        item for item in report["dimensions"] if item["key"] == "memory_access_cache"
     )
     signals = memory_dim["signals"]
     assert signals["sectors_per_ld_request"]["value"] == 6.5
-    assert signals["global_ld_instructions"]["metric_name"] == "smsp__inst_executed_op_global_ld.sum"
+    assert (
+        signals["global_ld_instructions"]["metric_name"]
+        == "smsp__inst_executed_op_global_ld.sum"
+    )
     assert signals["local_ld"]["metric_name"] == "smsp__inst_executed_op_local_ld.sum"
 
     findings = {
@@ -345,12 +395,23 @@ class TestReportDiagnosisUsesShippedRules:
 
     def _fake_module(self, with_rules=True):
         class M:
-            def __init__(self, v): self.v = v
-            def value(self): return self.v
-            def as_double(self): return self.v
-            def as_uint64(self): return int(self.v)
-            def unit(self): return ""
-            def has_correlation_ids(self): return False
+            def __init__(self, v):
+                self.v = v
+
+            def value(self):
+                return self.v
+
+            def as_double(self):
+                return self.v
+
+            def as_uint64(self):
+                return int(self.v)
+
+            def unit(self):
+                return ""
+
+            def has_correlation_ids(self):
+                return False
 
         values = {
             "sm__throughput.avg.pct_of_peak_sustained_elapsed": 85.0,
@@ -358,28 +419,42 @@ class TestReportDiagnosisUsesShippedRules:
         }
 
         class Action:
-            def name(self): return "gemm_kernel"
-            def metric_names(self): return list(values)
-            def metric_by_name(self, k): return M(values.get(k, 0.0))
+            def name(self):
+                return "gemm_kernel"
+
+            def metric_names(self):
+                return list(values)
+
+            def metric_by_name(self, k):
+                return M(values.get(k, 0.0))
+
             def rule_results_as_dicts(self):
                 if not with_rules:
                     return []
-                return [{
-                    "rule_identifier": "SOLBottleneck",
-                    "section_identifier": "SpeedOfLight",
-                    "rule_message": {"title": "Memory more utilized",
-                                     "message": "This kernel is memory bound.",
-                                     "message_type": "warning"},
-                    "speedup_estimation": {"type": "GLOBAL", "speedup": 25.0},
-                }]
+                return [
+                    {
+                        "rule_identifier": "SOLBottleneck",
+                        "section_identifier": "SpeedOfLight",
+                        "rule_message": {
+                            "title": "Memory more utilized",
+                            "message": "This kernel is memory bound.",
+                            "message_type": "warning",
+                        },
+                        "speedup_estimation": {"type": "GLOBAL", "speedup": 25.0},
+                    }
+                ]
 
         class Rng:
             num_actions = 1
-            def action_by_idx(self, i): return Action()
+
+            def action_by_idx(self, i):
+                return Action()
 
         class Ctx:
             num_ranges = 1
-            def range_by_idx(self, i): return Rng()
+
+            def range_by_idx(self, i):
+                return Rng()
 
         return types.SimpleNamespace(load_report=lambda p: Ctx())
 
@@ -388,17 +463,20 @@ class TestReportDiagnosisUsesShippedRules:
 
     def test_shipped_rules_reach_the_diagnosis(self):
         out = ncu_report_tools.diagnose_ncu_report(
-            "/dev/null", ncu_report_module=self._fake_module())
+            "/dev/null", ncu_report_module=self._fake_module()
+        )
         assert self._first(out)["corroboration"]["shipped_rules_available"] is True
 
     def test_disagreement_with_nvidia_surfaces_through_the_report_path(self):
         out = ncu_report_tools.diagnose_ncu_report(
-            "/dev/null", ncu_report_module=self._fake_module())
+            "/dev/null", ncu_report_module=self._fake_module()
+        )
         assert self._first(out)["corroboration"]["conflicts"]
 
     def test_report_without_rules_is_reported_honestly(self):
         out = ncu_report_tools.diagnose_ncu_report(
-            "/dev/null", ncu_report_module=self._fake_module(with_rules=False))
+            "/dev/null", ncu_report_module=self._fake_module(with_rules=False)
+        )
         assert self._first(out)["corroboration"]["shipped_rules_available"] is False
 
 
@@ -412,15 +490,27 @@ class TestDiagnoseIsSelfContained:
 
     def _module(self, with_samples=True):
         class Stall:
-            def __init__(self, n): self.name = n
+            def __init__(self, n):
+                self.name = n
 
         class M:
-            def __init__(self, v): self.v = v
-            def value(self): return self.v
-            def as_double(self): return self.v
-            def as_uint64(self): return int(self.v)
-            def unit(self): return ""
-            def has_correlation_ids(self): return False
+            def __init__(self, v):
+                self.v = v
+
+            def value(self):
+                return self.v
+
+            def as_double(self):
+                return self.v
+
+            def as_uint64(self):
+                return int(self.v)
+
+            def unit(self):
+                return ""
+
+            def has_correlation_ids(self):
+                return False
 
         vals = {
             "sm__throughput.avg.pct_of_peak_sustained_elapsed": 32.0,
@@ -430,11 +520,21 @@ class TestDiagnoseIsSelfContained:
         }
 
         class Action:
-            def name(self): return "fused_attn_fwd"
-            def metric_names(self): return list(vals)
-            def metric_by_name(self, k): return M(vals[k]) if k in vals else None
-            def rule_results_as_dicts(self): return []
-            def source_files(self): return {"attn.cu": "load\nsoftmax\nmm\n"}
+            def name(self):
+                return "fused_attn_fwd"
+
+            def metric_names(self):
+                return list(vals)
+
+            def metric_by_name(self, k):
+                return M(vals[k]) if k in vals else None
+
+            def rule_results_as_dicts(self):
+                return []
+
+            def source_files(self):
+                return {"attn.cu": "load\nsoftmax\nmm\n"}
+
             def source_info(self, a):
                 table = {0x10: ("attn.cu", 1), 0x20: ("attn.cu", 2)}
                 if a not in table:
@@ -442,31 +542,51 @@ class TestDiagnoseIsSelfContained:
                 fname, ln = table[a]
 
                 class I:
-                    def file_name(self): return fname
-                    def line(self): return ln
+                    def file_name(self):
+                        return fname
+
+                    def line(self):
+                        return ln
+
                 return I()
-            def sass_by_pc(self, a): return ""
-            def ptx_by_pc(self, a): return ""
+
+            def sass_by_pc(self, a):
+                return ""
+
+            def ptx_by_pc(self, a):
+                return ""
+
             def timed_warp_samples(self):
                 if not with_samples:
                     return []
-                return [{"timestamp": i * 100, "pc": 0x20,
-                         "stall_reason": Stall("MIO_THROTTLE"), "not_issued": True}
-                        for i in range(600)]
+                return [
+                    {
+                        "timestamp": i * 100,
+                        "pc": 0x20,
+                        "stall_reason": Stall("MIO_THROTTLE"),
+                        "not_issued": True,
+                    }
+                    for i in range(600)
+                ]
 
         class Rng:
             num_actions = 1
-            def action_by_idx(self, i): return Action()
+
+            def action_by_idx(self, i):
+                return Action()
 
         class Ctx:
             num_ranges = 1
-            def range_by_idx(self, i): return Rng()
+
+            def range_by_idx(self, i):
+                return Rng()
 
         return types.SimpleNamespace(load_report=lambda p: Ctx())
 
     def test_source_attribution_is_in_the_diagnosis(self):
         out = ncu_report_tools.diagnose_ncu_report(
-            "/dev/null", ncu_report_module=self._module())
+            "/dev/null", ncu_report_module=self._module()
+        )
         kernel = out["kernels"][0]
         assert "source_attribution" in kernel
         rows = kernel["source_attribution"]["stall_attribution"]["source_lines"]
@@ -475,7 +595,9 @@ class TestDiagnoseIsSelfContained:
     def test_markdown_renders_where_it_stalls(self):
         text = ncu_report_tools.diagnose_result_to_markdown(
             ncu_report_tools.diagnose_ncu_report(
-                "/dev/null", ncu_report_module=self._module()))
+                "/dev/null", ncu_report_module=self._module()
+            )
+        )
         assert "### Where it stalls" in text
         assert "MIO_THROTTLE" in text
 
@@ -483,18 +605,22 @@ class TestDiagnoseIsSelfContained:
         """Do not print 'no source data' directly beneath the source data."""
         text = ncu_report_tools.diagnose_result_to_markdown(
             ncu_report_tools.diagnose_ncu_report(
-                "/dev/null", ncu_report_module=self._module()))
+                "/dev/null", ncu_report_module=self._module()
+            )
+        )
         assert "### Where it stalls" in text
         assert "No source-correlated metrics" not in text
 
     def test_include_source_false_skips_it(self):
         out = ncu_report_tools.diagnose_ncu_report(
-            "/dev/null", include_source=False, ncu_report_module=self._module())
+            "/dev/null", include_source=False, ncu_report_module=self._module()
+        )
         assert "source_attribution" not in out["kernels"][0]
 
     def test_absent_samples_do_not_break_the_diagnosis(self):
         out = ncu_report_tools.diagnose_ncu_report(
-            "/dev/null", ncu_report_module=self._module(with_samples=False))
+            "/dev/null", ncu_report_module=self._module(with_samples=False)
+        )
         kernel = out["kernels"][0]
         assert kernel["verdict"]
         assert kernel["source_attribution"]["stall_attribution"]["available"] is False
@@ -513,7 +639,7 @@ class TestNcuReportModuleDiscovery:
         assert found is None or (found / "ncu_report.py").exists()
 
     def test_error_message_is_actionable(self):
-        import re
+
         source = Path(ncu_report_tools.__file__).read_text()
         block = source.split("The `ncu_report` module is required")[1][:1200]
         assert "PYTHONPATH" in block
@@ -534,15 +660,27 @@ class TestReportIsReadOnce:
         opens = {"n": 0}
 
         class Stall:
-            def __init__(self, n): self.name = n
+            def __init__(self, n):
+                self.name = n
 
         class M:
-            def __init__(self, v): self.v = v
-            def value(self): return self.v
-            def as_double(self): return self.v
-            def as_uint64(self): return int(self.v)
-            def unit(self): return ""
-            def has_correlation_ids(self): return False
+            def __init__(self, v):
+                self.v = v
+
+            def value(self):
+                return self.v
+
+            def as_double(self):
+                return self.v
+
+            def as_uint64(self):
+                return int(self.v)
+
+            def unit(self):
+                return ""
+
+            def has_correlation_ids(self):
+                return False
 
         vals = {
             "sm__throughput.avg.pct_of_peak_sustained_elapsed": 34.0,
@@ -553,37 +691,72 @@ class TestReportIsReadOnce:
         }
 
         class Action:
-            def name(self): return "k"
-            def metric_names(self): return list(vals)
-            def metric_by_name(self, k): return M(vals[k]) if k in vals else None
+            def name(self):
+                return "k"
+
+            def metric_names(self):
+                return list(vals)
+
+            def metric_by_name(self, k):
+                return M(vals[k]) if k in vals else None
+
             def rule_results_as_dicts(self):
-                return [{"rule_identifier": "SOLBottleneck",
-                         "rule_message": {"title": "t", "message": "m",
-                                          "message_type": "optimization"},
-                         "speedup_estimation": {"type": "GLOBAL", "speedup": 20.0}}]
-            def source_files(self): return {"k.cu": "a\nb\n"}
+                return [
+                    {
+                        "rule_identifier": "SOLBottleneck",
+                        "rule_message": {
+                            "title": "t",
+                            "message": "m",
+                            "message_type": "optimization",
+                        },
+                        "speedup_estimation": {"type": "GLOBAL", "speedup": 20.0},
+                    }
+                ]
+
+            def source_files(self):
+                return {"k.cu": "a\nb\n"}
+
             def source_info(self, a):
                 if a != 0x10:
                     return None
 
                 class I:
-                    def file_name(self): return "k.cu"
-                    def line(self): return 1
+                    def file_name(self):
+                        return "k.cu"
+
+                    def line(self):
+                        return 1
+
                 return I()
-            def sass_by_pc(self, a): return ""
-            def ptx_by_pc(self, a): return ""
+
+            def sass_by_pc(self, a):
+                return ""
+
+            def ptx_by_pc(self, a):
+                return ""
+
             def timed_warp_samples(self):
-                return [{"timestamp": i, "pc": 0x10,
-                         "stall_reason": Stall("LONG_SCOREBOARD"), "not_issued": True}
-                        for i in range(400)]
+                return [
+                    {
+                        "timestamp": i,
+                        "pc": 0x10,
+                        "stall_reason": Stall("LONG_SCOREBOARD"),
+                        "not_issued": True,
+                    }
+                    for i in range(400)
+                ]
 
         class Rng:
             num_actions = 1
-            def action_by_idx(self, i): return Action()
+
+            def action_by_idx(self, i):
+                return Action()
 
         class Ctx:
             num_ranges = 1
-            def range_by_idx(self, i): return Rng()
+
+            def range_by_idx(self, i):
+                return Rng()
 
         def loader(path):
             opens["n"] += 1
@@ -599,10 +772,18 @@ class TestReportIsReadOnce:
     def test_single_pass_still_produces_every_section(self):
         module, _ = self._counting_module()
         kernel = ncu_report_tools.diagnose_ncu_report(
-            "/dev/null", ncu_report_module=module)["kernels"][0]
-        for key in ("verdict", "coverage", "axes", "metric_inventory",
-                    "corroboration", "signal_scan", "source_attribution",
-                    "duration_ns"):
+            "/dev/null", ncu_report_module=module
+        )["kernels"][0]
+        for key in (
+            "verdict",
+            "coverage",
+            "axes",
+            "metric_inventory",
+            "corroboration",
+            "signal_scan",
+            "source_attribution",
+            "duration_ns",
+        ):
             assert key in kernel, f"single-pass rewrite dropped `{key}`"
         assert kernel["corroboration"]["shipped_rules_available"] is True
         assert kernel["source_attribution"]["stall_attribution"]["available"] is True
@@ -610,7 +791,8 @@ class TestReportIsReadOnce:
     def test_no_source_still_reads_once(self):
         module, opens = self._counting_module()
         ncu_report_tools.diagnose_ncu_report(
-            "/dev/null", include_source=False, ncu_report_module=module)
+            "/dev/null", include_source=False, ncu_report_module=module
+        )
         assert opens["n"] == 1
 
 
@@ -623,27 +805,45 @@ class TestStringValuedMetrics:
     """
 
     class _Action:
-        _NUM = {"sm__throughput.avg.pct_of_peak_sustained_elapsed": 33.7,
-                "sm__pipe_tensor_cycles_active.avg.pct_of_peak_sustained_elapsed": 33.7,
-                "sm__issue_active.avg.pct_of_peak_sustained_elapsed": 14.1}
-        _STR = {"device__attribute_display_name": "NVIDIA H100 80GB HBM3",
-                "launch__cluster_scheduling_policy": "PolicySpread",
-                "breakdown:sm__throughput.avg.pct_of_peak_sustained_elapsed":
-                    "sm__pipe_tensor_cycles_active.avg.pct_of_peak_sustained_elapsed,"
-                    "sm__issue_active.avg.pct_of_peak_sustained_elapsed"}
+        _NUM = {
+            "sm__throughput.avg.pct_of_peak_sustained_elapsed": 33.7,
+            "sm__pipe_tensor_cycles_active.avg.pct_of_peak_sustained_elapsed": 33.7,
+            "sm__issue_active.avg.pct_of_peak_sustained_elapsed": 14.1,
+        }
+        _STR = {
+            "device__attribute_display_name": "NVIDIA H100 80GB HBM3",
+            "launch__cluster_scheduling_policy": "PolicySpread",
+            "breakdown:sm__throughput.avg.pct_of_peak_sustained_elapsed": "sm__pipe_tensor_cycles_active.avg.pct_of_peak_sustained_elapsed,"
+            "sm__issue_active.avg.pct_of_peak_sustained_elapsed",
+        }
 
         class _M:
-            def __init__(self, v): self.v = v
-            def value(self): return self.v
-            def as_double(self): return self.v if isinstance(self.v, float) else None
-            def as_string(self): return self.v if isinstance(self.v, str) else None
-            def unit(self): return ""
+            def __init__(self, v):
+                self.v = v
 
-        def name(self): return "k"
-        def metric_names(self): return list(self._NUM) + list(self._STR)
+            def value(self):
+                return self.v
+
+            def as_double(self):
+                return self.v if isinstance(self.v, float) else None
+
+            def as_string(self):
+                return self.v if isinstance(self.v, str) else None
+
+            def unit(self):
+                return ""
+
+        def name(self):
+            return "k"
+
+        def metric_names(self):
+            return list(self._NUM) + list(self._STR)
+
         def metric_by_name(self, n):
-            if n in self._NUM: return self._M(self._NUM[n])
-            if n in self._STR: return self._M(self._STR[n])
+            if n in self._NUM:
+                return self._M(self._NUM[n])
+            if n in self._STR:
+                return self._M(self._STR[n])
             return None
 
     def test_string_metrics_are_kept_not_dropped(self):
@@ -677,5 +877,6 @@ class TestStringValuedMetrics:
 
     def test_breakdown_with_unresolvable_constituents_is_skipped(self):
         out = ncu_report_tools.resolve_sol_breakdown(
-            {"breakdown:x": "not_collected_a,not_collected_b"}, {})
+            {"breakdown:x": "not_collected_a,not_collected_b"}, {}
+        )
         assert out == {}

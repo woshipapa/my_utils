@@ -104,7 +104,9 @@ def _module_buffer_dtype_runtime(module: nn.Module) -> Dict[str, Any]:
     }
 
 
-def _hash_named_tensors_md5(named_tensors: List[Tuple[str, torch.Tensor]]) -> Dict[str, Any]:
+def _hash_named_tensors_md5(
+    named_tensors: List[Tuple[str, torch.Tensor]],
+) -> Dict[str, Any]:
     """
     Stable MD5 for a list of (name, tensor):
       - per-tensor md5 is over raw bytes (cpu/contiguous)
@@ -163,9 +165,9 @@ def _module_buffer_md5_runtime(module: nn.Module) -> Dict[str, Any]:
 
 @dataclass
 class TraceTensorMeta:
-    name: str              # module qualified name
-    kind: str              # "in" or "out"
-    key: str               # nested key inside in/out structure
+    name: str  # module qualified name
+    kind: str  # "in" or "out"
+    key: str  # nested key inside in/out structure
     shape: List[int]
     dtype: str
     device: str
@@ -193,7 +195,11 @@ class ForwardTraceRecorder:
         include_name_regex: Optional[str] = None,
         exclude_name_regex: Optional[str] = None,
         include_module_types: Optional[Tuple[type, ...]] = None,
-        exclude_module_types: Optional[Tuple[type, ...]] = (nn.Sequential, nn.ModuleList, nn.ModuleDict),
+        exclude_module_types: Optional[Tuple[type, ...]] = (
+            nn.Sequential,
+            nn.ModuleList,
+            nn.ModuleDict,
+        ),
         sample_mode: str = "none",
         sample_max_elems: int = 200_000,
         sample_seed: int = 0,
@@ -303,17 +309,14 @@ class ForwardTraceRecorder:
                 "module_name": module_name,
                 "module_type": module.__class__.__name__,
                 "time": time.time(),
-
                 # dtype snapshots
                 "param_dtypes": None,
                 "buffer_dtypes": None,
-
                 # md5 snapshots
-                "param_md5": None,               # overall module md5 (params)
-                "param_md5_per_param": None,     # per-param md5 map
-                "buffer_md5": None,              # overall module md5 (buffers)
-                "buffer_md5_per_buffer": None,   # per-buffer md5 map
-
+                "param_md5": None,  # overall module md5 (params)
+                "param_md5_per_param": None,  # per-param md5 map
+                "buffer_md5": None,  # overall module md5 (buffers)
+                "buffer_md5_per_buffer": None,  # per-buffer md5 map
                 "inputs": None,
                 "outputs": None,
                 "meta": [],
@@ -363,10 +366,14 @@ class ForwardTraceRecorder:
             self.handles.append(h)
             self._module_count += 1
             if self.verbose:
-                print(f"[trace:{self.name}] hook {module_name}: {module.__class__.__name__}")
+                print(
+                    f"[trace:{self.name}] hook {module_name}: {module.__class__.__name__}"
+                )
 
         if self.verbose:
-            print(f"[trace:{self.name}] installed hooks on {self._module_count} modules")
+            print(
+                f"[trace:{self.name}] installed hooks on {self._module_count} modules"
+            )
 
     def remove(self) -> None:
         for h in self.handles:
@@ -376,13 +383,16 @@ class ForwardTraceRecorder:
                 pass
         self.handles.clear()
 
-    def save(self, path: Union[str, Path], extra: Optional[Dict[str, Any]] = None) -> None:
+    def save(
+        self, path: Union[str, Path], extra: Optional[Dict[str, Any]] = None
+    ) -> None:
         payload = {
             "trace_name": self.name,
             "num_modules_hooked": self._module_count,
             "num_events": len(self.events),
-            "elapsed_sec": (time.time() - self._start_time) if self._start_time else None,
-
+            "elapsed_sec": (time.time() - self._start_time)
+            if self._start_time
+            else None,
             "record_inputs": self.record_inputs,
             "record_outputs": self.record_outputs,
             "cast_float32": self.cast_float32,
@@ -390,17 +400,14 @@ class ForwardTraceRecorder:
             "sample_max_elems": self.sample_max_elems,
             "sample_seed": self.sample_seed,
             "save_stats_only": self.save_stats_only,
-
             # dtype knobs
             "record_param_dtypes_each_call": self.record_param_dtypes_each_call,
             "record_buffer_dtypes_each_call": self.record_buffer_dtypes_each_call,
-
             # md5 knobs
             "record_param_md5_each_call": self.record_param_md5_each_call,
             "record_buffer_md5_each_call": self.record_buffer_md5_each_call,
             "record_param_md5_per_param": self.record_param_md5_per_param,
             "record_buffer_md5_per_buffer": self.record_buffer_md5_per_buffer,
-
             "events": self.events,
             "extra": extra or {},
         }

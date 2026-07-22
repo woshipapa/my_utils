@@ -7,7 +7,13 @@ import types
 import pytest
 
 
-from _synthetic_loader import ncu_report_tools, section_index, signal_scan, source_correlation, source_correlation_mod
+from _synthetic_loader import (
+    ncu_report_tools,
+    section_index,
+    signal_scan,
+    source_correlation,
+    source_correlation_mod,
+)
 
 
 class _FakeStall:
@@ -38,11 +44,12 @@ class _FakeMetric:
 class _FakeAction:
     """Mirrors the IAction surface: source_info/sass_by_pc/source_files/..."""
 
-    def __init__(self, *, metrics=None, sources=None, lines=None,
-                 sass=None, samples=None):
+    def __init__(
+        self, *, metrics=None, sources=None, lines=None, sass=None, samples=None
+    ):
         self._metrics = metrics or {}
         self._sources = sources or {}
-        self._lines = lines or {}       # address -> (file, line)
+        self._lines = lines or {}  # address -> (file, line)
         self._sass = sass or {}
         self._samples = samples or []
 
@@ -85,13 +92,17 @@ class TestSourceAvailability:
         """The most common cause: a bare ncu run collects no source metrics."""
         report = source_correlation.source_availability(_FakeAction())
         assert report["source_correlation_possible"] is False
-        assert any("basic" in r and "SourceCounters" in r
-                   for r in report["reasons_unavailable"])
+        assert any(
+            "basic" in r and "SourceCounters" in r
+            for r in report["reasons_unavailable"]
+        )
 
     def test_missing_lineinfo_is_distinguished_from_missing_section(self):
-        action = _FakeAction(metrics={
-            "sass__inst_executed": _FakeMetric([1.0], correlation=[0x10]),
-        })
+        action = _FakeAction(
+            metrics={
+                "sass__inst_executed": _FakeMetric([1.0], correlation=[0x10]),
+            }
+        )
         report = source_correlation.source_availability(action)
         assert report["source_correlation_possible"] is True
         assert any("-lineinfo" in r for r in report["reasons_unavailable"])
@@ -108,8 +119,11 @@ class TestSourceAvailability:
 class TestMetricToSourceCorrelation:
     def _action(self):
         return _FakeAction(
-            metrics={"sass__inst_executed": _FakeMetric(
-                [10.0, 90.0, 5.0], correlation=[0x10, 0x20, 0x30])},
+            metrics={
+                "sass__inst_executed": _FakeMetric(
+                    [10.0, 90.0, 5.0], correlation=[0x10, 0x20, 0x30]
+                )
+            },
             sources={"kernel.cu": "line one\nline two\nline three\n"},
             lines={0x10: ("kernel.cu", 1), 0x20: ("kernel.cu", 2)},
             sass={0x10: "LDG.E R0", 0x20: "FFMA R2, R0, R1", 0x30: "EXIT"},
@@ -117,7 +131,8 @@ class TestMetricToSourceCorrelation:
 
     def test_hot_line_is_ranked_first_with_its_source_text(self):
         out = source_correlation.correlate_metric_to_source(
-            self._action(), "sass__inst_executed")
+            self._action(), "sass__inst_executed"
+        )
         assert out["available"] is True
         top = out["source_lines"][0]
         assert top["line"] == 2 and top["source_text"] == "line two"
@@ -125,7 +140,8 @@ class TestMetricToSourceCorrelation:
 
     def test_unlocated_instructions_are_counted_not_hidden(self):
         out = source_correlation.correlate_metric_to_source(
-            self._action(), "sass__inst_executed")
+            self._action(), "sass__inst_executed"
+        )
         assert out["unlocated_value"] == pytest.approx(5.0)
         assert "could not be tied to a source line" in out["note"]
 
@@ -142,14 +158,23 @@ class TestMetricToSourceCorrelation:
 
 class TestStallAttribution:
     def _action(self):
-        samples = (
-            [{"timestamp": 1000 + i, "pc": 0x20,
-              "stall_reason": _FakeStall("LONG_SCOREBOARD"), "not_issued": True}
-             for i in range(30)]
-            + [{"timestamp": 2000 + i, "pc": 0x10,
-                "stall_reason": _FakeStall("WAIT"), "not_issued": False}
-               for i in range(5)]
-        )
+        samples = [
+            {
+                "timestamp": 1000 + i,
+                "pc": 0x20,
+                "stall_reason": _FakeStall("LONG_SCOREBOARD"),
+                "not_issued": True,
+            }
+            for i in range(30)
+        ] + [
+            {
+                "timestamp": 2000 + i,
+                "pc": 0x10,
+                "stall_reason": _FakeStall("WAIT"),
+                "not_issued": False,
+            }
+            for i in range(5)
+        ]
         return _FakeAction(
             sources={"kernel.cu": "load here\ncompute here\n"},
             lines={0x10: ("kernel.cu", 1), 0x20: ("kernel.cu", 2)},
@@ -179,16 +204,26 @@ class TestStallAttribution:
 class TestPcSamplingTimeline:
     def test_phase_change_is_detected_not_averaged_away(self):
         """A kernel memory-bound then compute-bound must not average to 'mediocre'."""
-        samples = (
-            [{"timestamp": i * 1000, "pc": 0x10,
-              "stall_reason": _FakeStall("LONG_SCOREBOARD"), "not_issued": True}
-             for i in range(100)]
-            + [{"timestamp": 200_000 + i * 1000, "pc": 0x20,
-                "stall_reason": _FakeStall("MATH_PIPE_THROTTLE"), "not_issued": False}
-               for i in range(100)]
-        )
+        samples = [
+            {
+                "timestamp": i * 1000,
+                "pc": 0x10,
+                "stall_reason": _FakeStall("LONG_SCOREBOARD"),
+                "not_issued": True,
+            }
+            for i in range(100)
+        ] + [
+            {
+                "timestamp": 200_000 + i * 1000,
+                "pc": 0x20,
+                "stall_reason": _FakeStall("MATH_PIPE_THROTTLE"),
+                "not_issued": False,
+            }
+            for i in range(100)
+        ]
         out = source_correlation.pc_sampling_timeline(
-            _FakeAction(samples=samples), bucket_ns=50_000)
+            _FakeAction(samples=samples), bucket_ns=50_000
+        )
         assert out["available"] is True
         assert out["phase_change_count"] >= 1
         assert "LONG_SCOREBOARD" in out["phase_sequence"]
@@ -196,17 +231,30 @@ class TestPcSamplingTimeline:
         assert "wrong fix for each phase" in out["note"]
 
     def test_uniform_kernel_says_the_average_is_representative(self):
-        samples = [{"timestamp": i * 1000, "pc": 0x10,
-                    "stall_reason": _FakeStall("WAIT"), "not_issued": False}
-                   for i in range(200)]
+        samples = [
+            {
+                "timestamp": i * 1000,
+                "pc": 0x10,
+                "stall_reason": _FakeStall("WAIT"),
+                "not_issued": False,
+            }
+            for i in range(200)
+        ]
         out = source_correlation.pc_sampling_timeline(
-            _FakeAction(samples=samples), bucket_ns=50_000)
+            _FakeAction(samples=samples), bucket_ns=50_000
+        )
         assert out["phase_change_count"] == 0
         assert "representative" in out["note"]
 
     def test_summary_names_its_relationship_to_warpstatestats(self):
-        samples = [{"timestamp": 1, "pc": 0x10,
-                    "stall_reason": _FakeStall("BARRIER"), "not_issued": True}]
+        samples = [
+            {
+                "timestamp": 1,
+                "pc": 0x10,
+                "stall_reason": _FakeStall("BARRIER"),
+                "not_issued": True,
+            }
+        ]
         out = source_correlation.summarize_warp_samples(_FakeAction(samples=samples))
         assert "WarpStateStats" in out["comparison_note"]
 
@@ -219,19 +267,31 @@ class TestSignalToSourceLinkage:
             "available": True,
             "stall_reasons": {"LONG_SCOREBOARD": 700, "MATH_PIPE_THROTTLE": 100},
             "source_lines": [
-                {"file_name": "attn.cu", "line": 1, "source_text": "load_qkv",
-                 "samples": 700, "stall_reasons": {"LONG_SCOREBOARD": 700},
-                 "sass_samples": ["LDG.E.128"]},
-                {"file_name": "attn.cu", "line": 3, "source_text": "mm(p,v)",
-                 "samples": 100, "stall_reasons": {"MATH_PIPE_THROTTLE": 100},
-                 "sass_samples": []},
+                {
+                    "file_name": "attn.cu",
+                    "line": 1,
+                    "source_text": "load_qkv",
+                    "samples": 700,
+                    "stall_reasons": {"LONG_SCOREBOARD": 700},
+                    "sass_samples": ["LDG.E.128"],
+                },
+                {
+                    "file_name": "attn.cu",
+                    "line": 3,
+                    "source_text": "mm(p,v)",
+                    "samples": 100,
+                    "stall_reasons": {"MATH_PIPE_THROTTLE": 100},
+                    "sass_samples": [],
+                },
             ],
         }
 
     def _link(self, category):
         return source_correlation_mod.link_findings_to_source(
-            [{"category": category, "title": "t"}], None,
-            attribution=self._attribution())
+            [{"category": category, "title": "t"}],
+            None,
+            attribution=self._attribution(),
+        )
 
     def test_memory_finding_lands_on_the_loading_line(self):
         out = self._link("uncoalesced_global_load")
@@ -262,8 +322,10 @@ class TestSignalToSourceLinkage:
 
     def test_absent_attribution_is_reported_not_faked(self):
         out = source_correlation_mod.link_findings_to_source(
-            [{"category": "uncoalesced_global_load", "title": "t"}], None,
-            attribution={"available": False, "reason": "no samples"})
+            [{"category": "uncoalesced_global_load", "title": "t"}],
+            None,
+            attribution={"available": False, "reason": "no samples"},
+        )
         assert out["available"] is False and out["linked"] == []
 
 
@@ -294,10 +356,13 @@ class TestRealReportRegressions:
 
     def test_swig_map_is_not_discarded(self):
         files = source_correlation._as_dict(
-            self._SwigLikeMap({"k.cu": "line one\nline two\n"}))
+            self._SwigLikeMap({"k.cu": "line one\nline two\n"})
+        )
         assert files == {"k.cu": "line one\nline two\n"}
-        assert not isinstance(self._SwigLikeMap({}), __import__("collections.abc",
-                              fromlist=["Mapping"]).Mapping), "guard premise"
+        assert not isinstance(
+            self._SwigLikeMap({}),
+            __import__("collections.abc", fromlist=["Mapping"]).Mapping,
+        ), "guard premise"
 
     class _CorrelatedAction:
         """A report with aggregated pcsamp metrics and no raw warp samples.
@@ -313,26 +378,36 @@ class TestRealReportRegressions:
                 self._values = values
                 self._correlation = correlation
 
-            def num_instances(self): return len(self._values)
-            def as_double(self, i): return float(self._values[i])
-            def as_uint64(self, i): return int(self._values[i])
-            def has_correlation_ids(self): return self._correlation is not None
+            def num_instances(self):
+                return len(self._values)
+
+            def as_double(self, i):
+                return float(self._values[i])
+
+            def as_uint64(self, i):
+                return int(self._values[i])
+
+            def has_correlation_ids(self):
+                return self._correlation is not None
 
             def correlation_ids(self):
                 if self._correlation is None:
                     return None
                 return TestRealReportRegressions._CorrelatedAction._Metric(
-                    self._correlation)
+                    self._correlation
+                )
 
         def metric_names(self):
-            return [self._PREFIX + "long_scoreboard",
-                    self._PREFIX + "long_scoreboard_not_issued",
-                    self._PREFIX + "barrier"]
+            return [
+                self._PREFIX + "long_scoreboard",
+                self._PREFIX + "long_scoreboard_not_issued",
+                self._PREFIX + "barrier",
+            ]
 
         def metric_by_name(self, name):
             M = TestRealReportRegressions._CorrelatedAction._Metric
             if name.endswith("_not_issued"):
-                return M([999.0], correlation=[0x10])   # must be ignored
+                return M([999.0], correlation=[0x10])  # must be ignored
             if name.endswith("long_scoreboard"):
                 return M([100.0, 20.0], correlation=[0x10, 0x20])
             if name.endswith("barrier"):
@@ -341,7 +416,8 @@ class TestRealReportRegressions:
 
         def source_files(self):
             return TestRealReportRegressions._SwigLikeMap(
-                {"k.cu": "load line\ncompute line\n"})
+                {"k.cu": "load line\ncompute line\n"}
+            )
 
         def source_info(self, address):
             table = {0x10: ("k.cu", 1), 0x20: ("k.cu", 2)}
@@ -350,13 +426,22 @@ class TestRealReportRegressions:
             name, line = table[address]
 
             class _Info:
-                def file_name(self): return name
-                def line(self): return line
+                def file_name(self):
+                    return name
+
+                def line(self):
+                    return line
+
             return _Info()
 
-        def sass_by_pc(self, address): return "LDG.E"
-        def ptx_by_pc(self, address): return ""
-        def timed_warp_samples(self): return []
+        def sass_by_pc(self, address):
+            return "LDG.E"
+
+        def ptx_by_pc(self, address):
+            return ""
+
+        def timed_warp_samples(self):
+            return []
 
     def test_attribution_works_without_raw_warp_samples(self):
         out = source_correlation.attribute_stalls_to_source(self._CorrelatedAction())
@@ -374,18 +459,22 @@ class TestRealReportRegressions:
 
     def test_hit_rate_with_no_traffic_is_suppressed(self):
         """0% hit rate over 0 requests is not a result."""
-        out = signal_scan.scan_all_signals({
-            "l1tex__t_sector_pipe_lsu_mem_global_op_red_hit_rate.pct": 0.0,
-            "l1tex__t_requests_pipe_lsu_mem_global_op_red.sum": 0.0,
-        })
+        out = signal_scan.scan_all_signals(
+            {
+                "l1tex__t_sector_pipe_lsu_mem_global_op_red_hit_rate.pct": 0.0,
+                "l1tex__t_requests_pipe_lsu_mem_global_op_red.sum": 0.0,
+            }
+        )
         assert not [f for f in out["findings"] if f.category == "unit_hit_rate"]
         assert out["hit_rates_skipped_no_traffic"] == 1
 
     def test_hit_rate_with_traffic_is_reported_with_its_volume(self):
-        out = signal_scan.scan_all_signals({
-            "l1tex__t_sector_pipe_lsu_mem_global_op_st_hit_rate.pct": 0.0,
-            "l1tex__t_requests_pipe_lsu_mem_global_op_st.sum": 49152.0,
-        })
+        out = signal_scan.scan_all_signals(
+            {
+                "l1tex__t_sector_pipe_lsu_mem_global_op_st_hit_rate.pct": 0.0,
+                "l1tex__t_requests_pipe_lsu_mem_global_op_st.sum": 49152.0,
+            }
+        )
         finding = next(f for f in out["findings"] if f.category == "unit_hit_rate")
         assert finding.evidence["requests_behind_it"] == 49152.0
         assert "more than 100%" not in finding.summary, "100 - 0 rendered as prose"
@@ -394,26 +483,47 @@ class TestRealReportRegressions:
     def test_scan_hit_rate_findings_are_not_linked_to_source(self):
         """The scan knows a path missed, not which lines use that path."""
         out = source_correlation.link_findings_to_source(
-            [{"category": "unit_hit_rate", "title": "t"}], None,
-            attribution={"available": True, "stall_reasons": {"LONG_SCOREBOARD": 100},
-                         "source_lines": [{"file_name": "k.cu", "line": 1,
-                                           "samples": 100,
-                                           "stall_reasons": {"LONG_SCOREBOARD": 100}}]})
+            [{"category": "unit_hit_rate", "title": "t"}],
+            None,
+            attribution={
+                "available": True,
+                "stall_reasons": {"LONG_SCOREBOARD": 100},
+                "source_lines": [
+                    {
+                        "file_name": "k.cu",
+                        "line": 1,
+                        "samples": 100,
+                        "stall_reasons": {"LONG_SCOREBOARD": 100},
+                    }
+                ],
+            },
+        )
         assert out["linked"] == []
 
     def test_identical_linkages_are_folded(self):
         attribution = {
-            "available": True, "stall_reasons": {"LONG_SCOREBOARD": 100},
-            "source_lines": [{"file_name": "k.cu", "line": 1, "samples": 100,
-                              "stall_reasons": {"LONG_SCOREBOARD": 100}}],
+            "available": True,
+            "stall_reasons": {"LONG_SCOREBOARD": 100},
+            "source_lines": [
+                {
+                    "file_name": "k.cu",
+                    "line": 1,
+                    "samples": 100,
+                    "stall_reasons": {"LONG_SCOREBOARD": 100},
+                }
+            ],
         }
         # Both resolve to exactly ("LONG_SCOREBOARD",), so same reasons AND
         # same lines. Findings whose reasons differ are NOT folded, because the
         # same line stalling for a second reason is a second fact.
         out = source_correlation.link_findings_to_source(
-            [{"category": "poor_cache_locality", "title": "first"},
-             {"category": "l2_load_imbalance", "title": "second"}],
-            None, attribution=attribution)
+            [
+                {"category": "poor_cache_locality", "title": "first"},
+                {"category": "l2_load_imbalance", "title": "second"},
+            ],
+            None,
+            attribution=attribution,
+        )
         assert len(out["linked"]) == 1
         assert out["duplicate_links"] and out["duplicate_note"]
 
@@ -421,16 +531,26 @@ class TestRealReportRegressions:
         attribution = {
             "available": True,
             "stall_reasons": {"LONG_SCOREBOARD": 100, "LG_THROTTLE": 10},
-            "source_lines": [{"file_name": "k.cu", "line": 1, "samples": 110,
-                              "stall_reasons": {"LONG_SCOREBOARD": 100,
-                                                "LG_THROTTLE": 10}}],
+            "source_lines": [
+                {
+                    "file_name": "k.cu",
+                    "line": 1,
+                    "samples": 110,
+                    "stall_reasons": {"LONG_SCOREBOARD": 100, "LG_THROTTLE": 10},
+                }
+            ],
         }
         out = source_correlation.link_findings_to_source(
-            [{"category": "poor_cache_locality", "title": "locality"},
-             {"category": "register_spilling", "title": "spilling"}],
-            None, attribution=attribution)
+            [
+                {"category": "poor_cache_locality", "title": "locality"},
+                {"category": "register_spilling", "title": "spilling"},
+            ],
+            None,
+            attribution=attribution,
+        )
         assert len(out["linked"]) == 2, (
-            "same lines but different mechanisms is two findings, not one")
+            "same lines but different mechanisms is two findings, not one"
+        )
 
 
 class TestInstructionAndPmSampling:
@@ -444,18 +564,31 @@ class TestInstructionAndPmSampling:
             def __init__(self, values, correlation=None):
                 self.values = values
                 self._c = correlation
-            def num_instances(self): return len(self.values)
-            def as_double(self, i): return float(self.values[i])
-            def as_uint64(self, i): return int(self.values[i])
-            def has_correlation_ids(self): return self._c is not None
+
+            def num_instances(self):
+                return len(self.values)
+
+            def as_double(self, i):
+                return float(self.values[i])
+
+            def as_uint64(self, i):
+                return int(self.values[i])
+
+            def has_correlation_ids(self):
+                return self._c is not None
+
             def correlation_ids(self):
-                if self._c is None: return None
+                if self._c is None:
+                    return None
                 return TestInstructionAndPmSampling._Action._M(self._c)
 
         def metric_names(self):
-            return [self._P + "long_scoreboard",
-                    self._PM + "sm__pipe_tensor_cycles_active.avg.pct_of_peak_sustained_elapsed",
-                    self._PM + "sm__cycles_active.avg"]
+            return [
+                self._P + "long_scoreboard",
+                self._PM
+                + "sm__pipe_tensor_cycles_active.avg.pct_of_peak_sustained_elapsed",
+                self._PM + "sm__cycles_active.avg",
+            ]
 
         def metric_by_name(self, n):
             M = TestInstructionAndPmSampling._Action._M
@@ -463,26 +596,43 @@ class TestInstructionAndPmSampling:
                 return M([600.0, 100.0], correlation=[0x10, 0x20])
             if n.endswith("pct_of_peak_sustained_elapsed"):
                 # bursty: high peak, low average
-                return M([0.0, 0.0, 94.0, 90.0, 0.0, 0.0],
-                         correlation=[1000, 2500, 4000, 5500, 7000, 8500])
+                return M(
+                    [0.0, 0.0, 94.0, 90.0, 0.0, 0.0],
+                    correlation=[1000, 2500, 4000, 5500, 7000, 8500],
+                )
             if n.endswith("sm__cycles_active.avg"):
-                return M([0.0, 2964.0, 100.0, 0.0, 0.0, 0.0],
-                         correlation=[1000, 2500, 4000, 5500, 7000, 8500])
+                return M(
+                    [0.0, 2964.0, 100.0, 0.0, 0.0, 0.0],
+                    correlation=[1000, 2500, 4000, 5500, 7000, 8500],
+                )
             return None
 
-        def source_files(self): return {"k.cu": "convert line\nload line\n"}
+        def source_files(self):
+            return {"k.cu": "convert line\nload line\n"}
+
         def source_info(self, a):
             t = {0x10: ("k.cu", 1), 0x20: ("k.cu", 2)}
-            if a not in t: return None
+            if a not in t:
+                return None
             f, l = t[a]
+
             class I:
-                def file_name(self): return f
-                def line(self): return l
+                def file_name(self):
+                    return f
+
+                def line(self):
+                    return l
+
             return I()
+
         def sass_by_pc(self, a):
             return {0x10: "PRMT R19, R8, 0x7732, RZ", 0x20: "LDG.E.128 R4"}.get(a, "")
-        def ptx_by_pc(self, a): return ""
-        def timed_warp_samples(self): return []
+
+        def ptx_by_pc(self, a):
+            return ""
+
+        def timed_warp_samples(self):
+            return []
 
     def test_top_instruction_carries_its_sass(self):
         out = source_correlation.top_stalling_instructions(self._Action())
@@ -511,10 +661,14 @@ class TestInstructionAndPmSampling:
         tensor = next(e for e in out["series"] if "tensor" in e["metric"])
         assert tensor["peak"] == pytest.approx(94.0)
         assert tensor["mean_in_active_window"] > tensor["mean_all_buckets"], (
-            "the window average must exceed the whole-session average")
+            "the window average must exceed the whole-session average"
+        )
         # The window is derived per pass; with no kernel duration in this
         # fixture it falls back to that pass's own envelope.
-        assert "envelope" in out["window_source"] or "kernel duration" in out["window_source"]
+        assert (
+            "envelope" in out["window_source"]
+            or "kernel duration" in out["window_source"]
+        )
 
     def test_duty_cycle_is_counted_inside_the_window(self):
         """Counting non-zero buckets series-wide over a window denominator
@@ -538,8 +692,12 @@ class TestInstructionAndPmSampling:
 
     def test_pm_sampling_absent_is_explained(self):
         class _Bare:
-            def metric_names(self): return ["sm__throughput.avg"]
-            def metric_by_name(self, n): return None
+            def metric_names(self):
+                return ["sm__throughput.avg"]
+
+            def metric_by_name(self, n):
+                return None
+
         out = source_correlation.analyze_pm_sampling(_Bare())
         assert out["available"] is False
         assert "pmsampling" in out["reason"]
@@ -552,42 +710,69 @@ class TestSamplingAppearsInTheReport:
         A = TestInstructionAndPmSampling._Action
 
         class Action(A):
-            def name(self): return "k"
-            def rule_results_as_dicts(self): return []
+            def name(self):
+                return "k"
+
+            def rule_results_as_dicts(self):
+                return []
+
             def metric_names(self):
                 return A.metric_names(self) + [
                     "sm__throughput.avg.pct_of_peak_sustained_elapsed",
-                    "smsp__pcsamp_sample_count", "smsp__pcsamp_interval_cycles"]
+                    "smsp__pcsamp_sample_count",
+                    "smsp__pcsamp_interval_cycles",
+                ]
 
             def metric_by_name(self, n):
-                simple = {"sm__throughput.avg.pct_of_peak_sustained_elapsed": 33.7,
-                          "smsp__pcsamp_sample_count": 9244.0,
-                          "smsp__pcsamp_interval_cycles": 2048.0}
+                simple = {
+                    "sm__throughput.avg.pct_of_peak_sustained_elapsed": 33.7,
+                    "smsp__pcsamp_sample_count": 9244.0,
+                    "smsp__pcsamp_interval_cycles": 2048.0,
+                }
                 if n in simple:
+
                     class _M:
-                        def __init__(self, v): self.v = v
-                        def value(self): return self.v
-                        def as_double(self): return self.v
-                        def as_uint64(self): return int(self.v)
-                        def unit(self): return ""
-                        def has_correlation_ids(self): return False
+                        def __init__(self, v):
+                            self.v = v
+
+                        def value(self):
+                            return self.v
+
+                        def as_double(self):
+                            return self.v
+
+                        def as_uint64(self):
+                            return int(self.v)
+
+                        def unit(self):
+                            return ""
+
+                        def has_correlation_ids(self):
+                            return False
+
                     return _M(simple[n])
                 return A.metric_by_name(self, n)
 
         class Rng:
             num_actions = 1
-            def action_by_idx(self, i): return Action()
+
+            def action_by_idx(self, i):
+                return Action()
 
         class Ctx:
             num_ranges = 1
-            def range_by_idx(self, i): return Rng()
+
+            def range_by_idx(self, i):
+                return Rng()
 
         return types.SimpleNamespace(load_report=lambda p: Ctx())
 
     def _markdown(self):
         return ncu_report_tools.diagnose_result_to_markdown(
             ncu_report_tools.diagnose_ncu_report(
-                "/dev/null", ncu_report_module=self._module()))
+                "/dev/null", ncu_report_module=self._module()
+            )
+        )
 
     def test_pc_sampling_section_is_rendered(self):
         text = self._markdown()
@@ -631,16 +816,29 @@ class TestPmSamplingPassGroups:
         class _M:
             def __init__(self, values, t0, step):
                 self.values, self.t0, self.step = values, t0, step
-            def num_instances(self): return len(self.values)
-            def as_double(self, i): return float(self.values[i])
-            def as_uint64(self, i): return self.t0 + i * self.step
-            def has_correlation_ids(self): return True
-            def correlation_ids(self): return self
+
+            def num_instances(self):
+                return len(self.values)
+
+            def as_double(self, i):
+                return float(self.values[i])
+
+            def as_uint64(self, i):
+                return self.t0 + i * self.step
+
+            def has_correlation_ids(self):
+                return True
+
+            def correlation_ids(self):
+                return self
 
         def metric_names(self):
-            return [self._PM + "sm__cycles_active.avg",
-                    self._PM + "sm__pipe_tensor_cycles_active.avg.pct_of_peak_sustained_elapsed",
-                    self._PM + "smsp__warps_issue_stalled_barrier.avg"]
+            return [
+                self._PM + "sm__cycles_active.avg",
+                self._PM
+                + "sm__pipe_tensor_cycles_active.avg.pct_of_peak_sustained_elapsed",
+                self._PM + "smsp__warps_issue_stalled_barrier.avg",
+            ]
 
         def metric_by_name(self, n):
             M = TestPmSamplingPassGroups._Action._M
@@ -662,10 +860,14 @@ class TestPmSamplingPassGroups:
     def test_each_series_records_its_pass(self):
         out = source_correlation.analyze_pm_sampling(self._Action())
         groups = {e["metric"]: e["pass_group"] for e in out["series"]}
-        assert groups["sm__cycles_active.avg"] == groups[
-            "sm__pipe_tensor_cycles_active.avg.pct_of_peak_sustained_elapsed"]
-        assert groups["smsp__warps_issue_stalled_barrier.avg"] != groups[
-            "sm__cycles_active.avg"]
+        assert (
+            groups["sm__cycles_active.avg"]
+            == groups["sm__pipe_tensor_cycles_active.avg.pct_of_peak_sustained_elapsed"]
+        )
+        assert (
+            groups["smsp__warps_issue_stalled_barrier.avg"]
+            != groups["sm__cycles_active.avg"]
+        )
 
     def test_window_is_computed_per_pass_not_borrowed(self):
         """Pass A is active in buckets 1..3; pass B in 0..2. Applying A's
@@ -679,6 +881,7 @@ class TestPmSamplingPassGroups:
         class _One(TestPmSamplingPassGroups._Action):
             def metric_names(self):
                 return [self._PM + "sm__cycles_active.avg"]
+
         out = source_correlation.analyze_pm_sampling(_One())
         assert out["pass_group_count"] == 1
         assert out["cross_pass_warning"] == ""
@@ -714,7 +917,9 @@ class TestPmSamplingDeclaredGroups:
         if not groups:
             pytest.skip("no local Nsight Compute install")
         warp_states = {
-            name.replace("pmsampling:smsp__warps_issue_stalled_", "").replace(".avg", ""): group
+            name.replace("pmsampling:smsp__warps_issue_stalled_", "").replace(
+                ".avg", ""
+            ): group
             for name, group in groups.items()
             if "warps_issue_stalled" in name
         }
@@ -748,12 +953,21 @@ class TestPmSamplingDeclaredGroups:
             class _M:
                 def __init__(self, values, t0, step):
                     self.values, self.t0, self.step = values, t0, step
-                def num_instances(self): return len(self.values)
+
+                def num_instances(self):
+                    return len(self.values)
+
                 def as_double(self, i=None):
                     return 8000.0 if i is None else float(self.values[i])
-                def as_uint64(self, i): return self.t0 + i * self.step
-                def has_correlation_ids(self): return True
-                def correlation_ids(self): return self
+
+                def as_uint64(self, i):
+                    return self.t0 + i * self.step
+
+                def has_correlation_ids(self):
+                    return True
+
+                def correlation_ids(self):
+                    return self
 
             def metric_names(self):
                 return [self._PM + "smsp__warps_issue_stalled_imc_miss.avg"]
@@ -761,7 +975,7 @@ class TestPmSamplingDeclaredGroups:
             def metric_by_name(self, n):
                 M = _Sparse._M
                 if n == "gpu__time_duration.sum":
-                    return M([], 0, 1)          # as_double() -> 8000 ns
+                    return M([], 0, 1)  # as_double() -> 8000 ns
                 # non-zero in 1 bucket of 10; the envelope would give a
                 # 1-bucket window and inflate the mean tenfold
                 return M([0, 0, 0, 100.0, 0, 0, 0, 0, 0, 0], 1000, 1000)
@@ -800,17 +1014,27 @@ class TestLinkageDedupUsesContributingReasons:
         "available": True,
         "stall_reasons": {"LONG_SCOREBOARD": 1000, "LG_THROTTLE": 0},
         "source_lines": [
-            {"file_name": "k.cu", "line": 1, "samples": 600,
-             "stall_reasons": {"LONG_SCOREBOARD": 600}},
-            {"file_name": "k.cu", "line": 2, "samples": 400,
-             "stall_reasons": {"LONG_SCOREBOARD": 400}},
+            {
+                "file_name": "k.cu",
+                "line": 1,
+                "samples": 600,
+                "stall_reasons": {"LONG_SCOREBOARD": 600},
+            },
+            {
+                "file_name": "k.cu",
+                "line": 2,
+                "samples": 400,
+                "stall_reasons": {"LONG_SCOREBOARD": 400},
+            },
         ],
     }
 
     def _link(self, categories):
         return source_correlation.link_findings_to_source(
-            [{"category": c, "title": c} for c in categories], None,
-            attribution=self._ATTRIBUTION)
+            [{"category": c, "title": c} for c in categories],
+            None,
+            attribution=self._ATTRIBUTION,
+        )
 
     def test_zero_sample_reason_does_not_make_a_finding_distinct(self):
         out = self._link(["stall_long_scoreboard", "register_spilling"])
@@ -830,19 +1054,35 @@ class TestLinkageDedupUsesContributingReasons:
             "available": True,
             "stall_reasons": {"LONG_SCOREBOARD": 500, "BARRIER": 500},
             "source_lines": [
-                {"file_name": "k.cu", "line": 1, "samples": 1000,
-                 "stall_reasons": {"LONG_SCOREBOARD": 500, "BARRIER": 500}},
+                {
+                    "file_name": "k.cu",
+                    "line": 1,
+                    "samples": 1000,
+                    "stall_reasons": {"LONG_SCOREBOARD": 500, "BARRIER": 500},
+                },
             ],
         }
         out = source_correlation.link_findings_to_source(
-            [{"category": "stall_long_scoreboard", "title": "ls"},
-             {"category": "stall_barrier", "title": "b"}],
-            None, attribution=attribution)
+            [
+                {"category": "stall_long_scoreboard", "title": "ls"},
+                {"category": "stall_barrier", "title": "b"},
+            ],
+            None,
+            attribution=attribution,
+        )
         assert len(out["linked"]) == 2, (
-            "same line, different mechanisms, both carrying samples")
+            "same line, different mechanisms, both carrying samples"
+        )
 
     def test_markdown_shows_the_absent_reason(self):
         text = ncu_report_tools.diagnose_result_to_markdown(
-            {"kernels": [{"kernel_name": "k",
-                          "signal_to_source": self._link(["register_spilling"])}]})
+            {
+                "kernels": [
+                    {
+                        "kernel_name": "k",
+                        "signal_to_source": self._link(["register_spilling"]),
+                    }
+                ]
+            }
+        )
         assert "carried no samples in this kernel" in text

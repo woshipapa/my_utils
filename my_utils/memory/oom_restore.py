@@ -1,6 +1,6 @@
-import datetime
-from datetime import timedelta
 import torch
+
+
 def set_oom_flag():
     """在分布式存储中设置 OOM 标志"""
     try:
@@ -13,6 +13,7 @@ def set_oom_flag():
                 print("🚩 [Signal] 已向集群广播 OOM 信号。")
     except Exception as e:
         print(f"⚠️ 广播 OOM 信号失败: {e}")
+
 
 def check_oom_flag():
     """检查集群中是否有人触发了 OOM"""

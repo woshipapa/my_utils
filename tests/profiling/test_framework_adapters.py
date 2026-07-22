@@ -37,7 +37,9 @@ def test_default_registry_contains_extended_framework_adapters() -> None:
         ("vllm", "vllm"),
     ],
 )
-def test_auto_setup_selects_explicit_framework_adapter(tmp_path: Path, framework: str, expected: str) -> None:
+def test_auto_setup_selects_explicit_framework_adapter(
+    tmp_path: Path, framework: str, expected: str
+) -> None:
     registry = build_default_adapter_registry()
     collector = MetricsCollector(output_dir=str(tmp_path / framework))
     result = registry.auto_setup_collector(
@@ -61,7 +63,9 @@ def test_auto_setup_selects_explicit_framework_adapter(tmp_path: Path, framework
         (["vllm", "serve", "Qwen/Qwen2.5-1.5B-Instruct"], "vllm"),
     ],
 )
-def test_auto_setup_detects_framework_from_command(tmp_path: Path, command: list[str], expected: str) -> None:
+def test_auto_setup_detects_framework_from_command(
+    tmp_path: Path, command: list[str], expected: str
+) -> None:
     registry = build_default_adapter_registry()
     collector = MetricsCollector(output_dir=str(tmp_path / "cmd"))
     result = registry.auto_setup_collector(

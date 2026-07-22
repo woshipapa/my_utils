@@ -6,7 +6,14 @@ from __future__ import annotations
 import pytest
 
 
-from _synthetic_loader import axes, gpu_specs, measurement_context, metric_catalog, ncu_diagnostics, source_correlation
+from _synthetic_loader import (
+    axes,
+    gpu_specs,
+    measurement_context,
+    metric_catalog,
+    ncu_diagnostics,
+    source_correlation,
+)
 
 
 def _h100():
@@ -53,32 +60,41 @@ SATURATED_LOW_OCCUPANCY = {
 def test_low_occupancy_on_a_saturated_kernel_is_not_a_finding():
     """CUTLASS-class GEMMs run at low occupancy by design and still hit peak."""
     result = ncu_diagnostics.diagnose_kernel(
-        SATURATED_LOW_OCCUPANCY, kernel_name="cutlass3x_sm90_gemm", gpu_spec=_h100())
+        SATURATED_LOW_OCCUPANCY, kernel_name="cutlass3x_sm90_gemm", gpu_spec=_h100()
+    )
     assert not [f for f in result["findings"] if "occupancy" in f["category"]]
 
 
 def test_low_occupancy_is_a_finding_when_schedulers_are_starving():
-    starved = dict(SATURATED_LOW_OCCUPANCY, **{
-        "sm__throughput.avg.pct_of_peak_sustained_elapsed": 20.0,
-        "gpu__compute_memory_throughput.avg.pct_of_peak_sustained_elapsed": 18.0,
-        "smsp__issue_active.avg.per_cycle_active": 0.15,
-    })
+    starved = dict(
+        SATURATED_LOW_OCCUPANCY,
+        **{
+            "sm__throughput.avg.pct_of_peak_sustained_elapsed": 20.0,
+            "gpu__compute_memory_throughput.avg.pct_of_peak_sustained_elapsed": 18.0,
+            "smsp__issue_active.avg.per_cycle_active": 0.15,
+        },
+    )
     result = ncu_diagnostics.diagnose_kernel(
-        starved, kernel_name="void my_kernel()", gpu_spec=_h100())
+        starved, kernel_name="void my_kernel()", gpu_spec=_h100()
+    )
     assert [f for f in result["findings"] if "occupancy" in f["category"]]
 
 
 def test_warp_specialized_kernels_are_excluded_from_the_occupancy_model():
     """setmaxnreg makes registers-per-thread a weighted artifact."""
-    metrics = dict(SATURATED_LOW_OCCUPANCY, **{
-        "sm__throughput.avg.pct_of_peak_sustained_elapsed": 20.0,
-        "gpu__compute_memory_throughput.avg.pct_of_peak_sustained_elapsed": 18.0,
-        "smsp__issue_active.avg.per_cycle_active": 0.15,
-        "sm__inst_executed_pipe_tensor_op_gmma.avg.pct_of_peak_sustained_active": 60.0,
-        "launch__registers_per_thread": 168,
-    })
+    metrics = dict(
+        SATURATED_LOW_OCCUPANCY,
+        **{
+            "sm__throughput.avg.pct_of_peak_sustained_elapsed": 20.0,
+            "gpu__compute_memory_throughput.avg.pct_of_peak_sustained_elapsed": 18.0,
+            "smsp__issue_active.avg.per_cycle_active": 0.15,
+            "sm__inst_executed_pipe_tensor_op_gmma.avg.pct_of_peak_sustained_active": 60.0,
+            "launch__registers_per_thread": 168,
+        },
+    )
     section = ncu_diagnostics.diagnose_kernel(
-        metrics, kernel_name="void flash_fwd_ws()", gpu_spec=_h100())["sections"]["occupancy"]
+        metrics, kernel_name="void flash_fwd_ws()", gpu_spec=_h100()
+    )["sections"]["occupancy"]
     assert section["warp_specialized"] is True
     assert section["occupancy_model_applicable"] is False
     assert not section["findings"]
@@ -92,8 +108,8 @@ def test_green_context_grid_is_judged_against_the_partition():
             "gpu__compute_memory_throughput.avg.pct_of_peak_sustained_elapsed": 25.0,
             "launch__grid_size": 20,
             "launch__block_size": 256,
-            "launch__sm_count": 16,                              # the partition
-            "device__attribute_multiprocessor_count": 132,       # the whole GPU
+            "launch__sm_count": 16,  # the partition
+            "device__attribute_multiprocessor_count": 132,  # the whole GPU
             "launch__uses_green_context": 1,
         },
         kernel_name="void partitioned()",
@@ -108,10 +124,12 @@ class TestAnalysisCoverage:
 
     def test_missing_sections_are_reported(self):
         # A SpeedOfLight-only report, which is what real ncu runs often carry.
-        view = ncu_diagnostics.MetricView({
-            "sm__throughput.avg.pct_of_peak_sustained_elapsed": 85.0,
-            "gpu__compute_memory_throughput.avg.pct_of_peak_sustained_elapsed": 60.0,
-        })
+        view = ncu_diagnostics.MetricView(
+            {
+                "sm__throughput.avg.pct_of_peak_sustained_elapsed": 85.0,
+                "gpu__compute_memory_throughput.avg.pct_of_peak_sustained_elapsed": 60.0,
+            }
+        )
         cov = ncu_diagnostics.analysis_coverage(view)
         assert "bottleneck" in cov["ran"]
         skipped = {s["analysis"] for s in cov["skipped"]}
@@ -124,7 +142,9 @@ class TestAnalysisCoverage:
         view = ncu_diagnostics.MetricView({})
         cov = ncu_diagnostics.analysis_coverage(view)
         for entry in cov["skipped"]:
-            assert entry["needs_section"], f"{entry['analysis']} has no section to collect"
+            assert entry["needs_section"], (
+                f"{entry['analysis']} has no section to collect"
+            )
         assert cov["remedy"]
 
 
@@ -143,7 +163,9 @@ class TestEveryFindingCarriesEvidence:
             "launch__waves_per_multiprocessor": 0.3,
         }
         result = ncu_diagnostics.diagnose_kernel(metrics, kernel_name="my_fused_kernel")
-        findings = [f if isinstance(f, dict) else f.to_dict() for f in result["findings"]]
+        findings = [
+            f if isinstance(f, dict) else f.to_dict() for f in result["findings"]
+        ]
         assert findings, "expected findings from a deliberately unhealthy kernel"
         for f in findings:
             assert f.get("evidence"), f"finding {f['title']!r} carries no evidence"
@@ -160,11 +182,14 @@ class TestPackedFp32Correction:
     }
 
     def test_applied_on_cc10(self):
-        m = dict(self.BASE, **{
-            "device__attribute_compute_capability_major": 10,
-            "device__attribute_compute_capability_minor": 0,
-            "smsp__sass_thread_inst_executed_op_ffma2_pred_on.sum": 1e9,
-        })
+        m = dict(
+            self.BASE,
+            **{
+                "device__attribute_compute_capability_major": 10,
+                "device__attribute_compute_capability_minor": 0,
+                "smsp__sass_thread_inst_executed_op_ffma2_pred_on.sum": 1e9,
+            },
+        )
         r = ncu_diagnostics.compute_roofline(ncu_diagnostics.MetricView(m))
         assert r["packed_fp32_applied"] is True
         base = ncu_diagnostics.compute_roofline(ncu_diagnostics.MetricView(self.BASE))
@@ -176,10 +201,13 @@ class TestPackedFp32Correction:
         assert not r.get("caveats")
 
     def test_absent_counters_on_cc10_are_flagged(self):
-        m = dict(self.BASE, **{
-            "device__attribute_compute_capability_major": 10,
-            "device__attribute_compute_capability_minor": 0,
-        })
+        m = dict(
+            self.BASE,
+            **{
+                "device__attribute_compute_capability_major": 10,
+                "device__attribute_compute_capability_minor": 0,
+            },
+        )
         r = ncu_diagnostics.compute_roofline(ncu_diagnostics.MetricView(m))
         assert r["packed_fp32_applied"] is False
         assert any("undercounted by up to 2x" in c for c in r["caveats"])
@@ -201,8 +229,9 @@ class TestCaveatsReachTheFindingsList:
             "gpu__compute_memory_throughput.avg.pct_of_peak_sustained_elapsed": 30.0,
         }
         result = ncu_diagnostics.diagnose_kernel(metrics, kernel_name="fused")
-        assert any(f["category"] == "measurement_caveat" for f in result["findings"]), \
+        assert any(f["category"] == "measurement_caveat" for f in result["findings"]), (
             "roofline caveat never reached the findings list"
+        )
         assert result["sections"]["roofline"]["packed_fp32_applied"] is False
 
     def test_no_spurious_caveat_when_complete(self):
@@ -212,14 +241,18 @@ class TestCaveatsReachTheFindingsList:
             "smsp__sass_thread_inst_executed_op_ffma_pred_on.sum": 1e9,
         }
         result = ncu_diagnostics.diagnose_kernel(metrics, kernel_name="fused")
-        assert not any(f["category"] == "measurement_caveat" for f in result["findings"])
+        assert not any(
+            f["category"] == "measurement_caveat" for f in result["findings"]
+        )
 
 
 class TestDiagnoseKernelReportsAxes:
     def test_axes_present_and_gaps_named(self):
         result = ncu_diagnostics.diagnose_kernel(
-            {"sm__throughput.avg.pct_of_peak_sustained_elapsed": 80.0,
-             "gpu__compute_memory_throughput.avg.pct_of_peak_sustained_elapsed": 20.0},
+            {
+                "sm__throughput.avg.pct_of_peak_sustained_elapsed": 80.0,
+                "gpu__compute_memory_throughput.avg.pct_of_peak_sustained_elapsed": 20.0,
+            },
             kernel_name="fused_kernel",
         )
         assert result["axes"]["axis_count"] == len(axes.AXES)
@@ -229,10 +262,12 @@ class TestDiagnoseKernelReportsAxes:
 
 class TestDiagnoseKernelAccountsForEveryMetric:
     def test_uncatalogued_metrics_are_reported(self):
-        result = ncu_diagnostics.diagnose_kernel({
-            "sm__throughput.avg.pct_of_peak_sustained_elapsed": 70.0,
-            "lts__t_sectors_srcunit_tex_op_read.sum": 12345.0,
-        })
+        result = ncu_diagnostics.diagnose_kernel(
+            {
+                "sm__throughput.avg.pct_of_peak_sustained_elapsed": 70.0,
+                "lts__t_sectors_srcunit_tex_op_read.sum": 12345.0,
+            }
+        )
         inventory = result["metric_inventory"]
         assert inventory["total"] == 2
         assert inventory["uncatalogued_count"] == 1
@@ -248,13 +283,17 @@ class TestThrottlingIsWiredIn:
 
     def test_throttling_is_reported_and_demotes_confidence(self):
         result = ncu_diagnostics.diagnose_kernel(
-            {"sm__throughput.avg.pct_of_peak_sustained_elapsed": 85.0,
-             "gpu__compute_memory_throughput.avg.pct_of_peak_sustained_elapsed": 20.0},
+            {
+                "sm__throughput.avg.pct_of_peak_sustained_elapsed": 85.0,
+                "gpu__compute_memory_throughput.avg.pct_of_peak_sustained_elapsed": 20.0,
+            },
             kernel_name="gemm",
-            throttling={"clock_event_mask": 0x4},   # SwPowerCap
+            throttling={"clock_event_mask": 0x4},  # SwPowerCap
         )
         assert "power_clock" not in result["axes"]["not_examined"]
-        throttle_findings = [f for f in result["findings"] if f["category"] == "throttling"]
+        throttle_findings = [
+            f for f in result["findings"] if f["category"] == "throttling"
+        ]
         assert throttle_findings, "a throttled run must say so"
         assert throttle_findings[0]["severity"] == "high"
         for finding in result["findings"]:
@@ -280,9 +319,12 @@ class TestTileQuantization:
             {"launch__grid_size": 512, "launch__block_size": 256},
             kernel_name=self._KERNEL,
         )
-        unasked = [f for f in result["findings"]
-                   if f["category"] == "tile_quantization"
-                   and "could not be checked" in f["title"]]
+        unasked = [
+            f
+            for f in result["findings"]
+            if f["category"] == "tile_quantization"
+            and "could not be checked" in f["title"]
+        ]
         assert unasked, "an unaskable question must not read as a clean result"
         assert unasked[0]["severity"] == "info"
 
@@ -293,10 +335,15 @@ class TestTileQuantization:
             kernel_name=self._KERNEL,
             problem_shape={"m": 257, "n": 4096},
         )
-        flagged = [f for f in result["findings"]
-                   if f["category"] == "tile_quantization" and "M" in f["title"]]
+        flagged = [
+            f
+            for f in result["findings"]
+            if f["category"] == "tile_quantization" and "M" in f["title"]
+        ]
         assert flagged, "257 against a 128 tile computes a third padding"
-        assert flagged[0]["evidence"]["waste_fraction"] == pytest.approx(0.331, abs=0.01)
+        assert flagged[0]["evidence"]["waste_fraction"] == pytest.approx(
+            0.331, abs=0.01
+        )
         assert flagged[0]["speedup_ceiling"] == pytest.approx(1.494, abs=0.01)
 
     def test_large_ragged_dimension_is_not_flagged(self):
@@ -306,8 +353,11 @@ class TestTileQuantization:
             kernel_name=self._KERNEL,
             problem_shape={"m": 4097, "n": 4096},
         )
-        assert not [f for f in result["findings"]
-                    if f["category"] == "tile_quantization" and "M" in f["title"]]
+        assert not [
+            f
+            for f in result["findings"]
+            if f["category"] == "tile_quantization" and "M" in f["title"]
+        ]
 
     def test_evenly_divided_shape_is_not_flagged(self):
         result = ncu_diagnostics.diagnose_kernel(
@@ -315,68 +365,100 @@ class TestTileQuantization:
             kernel_name=self._KERNEL,
             problem_shape={"m": 4096, "n": 4096},
         )
-        assert not [f for f in result["findings"]
-                    if f["category"] == "tile_quantization"]
+        assert not [
+            f for f in result["findings"] if f["category"] == "tile_quantization"
+        ]
 
 
 class TestMemoryHierarchy:
     def test_saturated_l2_is_distinguished_from_dram(self):
-        result = ncu_diagnostics.analyze_memory_hierarchy(ncu_diagnostics.MetricView({
-            "lts__throughput.avg.pct_of_peak_sustained_elapsed": 88.0,
-            "gpu__dram_throughput.avg.pct_of_peak_sustained_elapsed": 25.0,
-        }))
+        result = ncu_diagnostics.analyze_memory_hierarchy(
+            ncu_diagnostics.MetricView(
+                {
+                    "lts__throughput.avg.pct_of_peak_sustained_elapsed": 88.0,
+                    "gpu__dram_throughput.avg.pct_of_peak_sustained_elapsed": 25.0,
+                }
+            )
+        )
         assert result["tightest_level"] == "L2"
         finding = next(f for f in result["findings"] if "saturated level" in f.title)
         assert "not DRAM" in finding.title
 
     def test_sysmem_aperture_access_is_high_severity(self):
-        result = ncu_diagnostics.analyze_memory_hierarchy(ncu_diagnostics.MetricView({
-            "lts__t_sectors_srcunit_tex_aperture_sysmem_lookup_miss.sum": 50000.0,
-        }))
+        result = ncu_diagnostics.analyze_memory_hierarchy(
+            ncu_diagnostics.MetricView(
+                {
+                    "lts__t_sectors_srcunit_tex_aperture_sysmem_lookup_miss.sum": 50000.0,
+                }
+            )
+        )
         finding = next(f for f in result["findings"] if "system memory" in f.title)
         assert finding.severity == "high"
 
     def test_asymmetric_l2_hit_rate_is_flagged(self):
-        result = ncu_diagnostics.analyze_memory_hierarchy(ncu_diagnostics.MetricView({
-            "lts__t_sector_op_read_hit_rate.pct": 15.0,
-            "lts__t_sector_op_write_hit_rate.pct": 90.0,
-        }))
+        result = ncu_diagnostics.analyze_memory_hierarchy(
+            ncu_diagnostics.MetricView(
+                {
+                    "lts__t_sector_op_read_hit_rate.pct": 15.0,
+                    "lts__t_sector_op_write_hit_rate.pct": 90.0,
+                }
+            )
+        )
         assert any(f.category == "poor_cache_locality" for f in result["findings"])
 
     def test_write_dominated_traffic_is_reported(self):
-        result = ncu_diagnostics.analyze_memory_hierarchy(ncu_diagnostics.MetricView({
-            "dram__bytes_read.sum": 1e6, "dram__bytes_write.sum": 9e6,
-        }))
+        result = ncu_diagnostics.analyze_memory_hierarchy(
+            ncu_diagnostics.MetricView(
+                {
+                    "dram__bytes_read.sum": 1e6,
+                    "dram__bytes_write.sum": 9e6,
+                }
+            )
+        )
         assert result["dram_write_share"] == pytest.approx(0.9)
         assert any("write-dominated" in f.title for f in result["findings"])
 
     def test_silent_when_no_memory_counters(self):
-        result = ncu_diagnostics.analyze_memory_hierarchy(ncu_diagnostics.MetricView({}))
+        result = ncu_diagnostics.analyze_memory_hierarchy(
+            ncu_diagnostics.MetricView({})
+        )
         assert result["findings"] == []
 
 
 class TestIssueEfficiency:
     def test_stalled_resident_warps_are_not_an_occupancy_problem(self):
         """High occupancy + no eligible warps means latency, not occupancy."""
-        result = ncu_diagnostics.analyze_issue_efficiency(ncu_diagnostics.MetricView({
-            "smsp__warps_eligible.avg.per_cycle_active": 0.3,
-            "smsp__warps_active.avg.per_cycle_active": 12.0,
-        }))
+        result = ncu_diagnostics.analyze_issue_efficiency(
+            ncu_diagnostics.MetricView(
+                {
+                    "smsp__warps_eligible.avg.per_cycle_active": 0.3,
+                    "smsp__warps_active.avg.per_cycle_active": 12.0,
+                }
+            )
+        )
         finding = result["findings"][0]
         assert "not occupancy" in finding.summary
         assert "stall breakdown" in finding.actions[0]
 
     def test_low_occupancy_gets_the_occupancy_advice(self):
-        result = ncu_diagnostics.analyze_issue_efficiency(ncu_diagnostics.MetricView({
-            "smsp__warps_eligible.avg.per_cycle_active": 0.4,
-            "smsp__warps_active.avg.per_cycle_active": 2.0,
-        }))
+        result = ncu_diagnostics.analyze_issue_efficiency(
+            ncu_diagnostics.MetricView(
+                {
+                    "smsp__warps_eligible.avg.per_cycle_active": 0.4,
+                    "smsp__warps_active.avg.per_cycle_active": 2.0,
+                }
+            )
+        )
         assert "Increase occupancy" in result["findings"][0].actions[0]
 
     def test_healthy_scheduler_is_silent(self):
-        result = ncu_diagnostics.analyze_issue_efficiency(ncu_diagnostics.MetricView({
-            "smsp__warps_eligible.avg.per_cycle_active": 3.5,
-        }))
+        result = ncu_diagnostics.analyze_issue_efficiency(
+            ncu_diagnostics.MetricView(
+                {
+                    "smsp__warps_eligible.avg.per_cycle_active": 3.5,
+                }
+            )
+        )
         assert result["findings"] == []
 
 
@@ -384,54 +466,82 @@ class TestInstructionMix:
     """SpeedOfLight compute is a max over pipes, so it hides the busy one."""
 
     def test_transcendental_bound_kernel_is_named(self):
-        result = ncu_diagnostics.analyze_instruction_mix(ncu_diagnostics.MetricView({
-            "sm__inst_executed_pipe_xu.avg.pct_of_peak_sustained_active": 85.0,
-            "sm__inst_executed_pipe_fma.avg.pct_of_peak_sustained_active": 20.0,
-        }))
+        result = ncu_diagnostics.analyze_instruction_mix(
+            ncu_diagnostics.MetricView(
+                {
+                    "sm__inst_executed_pipe_xu.avg.pct_of_peak_sustained_active": 85.0,
+                    "sm__inst_executed_pipe_fma.avg.pct_of_peak_sustained_active": 20.0,
+                }
+            )
+        )
         assert "XU" in result["busiest_pipe"]
         finding = result["findings"][0]
         assert finding.severity == "medium"
         assert "__expf" in finding.actions[0] or "transcendental" in finding.actions[0]
 
     def test_lsu_bound_is_not_advised_as_a_bandwidth_problem(self):
-        result = ncu_diagnostics.analyze_instruction_mix(ncu_diagnostics.MetricView({
-            "sm__inst_executed_pipe_lsu.avg.pct_of_peak_sustained_active": 90.0,
-        }))
+        result = ncu_diagnostics.analyze_instruction_mix(
+            ncu_diagnostics.MetricView(
+                {
+                    "sm__inst_executed_pipe_lsu.avg.pct_of_peak_sustained_active": 90.0,
+                }
+            )
+        )
         assert "vectorise" in result["findings"][0].actions[0].lower()
 
     def test_active_denominator_is_declared(self):
         """These are _active percentages and must not be ranked against SOL."""
-        result = ncu_diagnostics.analyze_instruction_mix(ncu_diagnostics.MetricView({
-            "sm__inst_executed_pipe_alu.avg.pct_of_peak_sustained_active": 75.0,
-        }))
+        result = ncu_diagnostics.analyze_instruction_mix(
+            ncu_diagnostics.MetricView(
+                {
+                    "sm__inst_executed_pipe_alu.avg.pct_of_peak_sustained_active": 75.0,
+                }
+            )
+        )
         assert "active" in result["findings"][0].evidence["denominator"]
 
     def test_incidental_fp64_is_flagged_separately(self):
-        result = ncu_diagnostics.analyze_instruction_mix(ncu_diagnostics.MetricView({
-            "sm__inst_executed_pipe_fma.avg.pct_of_peak_sustained_active": 70.0,
-            "sm__inst_executed_pipe_fp64.avg.pct_of_peak_sustained_active": 4.0,
-        }))
+        result = ncu_diagnostics.analyze_instruction_mix(
+            ncu_diagnostics.MetricView(
+                {
+                    "sm__inst_executed_pipe_fma.avg.pct_of_peak_sustained_active": 70.0,
+                    "sm__inst_executed_pipe_fp64.avg.pct_of_peak_sustained_active": 4.0,
+                }
+            )
+        )
         assert any(f.category == "unexpected_fp64" for f in result["findings"])
 
     def test_silent_without_pipe_counters(self):
-        assert ncu_diagnostics.analyze_instruction_mix(
-            ncu_diagnostics.MetricView({}))["findings"] == []
+        assert (
+            ncu_diagnostics.analyze_instruction_mix(ncu_diagnostics.MetricView({}))[
+                "findings"
+            ]
+            == []
+        )
 
 
 class TestRooflineDtypeBasis:
     """Grading against the wrong precision's peak scales efficiency directly."""
 
     def _spec(self):
-        return gpu_specs.lookup_gpu_spec("H100 SXM") or gpu_specs.lookup_gpu_spec("H100")
+        return gpu_specs.lookup_gpu_spec("H100 SXM") or gpu_specs.lookup_gpu_spec(
+            "H100"
+        )
 
     def test_fp8_counters_pick_the_fp8_peak(self):
         spec = self._spec()
         if spec is None:
             pytest.skip("no H100 spec")
-        result = ncu_diagnostics.compute_roofline(ncu_diagnostics.MetricView({
-            "sm__ops_path_tensor_src_fp8_dst_fp32_sparsity_off.sum": 1e12,
-            "dram__bytes.sum": 1e9, "gpu__time_duration.sum": 1e6,
-        }), spec)
+        result = ncu_diagnostics.compute_roofline(
+            ncu_diagnostics.MetricView(
+                {
+                    "sm__ops_path_tensor_src_fp8_dst_fp32_sparsity_off.sum": 1e12,
+                    "dram__bytes.sum": 1e9,
+                    "gpu__time_duration.sum": 1e6,
+                }
+            ),
+            spec,
+        )
         assert result["dtype_basis"] == "fp8"
         assert result["dtype_basis_source"] == "tensor_op_counters"
 
@@ -439,10 +549,16 @@ class TestRooflineDtypeBasis:
         spec = self._spec()
         if spec is None:
             pytest.skip("no H100 spec")
-        result = ncu_diagnostics.compute_roofline(ncu_diagnostics.MetricView({
-            "sm__pipe_tensor_cycles_active.avg.pct_of_peak_sustained_active": 70.0,
-            "dram__bytes.sum": 1e9, "gpu__time_duration.sum": 1e6,
-        }), spec)
+        result = ncu_diagnostics.compute_roofline(
+            ncu_diagnostics.MetricView(
+                {
+                    "sm__pipe_tensor_cycles_active.avg.pct_of_peak_sustained_active": 70.0,
+                    "dram__bytes.sum": 1e9,
+                    "gpu__time_duration.sum": 1e6,
+                }
+            ),
+            spec,
+        )
         assert result.get("dtype_ambiguous") is True
         assert result["dtype_basis_source"] == "tensor_pipe_active_precision_unknown"
         assert any("could not be determined" in c for c in result["caveats"])
@@ -451,10 +567,16 @@ class TestRooflineDtypeBasis:
         spec = self._spec()
         if spec is None:
             pytest.skip("no H100 spec")
-        result = ncu_diagnostics.compute_roofline(ncu_diagnostics.MetricView({
-            "smsp__sass_thread_inst_executed_op_ffma_pred_on.sum": 1e9,
-            "dram__bytes.sum": 1e9, "gpu__time_duration.sum": 1e6,
-        }), spec)
+        result = ncu_diagnostics.compute_roofline(
+            ncu_diagnostics.MetricView(
+                {
+                    "smsp__sass_thread_inst_executed_op_ffma_pred_on.sum": 1e9,
+                    "dram__bytes.sum": 1e9,
+                    "gpu__time_duration.sum": 1e6,
+                }
+            ),
+            spec,
+        )
         assert result["dtype_basis"] == "fp32"
         assert not result.get("dtype_ambiguous")
 
@@ -466,55 +588,82 @@ class TestHierarchicalRoofline:
 
     def test_leaking_l1_is_reported(self):
         """L1 and L2 intensities close together means L1 catches no reuse."""
-        result = ncu_diagnostics.hierarchical_roofline(ncu_diagnostics.MetricView({
-            **self._FLOPS,
-            "l1tex__t_sectors.sum": 1e6,
-            "lts__t_sectors.sum": 0.9e6,
-            "dram__bytes.sum": 1e9,
-        }))
+        result = ncu_diagnostics.hierarchical_roofline(
+            ncu_diagnostics.MetricView(
+                {
+                    **self._FLOPS,
+                    "l1tex__t_sectors.sum": 1e6,
+                    "lts__t_sectors.sum": 0.9e6,
+                    "dram__bytes.sum": 1e9,
+                }
+            )
+        )
         assert result["available"] is True
         assert result["l1_to_l2_intensity_ratio"] < 1.5
         assert any("L1 is not capturing reuse" in f.title for f in result["findings"])
 
     def test_healthy_hierarchy_advises_against_tiling_work(self):
-        result = ncu_diagnostics.hierarchical_roofline(ncu_diagnostics.MetricView({
-            **self._FLOPS,
-            "l1tex__t_sectors.sum": 1e6,
-            "lts__t_sectors.sum": 1e5,
-            "dram__bytes.sum": 1e6,
-        }))
+        result = ncu_diagnostics.hierarchical_roofline(
+            ncu_diagnostics.MetricView(
+                {
+                    **self._FLOPS,
+                    "l1tex__t_sectors.sum": 1e6,
+                    "lts__t_sectors.sum": 1e5,
+                    "dram__bytes.sum": 1e6,
+                }
+            )
+        )
         assert result["locality_verdict"] == "healthy"
         finding = next(f for f in result["findings"] if "already capturing" in f.title)
         assert "Do not spend effort" in finding.actions[0]
 
     def test_bytes_derived_from_sectors_when_byte_counters_absent(self):
-        result = ncu_diagnostics.hierarchical_roofline(ncu_diagnostics.MetricView({
-            **self._FLOPS, "l1tex__t_sectors.sum": 1000.0,
-        }))
+        result = ncu_diagnostics.hierarchical_roofline(
+            ncu_diagnostics.MetricView(
+                {
+                    **self._FLOPS,
+                    "l1tex__t_sectors.sum": 1000.0,
+                }
+            )
+        )
         assert result["levels"]["l1"]["bytes"] == pytest.approx(32000.0)
         assert "x 32" in result["levels"]["l1"]["byte_source"]
 
     def test_direct_byte_counter_is_preferred(self):
-        result = ncu_diagnostics.hierarchical_roofline(ncu_diagnostics.MetricView({
-            **self._FLOPS, "l1tex__t_bytes.sum": 4096.0, "l1tex__t_sectors.sum": 1000.0,
-        }))
+        result = ncu_diagnostics.hierarchical_roofline(
+            ncu_diagnostics.MetricView(
+                {
+                    **self._FLOPS,
+                    "l1tex__t_bytes.sum": 4096.0,
+                    "l1tex__t_sectors.sum": 1000.0,
+                }
+            )
+        )
         assert result["levels"]["l1"]["bytes"] == pytest.approx(4096.0)
         assert result["levels"]["l1"]["byte_source"] == "byte counter"
 
     def test_shared_memory_caveat_fires_for_tiled_kernels(self):
         """l1tex__t_bytes excludes shared traffic -- critical for attention/GEMM."""
-        result = ncu_diagnostics.hierarchical_roofline(ncu_diagnostics.MetricView({
-            **self._FLOPS,
-            "l1tex__t_sectors.sum": 1e6,
-            "l1tex__data_pipe_lsu_wavefronts_mem_shared_op_ld.sum": 5e5,
-        }))
+        result = ncu_diagnostics.hierarchical_roofline(
+            ncu_diagnostics.MetricView(
+                {
+                    **self._FLOPS,
+                    "l1tex__t_sectors.sum": 1e6,
+                    "l1tex__data_pipe_lsu_wavefronts_mem_shared_op_ld.sum": 5e5,
+                }
+            )
+        )
         assert any("shared-memory traffic" in c for c in result["caveats"])
         assert any("overestimate" in c for c in result["caveats"])
 
     def test_missing_flops_reports_why_not_empty(self):
-        result = ncu_diagnostics.hierarchical_roofline(ncu_diagnostics.MetricView({
-            "l1tex__t_sectors.sum": 1e6,
-        }))
+        result = ncu_diagnostics.hierarchical_roofline(
+            ncu_diagnostics.MetricView(
+                {
+                    "l1tex__t_sectors.sum": 1e6,
+                }
+            )
+        )
         assert result["available"] is False
         assert "FLOP counters" in result["reason"]
 
@@ -524,10 +673,10 @@ class TestSolThresholdsMatchShippedRule:
 
     def test_four_thresholds_match_nvidia(self):
         t = ncu_diagnostics.SOL_THRESHOLDS
-        assert t["balanced_delta"] == 10.0     # balanced_threshold
-        assert t["latency_bound"] == 60.0      # latency_bound_threshold
-        assert t["saturated"] == 80.0          # no_bound_threshold
-        assert t["waves_small_grid"] == 1.0    # waves_threshold
+        assert t["balanced_delta"] == 10.0  # balanced_threshold
+        assert t["latency_bound"] == 60.0  # latency_bound_threshold
+        assert t["saturated"] == 80.0  # no_bound_threshold
+        assert t["waves_small_grid"] == 1.0  # waves_threshold
 
     def test_unverified_two_axis_table_is_gone(self):
         t = ncu_diagnostics.SOL_THRESHOLDS
@@ -550,33 +699,43 @@ class TestStallAccountingCloses:
     """
 
     def _view(self, reasons):
-        metrics = {"smsp__average_warp_latency_per_inst_issued.ratio": 20.0,
-                   "smsp__issue_active.avg.per_cycle_active": 0.1}
+        metrics = {
+            "smsp__average_warp_latency_per_inst_issued.ratio": 20.0,
+            "smsp__issue_active.avg.per_cycle_active": 0.1,
+        }
         for name, value in reasons.items():
-            metrics[f"smsp__average_warps_issue_stalled_{name}_per_issue_active.ratio"] = value
+            metrics[
+                f"smsp__average_warps_issue_stalled_{name}_per_issue_active.ratio"
+            ] = value
         return ncu_diagnostics.MetricView(metrics)
 
     def test_complete_accounting_reports_full_explanation(self):
         result = ncu_diagnostics.analyze_stalls(
-            self._view({"long_scoreboard": 12.0, "barrier": 6.0, "wait": 2.0}))
+            self._view({"long_scoreboard": 12.0, "barrier": 6.0, "wait": 2.0})
+        )
         assert result["explained_share"] == pytest.approx(1.0, abs=0.01)
-        assert not [f for f in result["findings"]
-                    if f.title == "Stall accounting does not close"]
+        assert not [
+            f
+            for f in result["findings"]
+            if f.title == "Stall accounting does not close"
+        ]
 
     def test_missing_reasons_are_flagged_not_absorbed(self):
         """Half the reasons absent must not read as 'the rest is fine'."""
-        result = ncu_diagnostics.analyze_stalls(
-            self._view({"long_scoreboard": 8.0}))
+        result = ncu_diagnostics.analyze_stalls(self._view({"long_scoreboard": 8.0}))
         assert result["explained_share"] == pytest.approx(0.4, abs=0.01)
-        finding = next(f for f in result["findings"]
-                       if f.title == "Stall accounting does not close")
+        finding = next(
+            f
+            for f in result["findings"]
+            if f.title == "Stall accounting does not close"
+        )
         assert "not unexplained stalling" in finding.summary
         assert "WarpStateStats" in finding.actions[0]
 
     def test_note_states_what_the_top_stalls_cover(self):
         result = ncu_diagnostics.analyze_stalls(
-            self._view({"long_scoreboard": 12.0, "barrier": 6.0, "wait": 2.0}),
-            top_k=1)
+            self._view({"long_scoreboard": 12.0, "barrier": 6.0, "wait": 2.0}), top_k=1
+        )
         assert "top 1 account for 60" in result["accounting_note"]
 
     def test_absent_total_says_the_shares_have_no_denominator(self):
@@ -595,14 +754,20 @@ class TestWarpSpecializedKernelsAreNotJudgedAsCommodity:
     whole kernel; that is the steady state, not a scheduling fault.
     """
 
-    _WS = {"sm__inst_executed_pipe_tensor_op_gmma.avg.pct_of_peak_sustained_active": 30.0}
+    _WS = {
+        "sm__inst_executed_pipe_tensor_op_gmma.avg.pct_of_peak_sustained_active": 30.0
+    }
 
     def test_full_register_file_is_recognised_as_deliberate(self):
         # Near the cap AND warp-specialized: an ordinary kernel sitting near its
         # cap is still spilling, so the excuse is gated on the design.
         view = ncu_diagnostics.MetricView(
-            {"launch__registers_per_thread": 168.0, "launch__block_size": 384.0,
-             **self._WS})
+            {
+                "launch__registers_per_thread": 168.0,
+                "launch__block_size": 384.0,
+                **self._WS,
+            }
+        )
         out = ncu_diagnostics._registers_are_deliberate(view)
         assert out is not None
         assert out["registers_used"] == 64512
@@ -610,56 +775,89 @@ class TestWarpSpecializedKernelsAreNotJudgedAsCommodity:
 
     def test_ordinary_register_count_is_not_excused(self):
         view = ncu_diagnostics.MetricView(
-            {"launch__registers_per_thread": 40.0, "launch__block_size": 256.0})
+            {"launch__registers_per_thread": 40.0, "launch__block_size": 256.0}
+        )
         assert ncu_diagnostics._registers_are_deliberate(view) is None
 
     def test_spilling_severity_drops_when_registers_are_deliberate(self):
-        base = {"smsp__inst_executed_op_local_ld.sum": 70000.0,
-                "smsp__inst_executed_op_local_st.sum": 20000.0,
-                "smsp__inst_executed.sum": 500000.0,
-                "l1tex__t_sector_pipe_lsu_mem_local_op_ld_hit_rate.pct": 38.0}
-        careless = ncu_diagnostics.analyze_spilling(ncu_diagnostics.MetricView(
-            {**base, "launch__registers_per_thread": 40.0, "launch__block_size": 256.0}))
-        deliberate = ncu_diagnostics.analyze_spilling(ncu_diagnostics.MetricView(
-            {**base, "launch__registers_per_thread": 168.0, "launch__block_size": 384.0,
-             **self._WS}))
+        base = {
+            "smsp__inst_executed_op_local_ld.sum": 70000.0,
+            "smsp__inst_executed_op_local_st.sum": 20000.0,
+            "smsp__inst_executed.sum": 500000.0,
+            "l1tex__t_sector_pipe_lsu_mem_local_op_ld_hit_rate.pct": 38.0,
+        }
+        careless = ncu_diagnostics.analyze_spilling(
+            ncu_diagnostics.MetricView(
+                {
+                    **base,
+                    "launch__registers_per_thread": 40.0,
+                    "launch__block_size": 256.0,
+                }
+            )
+        )
+        deliberate = ncu_diagnostics.analyze_spilling(
+            ncu_diagnostics.MetricView(
+                {
+                    **base,
+                    "launch__registers_per_thread": 168.0,
+                    "launch__block_size": 384.0,
+                    **self._WS,
+                }
+            )
+        )
         assert careless["findings"][0].severity == "high"
         assert deliberate["findings"][0].severity != "high"
         assert "design question, not a defect" in deliberate["findings"][0].summary
 
     def test_eligible_warp_rule_is_not_applied_to_warp_specialized(self):
-        starved = {"smsp__warps_eligible.avg.per_cycle_active": 0.16,
-                   "smsp__warps_active.avg.per_cycle_active": 3.0}
+        starved = {
+            "smsp__warps_eligible.avg.per_cycle_active": 0.16,
+            "smsp__warps_active.avg.per_cycle_active": 3.0,
+        }
         ordinary = ncu_diagnostics.analyze_issue_efficiency(
-            ncu_diagnostics.MetricView(starved))
+            ncu_diagnostics.MetricView(starved)
+        )
         specialized = ncu_diagnostics.analyze_issue_efficiency(
-            ncu_diagnostics.MetricView({**starved, **self._WS}))
+            ncu_diagnostics.MetricView({**starved, **self._WS})
+        )
         assert ordinary["findings"], "the rule must still fire on a normal kernel"
         assert specialized["findings"] == []
         assert specialized["warp_specialized"] is True
         assert "by design" in specialized["note"]
 
     def test_long_scoreboard_confound_is_stated_on_wgmma_kernels(self):
-        stalls = {"smsp__average_warp_latency_per_inst_issued.ratio": 20.0,
-                  "smsp__average_warps_issue_stalled_long_scoreboard_per_issue_active.ratio": 12.0,
-                  "smsp__issue_active.avg.per_cycle_active": 0.1}
+        stalls = {
+            "smsp__average_warp_latency_per_inst_issued.ratio": 20.0,
+            "smsp__average_warps_issue_stalled_long_scoreboard_per_issue_active.ratio": 12.0,
+            "smsp__issue_active.avg.per_cycle_active": 0.1,
+        }
         plain = ncu_diagnostics.analyze_stalls(ncu_diagnostics.MetricView(stalls))
         wgmma = ncu_diagnostics.analyze_stalls(
-            ncu_diagnostics.MetricView({**stalls, **self._WS}))
-        plain_ls = next(f for f in plain["findings"] if f.category == "stall_long_scoreboard")
-        wgmma_ls = next(f for f in wgmma["findings"] if f.category == "stall_long_scoreboard")
+            ncu_diagnostics.MetricView({**stalls, **self._WS})
+        )
+        plain_ls = next(
+            f for f in plain["findings"] if f.category == "stall_long_scoreboard"
+        )
+        wgmma_ls = next(
+            f for f in wgmma["findings"] if f.category == "stall_long_scoreboard"
+        )
         assert plain_ls.severity == "high"
         assert wgmma_ls.severity == "medium", "confounded, so not asserted at high"
         assert "warpgroup synchronisation" in wgmma_ls.summary
         assert not any("coalesc" in a.lower() for a in wgmma_ls.actions), (
-            "coalescing advice sends the author after memory that is really sync")
+            "coalescing advice sends the author after memory that is really sync"
+        )
 
     def test_bf16_tensor_ops_resolve_without_the_sparsity_suffix(self):
         """The report carries `..._src_bf16_dst_fp32.sum`; the catalog only had
         the `_sparsity_off` spelling, so the dtype came back unknown."""
-        view = ncu_diagnostics.MetricView({
-            "sm__ops_path_tensor_src_bf16_dst_fp32.sum": 25769803776.0,
-            "gpu__time_duration.sum": 82464.0, "dram__bytes.sum": 1e9})
+        view = ncu_diagnostics.MetricView(
+            {
+                "sm__ops_path_tensor_src_bf16_dst_fp32.sum": 25769803776.0,
+                "gpu__time_duration.sum": 82464.0,
+                "dram__bytes.sum": 1e9,
+            }
+        )
         spec = gpu_specs.lookup_gpu_spec("H100 SXM5")
         result = ncu_diagnostics.compute_roofline(view, spec)
         assert result["tensor_ops"] == pytest.approx(25769803776.0)
@@ -684,106 +882,176 @@ class TestVerificationRegressions:
         "available": True,
         "stall_reasons": {"LONG_SCOREBOARD": 600, "LG_THROTTLE": 300},
         "source_lines": (
-            [{"file_name": "k.cu", "line": i, "samples": 200,
-              "stall_reasons": {"LONG_SCOREBOARD": 200}} for i in (1, 2, 3)]
-            + [{"file_name": "k.cu", "line": 10 + i, "samples": 30,
-                "stall_reasons": {"LG_THROTTLE": 30}} for i in range(10)]
+            [
+                {
+                    "file_name": "k.cu",
+                    "line": i,
+                    "samples": 200,
+                    "stall_reasons": {"LONG_SCOREBOARD": 200},
+                }
+                for i in (1, 2, 3)
+            ]
+            + [
+                {
+                    "file_name": "k.cu",
+                    "line": 10 + i,
+                    "samples": 30,
+                    "stall_reasons": {"LG_THROTTLE": 30},
+                }
+                for i in range(10)
+            ]
         ),
     }
 
     def test_reason_below_the_display_cut_still_distinguishes(self):
         """LG_THROTTLE is a third of the samples, spread under the top-K cut."""
         out = source_correlation.link_findings_to_source(
-            [{"category": "stall_long_scoreboard", "title": "LS"},
-             {"category": "register_spilling", "title": "SPILL"}],
-            None, attribution=self._SPREAD, top_k=3)
+            [
+                {"category": "stall_long_scoreboard", "title": "LS"},
+                {"category": "register_spilling", "title": "SPILL"},
+            ],
+            None,
+            attribution=self._SPREAD,
+            top_k=3,
+        )
         assert len(out["linked"]) == 2, "distinct mechanisms must not be folded"
         assert out["duplicate_links"] == []
 
     def test_declared_but_absent_means_absent_from_the_kernel(self):
         out = source_correlation.link_findings_to_source(
             [{"category": "register_spilling", "title": "SPILL"}],
-            None, attribution=self._SPREAD, top_k=3)
+            None,
+            attribution=self._SPREAD,
+            top_k=3,
+        )
         entry = out["linked"][0]
         assert entry["declared_but_absent"] == [], (
-            "LG_THROTTLE carried 300 samples; calling it absent is a false claim")
+            "LG_THROTTLE carried 300 samples; calling it absent is a false claim"
+        )
         assert entry["contributing_below_cut"] == ["LG_THROTTLE"]
 
     def test_dedup_is_independent_of_the_display_cut(self):
         keys = []
         for k in (2, 3, 5):
             out = source_correlation.link_findings_to_source(
-                [{"category": "stall_long_scoreboard", "title": "LS"},
-                 {"category": "register_spilling", "title": "SPILL"}],
-                None, attribution=self._SPREAD, top_k=k)
+                [
+                    {"category": "stall_long_scoreboard", "title": "LS"},
+                    {"category": "register_spilling", "title": "SPILL"},
+                ],
+                None,
+                attribution=self._SPREAD,
+                top_k=k,
+            )
             keys.append(len(out["linked"]))
         assert len(set(keys)) == 1, f"dedup varied with top_k: {keys}"
 
     def test_truly_zero_reason_still_folds(self):
-        zero = {"available": True,
-                "stall_reasons": {"LONG_SCOREBOARD": 1000, "LG_THROTTLE": 0},
-                "source_lines": [{"file_name": "k.cu", "line": 1, "samples": 1000,
-                                  "stall_reasons": {"LONG_SCOREBOARD": 1000}}]}
+        zero = {
+            "available": True,
+            "stall_reasons": {"LONG_SCOREBOARD": 1000, "LG_THROTTLE": 0},
+            "source_lines": [
+                {
+                    "file_name": "k.cu",
+                    "line": 1,
+                    "samples": 1000,
+                    "stall_reasons": {"LONG_SCOREBOARD": 1000},
+                }
+            ],
+        }
         out = source_correlation.link_findings_to_source(
-            [{"category": "stall_long_scoreboard", "title": "LS"},
-             {"category": "register_spilling", "title": "SPILL"}],
-            None, attribution=zero)
+            [
+                {"category": "stall_long_scoreboard", "title": "LS"},
+                {"category": "register_spilling", "title": "SPILL"},
+            ],
+            None,
+            attribution=zero,
+        )
         assert len(out["linked"]) == 1
 
     # --- register tolerance must be relative, and gated ---------------------
-    _WS = {"sm__inst_executed_pipe_tensor_op_gmma.avg.pct_of_peak_sustained_active": 30.0}
+    _WS = {
+        "sm__inst_executed_pipe_tensor_op_gmma.avg.pct_of_peak_sustained_active": 30.0
+    }
 
     def test_large_block_does_not_get_a_looser_excuse(self):
         """56 regs at block=1024 is 12.5% below the cap, not one granule."""
         view = ncu_diagnostics.MetricView(
-            {"launch__registers_per_thread": 56.0, "launch__block_size": 1024.0,
-             **self._WS})
+            {
+                "launch__registers_per_thread": 56.0,
+                "launch__block_size": 1024.0,
+                **self._WS,
+            }
+        )
         assert ncu_diagnostics._registers_are_deliberate(view) is None
 
     def test_deliberate_requires_warp_specialization(self):
         near_cap = {"launch__registers_per_thread": 168.0, "launch__block_size": 384.0}
-        assert ncu_diagnostics._registers_are_deliberate(
-            ncu_diagnostics.MetricView(near_cap)) is None
-        assert ncu_diagnostics._registers_are_deliberate(
-            ncu_diagnostics.MetricView({**near_cap, **self._WS})) is not None
+        assert (
+            ncu_diagnostics._registers_are_deliberate(
+                ncu_diagnostics.MetricView(near_cap)
+            )
+            is None
+        )
+        assert (
+            ncu_diagnostics._registers_are_deliberate(
+                ncu_diagnostics.MetricView({**near_cap, **self._WS})
+            )
+            is not None
+        )
 
     # --- warp-specialization detection needs a threshold -------------------
     def test_trace_tma_does_not_suppress_a_real_finding(self):
-        starved = {"smsp__warps_eligible.avg.per_cycle_active": 0.16,
-                   "smsp__warps_active.avg.per_cycle_active": 3.0}
+        starved = {
+            "smsp__warps_eligible.avg.per_cycle_active": 0.16,
+            "smsp__warps_active.avg.per_cycle_active": 3.0,
+        }
         trace = {"sm__pipe_tma_cycles_active.avg.pct_of_peak_sustained_active": 1e-9}
         out = ncu_diagnostics.analyze_issue_efficiency(
-            ncu_diagnostics.MetricView({**starved, **trace}))
+            ncu_diagnostics.MetricView({**starved, **trace})
+        )
         assert out["findings"], "one TMA instruction must not suppress the rule"
 
     def test_tma_alone_is_not_warp_specialization(self):
         tma_only = {"sm__pipe_tma_cycles_active.avg.pct_of_peak_sustained_active": 5.0}
-        assert ncu_diagnostics._is_warp_specialized(
-            ncu_diagnostics.MetricView(tma_only)) is False
-        with_tensor = {**tma_only,
-                       "sm__pipe_tensor_cycles_active.avg.pct_of_peak_sustained_active": 30.0}
-        assert ncu_diagnostics._is_warp_specialized(
-            ncu_diagnostics.MetricView(with_tensor)) is True
+        assert (
+            ncu_diagnostics._is_warp_specialized(ncu_diagnostics.MetricView(tma_only))
+            is False
+        )
+        with_tensor = {
+            **tma_only,
+            "sm__pipe_tensor_cycles_active.avg.pct_of_peak_sustained_active": 30.0,
+        }
+        assert (
+            ncu_diagnostics._is_warp_specialized(
+                ncu_diagnostics.MetricView(with_tensor)
+            )
+            is True
+        )
 
     # --- clock correction depends on what is being compared ----------------
     def _pair(self):
-        return (measurement_context.describe_collection_mode(
-                    source="ncu", sm_clock_hz=1.674e9, gpc_clock_hz=1.674e9),
-                measurement_context.describe_collection_mode(
-                    source="ncu", sm_clock_hz=1.789e9, gpc_clock_hz=1.789e9))
+        return (
+            measurement_context.describe_collection_mode(
+                source="ncu", sm_clock_hz=1.674e9, gpc_clock_hz=1.674e9
+            ),
+            measurement_context.describe_collection_mode(
+                source="ncu", sm_clock_hz=1.789e9, gpc_clock_hz=1.789e9
+            ),
+        )
 
     def test_byte_counts_are_not_clock_corrected(self):
         a, b = self._pair()
         out = measurement_context.compare_measurements(
-            a, b, baseline_value=1e9, candidate_value=1e9, metric="dram__bytes.sum")
+            a, b, baseline_value=1e9, candidate_value=1e9, metric="dram__bytes.sum"
+        )
         assert out["comparable"] is True, "a byte count does not depend on the clock"
         assert out.get("clock_normalised_ratio") is None
 
     def test_throughput_is_divided_not_multiplied(self):
         a, b = self._pair()
         out = measurement_context.compare_measurements(
-            a, b, baseline_value=301.6, candidate_value=354.6,
-            metric="achieved_tflops")
+            a, b, baseline_value=301.6, candidate_value=354.6, metric="achieved_tflops"
+        )
         assert out["metric_kind"] == "rate"
         # 1.1757 / 1.0687 = 1.100, not 1.1757 * 1.0687 = 1.256
         assert out["clock_normalised_ratio"] == pytest.approx(1.100, abs=0.01)
@@ -791,31 +1059,38 @@ class TestVerificationRegressions:
     def test_duration_is_multiplied(self):
         a, b = self._pair()
         out = measurement_context.compare_measurements(
-            a, b, baseline_value=82464.0, candidate_value=73344.0,
-            metric="duration_ns")
+            a, b, baseline_value=82464.0, candidate_value=73344.0, metric="duration_ns"
+        )
         assert out["clock_normalised_ratio"] == pytest.approx(0.951, abs=0.005)
 
     def test_missing_clock_does_not_fail_open(self):
         known = measurement_context.describe_collection_mode(
-            source="ncu", sm_clock_hz=1.7e9)
+            source="ncu", sm_clock_hz=1.7e9
+        )
         unknown = measurement_context.describe_collection_mode(source="ncu")
         out = measurement_context.compare_measurements(
-            known, unknown, baseline_value=100.0, candidate_value=90.0,
-            metric="duration_ns")
+            known,
+            unknown,
+            baseline_value=100.0,
+            candidate_value=90.0,
+            metric="duration_ns",
+        )
         assert out["comparable"] is False
         assert any("unrecorded" in b for b in out["blockers"])
 
     # --- closure must fire in both directions ------------------------------
     def test_states_exceeding_their_total_are_flagged(self):
-        view = ncu_diagnostics.MetricView({
-            "smsp__average_warp_latency_per_inst_issued.ratio": 20.0,
-            "smsp__average_warps_issue_stalled_long_scoreboard_per_issue_active.ratio": 15.0,
-            "smsp__average_warps_issue_stalled_barrier_per_issue_active.ratio": 6.0,
-            "smsp__issue_active.avg.per_cycle_active": 0.1})
+        view = ncu_diagnostics.MetricView(
+            {
+                "smsp__average_warp_latency_per_inst_issued.ratio": 20.0,
+                "smsp__average_warps_issue_stalled_long_scoreboard_per_issue_active.ratio": 15.0,
+                "smsp__average_warps_issue_stalled_barrier_per_issue_active.ratio": 6.0,
+                "smsp__issue_active.avg.per_cycle_active": 0.1,
+            }
+        )
         out = ncu_diagnostics.analyze_stalls(view)
         assert out["explained_share"] > 1.02
-        finding = next(f for f in out["findings"]
-                       if "sum to more than" in f.title)
+        finding = next(f for f in out["findings"] if "sum to more than" in f.title)
         assert "cannot exceed their own total" in finding.summary
         assert out["residual_cycles_per_issued_inst"] < 0
 
@@ -831,23 +1106,37 @@ class TestRegisterFigureIsKernelLevel:
     warpgroup that is spilling.
     """
 
-    _WS = {"sm__inst_executed_pipe_tensor_op_gmma.avg.pct_of_peak_sustained_active": 30.0}
+    _WS = {
+        "sm__inst_executed_pipe_tensor_op_gmma.avg.pct_of_peak_sustained_active": 30.0
+    }
 
     def test_result_states_what_it_cannot_identify(self):
-        out = ncu_diagnostics._registers_are_deliberate(ncu_diagnostics.MetricView(
-            {"launch__registers_per_thread": 168.0, "launch__block_size": 384.0,
-             **self._WS}))
+        out = ncu_diagnostics._registers_are_deliberate(
+            ncu_diagnostics.MetricView(
+                {
+                    "launch__registers_per_thread": 168.0,
+                    "launch__block_size": 384.0,
+                    **self._WS,
+                }
+            )
+        )
         note = out["does_not_identify_the_pressured_warpgroup"]
         assert "warpgroup_reg_dealloc" in note
         assert "LoadRegisterRequirement" in note, "must say where the real budget lives"
 
     def test_spilling_summary_carries_the_caveat(self):
-        out = ncu_diagnostics.analyze_spilling(ncu_diagnostics.MetricView({
-            "smsp__inst_executed_op_local_ld.sum": 70000.0,
-            "smsp__inst_executed_op_local_st.sum": 20000.0,
-            "smsp__inst_executed.sum": 500000.0,
-            "launch__registers_per_thread": 168.0, "launch__block_size": 384.0,
-            **self._WS}))
+        out = ncu_diagnostics.analyze_spilling(
+            ncu_diagnostics.MetricView(
+                {
+                    "smsp__inst_executed_op_local_ld.sum": 70000.0,
+                    "smsp__inst_executed_op_local_st.sum": 20000.0,
+                    "smsp__inst_executed.sum": 500000.0,
+                    "launch__registers_per_thread": 168.0,
+                    "launch__block_size": 384.0,
+                    **self._WS,
+                }
+            )
+        )
         summary = out["findings"][0].summary
         assert "kernel-level" in summary
         assert "post-dealloc" in summary or "warpgroup_reg_dealloc" in summary

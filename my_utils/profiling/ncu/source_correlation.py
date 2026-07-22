@@ -41,8 +41,8 @@ distinct cause rather than as an empty result:
 from __future__ import annotations
 
 from collections import Counter, defaultdict
-from dataclasses import dataclass, field
-from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
+from dataclasses import dataclass
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 __all__ = [
     "SourceLineAttribution",
@@ -133,8 +133,12 @@ class SourceLineAttribution:
 # read from the shipped module rather than guessed.
 STALL_REASON_BY_CATEGORY: Dict[str, Tuple[str, ...]] = {
     # Memory latency and throughput.
-    "memory_bound_kernel_below_expectation": ("LONG_SCOREBOARD", "LG_THROTTLE",
-                                              "MIO_THROTTLE", "DRAIN"),
+    "memory_bound_kernel_below_expectation": (
+        "LONG_SCOREBOARD",
+        "LG_THROTTLE",
+        "MIO_THROTTLE",
+        "DRAIN",
+    ),
     "uncoalesced_global_access": ("LONG_SCOREBOARD", "LG_THROTTLE"),
     "poor_cache_locality": ("LONG_SCOREBOARD",),
     "memory": ("LONG_SCOREBOARD", "LG_THROTTLE", "MIO_THROTTLE"),
@@ -181,14 +185,25 @@ _STALL_CATEGORY_PREFIX = "stall_"
 # names a unit whose relationship to any stall reason is unknown. Linking them
 # anyway would attach a real source line to an invented mechanism, which reads
 # as evidence and is not.
-_UNLINKABLE = frozenset({
-    "unit_saturated", "unit_duty_cycle", "unit_hit_rate",   # generic scan
-    "small_grid", "tail_wave_quantization", "block_size_not_warp_multiple",
-    "tile_quantization", "wave_quantization",
-    "measurement_caveat", "measurement_above_physical_limit",
-    "evidence_conflict", "uninformative_name", "unattributable_kernel",
-    "throttling", "coverage",
-})
+_UNLINKABLE = frozenset(
+    {
+        "unit_saturated",
+        "unit_duty_cycle",
+        "unit_hit_rate",  # generic scan
+        "small_grid",
+        "tail_wave_quantization",
+        "block_size_not_warp_multiple",
+        "tile_quantization",
+        "wave_quantization",
+        "measurement_caveat",
+        "measurement_above_physical_limit",
+        "evidence_conflict",
+        "uninformative_name",
+        "unattributable_kernel",
+        "throttling",
+        "coverage",
+    }
+)
 
 
 def link_findings_to_source(
@@ -221,7 +236,8 @@ def link_findings_to_source(
             "linked": [],
             "available": False,
             "reason": (attribution or {}).get(
-                "reason", "no stall attribution available for this launch"),
+                "reason", "no stall attribution available for this launch"
+            ),
         }
 
     lines = attribution.get("source_lines") or []
@@ -231,14 +247,17 @@ def link_findings_to_source(
     seen_signatures: Dict[Any, str] = {}
     duplicates: List[Dict[str, Any]] = []
     for finding in findings:
-        category = (finding.get("category") if isinstance(finding, Mapping)
-                    else getattr(finding, "category", "")) or ""
+        category = (
+            finding.get("category")
+            if isinstance(finding, Mapping)
+            else getattr(finding, "category", "")
+        ) or ""
         if category in _UNLINKABLE:
             continue
         reasons = STALL_REASON_BY_CATEGORY.get(category)
         if reasons is None and category.startswith(_STALL_CATEGORY_PREFIX):
             # `stall_long_scoreboard` -> ("LONG_SCOREBOARD",)
-            reasons = (category[len(_STALL_CATEGORY_PREFIX):].upper(),)
+            reasons = (category[len(_STALL_CATEGORY_PREFIX) :].upper(),)
         if reasons is None:
             for prefix, prefix_reasons in _CATEGORY_PREFIX_REASONS:
                 if category.startswith(prefix):
@@ -256,23 +275,28 @@ def link_findings_to_source(
             samples = sum(matched.values())
             # Share of all samples for these reasons that this line accounts for.
             reason_total = sum(int(totals.get(r, 0)) for r in reasons) or 1
-            hits.append({
-                "file_name": row.get("file_name"),
-                "line": row.get("line"),
-                "source_text": row.get("source_text"),
-                "samples": samples,
-                "share_of_reason": samples / reason_total,
-                "matched_stall_reasons": matched,
-                "sass_samples": (row.get("sass_samples") or [])[:2],
-            })
+            hits.append(
+                {
+                    "file_name": row.get("file_name"),
+                    "line": row.get("line"),
+                    "source_text": row.get("source_text"),
+                    "samples": samples,
+                    "share_of_reason": samples / reason_total,
+                    "matched_stall_reasons": matched,
+                    "sass_samples": (row.get("sass_samples") or [])[:2],
+                }
+            )
         if not hits:
             continue
         hits.sort(key=lambda h: h["samples"], reverse=True)
         top = hits[: int(top_k)]
         covered = sum(h["share_of_reason"] for h in top)
 
-        title = (finding.get("title") if isinstance(finding, Mapping)
-                 else getattr(finding, "title", "")) or ""
+        title = (
+            finding.get("title")
+            if isinstance(finding, Mapping)
+            else getattr(finding, "title", "")
+        ) or ""
 
         # Two findings that resolve to the same lines via the same reasons are
         # one piece of evidence, not two. Repeating it under a second heading
@@ -293,43 +317,53 @@ def link_findings_to_source(
         # It also made dedup depend on a display parameter, so the same report
         # deduped differently at top_k=3 and top_k=5.
         effective = sorted({r for hit in hits for r in hit["matched_stall_reasons"]})
-        signature = (tuple(effective),
-                     tuple((h["file_name"], h["line"]) for h in top))
+        signature = (tuple(effective), tuple((h["file_name"], h["line"]) for h in top))
         if signature in seen_signatures:
-            duplicates.append({"category": category, "finding_title": title,
-                               "same_lines_as": seen_signatures[signature],
-                               "identical_via": list(effective)})
+            duplicates.append(
+                {
+                    "category": category,
+                    "finding_title": title,
+                    "same_lines_as": seen_signatures[signature],
+                    "identical_via": list(effective),
+                }
+            )
             continue
         seen_signatures[signature] = title
 
-        linked.append({
-            "category": category,
-            "finding_title": title,
-            "matched_on_stall_reasons": list(reasons),
-            # Which of them actually carried samples here. A declared reason
-            # that contributed nothing should not read as corroboration.
-            "contributing_stall_reasons": effective,
-            # Absent means it carried nothing anywhere in this kernel, not that
-            # it missed the printed rows. The first version compared against the
-            # top-K and so reported "carried no samples here" for a reason
-            # holding a third of them -- a false statement the tool did not make
-            # before that change.
-            "declared_but_absent": sorted(
-                r for r in reasons if not totals.get(r)),
-            "contributing_below_cut": sorted(
-                set(effective) - {r for hit in top for r in hit["matched_stall_reasons"]}),
-            "source_lines": top,
-            "share_explained": covered,
-            "concentration": (
-                "concentrated" if top and top[0]["share_of_reason"] >= 0.5 else
-                "spread" if covered < 0.5 else "moderate"
-            ),
-            "caveat": (
-                "Correlation by stall reason, not proof of cause. A line can stall "
-                "for several reasons at once, and a finding can have causes the "
-                "sampler cannot observe."
-            ),
-        })
+        linked.append(
+            {
+                "category": category,
+                "finding_title": title,
+                "matched_on_stall_reasons": list(reasons),
+                # Which of them actually carried samples here. A declared reason
+                # that contributed nothing should not read as corroboration.
+                "contributing_stall_reasons": effective,
+                # Absent means it carried nothing anywhere in this kernel, not that
+                # it missed the printed rows. The first version compared against the
+                # top-K and so reported "carried no samples here" for a reason
+                # holding a third of them -- a false statement the tool did not make
+                # before that change.
+                "declared_but_absent": sorted(r for r in reasons if not totals.get(r)),
+                "contributing_below_cut": sorted(
+                    set(effective)
+                    - {r for hit in top for r in hit["matched_stall_reasons"]}
+                ),
+                "source_lines": top,
+                "share_explained": covered,
+                "concentration": (
+                    "concentrated"
+                    if top and top[0]["share_of_reason"] >= 0.5
+                    else "spread"
+                    if covered < 0.5
+                    else "moderate"
+                ),
+                "caveat": (
+                    "Correlation by stall reason, not proof of cause. A line can stall "
+                    "for several reasons at once, and a finding can have causes the "
+                    "sampler cannot observe."
+                ),
+            }
+        )
 
     return {
         "available": True,
@@ -339,7 +373,9 @@ def link_findings_to_source(
         "duplicate_note": (
             f"{len(duplicates)} finding(s) resolved to lines already shown under "
             "another heading and were folded away; repeating one observation "
-            "makes it look like two." if duplicates else ""
+            "makes it look like two."
+            if duplicates
+            else ""
         ),
         "unlinkable_note": (
             "Findings absent from this list have no stall reason that would "
@@ -417,7 +453,8 @@ def source_availability(action: Any) -> Dict[str, Any]:
 
     metric_names = list(_maybe(action, "metric_names") or ())
     source_metrics = [
-        name for name in metric_names
+        name
+        for name in metric_names
         if any(hint in str(name) for hint in SOURCE_METRIC_HINTS)
     ]
 
@@ -493,7 +530,8 @@ def correlate_metric_to_source(
             "metric": metric_name,
             "available": False,
             "reason": f"metric '{metric_name}' is not in this report",
-            "instructions": [], "source_lines": [],
+            "instructions": [],
+            "source_lines": [],
         }
 
     if not _maybe(metric, "has_correlation_ids"):
@@ -504,24 +542,29 @@ def correlate_metric_to_source(
                 f"'{metric_name}' has no correlation IDs, so its value cannot be "
                 "attributed to individual instructions. It is a whole-kernel total."
             ),
-            "instructions": [], "source_lines": [],
+            "instructions": [],
+            "source_lines": [],
         }
 
     correlation = _maybe(metric, "correlation_ids")
     if correlation is None:
         return {
-            "metric": metric_name, "available": False,
+            "metric": metric_name,
+            "available": False,
             "reason": "correlation IDs were advertised but could not be read",
-            "instructions": [], "source_lines": [],
+            "instructions": [],
+            "source_lines": [],
         }
 
     values = _instance_values(metric)
     addresses = _instance_values(correlation)
     if not values or not addresses:
         return {
-            "metric": metric_name, "available": False,
+            "metric": metric_name,
+            "available": False,
             "reason": "the metric carries no instance values",
-            "instructions": [], "source_lines": [],
+            "instructions": [],
+            "source_lines": [],
         }
 
     # Lengths should match one-to-one; if a release ever disagrees, use the
@@ -557,7 +600,9 @@ def correlate_metric_to_source(
         key = (entry.file_name, int(entry.line))
         rolled = by_line.get(key)
         if rolled is None:
-            rolled = SourceLineAttribution(file_name=entry.file_name, line=int(entry.line))
+            rolled = SourceLineAttribution(
+                file_name=entry.file_name, line=int(entry.line)
+            )
             by_line[key] = rolled
         rolled.value += entry.value
         rolled.instruction_count += 1
@@ -588,8 +633,8 @@ def correlate_metric_to_source(
             f"{unlocated / total * 100:.0f}% of the total could not be tied to a "
             "source line. Those instructions are usually compiler-generated or "
             "inlined from a header without line info; their SASS is still shown."
-            if unlocated else
-            "Every instruction resolved to a source line."
+            if unlocated
+            else "Every instruction resolved to a source line."
         ),
     }
 
@@ -618,15 +663,22 @@ def attribute_stalls_via_metrics(
     nothing -- the analysis reported "no PC sampling in this report" while
     sitting on a complete per-instruction breakdown.
     """
-    names = [str(n) for n in (_maybe(action, "metric_names") or ())
-             if str(n).startswith(PCSAMP_STALL_PREFIX)]
+    names = [
+        str(n)
+        for n in (_maybe(action, "metric_names") or ())
+        if str(n).startswith(PCSAMP_STALL_PREFIX)
+    ]
     if not names:
-        return {"available": False,
-                "reason": (
-                    "No per-instruction PC-sampling stall metrics "
-                    f"(`{PCSAMP_STALL_PREFIX}*`). Collect --section SourceCounters "
-                    "or --set full."),
-                "source_lines": [], "stall_reasons": {}}
+        return {
+            "available": False,
+            "reason": (
+                "No per-instruction PC-sampling stall metrics "
+                f"(`{PCSAMP_STALL_PREFIX}*`). Collect --section SourceCounters "
+                "or --set full."
+            ),
+            "source_lines": [],
+            "stall_reasons": {},
+        }
 
     files = _as_dict(_maybe(action, "source_files"))
     by_line: Dict[Tuple[str, int], Dict[str, Any]] = {}
@@ -639,7 +691,7 @@ def attribute_stalls_via_metrics(
         # all; folding both in would double-count the same instruction.
         if metric_name.endswith("_not_issued"):
             continue
-        reason = metric_name[len(PCSAMP_STALL_PREFIX):].upper()
+        reason = metric_name[len(PCSAMP_STALL_PREFIX) :].upper()
         metric = _maybe(action, "metric_by_name", metric_name)
         if metric is None or not _maybe(metric, "has_correlation_ids"):
             continue
@@ -673,10 +725,16 @@ def attribute_stalls_via_metrics(
                 unlocated += value
                 continue
 
-            entry = by_line.setdefault(located, {
-                "file_name": located[0], "line": located[1],
-                "samples": 0.0, "stall_reasons": Counter(), "sass_samples": [],
-            })
+            entry = by_line.setdefault(
+                located,
+                {
+                    "file_name": located[0],
+                    "line": located[1],
+                    "samples": 0.0,
+                    "stall_reasons": Counter(),
+                    "sass_samples": [],
+                },
+            )
             entry["samples"] += value
             entry["stall_reasons"][reason] += value
             if len(entry["sass_samples"]) < 3:
@@ -686,9 +744,12 @@ def attribute_stalls_via_metrics(
 
     total = sum(reason_totals.values())
     if total <= 0:
-        return {"available": False,
-                "reason": "PC-sampling stall metrics are present but all zero",
-                "source_lines": [], "stall_reasons": {}}
+        return {
+            "available": False,
+            "reason": "PC-sampling stall metrics are present but all zero",
+            "source_lines": [],
+            "stall_reasons": {},
+        }
 
     ranked: List[Dict[str, Any]] = []
     for (file_name, line_no), entry in by_line.items():
@@ -699,16 +760,20 @@ def attribute_stalls_via_metrics(
             if 0 < line_no <= len(lines):
                 text = lines[line_no - 1].strip()
         dominant = entry["stall_reasons"].most_common(1)
-        ranked.append({
-            "file_name": file_name,
-            "line": line_no,
-            "samples": int(entry["samples"]),
-            "share_of_samples": entry["samples"] / total,
-            "dominant_stall_reason": dominant[0][0] if dominant else "",
-            "stall_reasons": {k: int(v) for k, v in entry["stall_reasons"].most_common()},
-            "sass_samples": entry["sass_samples"],
-            "source_text": text,
-        })
+        ranked.append(
+            {
+                "file_name": file_name,
+                "line": line_no,
+                "samples": int(entry["samples"]),
+                "share_of_samples": entry["samples"] / total,
+                "dominant_stall_reason": dominant[0][0] if dominant else "",
+                "stall_reasons": {
+                    k: int(v) for k, v in entry["stall_reasons"].most_common()
+                },
+                "sass_samples": entry["sass_samples"],
+                "source_text": text,
+            }
+        )
     ranked.sort(key=lambda row: row["samples"], reverse=True)
 
     return {
@@ -723,9 +788,12 @@ def attribute_stalls_via_metrics(
             f"{int(total)} sampled stall cycles attributed across "
             f"{len(ranked)} source lines. PC sampling is statistical: a difference "
             "of a few samples between lines is noise."
-            + (f" {unlocated / total * 100:.0f}% could not be tied to a source line, "
-               "usually inlined or compiler-generated code."
-               if unlocated else "")
+            + (
+                f" {unlocated / total * 100:.0f}% could not be tied to a source line, "
+                "usually inlined or compiler-generated code."
+                if unlocated
+                else ""
+            )
         ),
     }
 
@@ -759,10 +827,10 @@ def attribute_stalls_to_source(
             "reason": (
                 "Neither per-instruction PC-sampling stall metrics nor raw warp "
                 "samples are in this report. Collect --section SourceCounters or "
-                "--set full. ("
-                + str(via_metrics.get("reason", "")) + ")"
+                "--set full. (" + str(via_metrics.get("reason", "")) + ")"
             ),
-            "source_lines": [], "stall_reasons": {},
+            "source_lines": [],
+            "stall_reasons": {},
         }
 
     by_pc: Dict[int, Counter] = defaultdict(Counter)
@@ -800,10 +868,16 @@ def attribute_stalls_to_source(
             unlocated_samples += count
             continue
         key = (file_name, int(line_no))
-        entry = by_line.setdefault(key, {
-            "file_name": file_name, "line": int(line_no),
-            "samples": 0, "stall_reasons": Counter(), "sass_samples": [],
-        })
+        entry = by_line.setdefault(
+            key,
+            {
+                "file_name": file_name,
+                "line": int(line_no),
+                "samples": 0,
+                "stall_reasons": Counter(),
+                "sass_samples": [],
+            },
+        )
         entry["samples"] += count
         entry["stall_reasons"].update(reasons)
         if len(entry["sass_samples"]) < 3:
@@ -820,16 +894,18 @@ def attribute_stalls_to_source(
             if 0 < line_no <= len(lines):
                 text = lines[line_no - 1].strip()
         dominant = entry["stall_reasons"].most_common(1)
-        ranked.append({
-            "file_name": file_name,
-            "line": line_no,
-            "samples": entry["samples"],
-            "share_of_samples": entry["samples"] / total_samples,
-            "dominant_stall_reason": dominant[0][0] if dominant else "",
-            "stall_reasons": dict(entry["stall_reasons"].most_common()),
-            "sass_samples": entry["sass_samples"],
-            "source_text": text,
-        })
+        ranked.append(
+            {
+                "file_name": file_name,
+                "line": line_no,
+                "samples": entry["samples"],
+                "share_of_samples": entry["samples"] / total_samples,
+                "dominant_stall_reason": dominant[0][0] if dominant else "",
+                "stall_reasons": dict(entry["stall_reasons"].most_common()),
+                "sass_samples": entry["sass_samples"],
+                "source_text": text,
+            }
+        )
     ranked.sort(key=lambda r: r["samples"], reverse=True)
 
     return {
@@ -848,7 +924,8 @@ def attribute_stalls_to_source(
             + (
                 f" {unlocated_samples / total_samples * 100:.0f}% of samples could not "
                 "be tied to a source line, most often inlined or compiler-generated code."
-                if unlocated_samples else ""
+                if unlocated_samples
+                else ""
             )
         ),
     }
@@ -858,7 +935,10 @@ PM_SAMPLING_PREFIX = "pmsampling:"
 
 
 def analyze_pm_sampling(
-    action: Any, *, top_k: int = 0, kernel_duration_ns: Optional[float] = None,
+    action: Any,
+    *,
+    top_k: int = 0,
+    kernel_duration_ns: Optional[float] = None,
 ) -> Dict[str, Any]:
     """Read the PM-sampling timeline: how utilisation moved across the kernel.
 
@@ -874,14 +954,20 @@ def analyze_pm_sampling(
     Those are not the same machine. An average across a burst and a long idle
     tail describes neither.
     """
-    names = [str(n) for n in (_maybe(action, "metric_names") or ())
-             if str(n).startswith(PM_SAMPLING_PREFIX)]
+    names = [
+        str(n)
+        for n in (_maybe(action, "metric_names") or ())
+        if str(n).startswith(PM_SAMPLING_PREFIX)
+    ]
     if not names:
-        return {"available": False,
-                "reason": (
-                    "No `pmsampling:` metrics. PM sampling ships in the `full` and "
-                    "`pmsampling` sets; a `basic` or `detailed` run has none."),
-                "series": []}
+        return {
+            "available": False,
+            "reason": (
+                "No `pmsampling:` metrics. PM sampling ships in the `full` and "
+                "`pmsampling` sets; a `basic` or `detailed` run has none."
+            ),
+            "series": [],
+        }
 
     if kernel_duration_ns is None:
         metric = _maybe(action, "metric_by_name", "gpu__time_duration.sum")
@@ -923,9 +1009,11 @@ def analyze_pm_sampling(
         by_pass.setdefault((first, step, count), []).append((name, values))
 
     if not raw_series:
-        return {"available": False,
-                "reason": "`pmsampling:` metrics are present but carry no samples",
-                "series": []}
+        return {
+            "available": False,
+            "reason": "`pmsampling:` metrics are present but carry no samples",
+            "series": [],
+        }
 
     # Per pass, find the window in which the kernel ran. Every pass executes
     # the same kernel, so its duration is known and identical across passes;
@@ -946,8 +1034,10 @@ def analyze_pm_sampling(
     pass_window_source: Dict[Tuple[int, int, int], str] = {}
     for key, members in by_pass.items():
         _t0, step_ns, length = key
-        envelope = [max((v[i] if i < len(v) else 0.0) for _n, v in members)
-                    for i in range(length)]
+        envelope = [
+            max((v[i] if i < len(v) else 0.0) for _n, v in members)
+            for i in range(length)
+        ]
 
         expected = int(round(duration_ns / step_ns)) if (duration_ns and step_ns) else 0
         if 0 < expected < length:
@@ -956,8 +1046,10 @@ def analyze_pm_sampling(
             # from deciding the placement for all of them.
             scales = [max(v) or 1.0 for _n, v in members]
             weight = [
-                sum((v[i] if i < len(v) else 0.0) / scales[j]
-                    for j, (_n, v) in enumerate(members))
+                sum(
+                    (v[i] if i < len(v) else 0.0) / scales[j]
+                    for j, (_n, v) in enumerate(members)
+                )
                 for i in range(length)
             ]
             running = sum(weight[:expected])
@@ -998,19 +1090,21 @@ def analyze_pm_sampling(
         declared, declared_by_base = {}, {}
 
     def _declared_group(metric_name: str) -> str:
-        return (declared.get(metric_name)
-                or declared_by_base.get(metric_name.split(".")[0], ""))
+        return declared.get(metric_name) or declared_by_base.get(
+            metric_name.split(".")[0], ""
+        )
+
     bucket_count = max(len(values) for _n, values in raw_series)
 
     series: List[Dict[str, Any]] = []
     for key, members in by_pass.items():
         window_lo, window_hi = pass_windows[key]
         for name, values in members:
-            window = values[window_lo:window_hi + 1]
+            window = values[window_lo : window_hi + 1]
             active_in_window = [v for v in window if v > 0.0]
             active = [v for v in values if v > 0.0]
             peak = max(values) if values else 0.0
-            short = name[len(PM_SAMPLING_PREFIX):]
+            short = name[len(PM_SAMPLING_PREFIX) :]
             is_pct = short.endswith(".pct") or "pct_of_peak" in short
             entry: Dict[str, Any] = {
                 "metric": short,
@@ -1037,9 +1131,10 @@ def analyze_pm_sampling(
 
     # Reported from the pass that carries the SM activity anchor, since that is
     # the one whose window is known to be the kernel rather than an envelope.
-    anchor_key = next((k for k, m in by_pass.items()
-                       if any("sm__cycles_active" in n for n, _v in m)),
-                      next(iter(by_pass)))
+    anchor_key = next(
+        (k for k, m in by_pass.items() if any("sm__cycles_active" in n for n, _v in m)),
+        next(iter(by_pass)),
+    )
     anchor_lo, anchor_hi = pass_windows[anchor_key]
     step_ns = anchor_key[1]
     duration_ns = step_ns * (anchor_key[2] - 1) if step_ns else None
@@ -1047,20 +1142,26 @@ def analyze_pm_sampling(
 
     # A "bursty" verdict compares a peak against a ceiling, which only exists
     # for percentages. For a raw count there is no bar to be near.
-    bursty = [e for e in series
-              if e["is_percentage"] and e.get("peak_to_mean", 1.0) >= 2.0
-              and e["peak"] >= 50.0]
+    bursty = [
+        e
+        for e in series
+        if e["is_percentage"]
+        and e.get("peak_to_mean", 1.0) >= 2.0
+        and e["peak"] >= 50.0
+    ]
 
     return {
         "available": True,
         "metric_count": len(series),
         "bucket_count": bucket_count,
         "pass_group_count": len(by_pass),
-        "declared_groups_seen": sorted({_declared_group(n) for n, _v in raw_series
-                                        if _declared_group(n)}),
+        "declared_groups_seen": sorted(
+            {_declared_group(n) for n, _v in raw_series if _declared_group(n)}
+        ),
         "pass_composition": {
-            str(pass_ids[k]): sorted({_declared_group(n) or "(undeclared)"
-                                      for n, _v in members})
+            str(pass_ids[k]): sorted(
+                {_declared_group(n) or "(undeclared)" for n, _v in members}
+            )
             for k, members in by_pass.items()
         },
         "pass_note": (
@@ -1079,11 +1180,15 @@ def analyze_pm_sampling(
             "count. Series within one pass share a clock and can be compared "
             "bucket for bucket; series from different passes cannot. Comparing "
             "them by bucket index compares different moments of different runs."
-        ) if len(by_pass) > 1 else "",
+        )
+        if len(by_pass) > 1
+        else "",
         "window_source": pass_window_source.get(anchor_key, ""),
         "kernel_duration_ns": kernel_duration_ns,
         "pass_window_us": {
-            str(pass_ids[k]): round((pass_windows[k][1] - pass_windows[k][0]) * k[1] / 1000.0, 1)
+            str(pass_ids[k]): round(
+                (pass_windows[k][1] - pass_windows[k][0]) * k[1] / 1000.0, 1
+            )
             for k in by_pass
         },
         "denominator_note": (
@@ -1101,8 +1206,11 @@ def analyze_pm_sampling(
         # kernel ran that long; the caller is given both so the difference is
         # visible rather than silently misread as one execution.
         "span_covers_replays": True,
-        "bucket_interval_ns": (duration_ns / (series[0]["buckets"] - 1)
-                               if duration_ns and series[0]["buckets"] > 1 else None),
+        "bucket_interval_ns": (
+            duration_ns / (series[0]["buckets"] - 1)
+            if duration_ns and series[0]["buckets"] > 1
+            else None
+        ),
         # All of them. `top_k` truncated the payload rather than the display,
         # so a report with 26 series returned 8 and the fifteen new stall-reason
         # series were invisible to any consumer. Truncation belongs to whatever
@@ -1110,12 +1218,16 @@ def analyze_pm_sampling(
         "series": series[: int(top_k)] if int(top_k) > 0 else series,
         "series_count": len(series),
         "bursty": [
-            {"metric": e["metric"], "peak": e["peak"],
-             "mean_in_active_window": e["mean_in_active_window"],
-             "active_share": e["duty_cycle"],
-             # Carried so a consumer can tell a percentage from a count without
-             # re-deriving it from the metric name.
-             "is_percentage": e["is_percentage"], "unit": e["unit"]}
+            {
+                "metric": e["metric"],
+                "peak": e["peak"],
+                "mean_in_active_window": e["mean_in_active_window"],
+                "active_share": e["duty_cycle"],
+                # Carried so a consumer can tell a percentage from a count without
+                # re-deriving it from the metric name.
+                "is_percentage": e["is_percentage"],
+                "unit": e["unit"],
+            }
             for e in bursty
         ],
         "note": (
@@ -1126,7 +1238,7 @@ def analyze_pm_sampling(
                 for e in bursty[:3]
             )
             or "No percentage-valued unit shows a large gap between its peak and "
-               "its kernel average."
+            "its kernel average."
         ),
         "span_note": (
             "The sampled span covers the whole profiling session. Under kernel "
@@ -1141,7 +1253,9 @@ def analyze_pm_sampling(
 
 
 def top_stalling_instructions(
-    action: Any, *, top_k: int = 12,
+    action: Any,
+    *,
+    top_k: int = 12,
 ) -> Dict[str, Any]:
     """Rank individual SASS instructions by sampled stall cycles.
 
@@ -1151,18 +1265,23 @@ def top_stalling_instructions(
     you a bf16 conversion is three PRMT/IMAD instructions rather than a memory
     access.
     """
-    names = [str(n) for n in (_maybe(action, "metric_names") or ())
-             if str(n).startswith(PCSAMP_STALL_PREFIX) and not str(n).endswith("_not_issued")]
+    names = [
+        str(n)
+        for n in (_maybe(action, "metric_names") or ())
+        if str(n).startswith(PCSAMP_STALL_PREFIX) and not str(n).endswith("_not_issued")
+    ]
     if not names:
-        return {"available": False,
-                "reason": f"no `{PCSAMP_STALL_PREFIX}*` metrics in this report",
-                "instructions": []}
+        return {
+            "available": False,
+            "reason": f"no `{PCSAMP_STALL_PREFIX}*` metrics in this report",
+            "instructions": [],
+        }
 
     files = _as_dict(_maybe(action, "source_files"))
     by_address: Dict[int, Dict[str, Any]] = {}
 
     for metric_name in names:
-        reason = metric_name[len(PCSAMP_STALL_PREFIX):].upper()
+        reason = metric_name[len(PCSAMP_STALL_PREFIX) :].upper()
         metric = _maybe(action, "metric_by_name", metric_name)
         if metric is None or not _maybe(metric, "has_correlation_ids"):
             continue
@@ -1177,16 +1296,23 @@ def top_stalling_instructions(
             if raw is None:
                 continue
             address = int(raw)
-            entry = by_address.setdefault(address, {
-                "address": address, "samples": 0.0, "stall_reasons": Counter(),
-            })
+            entry = by_address.setdefault(
+                address,
+                {
+                    "address": address,
+                    "samples": 0.0,
+                    "stall_reasons": Counter(),
+                },
+            )
             entry["samples"] += value
             entry["stall_reasons"][reason] += value
 
     if not by_address:
-        return {"available": False,
-                "reason": "stall metrics carry no non-zero per-instruction values",
-                "instructions": []}
+        return {
+            "available": False,
+            "reason": "stall metrics carry no non-zero per-instruction values",
+            "instructions": [],
+        }
 
     ranked = sorted(by_address.values(), key=lambda e: e["samples"], reverse=True)
     total = sum(e["samples"] for e in ranked) or 1.0
@@ -1205,18 +1331,22 @@ def top_stalling_instructions(
                 if 0 < int(line) <= len(lines):
                     text = lines[int(line) - 1].strip()
         dominant = entry["stall_reasons"].most_common(1)
-        out.append({
-            "address": address,
-            "address_hex": f"0x{address:x}",
-            "sass": str(_maybe(action, "sass_by_pc", address) or "").strip(),
-            "samples": int(entry["samples"]),
-            "share": entry["samples"] / total,
-            "dominant_stall_reason": dominant[0][0] if dominant else "",
-            "stall_reasons": {k: int(v) for k, v in entry["stall_reasons"].most_common(4)},
-            "file_name": file_name,
-            "line": int(line) if line is not None else None,
-            "source_text": text,
-        })
+        out.append(
+            {
+                "address": address,
+                "address_hex": f"0x{address:x}",
+                "sass": str(_maybe(action, "sass_by_pc", address) or "").strip(),
+                "samples": int(entry["samples"]),
+                "share": entry["samples"] / total,
+                "dominant_stall_reason": dominant[0][0] if dominant else "",
+                "stall_reasons": {
+                    k: int(v) for k, v in entry["stall_reasons"].most_common(4)
+                },
+                "file_name": file_name,
+                "line": int(line) if line is not None else None,
+                "source_text": text,
+            }
+        )
 
     return {
         "available": True,
@@ -1246,17 +1376,26 @@ def pc_sampling_timeline(
     """
     samples = _maybe(action, "timed_warp_samples")
     if not samples:
-        return {"available": False, "reason": "no timed warp samples in this report",
-                "buckets": []}
+        return {
+            "available": False,
+            "reason": "no timed warp samples in this report",
+            "buckets": [],
+        }
 
     stamped = [
-        (int(s["timestamp"]), getattr(s.get("stall_reason"), "name", None)
-                              or str(s.get("stall_reason")))
+        (
+            int(s["timestamp"]),
+            getattr(s.get("stall_reason"), "name", None) or str(s.get("stall_reason")),
+        )
         for s in samples
         if isinstance(s, Mapping) and s.get("timestamp") is not None
     ]
     if not stamped:
-        return {"available": False, "reason": "samples carry no timestamps", "buckets": []}
+        return {
+            "available": False,
+            "reason": "samples carry no timestamps",
+            "buckets": [],
+        }
 
     stamped.sort()
     start = stamped[0][0]
@@ -1272,14 +1411,18 @@ def pc_sampling_timeline(
         counts = buckets[index]
         total = sum(counts.values())
         dominant = counts.most_common(1)
-        out.append({
-            "bucket_index": index,
-            "offset_ns": index * width,
-            "samples": total,
-            "dominant_stall_reason": dominant[0][0] if dominant else "",
-            "dominant_share": (dominant[0][1] / total) if dominant and total else 0.0,
-            "stall_reasons": dict(counts.most_common(6)),
-        })
+        out.append(
+            {
+                "bucket_index": index,
+                "offset_ns": index * width,
+                "samples": total,
+                "dominant_stall_reason": dominant[0][0] if dominant else "",
+                "dominant_share": (dominant[0][1] / total)
+                if dominant and total
+                else 0.0,
+                "stall_reasons": dict(counts.most_common(6)),
+            }
+        )
 
     # A phase change is what makes the timeline worth reading.
     phases = [b["dominant_stall_reason"] for b in out]
@@ -1298,8 +1441,8 @@ def pc_sampling_timeline(
             f"{max(0, len(distinct) - 1)} time(s) across the kernel "
             f"({' -> '.join(distinct[:8])}). A single averaged stall breakdown would "
             "report a blend of these and suggest the wrong fix for each phase."
-            if len(distinct) > 1 else
-            f"One dominant stall reason throughout ({distinct[0] if distinct else 'none'}); "
+            if len(distinct) > 1
+            else f"One dominant stall reason throughout ({distinct[0] if distinct else 'none'}); "
             "the averaged breakdown is representative here."
         ),
     }
@@ -1316,17 +1459,20 @@ def summarize_warp_samples(action: Any) -> Dict[str, Any]:
     """
     samples = _maybe(action, "timed_warp_samples")
     if not samples:
-        return {"available": False,
-                "reason": "no timed warp samples in this report",
-                "stall_reasons": {}}
+        return {
+            "available": False,
+            "reason": "no timed warp samples in this report",
+            "stall_reasons": {},
+        }
 
     reasons: Counter = Counter()
     not_issued = 0
     for sample in samples:
         if not isinstance(sample, Mapping):
             continue
-        name = (getattr(sample.get("stall_reason"), "name", None)
-                or str(sample.get("stall_reason")))
+        name = getattr(sample.get("stall_reason"), "name", None) or str(
+            sample.get("stall_reason")
+        )
         reasons[name] += 1
         if sample.get("not_issued"):
             not_issued += 1

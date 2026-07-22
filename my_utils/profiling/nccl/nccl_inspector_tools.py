@@ -100,7 +100,11 @@ def _iter_input_files(path_text: str, *, prometheus: bool = False) -> List[Path]
         suffixes = {".prom", ".txt", ".metrics", ".out"}
     else:
         suffixes = {".json", ".jsonl", ".log", ".out", ".txt"}
-    files = [p for p in path.rglob("*") if p.is_file() and (p.suffix.lower() in suffixes or not p.suffix)]
+    files = [
+        p
+        for p in path.rglob("*")
+        if p.is_file() and (p.suffix.lower() in suffixes or not p.suffix)
+    ]
     return sorted(files)
 
 
@@ -235,7 +239,9 @@ class NcclInspectorSkill:
     run_fn: Optional[Callable[..., object]] = None
 
 
-def _event_from_json_obj(obj: Dict[str, object], source_file: str) -> Optional[NcclInspectorEvent]:
+def _event_from_json_obj(
+    obj: Dict[str, object], source_file: str
+) -> Optional[NcclInspectorEvent]:
     header = obj.get("header")
     metadata = obj.get("metadata")
     if not isinstance(header, dict):
@@ -275,11 +281,19 @@ def _event_from_json_obj(obj: Dict[str, object], source_file: str) -> Optional[N
         kind=kind,
         comm_id=str(header.get("id", "")),
         comm_name=str(header.get("comm_name", "")),
-        rank=_to_int(header.get("rank")) if _to_int(header.get("rank")) is not None else -1,
-        nranks=_to_int(header.get("n_ranks")) if _to_int(header.get("n_ranks")) is not None else -1,
-        nnodes=_to_int(header.get("nnodes")) if _to_int(header.get("nnodes")) is not None else -1,
+        rank=_to_int(header.get("rank"))
+        if _to_int(header.get("rank")) is not None
+        else -1,
+        nranks=_to_int(header.get("n_ranks"))
+        if _to_int(header.get("n_ranks")) is not None
+        else -1,
+        nnodes=_to_int(header.get("nnodes"))
+        if _to_int(header.get("nnodes")) is not None
+        else -1,
         hostname=str(metadata.get("hostname", "")),
-        pid=_to_int(metadata.get("pid")) if _to_int(metadata.get("pid")) is not None else -1,
+        pid=_to_int(metadata.get("pid"))
+        if _to_int(metadata.get("pid")) is not None
+        else -1,
         dump_timestamp_us=_to_int(metadata.get("dump_timestamp_us"))
         if _to_int(metadata.get("dump_timestamp_us")) is not None
         else -1,
@@ -313,7 +327,9 @@ def _parse_prom_labels(text: str) -> Dict[str, str]:
     labels: Dict[str, str] = {}
     for match in _LABEL_RE.finditer(text):
         key = match.group(1)
-        value = match.group(2).replace(r"\"", '"').replace(r"\\", "\\").replace(r"\n", "\n")
+        value = (
+            match.group(2).replace(r"\"", '"').replace(r"\\", "\\").replace(r"\n", "\n")
+        )
         labels[key] = value
     return labels
 
@@ -389,11 +405,15 @@ def _group_events(
             }
         )
         rows.append(row)
-    rows.sort(key=lambda x: float(x.get("exec_time_us", {}).get("sum", 0.0)), reverse=True)  # type: ignore[union-attr]
+    rows.sort(
+        key=lambda x: float(x.get("exec_time_us", {}).get("sum", 0.0)), reverse=True
+    )  # type: ignore[union-attr]
     return rows
 
 
-def _timing_source_summary(events: Sequence[NcclInspectorEvent]) -> List[Dict[str, object]]:
+def _timing_source_summary(
+    events: Sequence[NcclInspectorEvent],
+) -> List[Dict[str, object]]:
     buckets: Dict[str, List[NcclInspectorEvent]] = {}
     for event in events:
         buckets.setdefault(event.timing_source or "unknown", []).append(event)
@@ -412,7 +432,9 @@ def _timing_source_summary(events: Sequence[NcclInspectorEvent]) -> List[Dict[st
     return rows
 
 
-def _rank_skew(events: Sequence[NcclInspectorEvent], *, top_k: int = 20) -> List[Dict[str, object]]:
+def _rank_skew(
+    events: Sequence[NcclInspectorEvent], *, top_k: int = 20
+) -> List[Dict[str, object]]:
     seq_groups: Dict[Tuple[str, str, int], List[NcclInspectorEvent]] = {}
     for event in events:
         if event.seq < 0 or event.rank < 0:
@@ -449,7 +471,9 @@ def _rank_skew(events: Sequence[NcclInspectorEvent], *, top_k: int = 20) -> List
     return rows[: int(top_k)]
 
 
-def _prometheus_summary(metrics: Sequence[NcclPrometheusMetric], *, top_k: int = 20) -> Dict[str, object]:
+def _prometheus_summary(
+    metrics: Sequence[NcclPrometheusMetric], *, top_k: int = 20
+) -> Dict[str, object]:
     by_metric: Dict[str, List[NcclPrometheusMetric]] = {}
     for item in metrics:
         by_metric.setdefault(item.metric, []).append(item)
@@ -484,7 +508,11 @@ class NcclInspectorSkillEngine:
         self.path = str(path)
         self.prometheus_path = str(prometheus_path or "")
         self.events = load_nccl_inspector_events(self.path) if self.path else []
-        self.prometheus_metrics = load_nccl_prometheus_metrics(self.prometheus_path) if self.prometheus_path else []
+        self.prometheus_metrics = (
+            load_nccl_prometheus_metrics(self.prometheus_path)
+            if self.prometheus_path
+            else []
+        )
         self._skills = self._build_skills()
 
     def list_skills(self) -> List[str]:
@@ -545,17 +573,23 @@ class NcclInspectorSkillEngine:
             "timing_sources": _timing_source_summary(events),
         }
 
-    def _top_ops(self, kind: str, top_k: int = 20, **params: object) -> List[Dict[str, object]]:
+    def _top_ops(
+        self, kind: str, top_k: int = 20, **params: object
+    ) -> List[Dict[str, object]]:
         events = self._selected_events(kind=kind, **params)
         rows = _group_events(events, ["kind", "op", "message_size_bucket", "comm_name"])
         return rows[: int(top_k)]
 
-    def _comm_summary(self, top_k: int = 50, **params: object) -> List[Dict[str, object]]:
+    def _comm_summary(
+        self, top_k: int = 50, **params: object
+    ) -> List[Dict[str, object]]:
         events = self._selected_events(**params)
         rows = _group_events(events, ["comm_id", "comm_name", "kind", "op"])
         return rows[: int(top_k)]
 
-    def _event_rows(self, top_k: int = 100, sort_by: str = "exec_time_us", **params: object) -> List[Dict[str, object]]:
+    def _event_rows(
+        self, top_k: int = 100, sort_by: str = "exec_time_us", **params: object
+    ) -> List[Dict[str, object]]:
         events = self._selected_events(**params)
         key = str(sort_by or "exec_time_us")
         rows = [event.to_dict() for event in events]
@@ -564,12 +598,29 @@ class NcclInspectorSkillEngine:
 
     def _build_skills(self) -> Dict[str, NcclInspectorSkill]:
         common_params = [
-            SkillParam("kind", "filter by event kind: collective, p2p, or empty for all", default=""),
-            SkillParam("op_like", "operation LIKE pattern (%/_/* supported)", default="%"),
-            SkillParam("comm_like", "communicator name LIKE pattern (%/_/* supported)", default="%"),
-            SkillParam("min_msg_size_bytes", "minimum message size in bytes", type="int", default=0),
+            SkillParam(
+                "kind",
+                "filter by event kind: collective, p2p, or empty for all",
+                default="",
+            ),
+            SkillParam(
+                "op_like", "operation LIKE pattern (%/_/* supported)", default="%"
+            ),
+            SkillParam(
+                "comm_like",
+                "communicator name LIKE pattern (%/_/* supported)",
+                default="%",
+            ),
+            SkillParam(
+                "min_msg_size_bytes",
+                "minimum message size in bytes",
+                type="int",
+                default=0,
+            ),
         ]
-        top_params = common_params + [SkillParam("top_k", "number of rows to return", type="int", default=20)]
+        top_params = common_params + [
+            SkillParam("top_k", "number of rows to return", type="int", default=20)
+        ]
         return {
             "summary": NcclInspectorSkill(
                 name="summary",
@@ -584,7 +635,12 @@ class NcclInspectorSkillEngine:
                 title="Top NCCL Collectives",
                 description="Group collective events by op, message-size bucket, and communicator.",
                 category="collective",
-                params=common_params[1:] + [SkillParam("top_k", "number of rows to return", type="int", default=20)],
+                params=common_params[1:]
+                + [
+                    SkillParam(
+                        "top_k", "number of rows to return", type="int", default=20
+                    )
+                ],
                 run_fn=lambda top_k=20, **kw: self._top_ops(
                     "collective",
                     top_k=int(top_k),
@@ -598,7 +654,12 @@ class NcclInspectorSkillEngine:
                 title="Top NCCL P2P",
                 description="Group P2P events by op, message-size bucket, and communicator.",
                 category="p2p",
-                params=common_params[1:] + [SkillParam("top_k", "number of rows to return", type="int", default=20)],
+                params=common_params[1:]
+                + [
+                    SkillParam(
+                        "top_k", "number of rows to return", type="int", default=20
+                    )
+                ],
                 run_fn=lambda top_k=20, **kw: self._top_ops(
                     "p2p",
                     top_k=int(top_k),
@@ -621,14 +682,23 @@ class NcclInspectorSkillEngine:
                 description="Find sequence numbers whose per-rank execution time differs most.",
                 category="diagnostic",
                 params=top_params,
-                run_fn=lambda top_k=20, **kw: _rank_skew(self._selected_events(**kw), top_k=int(top_k)),
+                run_fn=lambda top_k=20, **kw: _rank_skew(
+                    self._selected_events(**kw), top_k=int(top_k)
+                ),
             ),
             "events": NcclInspectorSkill(
                 name="events",
                 title="Raw Event Rows",
                 description="Return normalized event rows sorted by a numeric column.",
                 category="raw",
-                params=top_params + [SkillParam("sort_by", "numeric event field to sort by", default="exec_time_us")],
+                params=top_params
+                + [
+                    SkillParam(
+                        "sort_by",
+                        "numeric event field to sort by",
+                        default="exec_time_us",
+                    )
+                ],
                 run_fn=self._event_rows,
             ),
             "prometheus_summary": NcclInspectorSkill(
@@ -636,8 +706,17 @@ class NcclInspectorSkillEngine:
                 title="Prometheus Textfile Summary",
                 description="Summarize NCCL Inspector Prometheus textfile metrics.",
                 category="prometheus",
-                params=[SkillParam("top_k", "number of top metric samples to return", type="int", default=20)],
-                run_fn=lambda top_k=20: _prometheus_summary(self.prometheus_metrics, top_k=int(top_k)),
+                params=[
+                    SkillParam(
+                        "top_k",
+                        "number of top metric samples to return",
+                        type="int",
+                        default=20,
+                    )
+                ],
+                run_fn=lambda top_k=20: _prometheus_summary(
+                    self.prometheus_metrics, top_k=int(top_k)
+                ),
             ),
         }
 
@@ -667,7 +746,9 @@ def analyze_nccl_inspector(
         "rank_skew": engine.run_skill("rank_skew", top_k=top_k, **params),
     }
     if prometheus_path:
-        payload["prometheus_summary"] = engine.run_skill("prometheus_summary", top_k=top_k)
+        payload["prometheus_summary"] = engine.run_skill(
+            "prometheus_summary", top_k=top_k
+        )
     payload["recommendations"] = _recommendations(payload)
     return payload
 
@@ -683,7 +764,8 @@ def _recommendations(payload: Dict[str, object]) -> List[str]:
             x
             for x in timing
             if isinstance(x, dict)
-            and str(x.get("timing_source", "")).lower() not in {"kernel_gpu", "gpu", "unknown"}
+            and str(x.get("timing_source", "")).lower()
+            not in {"kernel_gpu", "gpu", "unknown"}
         ]
         if non_gpu:
             recs.append(
@@ -693,7 +775,10 @@ def _recommendations(payload: Dict[str, object]) -> List[str]:
     rank_skew = payload.get("rank_skew")
     if isinstance(rank_skew, list) and rank_skew:
         first = rank_skew[0]
-        if isinstance(first, dict) and float(first.get("skew_ratio", 0.0) or 0.0) >= 1.5:
+        if (
+            isinstance(first, dict)
+            and float(first.get("skew_ratio", 0.0) or 0.0) >= 1.5
+        ):
             recs.append(
                 "Large per-rank skew detected for at least one NCCL sequence; inspect slow_rank, "
                 "node placement, and overlap with compute/host stalls."

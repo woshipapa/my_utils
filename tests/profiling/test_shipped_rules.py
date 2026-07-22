@@ -19,7 +19,14 @@ class TestShippedRuleReconciliation:
 
     def test_local_speedup_is_not_promoted_to_kernel_level(self):
         rules = shipped_rules.normalize_shipped_rules(
-            [self._rule("UncoalescedGlobalAccess", "excess sectors", stype="LOCAL", speedup=45.0)]
+            [
+                self._rule(
+                    "UncoalescedGlobalAccess",
+                    "excess sectors",
+                    stype="LOCAL",
+                    speedup=45.0,
+                )
+            ]
         )
         assert rules[0].speedup_ceiling is None
         findings = shipped_rules.shipped_rules_to_findings(rules)
@@ -42,7 +49,9 @@ class TestShippedRuleReconciliation:
         rules = shipped_rules.normalize_shipped_rules(
             [self._rule("SOLBottleneck", "This kernel is memory bound.")]
         )
-        out = shipped_rules.reconcile_with_shipped_rules([], rules, our_verdict="compute_bound")
+        out = shipped_rules.reconcile_with_shipped_rules(
+            [], rules, our_verdict="compute_bound"
+        )
         assert out["conflicts"], "compute-vs-memory disagreement must be raised"
         assert any(f.category == "evidence_conflict" for f in out["findings"])
 
@@ -50,16 +59,27 @@ class TestShippedRuleReconciliation:
         rules = shipped_rules.normalize_shipped_rules(
             [self._rule("UncoalescedGlobalAccess", "excess sectors")]
         )
-        ours = [ncu_diagnostics.Finding(
-            category="uncoalesced_global_access", title="t", summary="s", confidence="medium",
-        )]
+        ours = [
+            ncu_diagnostics.Finding(
+                category="uncoalesced_global_access",
+                title="t",
+                summary="s",
+                confidence="medium",
+            )
+        ]
         out = shipped_rules.reconcile_with_shipped_rules(ours, rules)
-        promoted = next(f for f in out["findings"] if f.category == "uncoalesced_global_access")
+        promoted = next(
+            f for f in out["findings"] if f.category == "uncoalesced_global_access"
+        )
         assert promoted.confidence == "high"
         assert "corroborated_by_ncu_rule" in promoted.evidence
 
     def test_absent_shipped_rules_do_not_weaken_findings(self):
-        ours = [ncu_diagnostics.Finding(category="uncoalesced_global_access", title="t", summary="s")]
+        ours = [
+            ncu_diagnostics.Finding(
+                category="uncoalesced_global_access", title="t", summary="s"
+            )
+        ]
         out = shipped_rules.reconcile_with_shipped_rules(ours, [])
         assert out["shipped_rules_available"] is False
         assert out["findings"] == ours

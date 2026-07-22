@@ -77,6 +77,19 @@ ncu-report-analyze = "my_utils.profiling.cli:entry_ncu_report_analyze"
 nccl-inspector-skill = "my_utils.profiling.cli:entry_nccl_inspector_skill"
 nccl-inspector-analyze = "my_utils.profiling.cli:entry_nccl_inspector_analyze"
 
+[tool.ruff]
+target-version = "py310"
+
+[tool.ruff.lint]
+# Default rule set (E4/E7/E9/F) minus rules the codebase deliberately
+# violates: late imports for optional deps (E402), compact legacy style
+# (E701/E722/E731/E741/E742), and inspect-only locals in tests (F841).
+ignore = ["E402", "E701", "E722", "E731", "E741", "E742", "F841"]
+
+[tool.ruff.lint.per-file-ignores]
+# Re-export surfaces: unused imports are the API.
+"**/__init__.py" = ["F401"]
+
 [tool.setuptools]
 include-package-data = true
 

@@ -81,7 +81,15 @@ def test_nccl_log_provider_parses_duration_and_bandwidth(tmp_path: Path) -> None
 def test_ras_json_provider_supports_jsonl_incremental(tmp_path: Path) -> None:
     path = tmp_path / "ras.jsonl"
     path.write_text(
-        json.dumps({"timestamp": 1712000000, "severity": "warning", "component": "nvlink", "correctable_errors": 2}) + "\n",
+        json.dumps(
+            {
+                "timestamp": 1712000000,
+                "severity": "warning",
+                "component": "nvlink",
+                "correctable_errors": 2,
+            }
+        )
+        + "\n",
         encoding="utf-8",
     )
     provider = RasJsonMetricsProvider(str(path), json_lines=True)
@@ -91,7 +99,17 @@ def test_ras_json_provider_supports_jsonl_incremental(tmp_path: Path) -> None:
 
     assert provider.get_metrics() == []
     with path.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps({"timestamp": 1712000001, "severity": "error", "component": "pcie", "fatal_errors": 1}) + "\n")
+        handle.write(
+            json.dumps(
+                {
+                    "timestamp": 1712000001,
+                    "severity": "error",
+                    "component": "pcie",
+                    "fatal_errors": 1,
+                }
+            )
+            + "\n"
+        )
     second = provider.get_metrics()
     assert any(item.name == "ras.fatal_errors" for item in second)
 
@@ -124,28 +142,94 @@ def test_pretrain_profile_includes_new_rules() -> None:
 def test_build_comprehensive_analysis_contains_new_sections() -> None:
     report = build_comprehensive_analysis(
         gpu_name="NVIDIA H100",
-        summary={"timing": {"span_ms": 100.0, "busy_ms": 65.0, "utilization_pct": 65.0}},
-        overlap={"comm_total_ms": 30.0, "compute_total_ms": 70.0, "overlap_ms": 10.0, "comm_only_ms": 20.0, "overlap_pct_of_comm": 33.3, "overlap_pct_of_compute": 14.2},
-        nccl_breakdown=[{"kernel_name": "ncclAllReduceRingLLKernel_sum_f16", "total_ms": 30.0, "invocations": 3, "avg_ms": 10.0}],
+        summary={
+            "timing": {"span_ms": 100.0, "busy_ms": 65.0, "utilization_pct": 65.0}
+        },
+        overlap={
+            "comm_total_ms": 30.0,
+            "compute_total_ms": 70.0,
+            "overlap_ms": 10.0,
+            "comm_only_ms": 20.0,
+            "overlap_pct_of_comm": 33.3,
+            "overlap_pct_of_compute": 14.2,
+        },
+        nccl_breakdown=[
+            {
+                "kernel_name": "ncclAllReduceRingLLKernel_sum_f16",
+                "total_ms": 30.0,
+                "invocations": 3,
+                "avg_ms": 10.0,
+            }
+        ],
         aggregate_kernels=[
             {"kernel_name": "gemm_kernel", "total_ms": 50.0, "invocations": 5},
-            {"kernel_name": "ncclAllReduceRingLLKernel_sum_f16", "total_ms": 30.0, "invocations": 3},
+            {
+                "kernel_name": "ncclAllReduceRingLLKernel_sum_f16",
+                "total_ms": 30.0,
+                "invocations": 3,
+            },
         ],
         per_stream_utilization=[
-            {"stream_id": 7, "kernel_count": 10, "kernel_busy_ms": 60.0, "stream_span_ms": 100.0, "utilization_pct": 60.0},
-            {"stream_id": 8, "kernel_count": 3, "kernel_busy_ms": 20.0, "stream_span_ms": 90.0, "utilization_pct": 22.2},
+            {
+                "stream_id": 7,
+                "kernel_count": 10,
+                "kernel_busy_ms": 60.0,
+                "stream_span_ms": 100.0,
+                "utilization_pct": 60.0,
+            },
+            {
+                "stream_id": 8,
+                "kernel_count": 3,
+                "kernel_busy_ms": 20.0,
+                "stream_span_ms": 90.0,
+                "utilization_pct": 22.2,
+            },
         ],
-        memcpy_bandwidth=[{"copy_kind": 1, "count": 4, "total_gb": 6.0, "total_ms": 20.0, "avg_gbps": 300.0}],
-        sync_breakdown=[{"sync_type": "cudaStreamSynchronize", "count": 4, "total_ms": 12.0, "avg_ms": 3.0}],
+        memcpy_bandwidth=[
+            {
+                "copy_kind": 1,
+                "count": 4,
+                "total_gb": 6.0,
+                "total_ms": 20.0,
+                "avg_gbps": 300.0,
+            }
+        ],
+        sync_breakdown=[
+            {
+                "sync_type": "cudaStreamSynchronize",
+                "count": 4,
+                "total_ms": 12.0,
+                "avg_ms": 3.0,
+            }
+        ],
         gpu_metrics_aggregate=[
-            {"metric_name": "sm__active.avg.pct_of_peak_sustained_elapsed", "sample_count": 10, "avg_value": 45.0, "max_value": 80.0},
-            {"metric_name": "dram__throughput.avg.pct_of_peak_sustained_elapsed", "sample_count": 10, "avg_value": 75.0, "max_value": 95.0},
+            {
+                "metric_name": "sm__active.avg.pct_of_peak_sustained_elapsed",
+                "sample_count": 10,
+                "avg_value": 45.0,
+                "max_value": 80.0,
+            },
+            {
+                "metric_name": "dram__throughput.avg.pct_of_peak_sustained_elapsed",
+                "sample_count": 10,
+                "avg_value": 75.0,
+                "max_value": 95.0,
+            },
         ],
         gpu_metrics_percentiles=[],
         memcpy_transfers_detail=[{"bytes": 128 * 1024}],
-        cpu_launch_gap=[{"kernel_name": "gemm_kernel", "avg_gap_us": 80.0, "total_gap_ms": 8.0}],
+        cpu_launch_gap=[
+            {"kernel_name": "gemm_kernel", "avg_gap_us": 80.0, "total_gap_ms": 8.0}
+        ],
         short_kernels=[{"duration_bracket": "b_lt10us", "pct_count": 35.0}],
-        kernel_duration_stats=[{"kernel_name": "gemm_kernel", "cv_pct": 12.0, "avg_ms": 10.0, "stddev_ms": 1.2}],
+        kernel_duration_stats=[
+            {
+                "kernel_name": "gemm_kernel",
+                "cv_pct": 12.0,
+                "avg_ms": 10.0,
+                "stddev_ms": 1.2,
+            }
+        ],
     )
     assert "communication_health" in report
     assert "roofline_gap" in report
@@ -154,13 +238,45 @@ def test_build_comprehensive_analysis_contains_new_sections() -> None:
 
 def test_timeline_html_contains_new_observability_panels() -> None:
     kernels = [
-        {"rank": 0, "device_id": 0, "stream_id": 7, "kernel_name": "gemm_kernel", "start_ns": 0, "end_ns": 10_000, "duration_ms": 0.01, "kind": "compute", "occupancy_pct_estimate": 70.0},
-        {"rank": 1, "device_id": 0, "stream_id": 8, "kernel_name": "ncclAllReduce", "start_ns": 2_000, "end_ns": 12_000, "duration_ms": 0.01, "kind": "comm", "occupancy_pct_estimate": 60.0},
+        {
+            "rank": 0,
+            "device_id": 0,
+            "stream_id": 7,
+            "kernel_name": "gemm_kernel",
+            "start_ns": 0,
+            "end_ns": 10_000,
+            "duration_ms": 0.01,
+            "kind": "compute",
+            "occupancy_pct_estimate": 70.0,
+        },
+        {
+            "rank": 1,
+            "device_id": 0,
+            "stream_id": 8,
+            "kernel_name": "ncclAllReduce",
+            "start_ns": 2_000,
+            "end_ns": 12_000,
+            "duration_ms": 0.01,
+            "kind": "comm",
+            "occupancy_pct_estimate": 60.0,
+        },
     ]
     metric_series = [
-        {"name": "sm__active.avg.pct_of_peak_sustained_elapsed [gpu 0]", "color": "#5fa", "points": [[0, 62.0], [10_000, 58.0]]},
-        {"name": "dram__throughput.avg.pct_of_peak_sustained_elapsed [gpu 0]", "color": "#fa5", "points": [[0, 75.0], [10_000, 78.0]]},
-        {"name": "python_gil_hold_pct", "color": "#acf", "points": [[0, 40.0], [10_000, 55.0]]},
+        {
+            "name": "sm__active.avg.pct_of_peak_sustained_elapsed [gpu 0]",
+            "color": "#5fa",
+            "points": [[0, 62.0], [10_000, 58.0]],
+        },
+        {
+            "name": "dram__throughput.avg.pct_of_peak_sustained_elapsed [gpu 0]",
+            "color": "#fa5",
+            "points": [[0, 75.0], [10_000, 78.0]],
+        },
+        {
+            "name": "python_gil_hold_pct",
+            "color": "#acf",
+            "points": [[0, 40.0], [10_000, 55.0]],
+        },
     ]
     html_text = _render_html(
         sqlite_path="dummy.sqlite",

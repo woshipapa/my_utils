@@ -119,7 +119,8 @@ def compute_mfu_compare(
         "after": after,
         "delta_mfu_pct": round(float(after["mfu_pct"]) - float(before["mfu_pct"]), 4),
         "delta_achieved_tflops": round(
-            float(after["achieved_model_tflops"]) - float(before["achieved_model_tflops"]),
+            float(after["achieved_model_tflops"])
+            - float(before["achieved_model_tflops"]),
             4,
         ),
     }

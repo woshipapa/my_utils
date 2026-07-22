@@ -32,7 +32,13 @@ load_nccl_prometheus_metrics = _MOD.load_nccl_prometheus_metrics
 def _write_jsonl(path: Path) -> Path:
     rows = [
         {
-            "header": {"id": "0xabc", "comm_name": "DP Group 0", "rank": 0, "n_ranks": 2, "nnodes": 1},
+            "header": {
+                "id": "0xabc",
+                "comm_name": "DP Group 0",
+                "rank": 0,
+                "n_ranks": 2,
+                "nnodes": 1,
+            },
             "metadata": {"hostname": "node0", "pid": 100, "dump_timestamp_us": 10},
             "coll_perf": {
                 "coll": "AllReduce",
@@ -44,14 +50,28 @@ def _write_jsonl(path: Path) -> Path:
                 "coll_busbw_gbs": 40.0,
                 "event_trace_ts": {
                     "kernel_events": [
-                        {"channel_id": 0, "kernel_start_ts": 1000, "kernel_stop_ts": 1100},
-                        {"channel_id": 1, "kernel_start_ts": 1010, "kernel_stop_ts": 1120},
+                        {
+                            "channel_id": 0,
+                            "kernel_start_ts": 1000,
+                            "kernel_stop_ts": 1100,
+                        },
+                        {
+                            "channel_id": 1,
+                            "kernel_start_ts": 1010,
+                            "kernel_stop_ts": 1120,
+                        },
                     ]
                 },
             },
         },
         {
-            "header": {"id": "0xabc", "comm_name": "DP Group 0", "rank": 1, "n_ranks": 2, "nnodes": 1},
+            "header": {
+                "id": "0xabc",
+                "comm_name": "DP Group 0",
+                "rank": 1,
+                "n_ranks": 2,
+                "nnodes": 1,
+            },
             "metadata": {"hostname": "node1", "pid": 200, "dump_timestamp_us": 11},
             "coll_perf": {
                 "coll": "AllReduce",
@@ -64,7 +84,13 @@ def _write_jsonl(path: Path) -> Path:
             },
         },
         {
-            "header": {"id": "0xabc", "comm_name": "DP Group 0", "rank": 0, "n_ranks": 2, "nnodes": 1},
+            "header": {
+                "id": "0xabc",
+                "comm_name": "DP Group 0",
+                "rank": 0,
+                "n_ranks": 2,
+                "nnodes": 1,
+            },
             "metadata": {"hostname": "node0", "pid": 100, "dump_timestamp_us": 12},
             "p2p_perf": {
                 "p2p": "Send",

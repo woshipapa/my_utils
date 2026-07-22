@@ -58,18 +58,25 @@ def test_cli_timeline_metrics_defaults_keep_all_points(tmp_path: Path) -> None:
     assert m is not None
     payload = json.loads(m.group(1))
     series = payload.get("metrics") or []
-    sm_series = next((s for s in series if "sm__active" in str(s.get("name", ""))), None)
+    sm_series = next(
+        (s for s in series if "sm__active" in str(s.get("name", ""))), None
+    )
     assert sm_series is not None, series
     assert len(sm_series.get("points", [])) == 5000
 
 
-def test_timeline_default_focus_metrics_filters_unrelated_series(tmp_path: Path) -> None:
+def test_timeline_default_focus_metrics_filters_unrelated_series(
+    tmp_path: Path,
+) -> None:
     db = tmp_path / "timeline_focus_metrics.sqlite"
     _init_sqlite(db)
 
     conn = sqlite3.connect(str(db))
     cur = conn.cursor()
-    cur.execute("INSERT INTO StringIds(id, value) VALUES (?, ?)", (777, "random_metric_should_be_filtered"))
+    cur.execute(
+        "INSERT INTO StringIds(id, value) VALUES (?, ?)",
+        (777, "random_metric_should_be_filtered"),
+    )
     cur.executemany(
         "INSERT INTO CUPTI_ACTIVITY_KIND_GPU_METRIC(timestamp, metricId, value, sourceId) VALUES (?, ?, ?, ?)",
         [
@@ -154,7 +161,9 @@ def test_timeline_focus_metrics_enabled_by_default(tmp_path: Path) -> None:
     assert all("random_metric_should_be_filtered" not in n for n in names), names
 
 
-def test_timeline_default_focus_warps_metrics_keep_avg_throughput_and_cycle(tmp_path: Path) -> None:
+def test_timeline_default_focus_warps_metrics_keep_avg_throughput_and_cycle(
+    tmp_path: Path,
+) -> None:
     db = tmp_path / "timeline_focus_warps_throughput_only.sqlite"
     _init_sqlite(db)
 
@@ -199,8 +208,12 @@ def test_timeline_default_focus_warps_metrics_keep_avg_throughput_and_cycle(tmp_
     assert m is not None
     payload = json.loads(m.group(1))
     names = {str(s.get("name", "")).lower() for s in (payload.get("metrics") or [])}
-    assert any("compute warps in flight" in n and "throughput" in n for n in names), names
-    assert any("compute warps in flight" in n and "avg warps per cycle" in n for n in names), names
+    assert any("compute warps in flight" in n and "throughput" in n for n in names), (
+        names
+    )
+    assert any(
+        "compute warps in flight" in n and "avg warps per cycle" in n for n in names
+    ), names
 
 
 def test_cli_new_subcommands(tmp_path: Path) -> None:
@@ -212,15 +225,25 @@ def test_cli_new_subcommands(tmp_path: Path) -> None:
     occ_json = tmp_path / "occ_h100.json"
 
     # nsys-iter-overlap
-    assert main([
-        "nsys-iter-overlap",
-        "--sqlite", str(db),
-        "--iteration-marker", "sample_0",
-        "--device-id", "0",
-        "--limit", "100",
-        "--output", str(overlap_json),
-        "--pretty",
-    ]) == 0
+    assert (
+        main(
+            [
+                "nsys-iter-overlap",
+                "--sqlite",
+                str(db),
+                "--iteration-marker",
+                "sample_0",
+                "--device-id",
+                "0",
+                "--limit",
+                "100",
+                "--output",
+                str(overlap_json),
+                "--pretty",
+            ]
+        )
+        == 0
+    )
     assert overlap_json.exists()
     data = json.loads(overlap_json.read_text())
     assert isinstance(data, list) and len(data) >= 1
@@ -231,31 +254,53 @@ def test_cli_new_subcommands(tmp_path: Path) -> None:
     print(f"\n[nsys-iter-overlap] {len(data)} iterations written to {overlap_json}")
 
     # nsys-iter-outliers
-    assert main([
-        "nsys-iter-outliers",
-        "--sqlite", str(db),
-        "--iteration-marker", "sample_0",
-        "--device-id", "0",
-        "--sigma", "0.5",
-        "--output", str(outliers_json),
-        "--pretty",
-    ]) == 0
+    assert (
+        main(
+            [
+                "nsys-iter-outliers",
+                "--sqlite",
+                str(db),
+                "--iteration-marker",
+                "sample_0",
+                "--device-id",
+                "0",
+                "--sigma",
+                "0.5",
+                "--output",
+                str(outliers_json),
+                "--pretty",
+            ]
+        )
+        == 0
+    )
     assert outliers_json.exists()
     data2 = json.loads(outliers_json.read_text())
     assert "stats" in data2 and "outliers" in data2
     assert data2["stats"]["count"] >= 1
-    print(f"[nsys-iter-outliers] stats={data2['stats']}  outliers={len(data2['outliers'])}")
+    print(
+        f"[nsys-iter-outliers] stats={data2['stats']}  outliers={len(data2['outliers'])}"
+    )
 
     # nsys-sql-skill: occupancy should be enriched for H100 by default (--occupancy-arch auto)
-    assert main([
-        "nsys-sql-skill",
-        "--sqlite", str(db),
-        "--skill", "kernel_occupancy_estimate",
-        "--param", "device_id=0",
-        "--param", "limit=10",
-        "--output", str(occ_json),
-        "--pretty",
-    ]) == 0
+    assert (
+        main(
+            [
+                "nsys-sql-skill",
+                "--sqlite",
+                str(db),
+                "--skill",
+                "kernel_occupancy_estimate",
+                "--param",
+                "device_id=0",
+                "--param",
+                "limit=10",
+                "--output",
+                str(occ_json),
+                "--pretty",
+            ]
+        )
+        == 0
+    )
     assert occ_json.exists()
     occ_rows = json.loads(occ_json.read_text())
     assert isinstance(occ_rows, list) and len(occ_rows) >= 1
@@ -675,8 +720,12 @@ def test_cli_nsys_module_kernel_compare_json_and_markdown(tmp_path: Path) -> Non
             "occupancy_pct_h100_estimate": 26.6,
         },
     ]
-    base_json.write_text(json.dumps(base_rows, ensure_ascii=False, indent=2), encoding="utf-8")
-    target_json.write_text(json.dumps(target_rows, ensure_ascii=False, indent=2), encoding="utf-8")
+    base_json.write_text(
+        json.dumps(base_rows, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    target_json.write_text(
+        json.dumps(target_rows, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
 
     rc_json = main(
         [
@@ -703,13 +752,17 @@ def test_cli_nsys_module_kernel_compare_json_and_markdown(tmp_path: Path) -> Non
     kernel_resource_diff = compare.get("kernel_resource_diff") or {}
     assert int(kernel_resource_diff.get("changed_kernel_count", 0)) >= 1
     changed_rows = kernel_resource_diff.get("changed_kernels") or []
-    gemm_change = next((x for x in changed_rows if str((x or {}).get("kernel_name")) == "gemm_A"), None)
+    gemm_change = next(
+        (x for x in changed_rows if str((x or {}).get("kernel_name")) == "gemm_A"), None
+    )
     assert gemm_change is not None
     assert "registers_per_thread" in set(gemm_change.get("changed_keys") or [])
     assert "top_kernel_duration_deltas" in compare
     stream_deltas = compare.get("stream_deltas") or []
     assert stream_deltas
-    stream83 = next((x for x in stream_deltas if int((x or {}).get("stream_id", -1)) == 83), None)
+    stream83 = next(
+        (x for x in stream_deltas if int((x or {}).get("stream_id", -1)) == 83), None
+    )
     assert stream83 is not None
     assert float(stream83.get("sequence_similarity", 0.0)) < 1.0
     assert isinstance(stream83.get("base_timeline_sample"), list)
@@ -766,7 +819,11 @@ def test_cli_nsys_module_kernel_compare_json_and_markdown(tmp_path: Path) -> Non
     assert "Top Kernel Duration Deltas" in html_text
     assert "Stream 83" in html_text
     assert "gelu_fused" in html_text
-    assert "possible_fusion_in_target" in html_text or "possible_split_in_target" in html_text or "kernel_set_changed" in html_text
+    assert (
+        "possible_fusion_in_target" in html_text
+        or "possible_split_in_target" in html_text
+        or "kernel_set_changed" in html_text
+    )
 
 
 def test_cli_nsys_module_kernel_compare_sqlite_mode(tmp_path: Path) -> None:
@@ -809,8 +866,12 @@ def test_cli_nsys_module_kernel_compare_sqlite_mode(tmp_path: Path) -> None:
     target_scope = dict(target_scope_sel.get("selected_scope") or {})
     assert int(base_scope_sel.get("requested_nvtx_index") or -1) == 1
     assert int(target_scope_sel.get("requested_nvtx_index") or -1) == 1
-    assert "sample_0 step=2 rank=0" in str(base_scope.get("nvtx_text") or ""), base_scope
-    assert "sample_0 step=2 rank=0" in str(target_scope.get("nvtx_text") or ""), target_scope
+    assert "sample_0 step=2 rank=0" in str(base_scope.get("nvtx_text") or ""), (
+        base_scope
+    )
+    assert "sample_0 step=2 rank=0" in str(target_scope.get("nvtx_text") or ""), (
+        target_scope
+    )
     stream_deltas = list(compare.get("stream_deltas") or [])
     assert stream_deltas, compare
     first_stream = dict(stream_deltas[0] or {})

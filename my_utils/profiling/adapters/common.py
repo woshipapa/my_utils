@@ -50,7 +50,14 @@ def build_standard_training_specs(
 ) -> List[ProviderSpec]:
     specs: List[ProviderSpec] = []
     if "my_timer" in context or "timer" in context:
-        specs.append(ProviderSpec(provider_type="my_timer", provider_id="my_timer", enabled=True, params={}))
+        specs.append(
+            ProviderSpec(
+                provider_type="my_timer",
+                provider_id="my_timer",
+                enabled=True,
+                params={},
+            )
+        )
     if "torch_profiler" in context or "profiler" in context:
         specs.append(
             ProviderSpec(

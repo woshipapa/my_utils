@@ -4,7 +4,7 @@ import json
 import sqlite3
 import statistics
 import time
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional
 
 from .nsys_auto_analysis import build_comprehensive_analysis, comprehensive_to_markdown
 from .nsys_mfu import compute_mfu_single, infer_peak_tflops
@@ -23,11 +23,15 @@ def _first_gpu_name_from_conn(conn: sqlite3.Connection) -> str:
     try:
         tables = {
             str(row[0])
-            for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table';").fetchall()
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table';"
+            ).fetchall()
         }
         if "TARGET_INFO_GPU" not in tables:
             return ""
-        row = conn.execute("SELECT name FROM TARGET_INFO_GPU ORDER BY id LIMIT 1;").fetchone()
+        row = conn.execute(
+            "SELECT name FROM TARGET_INFO_GPU ORDER BY id LIMIT 1;"
+        ).fetchone()
         return str(row["name"] or "").strip() if row else ""
     except Exception:
         return ""
@@ -76,10 +80,14 @@ def _resolve_nvtx_text(
     nvtx_join = ""
     if schema.string_table:
         if "textId" in nvtx_cols:
-            nvtx_join = f" LEFT JOIN {schema.string_table} s_nsc ON n.textId = s_nsc.id "
+            nvtx_join = (
+                f" LEFT JOIN {schema.string_table} s_nsc ON n.textId = s_nsc.id "
+            )
             text_expr = "COALESCE(n.text, s_nsc.value)"
         elif "nameId" in nvtx_cols:
-            nvtx_join = f" LEFT JOIN {schema.string_table} s_nsc ON n.nameId = s_nsc.id "
+            nvtx_join = (
+                f" LEFT JOIN {schema.string_table} s_nsc ON n.nameId = s_nsc.id "
+            )
             text_expr = "COALESCE(n.text, s_nsc.value)"
 
     start_col = "start" if "start" in nvtx_cols else None
@@ -110,7 +118,9 @@ def _resolve_nvtx_text(
         f"LIMIT ?"
     )
     try:
-        rows = [dict(r) for r in conn.execute(sql, (like_pattern, int(limit))).fetchall()]
+        rows = [
+            dict(r) for r in conn.execute(sql, (like_pattern, int(limit))).fetchall()
+        ]
     except Exception as exc:
         return {
             "pattern": nvtx_text,
@@ -134,8 +144,8 @@ def _resolve_nvtx_text(
         }
 
     window_start = min(int(r["start_ns"]) for r in rows)
-    window_end   = max(int(r["end_ns"])   for r in rows)
-    total_dur    = round(sum(float(r.get("duration_ms") or 0) for r in rows), 3)
+    window_end = max(int(r["end_ns"]) for r in rows)
+    total_dur = round(sum(float(r.get("duration_ms") or 0) for r in rows), 3)
 
     return {
         "pattern": nvtx_text,
@@ -148,7 +158,9 @@ def _resolve_nvtx_text(
     }
 
 
-def _safe_skill(engine: "NsysSqlSkillEngine", skill_name: str, warnings_out: List[str], **kwargs) -> List[Dict[str, object]]:
+def _safe_skill(
+    engine: "NsysSqlSkillEngine", skill_name: str, warnings_out: List[str], **kwargs
+) -> List[Dict[str, object]]:
     """Execute a skill and return [] on failure, appending a warning instead of crashing."""
     skill = engine.get_skill(skill_name)
     if skill is None:
@@ -331,7 +343,9 @@ def analyze_nsys_sqlite(
     try:
         with _phase("schema_and_nvtx_scope"):
             schema_obj = _run_subphase("schema.load", lambda: NsightSchema(conn))
-            engine = _run_subphase("schema.build_skill_engine", lambda: NsysSqlSkillEngine(conn))
+            engine = _run_subphase(
+                "schema.build_skill_engine", lambda: NsysSqlSkillEngine(conn)
+            )
             explicit_start_given = int(start_ns) >= 0
             explicit_end_given = int(end_ns) >= 0
 
@@ -343,7 +357,9 @@ def analyze_nsys_sqlite(
                 "tables": tables,
                 "columns": {t: schema_obj.columns(t) for t in tables},
                 "schema_meta": dict(schema_obj.meta),
-                "canonical_tables": dict(schema_obj.summary().get("canonical_tables", {})),
+                "canonical_tables": dict(
+                    schema_obj.summary().get("canonical_tables", {})
+                ),
                 "version_info": {
                     "exporter_version": schema_obj.version.exporter_version,
                     "export_schema_version": schema_obj.version.export_schema_version,
@@ -361,7 +377,9 @@ def analyze_nsys_sqlite(
             if nvtx_text:
                 nvtx_text_info = _run_subphase(
                     "nvtx.resolve_ranges",
-                    lambda: _resolve_nvtx_text(conn, schema_obj, nvtx_text, limit=limit),
+                    lambda: _resolve_nvtx_text(
+                        conn, schema_obj, nvtx_text, limit=limit
+                    ),
                 )
                 if nvtx_text_info.get("warning"):
                     pass  # warn later via warnings list; don't abort
@@ -383,12 +401,20 @@ def analyze_nsys_sqlite(
                         ),
                     )
                     if not str(nvtx_kernel_span_info.get("warning") or ""):
-                        k_start = int(nvtx_kernel_span_info.get("kernel_start_ns") or -1)
+                        k_start = int(
+                            nvtx_kernel_span_info.get("kernel_start_ns") or -1
+                        )
                         k_end = int(nvtx_kernel_span_info.get("kernel_end_ns") or -1)
                         if k_start >= 0 and not explicit_start_given:
-                            start_ns = k_start if int(start_ns) < 0 else min(int(start_ns), k_start)
+                            start_ns = (
+                                k_start
+                                if int(start_ns) < 0
+                                else min(int(start_ns), k_start)
+                            )
                         if k_end >= 0 and not explicit_end_given:
-                            end_ns = k_end if int(end_ns) < 0 else max(int(end_ns), k_end)
+                            end_ns = (
+                                k_end if int(end_ns) < 0 else max(int(end_ns), k_end)
+                            )
 
         with _phase("summarize_gpu_kernels"):
             summary = _run_subphase(
@@ -450,12 +476,12 @@ def analyze_nsys_sqlite(
             else:
                 n_ranges = int(nvtx_text_info.get("count") or 0)
                 w_start = int(nvtx_text_info.get("window_start_ns") or 0)
-                w_end   = int(nvtx_text_info.get("window_end_ns") or 0)
+                w_end = int(nvtx_text_info.get("window_end_ns") or 0)
                 warnings.append(
                     f"[NVTX_SCOPE] Scoped to pattern '{nvtx_text}': "
                     f"{n_ranges} range(s) matched, "
-                    f"window [{round(w_start/1e6,1)} ms – {round(w_end/1e6,1)} ms] "
-                    f"(span {round((w_end-w_start)/1e6,1)} ms)."
+                    f"window [{round(w_start / 1e6, 1)} ms – {round(w_end / 1e6, 1)} ms] "
+                    f"(span {round((w_end - w_start) / 1e6, 1)} ms)."
                 )
 
         if nvtx_kernel_span_info:
@@ -468,7 +494,7 @@ def analyze_nsys_sqlite(
                 k_end = int(nvtx_kernel_span_info.get("kernel_end_ns") or 0)
                 warnings.append(
                     f"[NVTX_SCOPE_KERNEL_SPAN] Attributed kernels={k_count}, "
-                    f"gpu_window [{round(k_start/1e6,1)} ms - {round(k_end/1e6,1)} ms]."
+                    f"gpu_window [{round(k_start / 1e6, 1)} ms - {round(k_end / 1e6, 1)} ms]."
                 )
 
         with _phase("mfu"):
@@ -476,23 +502,33 @@ def analyze_nsys_sqlite(
             if model_flops_per_step is not None:
                 step_time_s: Optional[float] = None
                 if iterations:
-                    iter_ms = [_to_float(item.get("duration_ms")) for item in iterations]
+                    iter_ms = [
+                        _to_float(item.get("duration_ms")) for item in iterations
+                    ]
                     iter_ms = [x for x in iter_ms if x and x > 0]
                     if iter_ms:
                         step_time_s = float(statistics.median(iter_ms)) / 1000.0
                 if step_time_s is None:
-                    span_ms = _to_float(((summary or {}).get("timing") or {}).get("span_ms"))
+                    span_ms = _to_float(
+                        ((summary or {}).get("timing") or {}).get("span_ms")
+                    )
                     if span_ms and span_ms > 0:
                         step_time_s = float(span_ms) / 1000.0
                 if step_time_s is None:
-                    warnings.append("MFU skipped: no usable step time from iterations or summary span.")
+                    warnings.append(
+                        "MFU skipped: no usable step time from iterations or summary span."
+                    )
                 else:
                     resolved_peak = peak_tflops
                     if resolved_peak is None:
                         gpu_name = _first_gpu_name_from_conn(conn)
-                        resolved_peak = infer_peak_tflops(gpu_name, precision=peak_precision)
+                        resolved_peak = infer_peak_tflops(
+                            gpu_name, precision=peak_precision
+                        )
                         if resolved_peak is None:
-                            warnings.append("MFU peak_tflops not provided and GPU name mapping failed.")
+                            warnings.append(
+                                "MFU peak_tflops not provided and GPU name mapping failed."
+                            )
                     if resolved_peak is not None:
                         mfu = compute_mfu_single(
                             step_time_s=float(step_time_s),
@@ -504,8 +540,13 @@ def analyze_nsys_sqlite(
             sync_breakdown = _run_subphase(
                 "sync_breakdown.skill",
                 lambda: _safe_skill(
-                    engine, "sync_breakdown", warnings,
-                    device_id=device_id, limit=50, start_ns=start_ns, end_ns=end_ns,
+                    engine,
+                    "sync_breakdown",
+                    warnings,
+                    device_id=device_id,
+                    limit=50,
+                    start_ns=start_ns,
+                    end_ns=end_ns,
                 ),
             )
 
@@ -513,7 +554,9 @@ def analyze_nsys_sqlite(
             memcpy_bandwidth = _run_subphase(
                 "memcpy_bandwidth.skill",
                 lambda: _safe_skill(
-                    engine, "memcpy_bandwidth_analysis", warnings,
+                    engine,
+                    "memcpy_bandwidth_analysis",
+                    warnings,
                     device_id=device_id,
                     start_ns=start_ns,
                     end_ns=end_ns,
@@ -524,8 +567,14 @@ def analyze_nsys_sqlite(
             kernel_duration_stats = _run_subphase(
                 "kernel_duration_stats.skill",
                 lambda: _safe_skill(
-                    engine, "kernel_duration_stats", warnings,
-                    device_id=device_id, start_ns=start_ns, end_ns=end_ns, min_invocations=3, limit=20,
+                    engine,
+                    "kernel_duration_stats",
+                    warnings,
+                    device_id=device_id,
+                    start_ns=start_ns,
+                    end_ns=end_ns,
+                    min_invocations=3,
+                    limit=20,
                 ),
             )
 
@@ -533,7 +582,9 @@ def analyze_nsys_sqlite(
             short_kernels = _run_subphase(
                 "short_kernels_overhead.skill",
                 lambda: _safe_skill(
-                    engine, "short_kernels_overhead", warnings,
+                    engine,
+                    "short_kernels_overhead",
+                    warnings,
                     device_id=device_id,
                     start_ns=start_ns,
                     end_ns=end_ns,
@@ -544,8 +595,13 @@ def analyze_nsys_sqlite(
             per_stream_utilization = _run_subphase(
                 "per_stream_utilization.skill",
                 lambda: _safe_skill(
-                    engine, "per_stream_utilization", warnings,
-                    device_id=device_id, start_ns=start_ns, end_ns=end_ns, limit=30,
+                    engine,
+                    "per_stream_utilization",
+                    warnings,
+                    device_id=device_id,
+                    start_ns=start_ns,
+                    end_ns=end_ns,
+                    limit=30,
                 ),
             )
 
@@ -558,7 +614,9 @@ def analyze_nsys_sqlite(
             nvtx_wall_efficiency = _run_subphase(
                 "nvtx_wall_efficiency.skill",
                 lambda: _safe_skill(
-                    engine, "nvtx_wall_efficiency", warnings,
+                    engine,
+                    "nvtx_wall_efficiency",
+                    warnings,
                     nvtx_text=_eff_nvtx_pattern,
                     device_id=device_id,
                     start_ns=start_ns,
@@ -571,8 +629,11 @@ def analyze_nsys_sqlite(
             nvtx_subphase_timing = _run_subphase(
                 "nvtx_subphase_timing.skill",
                 lambda: _safe_skill(
-                    engine, "nvtx_subphase_timing", warnings,
-                    start_ns=start_ns, end_ns=end_ns,
+                    engine,
+                    "nvtx_subphase_timing",
+                    warnings,
+                    start_ns=start_ns,
+                    end_ns=end_ns,
                 ),
             )
 
@@ -580,15 +641,23 @@ def analyze_nsys_sqlite(
             gpu_metrics_aggregate = _run_subphase(
                 "gpu_metrics.aggregate",
                 lambda: _safe_skill(
-                    engine, "gpu_metrics_aggregate", warnings,
-                    device_id=device_id, start_ns=start_ns, end_ns=end_ns,
+                    engine,
+                    "gpu_metrics_aggregate",
+                    warnings,
+                    device_id=device_id,
+                    start_ns=start_ns,
+                    end_ns=end_ns,
                 ),
             )
             gpu_metrics_percentiles_rows = _run_subphase(
                 "gpu_metrics.percentiles",
                 lambda: _safe_skill(
-                    engine, "gpu_metrics_percentiles", warnings,
-                    device_id=device_id, start_ns=start_ns, end_ns=end_ns,
+                    engine,
+                    "gpu_metrics_percentiles",
+                    warnings,
+                    device_id=device_id,
+                    start_ns=start_ns,
+                    end_ns=end_ns,
                 ),
             )
 
@@ -596,8 +665,12 @@ def analyze_nsys_sqlite(
             memcpy_transfers_detail_rows = _run_subphase(
                 "memcpy_transfers_detail.skill",
                 lambda: _safe_skill(
-                    engine, "memcpy_transfers_detail", warnings,
-                    device_id=device_id, start_ns=start_ns, end_ns=end_ns,
+                    engine,
+                    "memcpy_transfers_detail",
+                    warnings,
+                    device_id=device_id,
+                    start_ns=start_ns,
+                    end_ns=end_ns,
                 ),
             )
 
@@ -605,8 +678,12 @@ def analyze_nsys_sqlite(
             cpu_launch_gap_rows = _run_subphase(
                 "cpu_launch_gap.skill",
                 lambda: _safe_skill(
-                    engine, "cpu_launch_gap", warnings,
-                    device_id=device_id, start_ns=start_ns, end_ns=end_ns,
+                    engine,
+                    "cpu_launch_gap",
+                    warnings,
+                    device_id=device_id,
+                    start_ns=start_ns,
+                    end_ns=end_ns,
                 ),
             )
 
@@ -672,7 +749,9 @@ def analyze_nsys_sqlite(
 
         # ---- Automatic problem detection warnings ----
         # 1. Low overall GPU utilization
-        util_pct = _to_float(((summary or {}).get("timing") or {}).get("utilization_pct"))
+        util_pct = _to_float(
+            ((summary or {}).get("timing") or {}).get("utilization_pct")
+        )
         if util_pct is not None and util_pct < 70.0:
             warnings.append(
                 f"[LOW_GPU_UTIL] GPU utilization is {util_pct:.1f}% (target ≥70%). "
@@ -684,8 +763,10 @@ def analyze_nsys_sqlite(
         # 2. High-jitter kernels (CV > 50%)
         if kernel_duration_stats:
             jitter_kernels = [
-                r for r in kernel_duration_stats
-                if _to_float(r.get("cv_pct")) is not None and (_to_float(r.get("cv_pct")) or 0) > 50.0
+                r
+                for r in kernel_duration_stats
+                if _to_float(r.get("cv_pct")) is not None
+                and (_to_float(r.get("cv_pct")) or 0) > 50.0
             ]
             if jitter_kernels:
                 top_jitter = jitter_kernels[0]
@@ -699,8 +780,22 @@ def analyze_nsys_sqlite(
 
         # 3. Micro-kernel (launch) overhead
         if short_kernels:
-            micro_row = next((r for r in short_kernels if str(r.get("duration_bracket", "")).startswith("b_")), None)
-            submicro_row = next((r for r in short_kernels if str(r.get("duration_bracket", "")).startswith("a_")), None)
+            micro_row = next(
+                (
+                    r
+                    for r in short_kernels
+                    if str(r.get("duration_bracket", "")).startswith("b_")
+                ),
+                None,
+            )
+            submicro_row = next(
+                (
+                    r
+                    for r in short_kernels
+                    if str(r.get("duration_bracket", "")).startswith("a_")
+                ),
+                None,
+            )
             short_total_pct = 0.0
             for r in short_kernels:
                 bracket = str(r.get("duration_bracket", ""))
@@ -717,7 +812,12 @@ def analyze_nsys_sqlite(
         # 4. Poor compute/comm overlap
         overlap_pct_comm = _to_float((overlap or {}).get("overlap_pct_of_comm"))
         comm_total_ms = _to_float((overlap or {}).get("comm_total_ms"))
-        if comm_total_ms and comm_total_ms > 10.0 and overlap_pct_comm is not None and overlap_pct_comm < 10.0:
+        if (
+            comm_total_ms
+            and comm_total_ms > 10.0
+            and overlap_pct_comm is not None
+            and overlap_pct_comm < 10.0
+        ):
             warnings.append(
                 f"[LOW_OVERLAP] Compute/comm overlap is only {overlap_pct_comm:.1f}% of comm time. "
                 "Communication stalls compute for most of each step. Enable async collectives "
@@ -729,7 +829,9 @@ def analyze_nsys_sqlite(
         if rank_straggler.get("stragglers"):
             slowest = rank_straggler["stragglers"]
             per_rank = rank_straggler.get("per_rank", [])
-            worst_entry = next((r for r in per_rank if str(r.get("rank")) in slowest), None)
+            worst_entry = next(
+                (r for r in per_rank if str(r.get("rank")) in slowest), None
+            )
             delta = worst_entry.get("delta_vs_global_pct") if worst_entry else None
             warnings.append(
                 f"[STRAGGLER] Rank(s) {slowest} are stragglers "
@@ -740,7 +842,8 @@ def analyze_nsys_sqlite(
 
         # 6. Memory-bound phases
         mem_bound_phases = [
-            r for r in bottleneck_classification
+            r
+            for r in bottleneck_classification
             if r.get("bottleneck") == "memory_bound"
         ]
         if mem_bound_phases:
@@ -755,7 +858,8 @@ def analyze_nsys_sqlite(
 
         # 7. Latency-bound (low utilization everywhere)
         latency_bound_phases = [
-            r for r in bottleneck_classification
+            r
+            for r in bottleneck_classification
             if r.get("bottleneck") == "latency_bound"
         ]
         if latency_bound_phases:
@@ -810,8 +914,8 @@ def analyze_to_markdown(result: Dict[str, object]) -> str:
     win = result.get("window") or {}
     if win.get("start_ns", -1) >= 0 or win.get("end_ns", -1) >= 0:
         lines.append(
-            f"- window: `{round(int(win.get('start_ns',-1))/1e6,1)} ms` – "
-            f"`{round(int(win.get('end_ns',-1))/1e6,1)} ms`"
+            f"- window: `{round(int(win.get('start_ns', -1)) / 1e6, 1)} ms` – "
+            f"`{round(int(win.get('end_ns', -1)) / 1e6, 1)} ms`"
         )
     lines.append("")
 
@@ -826,8 +930,8 @@ def analyze_to_markdown(result: Dict[str, object]) -> str:
         w_s = int(nsi.get("window_start_ns") or 0)
         w_e = int(nsi.get("window_end_ns") or 0)
         lines.append(
-            f"- analysis window: `{round(w_s/1e6,1)} ms` – `{round(w_e/1e6,1)} ms` "
-            f"(span `{round((w_e-w_s)/1e6,1)} ms`)"
+            f"- analysis window: `{round(w_s / 1e6, 1)} ms` – `{round(w_e / 1e6, 1)} ms` "
+            f"(span `{round((w_e - w_s) / 1e6, 1)} ms`)"
         )
         if nsi.get("warning"):
             lines.append(f"- **warning**: {nsi['warning']}")
@@ -839,13 +943,13 @@ def analyze_to_markdown(result: Dict[str, object]) -> str:
             lines.append("|---|-----------|----------|--------|-------------|")
             for i, r in enumerate(matched[:10]):
                 lines.append(
-                    f"| {i+1} | {r.get('nvtx_text','')} "
-                    f"| {round(int(r.get('start_ns',0))/1e6,1)} "
-                    f"| {round(int(r.get('end_ns',0))/1e6,1)} "
-                    f"| {r.get('duration_ms','')} |"
+                    f"| {i + 1} | {r.get('nvtx_text', '')} "
+                    f"| {round(int(r.get('start_ns', 0)) / 1e6, 1)} "
+                    f"| {round(int(r.get('end_ns', 0)) / 1e6, 1)} "
+                    f"| {r.get('duration_ms', '')} |"
                 )
             if len(matched) > 10:
-                lines.append(f"| … | *(+{len(matched)-10} more)* | | | |")
+                lines.append(f"| … | *(+{len(matched) - 10} more)* | | | |")
         lines.append("")
 
     nks = result.get("nvtx_kernel_span_info")
@@ -860,8 +964,8 @@ def analyze_to_markdown(result: Dict[str, object]) -> str:
             k_s = int(nks.get("kernel_start_ns") or 0)
             k_e = int(nks.get("kernel_end_ns") or 0)
             lines.append(
-                f"- gpu kernel window: `{round(k_s/1e6,1)} ms` - `{round(k_e/1e6,1)} ms` "
-                f"(span `{round((k_e-k_s)/1e6,1)} ms`)"
+                f"- gpu kernel window: `{round(k_s / 1e6, 1)} ms` - `{round(k_e / 1e6, 1)} ms` "
+                f"(span `{round((k_e - k_s) / 1e6, 1)} ms`)"
             )
         lines.append("")
 
@@ -886,14 +990,18 @@ def analyze_to_markdown(result: Dict[str, object]) -> str:
     lines.append("## Top Kernels")
     lines.append("")
     lines.append("```json")
-    lines.append(json.dumps(result.get("top_kernels", []), ensure_ascii=False, indent=2))
+    lines.append(
+        json.dumps(result.get("top_kernels", []), ensure_ascii=False, indent=2)
+    )
     lines.append("```")
     lines.append("")
 
     lines.append("## NCCL Breakdown")
     lines.append("")
     lines.append("```json")
-    lines.append(json.dumps(result.get("nccl_breakdown", []), ensure_ascii=False, indent=2))
+    lines.append(
+        json.dumps(result.get("nccl_breakdown", []), ensure_ascii=False, indent=2)
+    )
     lines.append("```")
     lines.append("")
 
@@ -957,10 +1065,16 @@ def analyze_to_markdown(result: Dict[str, object]) -> str:
         w_start = int(win.get("start_ns", -1))
         w_end = int(win.get("end_ns", -1))
         if w_start >= 0 and w_end > w_start:
-            lines.append(f"*Window: {round(w_start/1e6,1)} ms – {round(w_end/1e6,1)} ms (span {round((w_end-w_start)/1e6,1)} ms)*")
+            lines.append(
+                f"*Window: {round(w_start / 1e6, 1)} ms – {round(w_end / 1e6, 1)} ms (span {round((w_end - w_start) / 1e6, 1)} ms)*"
+            )
             lines.append("")
-        lines.append("| Sub-Phase | Count | total_ms | avg_ms | min_ms | max_ms | pct_of_window |")
-        lines.append("|-----------|-------|----------|--------|--------|--------|---------------|")
+        lines.append(
+            "| Sub-Phase | Count | total_ms | avg_ms | min_ms | max_ms | pct_of_window |"
+        )
+        lines.append(
+            "|-----------|-------|----------|--------|--------|--------|---------------|"
+        )
         for r in spt[:50]:
             pct = r.get("pct_of_window")
             pct_str = f"{pct}%" if pct is not None else "n/a"
@@ -979,8 +1093,12 @@ def analyze_to_markdown(result: Dict[str, object]) -> str:
     if kds:
         lines.append("## Kernel Duration Jitter (Top by CV)")
         lines.append("")
-        lines.append("| Kernel | Invocations | avg_ms | stddev_ms | cv_pct | total_ms |")
-        lines.append("|--------|-------------|--------|-----------|--------|----------|")
+        lines.append(
+            "| Kernel | Invocations | avg_ms | stddev_ms | cv_pct | total_ms |"
+        )
+        lines.append(
+            "|--------|-------------|--------|-----------|--------|----------|"
+        )
         for r in kds[:10]:
             lines.append(
                 f"| {r.get('kernel_name', '')} "
@@ -1029,12 +1147,18 @@ def analyze_to_markdown(result: Dict[str, object]) -> str:
         lines.append("## Multi-Rank Straggler Analysis")
         lines.append("")
         gst = rs.get("global_stats") or {}
-        lines.append(f"- Global median: `{gst.get('median_ms', 'N/A')}` ms  |  "
-                     f"std: `{gst.get('std_ms', 'N/A')}` ms  |  "
-                     f"count: `{gst.get('count', 'N/A')}`")
+        lines.append(
+            f"- Global median: `{gst.get('median_ms', 'N/A')}` ms  |  "
+            f"std: `{gst.get('std_ms', 'N/A')}` ms  |  "
+            f"count: `{gst.get('count', 'N/A')}`"
+        )
         lines.append("")
-        lines.append("| Rank | Iterations | median_ms | std_ms | delta_vs_global_pct | straggler |")
-        lines.append("|------|------------|-----------|--------|---------------------|-----------|")
+        lines.append(
+            "| Rank | Iterations | median_ms | std_ms | delta_vs_global_pct | straggler |"
+        )
+        lines.append(
+            "|------|------------|-----------|--------|---------------------|-----------|"
+        )
         for r in rs["per_rank"]:
             tag = "**YES**" if r.get("is_straggler") else "no"
             lines.append(
@@ -1051,8 +1175,12 @@ def analyze_to_markdown(result: Dict[str, object]) -> str:
     if bc:
         lines.append("## GPU Bottleneck Classification (per NVTX Phase)")
         lines.append("")
-        lines.append("| NVTX Phase | sm_active% | tensor_active% | dram_throughput% | bottleneck | confidence |")
-        lines.append("|------------|-----------|----------------|------------------|------------|------------|")
+        lines.append(
+            "| NVTX Phase | sm_active% | tensor_active% | dram_throughput% | bottleneck | confidence |"
+        )
+        lines.append(
+            "|------------|-----------|----------------|------------------|------------|------------|"
+        )
         for r in bc[:20]:
             lines.append(
                 f"| {r.get('nvtx_text', '')} "
@@ -1073,7 +1201,7 @@ def analyze_to_markdown(result: Dict[str, object]) -> str:
             tag_end = item.find("]")
             if item.startswith("[") and tag_end > 0:
                 tag = item[1:tag_end]
-                body = item[tag_end + 2:]
+                body = item[tag_end + 2 :]
                 lines.append(f"### `{tag}`")
                 lines.append(body)
             else:

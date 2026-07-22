@@ -114,9 +114,14 @@ class MetricsAnalyzer:
     @staticmethod
     def _score(findings: List[Finding]) -> float:
         # Conservative score model: starts at 100 and deducts by severity.
-        penalty_by_severity = {"critical": 35.0, "high": 20.0, "warning": 10.0, "info": 3.0, "low": 5.0}
+        penalty_by_severity = {
+            "critical": 35.0,
+            "high": 20.0,
+            "warning": 10.0,
+            "info": 3.0,
+            "low": 5.0,
+        }
         score = 100.0
         for item in findings:
             score -= penalty_by_severity.get(str(item.severity).lower(), 5.0)
         return max(0.0, round(score, 2))
-

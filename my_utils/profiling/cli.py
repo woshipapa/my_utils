@@ -13,7 +13,10 @@ from .pipeline.metrics_collector import MetricsCollector
 from .output.metrics_diff import compare_reports, write_diff
 from .output.metrics_report import MetricsReportRenderer
 from .metrics.metrics_store import MetricsStore
-from .output.metrics_trace import ChromeTraceExportConfig, export_events_file_to_chrome_trace
+from .output.metrics_trace import (
+    ChromeTraceExportConfig,
+    export_events_file_to_chrome_trace,
+)
 from .metrics.metrics_types import AnalysisReport
 from .metrics.provider_registry import DEFAULT_PROVIDER_REGISTRY
 from .sources.nsys_analyze import analyze_nsys_sqlite, analyze_to_markdown
@@ -27,7 +30,10 @@ from .sources.nsys_module_kernel_compare import (
 )
 from .sources.nsys_sql_skills import NsysSqlSkillEngine
 from .sources.nsys_sqlite_provider import NsysSqliteMetricsProvider
-from .sources.nsys_timeline_html import export_timeline_compare_html, export_timeline_html
+from .sources.nsys_timeline_html import (
+    export_timeline_compare_html,
+    export_timeline_html,
+)
 from .ncu.ncu_csv_tools import (
     NcuCsvSkillEngine,
     analyze_ncu_csv,
@@ -148,7 +154,9 @@ def _split_user_values(text: str) -> List[str]:
     return [x for x in raw if x]
 
 
-def _collect_subparsers(parser: argparse.ArgumentParser) -> Dict[str, argparse.ArgumentParser]:
+def _collect_subparsers(
+    parser: argparse.ArgumentParser,
+) -> Dict[str, argparse.ArgumentParser]:
     for action in parser._actions:
         if isinstance(action, argparse._SubParsersAction):
             return {str(name): sub for name, sub in dict(action.choices).items()}
@@ -232,7 +240,9 @@ def _normalize_bool_text(raw: str) -> Optional[bool]:
     return None
 
 
-def _group_actions_by_dest(actions: List[argparse.Action]) -> List[List[argparse.Action]]:
+def _group_actions_by_dest(
+    actions: List[argparse.Action],
+) -> List[List[argparse.Action]]:
     by_dest: Dict[str, List[argparse.Action]] = {}
     for action in actions:
         by_dest.setdefault(str(action.dest), []).append(action)
@@ -307,34 +317,57 @@ def _nsys_panel_skip_reason(
             "default_focus_metrics",
             "include_all_metric_sources",
         }
-        if dest in metric_related and not bool(selected_values.get("include_metrics", False)):
+        if dest in metric_related and not bool(
+            selected_values.get("include_metrics", False)
+        ):
             return "requires --include-metrics"
-        if dest == "nvtx_index" and not str(selected_values.get("nvtx_text") or "").strip():
+        if (
+            dest == "nvtx_index"
+            and not str(selected_values.get("nvtx_text") or "").strip()
+        ):
             return "requires --nvtx-text"
 
     if command == "nsys-sql-skill":
         if bool(selected_values.get("list_skills", False)):
-            if dest in {"skill", "param", "debug", "debug_rows", "occupancy_arch", "schema_view", "output"}:
+            if dest in {
+                "skill",
+                "param",
+                "debug",
+                "debug_rows",
+                "occupancy_arch",
+                "schema_view",
+                "output",
+            }:
                 return "ignored when --list-skills is enabled"
         skill_name = str(selected_values.get("skill") or "").strip().lower()
         if dest == "schema_view" and skill_name not in {"schema_inspect"}:
             return "only used when --skill schema_inspect"
-        if dest == "occupancy_arch" and skill_name not in {"kernel_occupancy_estimate", "nvtx_kernel_sm_detail"}:
+        if dest == "occupancy_arch" and skill_name not in {
+            "kernel_occupancy_estimate",
+            "nvtx_kernel_sm_detail",
+        }:
             return "only used for occupancy-related skills"
 
     if command == "nsys-analyze":
-        if dest in {"peak_tflops", "peak_precision"} and selected_values.get("model_flops_per_step") in (None, "", 0):
+        if dest in {"peak_tflops", "peak_precision"} and selected_values.get(
+            "model_flops_per_step"
+        ) in (None, "", 0):
             return "only useful when --model-flops-per-step is set"
 
     if command == "nsys-module-kernel-compare":
         has_json = bool(str(selected_values.get("base_json") or "").strip()) or bool(
             str(selected_values.get("target_json") or "").strip()
         )
-        has_sqlite = bool(str(selected_values.get("base_sqlite") or "").strip()) or bool(
-            str(selected_values.get("target_sqlite") or "").strip()
-        )
+        has_sqlite = bool(
+            str(selected_values.get("base_sqlite") or "").strip()
+        ) or bool(str(selected_values.get("target_sqlite") or "").strip())
         has_nvtx_text = bool(str(selected_values.get("nvtx_text") or "").strip())
-        if has_json and dest in {"base_sqlite", "target_sqlite", "sqlite_limit", "occupancy_arch"}:
+        if has_json and dest in {
+            "base_sqlite",
+            "target_sqlite",
+            "sqlite_limit",
+            "occupancy_arch",
+        }:
             return "ignored in JSON input mode"
         if has_sqlite and dest in {"base_json", "target_json"}:
             return "ignored in sqlite input mode"
@@ -384,7 +417,9 @@ def _detect_gpu_name_from_sqlite(sqlite_path: str) -> str:
     return ""
 
 
-def _infer_unavailable_skill_reason(skill_name: str, schema_info: Dict[str, Any]) -> str:
+def _infer_unavailable_skill_reason(
+    skill_name: str, schema_info: Dict[str, Any]
+) -> str:
     canonical = dict(schema_info.get("canonical_tables") or {})
     columns = dict(schema_info.get("columns") or {})
     skill = str(skill_name or "").strip()
@@ -410,7 +445,9 @@ def _infer_unavailable_skill_reason(skill_name: str, schema_info: Dict[str, Any]
         if not string_table:
             missing_aliases.append("StringIds/STRINGIDS")
         if missing_aliases:
-            return "metrics schema columns/tables missing: " + ", ".join(missing_aliases)
+            return "metrics schema columns/tables missing: " + ", ".join(
+                missing_aliases
+            )
         return "skill is schema-guarded and unavailable under current sqlite schema."
 
     return "skill is schema-guarded and unavailable under current sqlite schema."
@@ -433,7 +470,9 @@ def _schema_tables_grouped(schema_info: Dict[str, Any]) -> List[Dict[str, Any]]:
 
 def _schema_relations(schema_info: Dict[str, Any]) -> List[Dict[str, str]]:
     tables = set((schema_info.get("tables") or []))
-    columns = {str(k): set(v or []) for k, v in dict(schema_info.get("columns") or {}).items()}
+    columns = {
+        str(k): set(v or []) for k, v in dict(schema_info.get("columns") or {}).items()
+    }
     canonical = dict(schema_info.get("canonical_tables") or {})
     relations: List[Dict[str, str]] = []
     seen = set()
@@ -466,11 +505,19 @@ def _schema_relations(schema_info: Dict[str, Any]) -> List[Dict[str, str]]:
     sync = str(canonical.get("sync") or "")
 
     if kernel and runtime:
-        if "correlationId" in columns.get(kernel, set()) and "correlationId" in columns.get(runtime, set()):
+        if "correlationId" in columns.get(
+            kernel, set()
+        ) and "correlationId" in columns.get(runtime, set()):
             _add(runtime, kernel, "correlationId", "id_join")
     if nvtx and runtime:
-        if "start" in columns.get(nvtx, set()) and "end" in columns.get(nvtx, set()) and "start" in columns.get(runtime, set()):
-            if "globalTid" in columns.get(nvtx, set()) and "globalTid" in columns.get(runtime, set()):
+        if (
+            "start" in columns.get(nvtx, set())
+            and "end" in columns.get(nvtx, set())
+            and "start" in columns.get(runtime, set())
+        ):
+            if "globalTid" in columns.get(nvtx, set()) and "globalTid" in columns.get(
+                runtime, set()
+            ):
                 _add(nvtx, runtime, "start/end window + globalTid", "time_window")
             else:
                 _add(nvtx, runtime, "start/end window", "time_window")
@@ -485,7 +532,11 @@ def _schema_relations(schema_info: Dict[str, Any]) -> List[Dict[str, str]]:
             _add(nvtx, kernel, "NVTX->Runtime->correlationId", "derived")
     if metrics and nvtx:
         ts_candidates = {"timestamp", "start", "time"}
-        if ts_candidates.intersection(columns.get(metrics, set())) and "start" in columns.get(nvtx, set()) and "end" in columns.get(nvtx, set()):
+        if (
+            ts_candidates.intersection(columns.get(metrics, set()))
+            and "start" in columns.get(nvtx, set())
+            and "end" in columns.get(nvtx, set())
+        ):
             _add(nvtx, metrics, "timestamp in [nvtx.start, nvtx.end]", "time_window")
     if string_ids:
         if kernel:
@@ -516,14 +567,20 @@ def _schema_relations(schema_info: Dict[str, Any]) -> List[Dict[str, str]]:
     if metrics and "GENERIC_EVENT_SOURCES" in tables:
         metric_cols = columns.get(metrics, set())
         ges_cols = columns.get("GENERIC_EVENT_SOURCES", set())
-        if ("sourceId" in metric_cols or "source_id" in metric_cols) and ("sourceId" in ges_cols or "id" in ges_cols or "source_id" in ges_cols):
+        if ("sourceId" in metric_cols or "source_id" in metric_cols) and (
+            "sourceId" in ges_cols or "id" in ges_cols or "source_id" in ges_cols
+        ):
             _add(metrics, "GENERIC_EVENT_SOURCES", "sourceId", "id_join")
     if "COMPOSITE_EVENTS" in tables and "ThreadNames" in tables:
         ce_cols = columns.get("COMPOSITE_EVENTS", set())
         tn_cols = columns.get("ThreadNames", set())
         if "globalTid" in ce_cols and "globalTid" in tn_cols:
             _add("COMPOSITE_EVENTS", "ThreadNames", "globalTid", "id_join")
-    if "ThreadNames" in tables and string_ids and "nameId" in columns.get("ThreadNames", set()):
+    if (
+        "ThreadNames" in tables
+        and string_ids
+        and "nameId" in columns.get("ThreadNames", set())
+    ):
         _add("ThreadNames", string_ids, "nameId -> id", "id_join")
 
     # Helpful same-key hints for tables that share core ids.
@@ -541,10 +598,12 @@ def _schema_relations(schema_info: Dict[str, Any]) -> List[Dict[str, str]]:
     return relations
 
 
-def _schema_mermaid(schema_info: Dict[str, Any], relations: List[Dict[str, str]]) -> str:
+def _schema_mermaid(
+    schema_info: Dict[str, Any], relations: List[Dict[str, str]]
+) -> str:
     tables = sorted(set((schema_info.get("tables") or [])))
     if not tables:
-        return "flowchart LR\n  EMPTY[\"No tables\"]\n"
+        return 'flowchart LR\n  EMPTY["No tables"]\n'
     node_ids: Dict[str, str] = {table: f"T{i}" for i, table in enumerate(tables)}
     lines: List[str] = ["flowchart LR"]
     for table in tables:
@@ -573,7 +632,9 @@ def cmd_ingest(args: argparse.Namespace) -> int:
             step += args.step_stride
     finally:
         collector.stop()
-    print(f"[ingest] providers={collector.list_providers()} written_events={total_written}")
+    print(
+        f"[ingest] providers={collector.list_providers()} written_events={total_written}"
+    )
     if args.analyze:
         report = collector.analyze()
         for fmt in _formats(args.report_formats):
@@ -586,7 +647,10 @@ def cmd_ingest(args: argparse.Namespace) -> int:
 
 def cmd_analyze(args: argparse.Namespace) -> int:
     events = MetricsStore.read_events_file(args.events)
-    analyzer = MetricsAnalyzer(workload_profile=args.workload, enable_advanced_rules=not args.disable_advanced_rules)
+    analyzer = MetricsAnalyzer(
+        workload_profile=args.workload,
+        enable_advanced_rules=not args.disable_advanced_rules,
+    )
     report = analyzer.analyze(events)
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -633,7 +697,11 @@ def cmd_list_providers(args: argparse.Namespace) -> int:
 
 def cmd_trace(args: argparse.Namespace) -> int:
     cfg = ChromeTraceExportConfig(
-        include_metric_prefixes=[item.strip() for item in (args.include_metric_prefixes or "").split(",") if item.strip()],
+        include_metric_prefixes=[
+            item.strip()
+            for item in (args.include_metric_prefixes or "").split(",")
+            if item.strip()
+        ],
         include_non_duration_metrics=bool(args.include_non_duration_metrics),
         auto_align_ranks=bool(args.auto_align_ranks),
         reference_rank=str(args.reference_rank or ""),
@@ -656,7 +724,8 @@ def cmd_nsys_panel(args: argparse.Namespace) -> int:
         [
             name
             for name in subparsers.keys()
-            if (name.startswith("nsys-") or name.startswith("ncu-")) and name != "nsys-panel"
+            if (name.startswith("nsys-") or name.startswith("ncu-"))
+            and name != "nsys-panel"
         ]
     )
     if not profile_cmds:
@@ -666,7 +735,10 @@ def cmd_nsys_panel(args: argparse.Namespace) -> int:
     print("=== Profiling Interactive Panel (NSYS + NCU) ===")
     print("Select one command by index or name:")
     for idx, name in enumerate(profile_cmds, start=1):
-        desc = help_map.get(name) or str(getattr(subparsers[name], "description", "") or "").strip()
+        desc = (
+            help_map.get(name)
+            or str(getattr(subparsers[name], "description", "") or "").strip()
+        )
         print(f"  {idx}. {name} - {desc}")
 
     selected_name = ""
@@ -696,12 +768,16 @@ def cmd_nsys_panel(args: argparse.Namespace) -> int:
     user_actions = _iter_user_actions(selected)
     required_groups = [
         group
-        for group in _group_actions_by_dest([a for a in user_actions if bool(a.required)])
+        for group in _group_actions_by_dest(
+            [a for a in user_actions if bool(a.required)]
+        )
         if group
     ]
     optional_groups = [
         group
-        for group in _group_actions_by_dest([a for a in user_actions if not bool(a.required)])
+        for group in _group_actions_by_dest(
+            [a for a in user_actions if not bool(a.required)]
+        )
         if group
     ]
 
@@ -729,7 +805,9 @@ def cmd_nsys_panel(args: argparse.Namespace) -> int:
                     print("    invalid value, try again")
                     continue
                 cmd_tokens.extend(args_from_value)
-                selected_values[str(action.dest)] = _coerce_value_for_action(action, value)
+                selected_values[str(action.dest)] = _coerce_value_for_action(
+                    action, value
+                )
                 break
 
     if optional_groups and _prompt_bool("Configure optional arguments?", default=False):
@@ -747,7 +825,13 @@ def cmd_nsys_panel(args: argparse.Namespace) -> int:
                 default_bool = _bool_group_default(group)
                 enable_opt = _bool_group_option_for_target(group, True)
                 disable_opt = _bool_group_option_for_target(group, False)
-                info_items = sorted({_action_help_text(item) for item in group if _action_help_text(item)})
+                info_items = sorted(
+                    {
+                        _action_help_text(item)
+                        for item in group
+                        if _action_help_text(item)
+                    }
+                )
                 info = " | ".join(info_items) if info_items else "(no description)"
                 default_text = "on" if default_bool else "off"
                 toggle_hint = "on/off/skip"
@@ -801,7 +885,9 @@ def cmd_nsys_sql_skill(args: argparse.Namespace) -> int:
     provider = NsysSqliteMetricsProvider(args.sqlite)
     if args.list_skills:
         payload = provider.describe_sql_skills()
-        print(json.dumps(payload, ensure_ascii=False, indent=2 if args.pretty else None))
+        print(
+            json.dumps(payload, ensure_ascii=False, indent=2 if args.pretty else None)
+        )
         return 0
 
     if not args.skill:
@@ -833,7 +919,10 @@ def cmd_nsys_sql_skill(args: argparse.Namespace) -> int:
 
     occ_arch = str(getattr(args, "occupancy_arch", "auto") or "auto").strip().lower()
     use_h100_occupancy = False
-    if skill_name in {"kernel_occupancy_estimate", "nvtx_kernel_sm_detail"} and occ_arch != "none":
+    if (
+        skill_name in {"kernel_occupancy_estimate", "nvtx_kernel_sm_detail"}
+        and occ_arch != "none"
+    ):
         if occ_arch == "h100":
             use_h100_occupancy = True
         elif occ_arch == "auto":
@@ -866,7 +955,10 @@ def cmd_nsys_sql_skill(args: argparse.Namespace) -> int:
                 file=sys.stderr,
             )
 
-    if skill_name in {"kernel_occupancy_estimate", "nvtx_kernel_sm_detail"} and not use_h100_occupancy:
+    if (
+        skill_name in {"kernel_occupancy_estimate", "nvtx_kernel_sm_detail"}
+        and not use_h100_occupancy
+    ):
         print(
             "[nsys-sql-skill] note: occupancy_pct_estimate depends on sqlite theoretical occupancy columns; "
             "if absent it will be NULL. Use --occupancy-arch h100 (or auto on H100) to attach "
@@ -876,7 +968,9 @@ def cmd_nsys_sql_skill(args: argparse.Namespace) -> int:
 
     payload: Any = rows
     if skill_name == "schema_inspect":
-        schema_view = str(getattr(args, "schema_view", "both") or "both").strip().lower()
+        schema_view = (
+            str(getattr(args, "schema_view", "both") or "both").strip().lower()
+        )
         schema_info = provider.describe_schema()
         grouped = _schema_tables_grouped(schema_info)
         relations = _schema_relations(schema_info)
@@ -987,7 +1081,10 @@ def cmd_ncu_csv_skill(args: argparse.Namespace) -> int:
         return 0
 
     if not args.skill:
-        print("[ncu-csv-skill] --skill is required unless --list-skills is set", file=sys.stderr)
+        print(
+            "[ncu-csv-skill] --skill is required unless --list-skills is set",
+            file=sys.stderr,
+        )
         return 2
 
     params = _parse_kv_params(args.param)
@@ -1039,7 +1136,10 @@ def cmd_ncu_report_skill(args: argparse.Namespace) -> int:
         return 0
 
     if not args.skill:
-        print("[ncu-report-skill] --skill is required unless --list-skills is set", file=sys.stderr)
+        print(
+            "[ncu-report-skill] --skill is required unless --list-skills is set",
+            file=sys.stderr,
+        )
         return 2
 
     params = _parse_kv_params(args.param)
@@ -1113,7 +1213,9 @@ def cmd_ncu_metrics(args: argparse.Namespace) -> int:
     index = build_section_index(str(args.sections_dir or ""))
     if args.search:
         if index is None:
-            print("[ncu-metrics] no Nsight Compute installation found; pass --sections-dir")
+            print(
+                "[ncu-metrics] no Nsight Compute installation found; pass --sections-dir"
+            )
             return 1
         hits = index.search(args.search)
         print(f"# {len(hits)} metric(s) matching {args.search!r}\n")
@@ -1132,10 +1234,12 @@ def cmd_ncu_metrics(args: argparse.Namespace) -> int:
     if index is None:
         print("[ncu-metrics] no Nsight Compute installation found; pass --sections-dir")
         return 1
-    print(f"# Nsight Compute metric index\n")
+    print("# Nsight Compute metric index\n")
     print(f"sections dir : {index.sections_dir}")
     print(f"sections     : {len(index.sections)}")
-    print(f"metrics      : {len(index.metrics)}  ({len(index.in_set('full'))} in --set full)\n")
+    print(
+        f"metrics      : {len(index.metrics)}  ({len(index.in_set('full'))} in --set full)\n"
+    )
     print("metrics per hardware unit:")
     for unit, count in index.unit_summary().items():
         print(f"  {unit or '(none)':12s} {count:4d}")
@@ -1143,7 +1247,9 @@ def cmd_ncu_metrics(args: argparse.Namespace) -> int:
 
 
 def cmd_nccl_inspector_skill(args: argparse.Namespace) -> int:
-    engine = NcclInspectorSkillEngine(args.input, prometheus_path=str(args.prometheus_path or ""))
+    engine = NcclInspectorSkillEngine(
+        args.input, prometheus_path=str(args.prometheus_path or "")
+    )
     if args.list_skills:
         payload = engine.describe_skills()
         text = inspector_result_to_json(payload, pretty=bool(args.pretty))
@@ -1157,7 +1263,10 @@ def cmd_nccl_inspector_skill(args: argparse.Namespace) -> int:
         return 0
 
     if not args.skill:
-        print("[nccl-inspector-skill] --skill is required unless --list-skills is set", file=sys.stderr)
+        print(
+            "[nccl-inspector-skill] --skill is required unless --list-skills is set",
+            file=sys.stderr,
+        )
         return 2
 
     params = _parse_kv_params(args.param)
@@ -1210,7 +1319,9 @@ def cmd_nsys_module_kernel_compare(args: argparse.Namespace) -> int:
             "device_id": int(args.device_id),
             "limit": int(args.sqlite_limit),
         }
-        occ_arch = str(getattr(args, "occupancy_arch", "auto") or "auto").strip().lower()
+        occ_arch = (
+            str(getattr(args, "occupancy_arch", "auto") or "auto").strip().lower()
+        )
         use_h100_occupancy = False
         if occ_arch == "h100":
             use_h100_occupancy = True
@@ -1227,12 +1338,22 @@ def cmd_nsys_module_kernel_compare(args: argparse.Namespace) -> int:
             finally:
                 conn.close()
             return list(rows or [])
-        return list(provider.run_sql_skill("nvtx_kernel_sm_detail", **exec_params) or [])
+        return list(
+            provider.run_sql_skill("nvtx_kernel_sm_detail", **exec_params) or []
+        )
 
-    has_json_pair = bool(str(args.base_json or "").strip()) and bool(str(args.target_json or "").strip())
-    has_sqlite_pair = bool(str(args.base_sqlite or "").strip()) and bool(str(args.target_sqlite or "").strip())
-    has_any_json = bool(str(args.base_json or "").strip()) or bool(str(args.target_json or "").strip())
-    has_any_sqlite = bool(str(args.base_sqlite or "").strip()) or bool(str(args.target_sqlite or "").strip())
+    has_json_pair = bool(str(args.base_json or "").strip()) and bool(
+        str(args.target_json or "").strip()
+    )
+    has_sqlite_pair = bool(str(args.base_sqlite or "").strip()) and bool(
+        str(args.target_sqlite or "").strip()
+    )
+    has_any_json = bool(str(args.base_json or "").strip()) or bool(
+        str(args.target_json or "").strip()
+    )
+    has_any_sqlite = bool(str(args.base_sqlite or "").strip()) or bool(
+        str(args.target_sqlite or "").strip()
+    )
     if has_any_json and has_any_sqlite:
         print(
             "[nsys-module-kernel-compare] choose one input mode: JSON pair or sqlite pair, do not mix.",
@@ -1265,7 +1386,10 @@ def cmd_nsys_module_kernel_compare(args: argparse.Namespace) -> int:
             base_rows = _load_rows_from_sqlite(str(args.base_sqlite))
             target_rows = _load_rows_from_sqlite(str(args.target_sqlite))
         except Exception as exc:
-            print(f"[nsys-module-kernel-compare] failed to load sqlite rows: {exc}", file=sys.stderr)
+            print(
+                f"[nsys-module-kernel-compare] failed to load sqlite rows: {exc}",
+                file=sys.stderr,
+            )
             return 2
         payload = compare_module_kernel_rows(
             base_rows=base_rows,
@@ -1300,7 +1424,9 @@ def cmd_nsys_module_kernel_compare(args: argparse.Namespace) -> int:
     elif fmt == "html":
         text = module_kernel_compare_to_html(payload)
     else:
-        text = json.dumps(payload, ensure_ascii=False, indent=2 if args.pretty else None)
+        text = json.dumps(
+            payload, ensure_ascii=False, indent=2 if args.pretty else None
+        )
     if args.output:
         path = Path(args.output)
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -1436,7 +1562,9 @@ def build_parser() -> argparse.ArgumentParser:
     ingest.add_argument("--report-formats", default="json,markdown,html")
     ingest.set_defaults(func=cmd_ingest)
 
-    analyze = sub.add_parser("analyze", help="analyze events JSONL and generate reports")
+    analyze = sub.add_parser(
+        "analyze", help="analyze events JSONL and generate reports"
+    )
     analyze.add_argument("--events", required=True, help="metrics events jsonl path")
     analyze.add_argument("--output-dir", default="./metrics_cli_output")
     analyze.add_argument("--workload", default="default")
@@ -1454,13 +1582,19 @@ def build_parser() -> argparse.ArgumentParser:
     diff.add_argument("--base-report", required=True)
     diff.add_argument("--target-report", required=True)
     diff.add_argument("--output", required=True, help="diff json output path")
-    diff.add_argument("--markdown", default="", help="optional diff markdown output path")
+    diff.add_argument(
+        "--markdown", default="", help="optional diff markdown output path"
+    )
     diff.set_defaults(func=cmd_diff)
 
-    list_providers = sub.add_parser("list-providers", help="list available provider types")
+    list_providers = sub.add_parser(
+        "list-providers", help="list available provider types"
+    )
     list_providers.set_defaults(func=cmd_list_providers)
 
-    trace = sub.add_parser("trace", help="convert metrics events jsonl to Chrome Trace JSON")
+    trace = sub.add_parser(
+        "trace", help="convert metrics events jsonl to Chrome Trace JSON"
+    )
     trace.add_argument("--events", required=True, help="metrics events jsonl path")
     trace.add_argument("--output", required=True, help="chrome trace json output path")
     trace.add_argument(
@@ -1503,9 +1637,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     nsys_panel.set_defaults(func=cmd_nsys_panel)
 
-    nsys_sql = sub.add_parser("nsys-sql-skill", help="run built-in Nsight SQLite SQL skills")
+    nsys_sql = sub.add_parser(
+        "nsys-sql-skill", help="run built-in Nsight SQLite SQL skills"
+    )
     nsys_sql.add_argument("--sqlite", required=True, help="nsys exported sqlite path")
-    nsys_sql.add_argument("--list-skills", action="store_true", help="list available skills and parameters")
+    nsys_sql.add_argument(
+        "--list-skills",
+        action="store_true",
+        help="list available skills and parameters",
+    )
     nsys_sql.add_argument("--skill", default="", help="skill name, e.g. top_kernels")
     nsys_sql.add_argument(
         "--param",
@@ -1553,11 +1693,17 @@ def build_parser() -> argparse.ArgumentParser:
             "mermaid=relations+mermaid graph, both=grouped tables + relations + mermaid"
         ),
     )
-    nsys_sql.add_argument("--pretty", action="store_true", help="pretty-print JSON output")
+    nsys_sql.add_argument(
+        "--pretty", action="store_true", help="pretty-print JSON output"
+    )
     nsys_sql.set_defaults(func=cmd_nsys_sql_skill)
 
-    nsys_export = sub.add_parser("nsys-export", help="export sqlite kernel timeline rows to json/csv")
-    nsys_export.add_argument("--sqlite", required=True, help="nsys exported sqlite path")
+    nsys_export = sub.add_parser(
+        "nsys-export", help="export sqlite kernel timeline rows to json/csv"
+    )
+    nsys_export.add_argument(
+        "--sqlite", required=True, help="nsys exported sqlite path"
+    )
     nsys_export.add_argument("--output", required=True, help="output file path")
     nsys_export.add_argument("--format", default="json", choices=["json", "csv"])
     nsys_export.add_argument("--device-id", type=int, default=-1)
@@ -1568,8 +1714,13 @@ def build_parser() -> argparse.ArgumentParser:
     nsys_export.add_argument("--iteration-marker", default="sample_0")
     nsys_export.set_defaults(func=cmd_nsys_export)
 
-    nsys_analyze = sub.add_parser("nsys-analyze", help="run nsys-oriented summary/overlap/nccl/iterations/mfu analysis")
-    nsys_analyze.add_argument("--sqlite", required=True, help="nsys exported sqlite path")
+    nsys_analyze = sub.add_parser(
+        "nsys-analyze",
+        help="run nsys-oriented summary/overlap/nccl/iterations/mfu analysis",
+    )
+    nsys_analyze.add_argument(
+        "--sqlite", required=True, help="nsys exported sqlite path"
+    )
     nsys_analyze.add_argument("--device-id", type=int, default=-1)
     nsys_analyze.add_argument("--start-ns", type=int, default=-1)
     nsys_analyze.add_argument("--end-ns", type=int, default=-1)
@@ -1590,26 +1741,36 @@ def build_parser() -> argparse.ArgumentParser:
     nsys_analyze.add_argument("--model-flops-per-step", type=float, default=None)
     nsys_analyze.add_argument("--peak-tflops", type=float, default=None)
     nsys_analyze.add_argument("--peak-precision", default="fp16")
-    nsys_analyze.add_argument("--format", default="json", choices=["json", "markdown", "md"])
+    nsys_analyze.add_argument(
+        "--format", default="json", choices=["json", "markdown", "md"]
+    )
     nsys_analyze.add_argument("--output", default="")
     nsys_analyze.add_argument("--pretty", action="store_true")
     nsys_analyze.set_defaults(func=cmd_nsys_analyze)
 
-    nsys_diff = sub.add_parser("nsys-diff", help="diff two nsys sqlite profiles by kernel/nvtx aggregates")
+    nsys_diff = sub.add_parser(
+        "nsys-diff", help="diff two nsys sqlite profiles by kernel/nvtx aggregates"
+    )
     nsys_diff.add_argument("--before-sqlite", required=True)
     nsys_diff.add_argument("--after-sqlite", required=True)
     nsys_diff.add_argument("--device-id", type=int, default=-1)
     nsys_diff.add_argument("--start-ns", type=int, default=-1)
     nsys_diff.add_argument("--end-ns", type=int, default=-1)
     nsys_diff.add_argument("--top-k", type=int, default=20)
-    nsys_diff.add_argument("--format", default="json", choices=["json", "markdown", "md"])
+    nsys_diff.add_argument(
+        "--format", default="json", choices=["json", "markdown", "md"]
+    )
     nsys_diff.add_argument("--output", default="")
     nsys_diff.add_argument("--pretty", action="store_true")
     nsys_diff.set_defaults(func=cmd_nsys_diff)
 
-    ncu_csv_skill = sub.add_parser("ncu-csv-skill", help="run built-in ncu CSV parsing skills")
+    ncu_csv_skill = sub.add_parser(
+        "ncu-csv-skill", help="run built-in ncu CSV parsing skills"
+    )
     ncu_csv_skill.add_argument("--csv", required=True, help="ncu csv path")
-    ncu_csv_skill.add_argument("--list-skills", action="store_true", help="list skills and params")
+    ncu_csv_skill.add_argument(
+        "--list-skills", action="store_true", help="list skills and params"
+    )
     ncu_csv_skill.add_argument("--skill", default="", help="skill name")
     ncu_csv_skill.add_argument(
         "--param",
@@ -1618,22 +1779,38 @@ def build_parser() -> argparse.ArgumentParser:
         help="skill parameter in key=value format (can repeat)",
     )
     ncu_csv_skill.add_argument("--output", default="", help="optional json output path")
-    ncu_csv_skill.add_argument("--pretty", action="store_true", help="pretty-print json output")
+    ncu_csv_skill.add_argument(
+        "--pretty", action="store_true", help="pretty-print json output"
+    )
     ncu_csv_skill.set_defaults(func=cmd_ncu_csv_skill)
 
-    ncu_csv_analyze = sub.add_parser("ncu-csv-analyze", help="run summarized analysis for ncu csv")
+    ncu_csv_analyze = sub.add_parser(
+        "ncu-csv-analyze", help="run summarized analysis for ncu csv"
+    )
     ncu_csv_analyze.add_argument("--csv", required=True, help="ncu csv path")
-    ncu_csv_analyze.add_argument("--metric-like", default="", help="metric LIKE pattern (%%/_/*)")
-    ncu_csv_analyze.add_argument("--kernel-like", default="%", help="kernel LIKE pattern (%%/_/*)")
+    ncu_csv_analyze.add_argument(
+        "--metric-like", default="", help="metric LIKE pattern (%%/_/*)"
+    )
+    ncu_csv_analyze.add_argument(
+        "--kernel-like", default="%", help="kernel LIKE pattern (%%/_/*)"
+    )
     ncu_csv_analyze.add_argument("--top-k", type=int, default=20)
-    ncu_csv_analyze.add_argument("--format", default="json", choices=["json", "markdown", "md"])
+    ncu_csv_analyze.add_argument(
+        "--format", default="json", choices=["json", "markdown", "md"]
+    )
     ncu_csv_analyze.add_argument("--output", default="")
     ncu_csv_analyze.add_argument("--pretty", action="store_true")
     ncu_csv_analyze.set_defaults(func=cmd_ncu_csv_analyze)
 
-    ncu_report_skill = sub.add_parser("ncu-report-skill", help="run built-in ncu .ncu-rep parsing skills")
-    ncu_report_skill.add_argument("--report", required=True, help="ncu report path (.ncu-rep)")
-    ncu_report_skill.add_argument("--list-skills", action="store_true", help="list skills and params")
+    ncu_report_skill = sub.add_parser(
+        "ncu-report-skill", help="run built-in ncu .ncu-rep parsing skills"
+    )
+    ncu_report_skill.add_argument(
+        "--report", required=True, help="ncu report path (.ncu-rep)"
+    )
+    ncu_report_skill.add_argument(
+        "--list-skills", action="store_true", help="list skills and params"
+    )
     ncu_report_skill.add_argument("--skill", default="", help="skill name")
     ncu_report_skill.add_argument(
         "--param",
@@ -1641,8 +1818,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=[],
         help="skill parameter in key=value format (can repeat)",
     )
-    ncu_report_skill.add_argument("--output", default="", help="optional json output path")
-    ncu_report_skill.add_argument("--pretty", action="store_true", help="pretty-print json output")
+    ncu_report_skill.add_argument(
+        "--output", default="", help="optional json output path"
+    )
+    ncu_report_skill.add_argument(
+        "--pretty", action="store_true", help="pretty-print json output"
+    )
     ncu_report_skill.set_defaults(func=cmd_ncu_report_skill)
 
     ncu_metrics = sub.add_parser(
@@ -1650,13 +1831,25 @@ def build_parser() -> argparse.ArgumentParser:
         help="explain any ncu metric, search the index, or report catalog coverage",
     )
     ncu_metrics.add_argument("--metric", default="", help="explain one metric by name")
-    ncu_metrics.add_argument("--value", type=float, default=None,
-                             help="a measured value, to get a verdict where a rule exists")
-    ncu_metrics.add_argument("--search", default="", help="regex over metric names and labels")
-    ncu_metrics.add_argument("--coverage", action="store_true",
-                             help="report how much of --set full the curated catalog covers")
-    ncu_metrics.add_argument("--sections-dir", default="",
-                             help="Nsight Compute sections directory (auto-detected by default)")
+    ncu_metrics.add_argument(
+        "--value",
+        type=float,
+        default=None,
+        help="a measured value, to get a verdict where a rule exists",
+    )
+    ncu_metrics.add_argument(
+        "--search", default="", help="regex over metric names and labels"
+    )
+    ncu_metrics.add_argument(
+        "--coverage",
+        action="store_true",
+        help="report how much of --set full the curated catalog covers",
+    )
+    ncu_metrics.add_argument(
+        "--sections-dir",
+        default="",
+        help="Nsight Compute sections directory (auto-detected by default)",
+    )
     ncu_metrics.add_argument("--limit", type=int, default=60)
     ncu_metrics.add_argument("--verbose", action="store_true")
     ncu_metrics.set_defaults(func=cmd_ncu_metrics)
@@ -1665,20 +1858,32 @@ def build_parser() -> argparse.ArgumentParser:
         "ncu-diagnose",
         help="diagnose every kernel in a .ncu-rep: bottleneck class, stalls, roofline, fixes",
     )
-    ncu_diagnose.add_argument("--report", required=True, help="ncu report path (.ncu-rep)")
-    ncu_diagnose.add_argument("--kernel-like", default="%", help="kernel LIKE pattern (%%/_/*)")
-    ncu_diagnose.add_argument("--top-kernels", type=int, default=10,
-                              help="how many kernels to report, ranked by duration")
+    ncu_diagnose.add_argument(
+        "--report", required=True, help="ncu report path (.ncu-rep)"
+    )
+    ncu_diagnose.add_argument(
+        "--kernel-like", default="%", help="kernel LIKE pattern (%%/_/*)"
+    )
+    ncu_diagnose.add_argument(
+        "--top-kernels",
+        type=int,
+        default=10,
+        help="how many kernels to report, ranked by duration",
+    )
     ncu_diagnose.add_argument("--findings-per-kernel", type=int, default=8)
     ncu_diagnose.add_argument(
-        "--gpu", default="",
+        "--gpu",
+        default="",
         help="GPU name (e.g. 'H100 SXM5') to unlock absolute roofline ceilings",
     )
     ncu_diagnose.add_argument(
-        "--no-source", action="store_true",
+        "--no-source",
+        action="store_true",
         help="skip source-line attribution (it re-reads the report for PC samples)",
     )
-    ncu_diagnose.add_argument("--format", default="md", choices=["json", "md", "markdown"])
+    ncu_diagnose.add_argument(
+        "--format", default="md", choices=["json", "md", "markdown"]
+    )
     ncu_diagnose.add_argument("--output", default="")
     ncu_diagnose.add_argument("--pretty", action="store_true")
     ncu_diagnose.set_defaults(func=cmd_ncu_diagnose)
@@ -1687,9 +1892,15 @@ def build_parser() -> argparse.ArgumentParser:
         "ncu-report-analyze",
         help="run summarized analysis for ncu .ncu-rep (includes per-metric stats)",
     )
-    ncu_report_analyze.add_argument("--report", required=True, help="ncu report path (.ncu-rep)")
-    ncu_report_analyze.add_argument("--metric-like", default="", help="metric LIKE pattern (%%/_/*)")
-    ncu_report_analyze.add_argument("--kernel-like", default="%", help="kernel LIKE pattern (%%/_/*)")
+    ncu_report_analyze.add_argument(
+        "--report", required=True, help="ncu report path (.ncu-rep)"
+    )
+    ncu_report_analyze.add_argument(
+        "--metric-like", default="", help="metric LIKE pattern (%%/_/*)"
+    )
+    ncu_report_analyze.add_argument(
+        "--kernel-like", default="%", help="kernel LIKE pattern (%%/_/*)"
+    )
     ncu_report_analyze.add_argument("--top-k", type=int, default=20)
     ncu_report_analyze.add_argument(
         "--include-all-metrics",
@@ -1709,7 +1920,9 @@ def build_parser() -> argparse.ArgumentParser:
         default=20000,
         help="max rows in all_metrics payload",
     )
-    ncu_report_analyze.add_argument("--format", default="json", choices=["json", "markdown", "md"])
+    ncu_report_analyze.add_argument(
+        "--format", default="json", choices=["json", "markdown", "md"]
+    )
     ncu_report_analyze.add_argument("--output", default="")
     ncu_report_analyze.add_argument("--pretty", action="store_true")
     ncu_report_analyze.set_defaults(func=cmd_ncu_report_analyze)
@@ -1718,13 +1931,19 @@ def build_parser() -> argparse.ArgumentParser:
         "nccl-inspector-skill",
         help="run built-in NCCL Inspector JSON/Prometheus parsing skills",
     )
-    nccl_skill.add_argument("--input", required=True, help="NCCL Inspector JSON/JSONL file or dump directory")
+    nccl_skill.add_argument(
+        "--input",
+        required=True,
+        help="NCCL Inspector JSON/JSONL file or dump directory",
+    )
     nccl_skill.add_argument(
         "--prometheus-path",
         default="",
         help="optional NCCL Inspector Prometheus textfile or directory",
     )
-    nccl_skill.add_argument("--list-skills", action="store_true", help="list skills and params")
+    nccl_skill.add_argument(
+        "--list-skills", action="store_true", help="list skills and params"
+    )
     nccl_skill.add_argument("--skill", default="", help="skill name")
     nccl_skill.add_argument(
         "--param",
@@ -1733,24 +1952,36 @@ def build_parser() -> argparse.ArgumentParser:
         help="skill parameter in key=value format (can repeat)",
     )
     nccl_skill.add_argument("--output", default="", help="optional json output path")
-    nccl_skill.add_argument("--pretty", action="store_true", help="pretty-print json output")
+    nccl_skill.add_argument(
+        "--pretty", action="store_true", help="pretty-print json output"
+    )
     nccl_skill.set_defaults(func=cmd_nccl_inspector_skill)
 
     nccl_analyze = sub.add_parser(
         "nccl-inspector-analyze",
         help="summarize NCCL Inspector JSON dumps and optional Prometheus textfiles",
     )
-    nccl_analyze.add_argument("--input", required=True, help="NCCL Inspector JSON/JSONL file or dump directory")
+    nccl_analyze.add_argument(
+        "--input",
+        required=True,
+        help="NCCL Inspector JSON/JSONL file or dump directory",
+    )
     nccl_analyze.add_argument(
         "--prometheus-path",
         default="",
         help="optional NCCL Inspector Prometheus textfile or directory",
     )
-    nccl_analyze.add_argument("--op-like", default="%", help="operation LIKE pattern (%%/_/*)")
-    nccl_analyze.add_argument("--comm-like", default="%", help="communicator name LIKE pattern (%%/_/*)")
+    nccl_analyze.add_argument(
+        "--op-like", default="%", help="operation LIKE pattern (%%/_/*)"
+    )
+    nccl_analyze.add_argument(
+        "--comm-like", default="%", help="communicator name LIKE pattern (%%/_/*)"
+    )
     nccl_analyze.add_argument("--min-msg-size-bytes", type=int, default=0)
     nccl_analyze.add_argument("--top-k", type=int, default=20)
-    nccl_analyze.add_argument("--format", default="json", choices=["json", "markdown", "md"])
+    nccl_analyze.add_argument(
+        "--format", default="json", choices=["json", "markdown", "md"]
+    )
     nccl_analyze.add_argument("--output", default="")
     nccl_analyze.add_argument("--pretty", action="store_true")
     nccl_analyze.set_defaults(func=cmd_nccl_inspector_analyze)
@@ -1762,12 +1993,24 @@ def build_parser() -> argparse.ArgumentParser:
             "Supports JSON exports or direct sqlite inputs."
         ),
     )
-    nsys_module_kernel_compare.add_argument("--base-json", default="", help="baseline kernel JSON path")
-    nsys_module_kernel_compare.add_argument("--target-json", default="", help="target kernel JSON path")
-    nsys_module_kernel_compare.add_argument("--base-sqlite", default="", help="baseline nsys sqlite path")
-    nsys_module_kernel_compare.add_argument("--target-sqlite", default="", help="target nsys sqlite path")
-    nsys_module_kernel_compare.add_argument("--base-label", default="base", help="display label for baseline")
-    nsys_module_kernel_compare.add_argument("--target-label", default="target", help="display label for target")
+    nsys_module_kernel_compare.add_argument(
+        "--base-json", default="", help="baseline kernel JSON path"
+    )
+    nsys_module_kernel_compare.add_argument(
+        "--target-json", default="", help="target kernel JSON path"
+    )
+    nsys_module_kernel_compare.add_argument(
+        "--base-sqlite", default="", help="baseline nsys sqlite path"
+    )
+    nsys_module_kernel_compare.add_argument(
+        "--target-sqlite", default="", help="target nsys sqlite path"
+    )
+    nsys_module_kernel_compare.add_argument(
+        "--base-label", default="base", help="display label for baseline"
+    )
+    nsys_module_kernel_compare.add_argument(
+        "--target-label", default="target", help="display label for target"
+    )
     nsys_module_kernel_compare.add_argument(
         "--nvtx-text",
         default="",
@@ -1826,7 +2069,9 @@ def build_parser() -> argparse.ArgumentParser:
             "'auto' uses H100 estimate when TARGET_INFO reports H100."
         ),
     )
-    nsys_module_kernel_compare.add_argument("--format", default="json", choices=["json", "markdown", "md", "html"])
+    nsys_module_kernel_compare.add_argument(
+        "--format", default="json", choices=["json", "markdown", "md", "html"]
+    )
     nsys_module_kernel_compare.add_argument("--output", default="")
     nsys_module_kernel_compare.add_argument("--pretty", action="store_true")
     nsys_module_kernel_compare.set_defaults(func=cmd_nsys_module_kernel_compare)
@@ -2059,7 +2304,9 @@ def build_parser() -> argparse.ArgumentParser:
             "(at least two required)"
         ),
     )
-    nsys_timeline_compare.add_argument("--output", required=True, help="output compare HTML file path")
+    nsys_timeline_compare.add_argument(
+        "--output", required=True, help="output compare HTML file path"
+    )
     nsys_timeline_compare.add_argument(
         "--device-id",
         type=int,
@@ -2252,21 +2499,43 @@ def build_parser() -> argparse.ArgumentParser:
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    nsys_iter_overlap.add_argument("--sqlite", required=True, help="nsys exported sqlite path")
     nsys_iter_overlap.add_argument(
-        "--iteration-marker", default="sample_0",
+        "--sqlite", required=True, help="nsys exported sqlite path"
+    )
+    nsys_iter_overlap.add_argument(
+        "--iteration-marker",
+        default="sample_0",
         help="NVTX text substring that marks iteration boundaries (default: sample_0)",
     )
-    nsys_iter_overlap.add_argument("--device-id", type=int, default=-1, help="CUDA device ID, -1 = all")
-    nsys_iter_overlap.add_argument("--start-ns", type=int, default=-1, help="global window start ns, -1 = no filter")
-    nsys_iter_overlap.add_argument("--end-ns", type=int, default=-1, help="global window end ns, -1 = no filter")
     nsys_iter_overlap.add_argument(
-        "--include-nested", action="store_true",
+        "--device-id", type=int, default=-1, help="CUDA device ID, -1 = all"
+    )
+    nsys_iter_overlap.add_argument(
+        "--start-ns",
+        type=int,
+        default=-1,
+        help="global window start ns, -1 = no filter",
+    )
+    nsys_iter_overlap.add_argument(
+        "--end-ns", type=int, default=-1, help="global window end ns, -1 = no filter"
+    )
+    nsys_iter_overlap.add_argument(
+        "--include-nested",
+        action="store_true",
         help="include nested NVTX ranges with same marker (default: top-level only)",
     )
-    nsys_iter_overlap.add_argument("--limit", type=int, default=2000, help="max iterations to process (default: 2000)")
-    nsys_iter_overlap.add_argument("--output", default="", help="optional JSON output path")
-    nsys_iter_overlap.add_argument("--pretty", action="store_true", help="pretty-print JSON output")
+    nsys_iter_overlap.add_argument(
+        "--limit",
+        type=int,
+        default=2000,
+        help="max iterations to process (default: 2000)",
+    )
+    nsys_iter_overlap.add_argument(
+        "--output", default="", help="optional JSON output path"
+    )
+    nsys_iter_overlap.add_argument(
+        "--pretty", action="store_true", help="pretty-print JSON output"
+    )
     nsys_iter_overlap.set_defaults(func=cmd_nsys_iter_overlap)
 
     nsys_iter_outliers = sub.add_parser(
@@ -2280,19 +2549,32 @@ def build_parser() -> argparse.ArgumentParser:
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    nsys_iter_outliers.add_argument("--sqlite", required=True, help="nsys exported sqlite path")
     nsys_iter_outliers.add_argument(
-        "--iteration-marker", default="sample_0",
+        "--sqlite", required=True, help="nsys exported sqlite path"
+    )
+    nsys_iter_outliers.add_argument(
+        "--iteration-marker",
+        default="sample_0",
         help="NVTX text substring that marks iteration boundaries (default: sample_0)",
     )
-    nsys_iter_outliers.add_argument("--device-id", type=int, default=-1, help="CUDA device ID, -1 = all")
     nsys_iter_outliers.add_argument(
-        "--sigma", type=float, default=2.0,
+        "--device-id", type=int, default=-1, help="CUDA device ID, -1 = all"
+    )
+    nsys_iter_outliers.add_argument(
+        "--sigma",
+        type=float,
+        default=2.0,
         help="flag iterations deviating more than this many σ from median (default: 2.0)",
     )
-    nsys_iter_outliers.add_argument("--limit", type=int, default=2000, help="max iterations to scan (default: 2000)")
-    nsys_iter_outliers.add_argument("--output", default="", help="optional JSON output path")
-    nsys_iter_outliers.add_argument("--pretty", action="store_true", help="pretty-print JSON output")
+    nsys_iter_outliers.add_argument(
+        "--limit", type=int, default=2000, help="max iterations to scan (default: 2000)"
+    )
+    nsys_iter_outliers.add_argument(
+        "--output", default="", help="optional JSON output path"
+    )
+    nsys_iter_outliers.add_argument(
+        "--pretty", action="store_true", help="pretty-print JSON output"
+    )
     nsys_iter_outliers.set_defaults(func=cmd_nsys_iter_outliers)
 
     return parser

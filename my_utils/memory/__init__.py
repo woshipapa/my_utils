@@ -1,4 +1,8 @@
-from .memory_snapshot import MemorySnapshotter, NoOpMemorySnapshotter, global_snapshotter
+from .memory_snapshot import (
+    MemorySnapshotter,
+    NoOpMemorySnapshotter,
+    global_snapshotter,
+)
 from .oom_restore import check_oom_flag, set_oom_flag
 
 __all__ = [

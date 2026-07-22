@@ -112,7 +112,9 @@ def _empty_table_row(colspan: int, text: str) -> str:
 
 
 def _color_for_name(name: str) -> str:
-    digest = int(hashlib.md5((name or "").encode(), usedforsecurity=False).hexdigest(), 16)
+    digest = int(
+        hashlib.md5((name or "").encode(), usedforsecurity=False).hexdigest(), 16
+    )
     r = 70 + (digest >> 16 & 0xFF) * 130 // 255
     g = 70 + (digest >> 8 & 0xFF) * 130 // 255
     b = 70 + (digest & 0xFF) * 130 // 255
@@ -134,7 +136,10 @@ def _resolve_occupancy_pct_estimate(
     total_shared_bytes: object,
 ) -> Optional[float]:
     try:
-        if occupancy_pct_estimate is not None and str(occupancy_pct_estimate).strip() != "":
+        if (
+            occupancy_pct_estimate is not None
+            and str(occupancy_pct_estimate).strip() != ""
+        ):
             occ = float(occupancy_pct_estimate)
             if math.isfinite(occ):
                 return float(occ)
@@ -225,7 +230,9 @@ def _percentile_linear(values: Sequence[float], q: float) -> float:
     return float(arr[lo]) * (1.0 - frac) + float(arr[hi]) * frac
 
 
-def _iqr_clip(values: Sequence[float], k: float = 1.5) -> Tuple[List[float], float, float]:
+def _iqr_clip(
+    values: Sequence[float], k: float = 1.5
+) -> Tuple[List[float], float, float]:
     vals = [float(v) for v in values]
     if len(vals) < 4:
         return list(vals), float("-inf"), float("inf")
@@ -265,7 +272,9 @@ def _series_stats_with_iqr(values: Sequence[float], k: float = 1.5) -> Dict[str,
     std_raw = math.sqrt(max(0.0, variance_raw))
     kept_vals, clip_low, clip_high = _iqr_clip(vals, k=k)
     mean_clipped = sum(kept_vals) / float(len(kept_vals))
-    variance_clipped = sum((v - mean_clipped) * (v - mean_clipped) for v in kept_vals) / float(len(kept_vals))
+    variance_clipped = sum(
+        (v - mean_clipped) * (v - mean_clipped) for v in kept_vals
+    ) / float(len(kept_vals))
     std_clipped = math.sqrt(max(0.0, variance_clipped))
     removed_count = max(0, int(len(vals) - len(kept_vals)))
     return {
@@ -355,7 +364,9 @@ def _resolve_kernel_category_rules(
             raw_map_obj = json.loads(Path(map_path).read_text(encoding="utf-8"))
             debug(f"kernel-category map loaded from {map_path}")
         except Exception as exc:
-            debug(f"kernel-category map load failed path={map_path} err={exc}; fallback to built-in defaults")
+            debug(
+                f"kernel-category map load failed path={map_path} err={exc}; fallback to built-in defaults"
+            )
             raw_map_obj = _DEFAULT_KERNEL_CATEGORY_MAPS
 
     mapping: Dict[str, str] = {}
@@ -376,7 +387,9 @@ def _resolve_kernel_category_rules(
                 selected_engine = "sglang"
             else:
                 selected_engine = next(iter(raw_map_obj.keys()), None)
-            selected_models = raw_map_obj.get(selected_engine) if selected_engine else None
+            selected_models = (
+                raw_map_obj.get(selected_engine) if selected_engine else None
+            )
             if isinstance(selected_models, dict):
                 selected_model = None
                 if model_v and model_v in selected_models:
@@ -385,7 +398,9 @@ def _resolve_kernel_category_rules(
                     selected_model = "llama"
                 else:
                     selected_model = next(iter(selected_models.keys()), None)
-                if selected_model and isinstance(selected_models.get(selected_model), dict):
+                if selected_model and isinstance(
+                    selected_models.get(selected_model), dict
+                ):
                     mapping = dict(selected_models[selected_model])
                     profile_name = f"{selected_engine}:{selected_model}"
     except Exception as exc:
@@ -512,18 +527,26 @@ def _build_kernel_category_breakdown(
         if prev_t is not None and tt > prev_t and active_by_cat:
             span = float(tt - prev_t)
             non_overlap_ns += span
-            active_cats = [cat for cat, count in active_by_cat.items() if int(count) > 0]
+            active_cats = [
+                cat for cat, count in active_by_cat.items() if int(count) > 0
+            ]
             if active_cats:
                 if len(active_cats) == 1:
                     only_cat = str(active_cats[0])
-                    exclusive_ns_by_cat[only_cat] = float(exclusive_ns_by_cat.get(only_cat, 0.0)) + span
+                    exclusive_ns_by_cat[only_cat] = (
+                        float(exclusive_ns_by_cat.get(only_cat, 0.0)) + span
+                    )
                 else:
                     cross_category_overlap_ns += span
                     for cat in active_cats:
-                        overlap_ns_by_cat[cat] = float(overlap_ns_by_cat.get(cat, 0.0)) + span
+                        overlap_ns_by_cat[cat] = (
+                            float(overlap_ns_by_cat.get(cat, 0.0)) + span
+                        )
                 share = span / float(len(active_cats))
                 for cat in active_cats:
-                    weighted_ns_by_cat[cat] = float(weighted_ns_by_cat.get(cat, 0.0)) + share
+                    weighted_ns_by_cat[cat] = (
+                        float(weighted_ns_by_cat.get(cat, 0.0)) + share
+                    )
         prev_t = tt
         if int(delta_kind) > 0:
             active_by_cat[category] = int(active_by_cat.get(category, 0)) + 1
@@ -599,7 +622,10 @@ def _build_kernel_category_breakdown(
         "idle_ms": idle_ms,
         "idle_pct_of_wall": (idle_ms / wall_ms) * 100.0 if wall_ms > 0 else 0.0,
         "cross_category_overlap_ms": float(cross_category_overlap_ns) / 1e6,
-        "cross_category_overlap_pct_of_wall": (float(cross_category_overlap_ns) / wall_ns) * 100.0,
+        "cross_category_overlap_pct_of_wall": (
+            float(cross_category_overlap_ns) / wall_ns
+        )
+        * 100.0,
         "overlap_saved_ms": max(0.0, raw_total_ms - non_overlap_ms),
         "rows": rows,
     }
@@ -639,7 +665,9 @@ def _build_kernel_category_kernel_table(
         entry["instances"] = int(entry.get("instances") or 0) + 1
         entry["total_ms"] = _safe_float(entry.get("total_ms")) + float(dur_ms)
         entry["max_ms"] = max(_safe_float(entry.get("max_ms")), float(dur_ms))
-        entry["stream_keys"].add((_to_int(row.get("device_id"), -1), _to_int(row.get("stream_id"), 0)))
+        entry["stream_keys"].add(
+            (_to_int(row.get("device_id"), -1), _to_int(row.get("stream_id"), 0))
+        )
         if str(row.get("kind") or "compute").lower() == "comm":
             entry["comm_instances"] = int(entry.get("comm_instances") or 0) + 1
         else:
@@ -707,7 +735,9 @@ def _write_rows_table(path: str, rows: Sequence[Dict[str, object]]) -> str:
             for row in rows_list:
                 writer.writerow({k: row.get(k) for k in fieldnames})
     else:
-        out.write_text(json.dumps(rows_list, ensure_ascii=False, indent=2), encoding="utf-8")
+        out.write_text(
+            json.dumps(rows_list, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
     return str(out)
 
 
@@ -782,15 +812,21 @@ def _build_nvtx_window_category_stats(
             )
             cat_rows = list(breakdown.get("rows") or [])
             cat_pct_map = {
-                str(item.get("category") or "misc"): _safe_float(item.get("weighted_pct_of_nonoverlap"))
+                str(item.get("category") or "misc"): _safe_float(
+                    item.get("weighted_pct_of_nonoverlap")
+                )
                 for item in cat_rows
             }
             cat_weighted_ms_map = {
-                str(item.get("category") or "misc"): _safe_float(item.get("weighted_elapsed_ms"))
+                str(item.get("category") or "misc"): _safe_float(
+                    item.get("weighted_elapsed_ms")
+                )
                 for item in cat_rows
             }
             cat_raw_total_ms_map = {
-                str(item.get("category") or "misc"): _safe_float(item.get("raw_total_ms"))
+                str(item.get("category") or "misc"): _safe_float(
+                    item.get("raw_total_ms")
+                )
                 for item in cat_rows
             }
             for cat_name in cat_pct_map.keys():
@@ -798,7 +834,9 @@ def _build_nvtx_window_category_stats(
             top_cat = ""
             top_cat_pct = 0.0
             if cat_pct_map:
-                top_cat, top_cat_pct = max(cat_pct_map.items(), key=lambda kv: float(kv[1]))
+                top_cat, top_cat_pct = max(
+                    cat_pct_map.items(), key=lambda kv: float(kv[1])
+                )
         else:
             gpu_start_ns = -1
             gpu_end_ns = -1
@@ -824,8 +862,12 @@ def _build_nvtx_window_category_stats(
                 "cpu_end_ns": int(w["end_ns"]),
                 "cpu_duration_ms": _safe_float(w.get("duration_ms")),
                 "gpu_start_ns": int(gpu_start_ns) if gpu_start_ns >= 0 else None,
-                "gpu_end_ns": int(gpu_end_ns) if gpu_end_ns > gpu_start_ns >= 0 else None,
-                "gpu_duration_ms": (float(gpu_end_ns - gpu_start_ns) / 1e6) if gpu_end_ns > gpu_start_ns >= 0 else 0.0,
+                "gpu_end_ns": int(gpu_end_ns)
+                if gpu_end_ns > gpu_start_ns >= 0
+                else None,
+                "gpu_duration_ms": (float(gpu_end_ns - gpu_start_ns) / 1e6)
+                if gpu_end_ns > gpu_start_ns >= 0
+                else 0.0,
                 "kernel_count": len(wk),
                 "non_overlap_ms": _safe_float(breakdown.get("non_overlap_ms")),
                 "gpu_idle_ms": _safe_float(breakdown.get("idle_ms")),
@@ -887,8 +929,12 @@ def _build_nvtx_window_category_stats(
                 "clip_low_pct": _safe_float(pct_stats.get("clip_low")),
                 "clip_high_pct": _safe_float(pct_stats.get("clip_high")),
                 "clip_method": "iqr_1.5x",
-                "removed_windows_weighted_ms": int(_safe_float(weighted_ms_stats.get("removed_count"))),
-                "removed_windows_raw_total_ms": int(_safe_float(raw_total_ms_stats.get("removed_count"))),
+                "removed_windows_weighted_ms": int(
+                    _safe_float(weighted_ms_stats.get("removed_count"))
+                ),
+                "removed_windows_raw_total_ms": int(
+                    _safe_float(raw_total_ms_stats.get("removed_count"))
+                ),
                 "nonzero_windows": int(sum(1 for v in pct_values if v > 1e-9)),
                 "window_count": len(pct_values),
             }
@@ -932,7 +978,9 @@ def _build_nvtx_window_category_stats(
                     "outlier_category": str(top_cat),
                     "outlier_z": float(top_z),
                     "max_abs_z": abs(float(top_z)),
-                    "warmup_head_window": bool(int(row.get("window_index") or 0) < int(warmup_head)),
+                    "warmup_head_window": bool(
+                        int(row.get("window_index") or 0) < int(warmup_head)
+                    ),
                 }
             )
     outlier_rows.sort(
@@ -942,8 +990,12 @@ def _build_nvtx_window_category_stats(
         )
     )
 
-    cpu_durations_ms = [_safe_float(row.get("cpu_duration_ms")) for row in per_window_rows]
-    gpu_durations_ms = [_safe_float(row.get("gpu_duration_ms")) for row in per_window_rows]
+    cpu_durations_ms = [
+        _safe_float(row.get("cpu_duration_ms")) for row in per_window_rows
+    ]
+    gpu_durations_ms = [
+        _safe_float(row.get("gpu_duration_ms")) for row in per_window_rows
+    ]
     non_overlap_ms = [_safe_float(row.get("non_overlap_ms")) for row in per_window_rows]
     gpu_idle_ms = [_safe_float(row.get("gpu_idle_ms")) for row in per_window_rows]
     raw_total_ms = [_safe_float(row.get("raw_total_ms")) for row in per_window_rows]
@@ -984,7 +1036,9 @@ def _build_nvtx_window_category_stats(
                 "avg_raw": _safe_float(non_overlap_stats.get("avg_raw")),
                 "std_clipped": _safe_float(non_overlap_stats.get("std")),
                 "std_raw": _safe_float(non_overlap_stats.get("std_raw")),
-                "removed_windows": int(_safe_float(non_overlap_stats.get("removed_count"))),
+                "removed_windows": int(
+                    _safe_float(non_overlap_stats.get("removed_count"))
+                ),
                 "window_count": int(_safe_float(non_overlap_stats.get("count"))),
             },
             "gpu_idle_ms": {
@@ -992,7 +1046,9 @@ def _build_nvtx_window_category_stats(
                 "avg_raw": _safe_float(gpu_idle_stats.get("avg_raw")),
                 "std_clipped": _safe_float(gpu_idle_stats.get("std")),
                 "std_raw": _safe_float(gpu_idle_stats.get("std_raw")),
-                "removed_windows": int(_safe_float(gpu_idle_stats.get("removed_count"))),
+                "removed_windows": int(
+                    _safe_float(gpu_idle_stats.get("removed_count"))
+                ),
                 "window_count": int(_safe_float(gpu_idle_stats.get("count"))),
             },
             "raw_total_ms": {
@@ -1000,7 +1056,9 @@ def _build_nvtx_window_category_stats(
                 "avg_raw": _safe_float(raw_total_stats.get("avg_raw")),
                 "std_clipped": _safe_float(raw_total_stats.get("std")),
                 "std_raw": _safe_float(raw_total_stats.get("std_raw")),
-                "removed_windows": int(_safe_float(raw_total_stats.get("removed_count"))),
+                "removed_windows": int(
+                    _safe_float(raw_total_stats.get("removed_count"))
+                ),
                 "window_count": int(_safe_float(raw_total_stats.get("count"))),
             },
         },
@@ -1097,7 +1155,11 @@ def _collect_kernels_in_window(
 
     # Prefer launch-attribution view (NVTX -> Runtime -> correlationId -> Kernel).
     skills = set(provider.list_sql_skills())
-    debug("available skills={} has_nvtx_kernel_sm_detail={}".format(len(skills), "nvtx_kernel_sm_detail" in skills))
+    debug(
+        "available skills={} has_nvtx_kernel_sm_detail={}".format(
+            len(skills), "nvtx_kernel_sm_detail" in skills
+        )
+    )
     detailed_kept = 0
     if "nvtx_kernel_sm_detail" in skills:
         detailed = provider.run_sql_skill(
@@ -1106,7 +1168,11 @@ def _collect_kernels_in_window(
             device_id=int(device_id),
             limit=int(limit),
         )
-        debug("skill nvtx_kernel_sm_detail returned {} rows before filtering".format(len(detailed)))
+        debug(
+            "skill nvtx_kernel_sm_detail returned {} rows before filtering".format(
+                len(detailed)
+            )
+        )
         for row in detailed:
             ns = _to_int(row.get("nvtx_start_ns"), -1)
             ne = _to_int(row.get("nvtx_end_ns"), -1)
@@ -1118,13 +1184,22 @@ def _collect_kernels_in_window(
             ke = _to_int(row.get("kernel_end_ns", row.get("end_ns")), -1)
             if ks < 0 or ke <= ks:
                 continue
-            if not selected_pairs and int(start_ns) >= 0 and int(end_ns) > int(start_ns):
+            if (
+                not selected_pairs
+                and int(start_ns) >= 0
+                and int(end_ns) > int(start_ns)
+            ):
                 # Timeline window filtering must follow GPU execution timestamps.
                 # Using NVTX CPU-side timestamps here can drop valid kernels due to
                 # async CPU launch vs GPU execution lag.
                 if not _intervals_overlap(ks, ke, int(start_ns), int(end_ns)):
                     continue
-            uniq = (ks, ke, _to_int(row.get("stream_id"), 0), str(row.get("kernel_name") or ""))
+            uniq = (
+                ks,
+                ke,
+                _to_int(row.get("stream_id"), 0),
+                str(row.get("kernel_name") or ""),
+            )
             attributed_kernel_keys.add(uniq)
             detailed_kept += 1
             threads_per_block = row.get("threads_per_block")
@@ -1137,7 +1212,9 @@ def _collect_kernels_in_window(
                     "kernel_name": str(row.get("kernel_name") or ""),
                     "start_ns": ks,
                     "end_ns": ke,
-                    "duration_ms": float(row.get("duration_ms") or round((ke - ks) / 1e6, 6)),
+                    "duration_ms": float(
+                        row.get("duration_ms") or round((ke - ks) / 1e6, 6)
+                    ),
                     "kind": str(row.get("kind") or "compute"),
                     "registers_per_thread": row.get("registersPerThread"),
                     "threads_per_block": row.get("threads_per_block"),
@@ -1156,7 +1233,11 @@ def _collect_kernels_in_window(
                     "rank": _parse_rank_from_text(row.get("nvtx_text")),
                 }
             )
-        debug("skill nvtx_kernel_sm_detail kept {} rows after filtering".format(detailed_kept))
+        debug(
+            "skill nvtx_kernel_sm_detail kept {} rows after filtering".format(
+                detailed_kept
+            )
+        )
     else:
         debug("skill nvtx_kernel_sm_detail unavailable, fallback to kernel_map only")
 
@@ -1171,19 +1252,30 @@ def _collect_kernels_in_window(
         attach_iteration=False,
     )
     fallback_kept = 0
-    debug("skill kernel_map returned {} rows before fallback filtering".format(len(fallback)))
+    debug(
+        "skill kernel_map returned {} rows before fallback filtering".format(
+            len(fallback)
+        )
+    )
     for row in fallback:
         ks = _to_int(row.get("start_ns"), -1)
         ke = _to_int(row.get("end_ns"), -1)
         if ks < 0 or ke <= ks:
             continue
         if selected_windows:
-            if not any(_intervals_overlap(ks, ke, ws, we) for ws, we in selected_windows):
+            if not any(
+                _intervals_overlap(ks, ke, ws, we) for ws, we in selected_windows
+            ):
                 continue
         elif int(start_ns) >= 0 and int(end_ns) > int(start_ns):
             if not _intervals_overlap(ks, ke, int(start_ns), int(end_ns)):
                 continue
-        uniq = (ks, ke, _to_int(row.get("stream_id"), 0), str(row.get("kernel_name") or ""))
+        uniq = (
+            ks,
+            ke,
+            _to_int(row.get("stream_id"), 0),
+            str(row.get("kernel_name") or ""),
+        )
         if uniq in attributed_kernel_keys:
             continue
         fallback_kept += 1
@@ -1216,8 +1308,18 @@ def _collect_kernels_in_window(
                 "rank": None,
             }
         )
-    rows.sort(key=lambda x: (_to_int(x.get("start_ns"), 0), _to_int(x.get("end_ns"), 0), _to_int(x.get("stream_id"), 0)))
-    debug("kernel rows final={} (from detail={} + fallback_added={})".format(len(rows), detailed_kept, fallback_kept))
+    rows.sort(
+        key=lambda x: (
+            _to_int(x.get("start_ns"), 0),
+            _to_int(x.get("end_ns"), 0),
+            _to_int(x.get("stream_id"), 0),
+        )
+    )
+    debug(
+        "kernel rows final={} (from detail={} + fallback_added={})".format(
+            len(rows), detailed_kept, fallback_kept
+        )
+    )
     stream_count = len(
         {
             (_to_int(item.get("device_id"), -1), _to_int(item.get("stream_id"), 0))
@@ -1249,7 +1351,14 @@ def _collect_kernels_in_window(
             "kernel sample={}".format(
                 _preview_dict_rows(
                     rows,
-                    keys=("kernel_name", "stream_id", "device_id", "start_ns", "end_ns", "kind"),
+                    keys=(
+                        "kernel_name",
+                        "stream_id",
+                        "device_id",
+                        "start_ns",
+                        "end_ns",
+                        "kind",
+                    ),
                     limit=debug_rows_i,
                 )
             )
@@ -1257,13 +1366,17 @@ def _collect_kernels_in_window(
     return rows
 
 
-def _downsample_points(points: Sequence[Tuple[int, float]], max_points: int = 2000) -> List[Tuple[int, float]]:
+def _downsample_points(
+    points: Sequence[Tuple[int, float]], max_points: int = 2000
+) -> List[Tuple[int, float]]:
     if int(max_points) <= 0:
         return [(int(t), float(v)) for t, v in points]
     if len(points) <= max_points:
         return [(int(t), float(v)) for t, v in points]
     step = max(1, int(math.ceil(len(points) / float(max_points))))
-    sampled = [(int(points[i][0]), float(points[i][1])) for i in range(0, len(points), step)]
+    sampled = [
+        (int(points[i][0]), float(points[i][1])) for i in range(0, len(points), step)
+    ]
     last_t, last_v = points[-1]
     if sampled[-1][0] != int(last_t):
         sampled.append((int(last_t), float(last_v)))
@@ -1362,8 +1475,12 @@ def _collect_metric_samples(
             return []
         metrics_table = _ident(schema.metrics_table)
         ts_col = schema.resolve_column(metrics_table, ("timestamp",))
-        id_col = schema.metrics_id_col or schema.resolve_column(metrics_table, ("metricId", "nameId", "eventId"))
-        val_col = schema.metrics_value_col or schema.resolve_column(metrics_table, ("value", "metricValue", "val"))
+        id_col = schema.metrics_id_col or schema.resolve_column(
+            metrics_table, ("metricId", "nameId", "eventId")
+        )
+        val_col = schema.metrics_value_col or schema.resolve_column(
+            metrics_table, ("value", "metricValue", "val")
+        )
         if not ts_col:
             debug(
                 "metrics timestamp unresolved table={} required_col=timestamp (rawTimestamp fallback disabled)".format(
@@ -1397,9 +1514,15 @@ def _collect_metric_samples(
         if schema.table_exists("TARGET_INFO_GPU_METRICS"):
             gm_tbl = _ident("TARGET_INFO_GPU_METRICS")
             gm_id_col = schema.resolve_column(gm_tbl, ("metricId", "id", "metric_id"))
-            gm_name_col = schema.resolve_column(gm_tbl, ("name", "metricName", "metric_name", "value"))
-            g_type_col = schema.resolve_column(metrics_table, ("typeId", "type_id", "eventType", "event_type"))
-            gm_type_col = schema.resolve_column(gm_tbl, ("typeId", "type_id", "eventType", "event_type"))
+            gm_name_col = schema.resolve_column(
+                gm_tbl, ("name", "metricName", "metric_name", "value")
+            )
+            g_type_col = schema.resolve_column(
+                metrics_table, ("typeId", "type_id", "eventType", "event_type")
+            )
+            gm_type_col = schema.resolve_column(
+                gm_tbl, ("typeId", "type_id", "eventType", "event_type")
+            )
             if gm_id_col and gm_name_col:
                 if g_type_col and gm_type_col:
                     joins.append(
@@ -1437,19 +1560,21 @@ def _collect_metric_samples(
         if source_col:
             source_key_expr = f"g.{_ident(source_col)}"
         elif has_gpu_info_mapping:
-            gm_source_col = schema.resolve_column("TARGET_INFO_GPU_METRICS", ("sourceId", "source_id"))
+            gm_source_col = schema.resolve_column(
+                "TARGET_INFO_GPU_METRICS", ("sourceId", "source_id")
+            )
             if gm_source_col:
                 source_key_expr = f"gm.{_ident(gm_source_col)}"
 
         if source_key_expr and schema.table_exists("GENERIC_EVENT_SOURCES"):
             ges_tbl = _ident("GENERIC_EVENT_SOURCES")
             ges_id_col = schema.resolve_column(ges_tbl, ("sourceId", "id", "source_id"))
-            ges_name_col = schema.resolve_column(ges_tbl, ("name", "source", "sourceName"))
+            ges_name_col = schema.resolve_column(
+                ges_tbl, ("name", "source", "sourceName")
+            )
             ges_name_id_col = schema.resolve_column(ges_tbl, ("nameId", "name_id"))
             if ges_id_col:
-                source_join = (
-                    f"LEFT JOIN {ges_tbl} gs ON {source_key_expr} = gs.{_ident(ges_id_col)}"
-                )
+                source_join = f"LEFT JOIN {ges_tbl} gs ON {source_key_expr} = gs.{_ident(ges_id_col)}"
                 if ges_name_col:
                     source_name_expr = f"gs.{_ident(ges_name_col)}"
                 elif ges_name_id_col and schema.string_table:
@@ -1480,7 +1605,9 @@ def _collect_metric_samples(
             str(metric_name_like or "%"),
             str(metric_name_like or "%"),
         ]
-        device_col = schema.resolve_column(metrics_table, ("deviceId", "gpuId", "device", "gpu"))
+        device_col = schema.resolve_column(
+            metrics_table, ("deviceId", "gpuId", "device", "gpu")
+        )
         if device_col:
             device_expr = f"CAST(g.{_ident(device_col)} AS INTEGER)"
             device_where = f"AND (? < 0 OR g.{_ident(device_col)} = ?) "
@@ -1490,15 +1617,12 @@ def _collect_metric_samples(
             filter_params.append(1 if bool(include_all_sources) else 0)
 
         from_join_expr = (
-            f"FROM {metrics_table} g "
-            + " ".join(joins)
-            + " "
-            + source_join
-            + " "
+            f"FROM {metrics_table} g " + " ".join(joins) + " " + source_join + " "
         )
 
         limit_i = int(limit)
         tmp_tbl = "_myu_metrics_base"
+
         def _materialize_rows() -> Tuple[int, List[sqlite3.Row]]:
             ts_ident = _ident(str(ts_col))
             base_where = (
@@ -1524,8 +1648,14 @@ def _collect_metric_samples(
                 + base_where
             )
             conn.execute(create_tmp_sql, filter_params)
-            total = int(conn.execute(f"SELECT COUNT(*) FROM {tmp_tbl}").fetchone()[0] or 0)
-            debug("metrics temp rows={} ts_col={} sampling_limit={}".format(total, ts_col, int(limit_i)))
+            total = int(
+                conn.execute(f"SELECT COUNT(*) FROM {tmp_tbl}").fetchone()[0] or 0
+            )
+            debug(
+                "metrics temp rows={} ts_col={} sampling_limit={}".format(
+                    total, ts_col, int(limit_i)
+                )
+            )
             if total > 0:
                 sample_sql = (
                     f"SELECT ts_ns, metric_name, metric_device_id, metric_source_name, metric_value "
@@ -1534,7 +1664,12 @@ def _collect_metric_samples(
                 if debug_rows_i > 0:
                     sample_sql += f" LIMIT {int(debug_rows_i)}"
                 sample_rows = conn.execute(sample_sql).fetchall()
-                debug("metrics temp sample ts_col={} data={}".format(ts_col, json.dumps([dict(x) for x in sample_rows], ensure_ascii=False)))
+                debug(
+                    "metrics temp sample ts_col={} data={}".format(
+                        ts_col,
+                        json.dumps([dict(x) for x in sample_rows], ensure_ascii=False),
+                    )
+                )
 
             if total <= 0:
                 return total, []
@@ -1553,7 +1688,9 @@ def _collect_metric_samples(
                 f"ORDER BY metric_name, metric_device_id, metric_source_name"
             ).fetchall()
             series_count = max(1, len(series_rows))
-            target_per_series = max(2, int(math.floor(float(limit_i) / float(series_count))))
+            target_per_series = max(
+                2, int(math.floor(float(limit_i) / float(series_count)))
+            )
             collected: List[sqlite3.Row] = []
             for sr in series_rows:
                 metric_name = sr["metric_name"]
@@ -1563,7 +1700,9 @@ def _collect_metric_samples(
                 if cnt <= target_per_series:
                     stride = 1
                 else:
-                    stride = max(1, int(math.ceil(float(cnt) / float(target_per_series))))
+                    stride = max(
+                        1, int(math.ceil(float(cnt) / float(target_per_series)))
+                    )
                 sampled_sql = (
                     "WITH numbered AS ("
                     f"SELECT ts_ns, metric_name, metric_device_id, metric_source_name, metric_value, "
@@ -1584,7 +1723,10 @@ def _collect_metric_samples(
                     [metric_name, metric_device_id, metric_source_name, int(stride)],
                 ).fetchall()
                 collected.extend(sampled_rows)
-            data_rows = sorted(collected, key=lambda r: (_to_int(r["ts_ns"], 0), str(r["metric_name"] or "")))
+            data_rows = sorted(
+                collected,
+                key=lambda r: (_to_int(r["ts_ns"], 0), str(r["metric_name"] or "")),
+            )
             return total, data_rows
 
         total_rows, rows = _materialize_rows()
@@ -1615,7 +1757,9 @@ def _collect_metric_samples(
                     int(len(rows)),
                 )
             )
-        debug("metrics rows after sampling={} using_ts_col={}".format(len(rows), ts_col))
+        debug(
+            "metrics rows after sampling={} using_ts_col={}".format(len(rows), ts_col)
+        )
     finally:
         conn.close()
 
@@ -1624,7 +1768,9 @@ def _collect_metric_samples(
         name = str(row["metric_name"] or "")
         if not name:
             continue
-        tag_kind, tag_value = _metric_device_tag(row["metric_device_id"], row["metric_source_name"])
+        tag_kind, tag_value = _metric_device_tag(
+            row["metric_device_id"], row["metric_source_name"]
+        )
         ts_ns = _to_int(row["ts_ns"], -1)
         if ts_ns < 0:
             continue
@@ -1636,7 +1782,9 @@ def _collect_metric_samples(
 
     if bool(apply_default_focus_filter):
         before_count = len(grouped)
-        grouped = {k: v for k, v in grouped.items() if _is_default_focus_metric_name(k[0])}
+        grouped = {
+            k: v for k, v in grouped.items() if _is_default_focus_metric_name(k[0])
+        }
         debug(
             "metrics default focus filter enabled tokens={} before_series={} after_series={}".format(
                 len(_DEFAULT_FOCUS_METRIC_TOKENS),
@@ -1646,7 +1794,9 @@ def _collect_metric_samples(
         )
 
     series: List[Dict[str, object]] = []
-    for name, tag_kind, tag_value in sorted(grouped.keys(), key=lambda x: (x[0], x[1], x[2])):
+    for name, tag_kind, tag_value in sorted(
+        grouped.keys(), key=lambda x: (x[0], x[1], x[2])
+    ):
         points = _downsample_points(
             grouped[(name, tag_kind, tag_value)],
             max_points=int(max_points_per_series),
@@ -1676,7 +1826,9 @@ def _collect_metric_samples(
     return series
 
 
-def _build_rank_heatmap_rows(kernels: Sequence[Dict[str, object]]) -> List[Dict[str, object]]:
+def _build_rank_heatmap_rows(
+    kernels: Sequence[Dict[str, object]],
+) -> List[Dict[str, object]]:
     grouped: Dict[Tuple[Optional[int], int], Dict[str, object]] = {}
     for row in kernels:
         rank_raw = row.get("rank")
@@ -1707,7 +1859,9 @@ def _build_rank_heatmap_rows(kernels: Sequence[Dict[str, object]]) -> List[Dict[
             item["compute_ms"] = _safe_float(item.get("compute_ms")) + dur_ms
         occ = row.get("occupancy_pct_estimate")
         if occ is not None:
-            item["occ_num"] = _safe_float(item.get("occ_num")) + dur_ms * _safe_float(occ)
+            item["occ_num"] = _safe_float(item.get("occ_num")) + dur_ms * _safe_float(
+                occ
+            )
             item["occ_den"] = _safe_float(item.get("occ_den")) + dur_ms
 
     rows: List[Dict[str, object]] = []
@@ -1751,7 +1905,9 @@ def _series_points_numeric(series_item: Dict[str, object]) -> List[Tuple[int, fl
     return out
 
 
-def _resample_points(points: Sequence[Tuple[int, float]], target_len: int) -> List[Tuple[int, float]]:
+def _resample_points(
+    points: Sequence[Tuple[int, float]], target_len: int
+) -> List[Tuple[int, float]]:
     items = list(points)
     if target_len <= 0 or len(items) <= target_len:
         return items
@@ -1928,7 +2084,11 @@ def _render_html(
         grouped.setdefault(key, {}).setdefault(sid, []).append(row)
     group_keys = sorted(
         grouped.keys(),
-        key=lambda k: (k[0] is None, int(k[0]) if k[0] is not None else 10**9, int(k[1])),
+        key=lambda k: (
+            k[0] is None,
+            int(k[0]) if k[0] is not None else 10**9,
+            int(k[1]),
+        ),
     )
     stream_count = sum(len(streams) for streams in grouped.values())
     known_ranks = sorted({int(k[0]) for k in group_keys if k[0] is not None})
@@ -1974,7 +2134,9 @@ def _render_html(
         )
 
     rank_heatmap_rows = _build_rank_heatmap_rows(kernels)
-    roofline_proxy = _build_roofline_proxy_data(metric_series if include_metrics else [])
+    roofline_proxy = _build_roofline_proxy_data(
+        metric_series if include_metrics else []
+    )
     gil_lane_series = _build_gil_lane_series(metric_series if include_metrics else [])
 
     payload = {
@@ -2100,13 +2262,23 @@ def _render_html(
     category_rows = list((kernel_category_summary or {}).get("rows") or [])
     if category_rows:
         wall_ms = _safe_float((kernel_category_summary or {}).get("wall_ms"))
-        non_overlap_ms = _safe_float((kernel_category_summary or {}).get("non_overlap_ms"))
-        busy_union_ms = _safe_float((kernel_category_summary or {}).get("busy_union_ms", non_overlap_ms))
+        non_overlap_ms = _safe_float(
+            (kernel_category_summary or {}).get("non_overlap_ms")
+        )
+        busy_union_ms = _safe_float(
+            (kernel_category_summary or {}).get("busy_union_ms", non_overlap_ms)
+        )
         idle_ms = _safe_float((kernel_category_summary or {}).get("idle_ms"))
-        busy_pct_wall = _safe_float((kernel_category_summary or {}).get("busy_pct_of_wall"))
-        cross_overlap_ms = _safe_float((kernel_category_summary or {}).get("cross_category_overlap_ms"))
+        busy_pct_wall = _safe_float(
+            (kernel_category_summary or {}).get("busy_pct_of_wall")
+        )
+        cross_overlap_ms = _safe_float(
+            (kernel_category_summary or {}).get("cross_category_overlap_ms")
+        )
         raw_total_ms = _safe_float((kernel_category_summary or {}).get("raw_total_ms"))
-        overlap_saved_ms = _safe_float((kernel_category_summary or {}).get("overlap_saved_ms"))
+        overlap_saved_ms = _safe_float(
+            (kernel_category_summary or {}).get("overlap_saved_ms")
+        )
         profile_text = str(kernel_category_profile or "custom")
         lines.extend(
             [
@@ -2130,7 +2302,9 @@ def _render_html(
         )
         for row in category_rows:
             cat_name = str(row.get("category") or "misc")
-            weighted_pct = max(0.0, min(100.0, _safe_float(row.get("weighted_pct_of_nonoverlap"))))
+            weighted_pct = max(
+                0.0, min(100.0, _safe_float(row.get("weighted_pct_of_nonoverlap")))
+            )
             lines.extend(
                 [
                     "<div class='category-card'>",
@@ -2210,7 +2384,9 @@ def _render_html(
                 )
             lines.extend(["</tbody>", "</table>"])
         else:
-            lines.append("<div class='empty'>No category kernels matched in selected NVTX windows.</div>")
+            lines.append(
+                "<div class='empty'>No category kernels matched in selected NVTX windows.</div>"
+            )
         if outlier_rows:
             lines.extend(
                 [
@@ -2252,7 +2428,9 @@ def _render_html(
     )
 
     if nvtx_count > 0:
-        lines.extend(["<div class='card'>", "<h3 class='panel-title'>Matched NVTX Scopes</h3>"])
+        lines.extend(
+            ["<div class='card'>", "<h3 class='panel-title'>Matched NVTX Scopes</h3>"]
+        )
         lines.append("<div class='row'>")
         lines.append("<div class='label'>nvtx</div>")
         lines.append("<div class='track'>")
@@ -2275,7 +2453,9 @@ def _render_html(
         lines.append("</div></div>")
         lines.append("</div>")
 
-    lines.extend(["<div class='card'>", "<h3 class='panel-title'>Kernel Timeline By Stream</h3>"])
+    lines.extend(
+        ["<div class='card'>", "<h3 class='panel-title'>Kernel Timeline By Stream</h3>"]
+    )
     if not kernels:
         lines.append("<div class='empty'>No kernels in selected window.</div>")
     else:
@@ -2729,8 +2909,8 @@ def _render_html(
             "    };",
             "  };",
             "  for (const g of groups) {",
-                "    const panel = document.createElement('div');",
-                "    panel.className = 'allstream-panel';",
+            "    const panel = document.createElement('div');",
+            "    panel.className = 'allstream-panel';",
             "    const title = document.createElement('div');",
             "    title.className = 'allstream-title';",
             "    const rankText = (g.rank === null || g.rank === undefined) ? 'Rank Unknown' : `Rank ${g.rank}`;",
@@ -2777,8 +2957,8 @@ def _render_html(
             "    for (const s of selectedMetrics) metricState.push({series:s, offset:0, visible:true});",
             "    for (const st of metricState) st._pts = toNumericPoints(st.series);",
             "    if (metricState.length > 0) {",
-                "      const ctrls = document.createElement('div');",
-                "      ctrls.className = 'allstream-controls';",
+            "      const ctrls = document.createElement('div');",
+            "      ctrls.className = 'allstream-controls';",
             "      panel.appendChild(ctrls);",
             "      for (const st of metricState) {",
             "        const row = document.createElement('div');",
@@ -2901,7 +3081,7 @@ def _render_html(
             "    };",
             "",
             "    const render = () => {",
-                "      while (svg.firstChild) svg.removeChild(svg.firstChild);",
+            "      while (svg.firstChild) svg.removeChild(svg.firstChild);",
             "      svg.appendChild(mkSvg('rect', {x:0, y:0, width:svgW, height:svgH, fill:'#0f1522'}));",
             "      if (metricBandH > 0) {",
             "        svg.appendChild(mkSvg('rect', {x:labelW, y:2, width:basePlotW, height:metricBandH-4, fill:'#111a2b', stroke:'#30405c'}));",
@@ -3026,7 +3206,7 @@ def _render_html(
             "      svg.addEventListener('mouseleave', hideHover);",
             "    }",
             "    for (const st of metricState) {",
-                "      if (st._btnUp) st._btnUp.onclick = () => { st.offset -= 10; st._dyEl.textContent = `dy=${st.offset}`; render(); };",
+            "      if (st._btnUp) st._btnUp.onclick = () => { st.offset -= 10; st._dyEl.textContent = `dy=${st.offset}`; render(); };",
             "      if (st._btnDown) st._btnDown.onclick = () => { st.offset += 10; st._dyEl.textContent = `dy=${st.offset}`; render(); };",
             "      if (st._btnReset) st._btnReset.onclick = () => { st.offset = 0; st.visible = true; st._dyEl.textContent = 'dy=0'; if (st._toggleEl) st._toggleEl.textContent = 'hide'; render(); };",
             "      if (st._toggleEl) st._toggleEl.onclick = () => { st.visible = !st.visible; st._toggleEl.textContent = st.visible ? 'hide' : 'show'; render(); };",
@@ -3058,7 +3238,7 @@ def _render_html(
             "    } else {",
             "      const maxTotal = Math.max(...rankRows.map((r) => Number(r.total_ms || 0)), 1);",
             "      const table = document.createElement('table'); table.className = 'heatmap-table';",
-            "      table.innerHTML = \"<thead><tr><th>rank</th><th>device</th><th>total ms</th><th>compute ms</th><th>comm ms</th><th>kernels</th><th>streams</th><th>avg occ %</th></tr></thead>\";",
+            '      table.innerHTML = "<thead><tr><th>rank</th><th>device</th><th>total ms</th><th>compute ms</th><th>comm ms</th><th>kernels</th><th>streams</th><th>avg occ %</th></tr></thead>";',
             "      const body = document.createElement('tbody');",
             "      for (const r of rankRows) {",
             "        const tr = document.createElement('tr');",
@@ -3218,6 +3398,7 @@ def _collect_timeline_state(
         _phase_timings.append({"phase": name, "elapsed_ms": elapsed_ms})
         if progress_cb:
             progress_cb(f"  done:     {name}  [{elapsed_ms} ms]")
+
     try:
         debug_rows_i = int(debug_rows)
     except Exception:
@@ -3272,7 +3453,11 @@ def _collect_timeline_state(
                 if not table_name:
                     continue
                 count = _safe_table_count(conn, table_name)
-                debug_log("table count {}={}".format(table_name, "n/a" if count is None else count))
+                debug_log(
+                    "table count {}={}".format(
+                        table_name, "n/a" if count is None else count
+                    )
+                )
         finally:
             conn.close()
     except Exception as exc:
@@ -3297,7 +3482,9 @@ def _collect_timeline_state(
             provider,
             nvtx_text=str(nvtx_pattern),
         )
-        selected_nvtx_windows = _pick_nvtx_windows(matched_nvtx, nvtx_index=int(nvtx_index))
+        selected_nvtx_windows = _pick_nvtx_windows(
+            matched_nvtx, nvtx_index=int(nvtx_index)
+        )
         debug_log(
             "nvtx match count={} selected_count={}".format(
                 len(matched_nvtx),
@@ -3313,7 +3500,11 @@ def _collect_timeline_state(
                 )
             )
             if selected_nvtx_windows:
-                selected_limit = len(selected_nvtx_windows) if int(nvtx_index) >= 0 else min(len(selected_nvtx_windows), 8)
+                selected_limit = (
+                    len(selected_nvtx_windows)
+                    if int(nvtx_index) >= 0
+                    else min(len(selected_nvtx_windows), 8)
+                )
                 for i, row in enumerate(selected_nvtx_windows[:selected_limit]):
                     progress_cb(
                         "  info:     selected_nvtx[{}] full_name={} start_ns={} end_ns={} duration_ms={}".format(
@@ -3341,8 +3532,12 @@ def _collect_timeline_state(
                 )
             )
         if selected_nvtx_windows:
-            effective_start_ns = min(_to_int(item.get("start_ns"), -1) for item in selected_nvtx_windows)
-            effective_end_ns = max(_to_int(item.get("end_ns"), -1) for item in selected_nvtx_windows)
+            effective_start_ns = min(
+                _to_int(item.get("start_ns"), -1) for item in selected_nvtx_windows
+            )
+            effective_end_ns = max(
+                _to_int(item.get("end_ns"), -1) for item in selected_nvtx_windows
+            )
             debug_log(
                 "effective window from nvtx start_ns={} end_ns={}".format(
                     int(effective_start_ns),
@@ -3353,7 +3548,11 @@ def _collect_timeline_state(
     _emit_phase("nvtx_window_selection", round((time.perf_counter() - _t0) * 1000, 1))
 
     _t0 = time.perf_counter()
-    if effective_start_ns < 0 or effective_end_ns < 0 or effective_end_ns <= effective_start_ns:
+    if (
+        effective_start_ns < 0
+        or effective_end_ns < 0
+        or effective_end_ns <= effective_start_ns
+    ):
         # If no explicit valid window, infer from full kernel rows.
         base_rows = collect_kernel_rows(
             provider,
@@ -3366,7 +3565,11 @@ def _collect_timeline_state(
         debug_log("infer window from kernel_map rows={}".format(len(base_rows)))
         if not base_rows:
             render_start_ns = max(0, int(start_ns))
-            render_end_ns = int(end_ns) if int(end_ns) > int(render_start_ns) else int(render_start_ns) + 1
+            render_end_ns = (
+                int(end_ns)
+                if int(end_ns) > int(render_start_ns)
+                else int(render_start_ns) + 1
+            )
             debug_log(
                 "no kernels found; using fallback render window=[{}, {}]".format(
                     int(render_start_ns),
@@ -3390,7 +3593,12 @@ def _collect_timeline_state(
                 },
                 "kernel_category_kernel_rows": [],
                 "kernel_category_profile": str(kernel_category_profile or ""),
-                "nvtx_window_category_stats": {"window_count": 0, "windows": [], "category_summary_rows": [], "outlier_windows": []},
+                "nvtx_window_category_stats": {
+                    "window_count": 0,
+                    "windows": [],
+                    "category_summary_rows": [],
+                    "outlier_windows": [],
+                },
                 "window_start_ns": int(render_start_ns),
                 "window_end_ns": int(render_end_ns),
                 "nvtx_windows": selected_nvtx_windows,
@@ -3434,7 +3642,9 @@ def _collect_timeline_state(
         kernel_span_end = kernel_intervals[-1][1]
         new_render_start = min(int(render_start_ns), int(kernel_span_start))
         new_render_end = max(int(render_end_ns), int(kernel_span_end))
-        if new_render_start != int(render_start_ns) or new_render_end != int(render_end_ns):
+        if new_render_start != int(render_start_ns) or new_render_end != int(
+            render_end_ns
+        ):
             debug_log(
                 "extend render window with kernel span start_ns={} end_ns={} (old=[{}, {}], new=[{}, {}])".format(
                     int(kernel_span_start),
@@ -3486,7 +3696,11 @@ def _collect_timeline_state(
             kernels,
             rules=list(kernel_category_rules or []),
         )
-        debug_log("kernel-category kernel table rows={}".format(len(kernel_category_kernel_rows)))
+        debug_log(
+            "kernel-category kernel table rows={}".format(
+                len(kernel_category_kernel_rows)
+            )
+        )
     if bool(enable_kernel_category_breakdown):
         kernel_category_summary = _build_kernel_category_breakdown(
             kernels,
@@ -3533,7 +3747,9 @@ def _collect_timeline_state(
                 len(kernel_intervals),
             )
         )
-        apply_focus_filter = bool(default_focus_metrics) and str(metric_name_like or "%").strip() in ("", "%")
+        apply_focus_filter = bool(default_focus_metrics) and str(
+            metric_name_like or "%"
+        ).strip() in ("", "%")
         debug_log(
             "metrics focus filter active={} metric_name_like={}".format(
                 int(apply_focus_filter),
@@ -3556,9 +3772,13 @@ def _collect_timeline_state(
         )
     else:
         debug_log("metrics disabled (include_metrics=0)")
-    _emit_phase("collect_kernels_and_metrics", round((time.perf_counter() - _t0) * 1000, 1))
+    _emit_phase(
+        "collect_kernels_and_metrics", round((time.perf_counter() - _t0) * 1000, 1)
+    )
     if progress_cb:
-        total_ms = round(sum(float(p.get("elapsed_ms") or 0) for p in _phase_timings), 1)
+        total_ms = round(
+            sum(float(p.get("elapsed_ms") or 0) for p in _phase_timings), 1
+        )
         progress_cb(f"  total:    {total_ms} ms  (phases: {len(_phase_timings)})")
     return {
         "sqlite_path": str(sqlite_path),
@@ -3667,18 +3887,36 @@ def export_timeline_html(
     if category_table_output:
         category_rows = list(state.get("kernel_category_kernel_rows") or [])
         table_path = _write_rows_table(category_table_output, category_rows)
-        debug_log("kernel-category table wrote path={} rows={}".format(table_path, len(category_rows)))
+        debug_log(
+            "kernel-category table wrote path={} rows={}".format(
+                table_path, len(category_rows)
+            )
+        )
         if progress_cb:
-            progress_cb("  wrote:    kernel-category-table={} rows={}".format(table_path, len(category_rows)))
+            progress_cb(
+                "  wrote:    kernel-category-table={} rows={}".format(
+                    table_path, len(category_rows)
+                )
+            )
     stats_output = str(nvtx_category_stats_output or "").strip()
     if stats_output:
         stats_path = Path(stats_output)
         stats_path.parent.mkdir(parents=True, exist_ok=True)
         stats_payload = dict(state.get("nvtx_window_category_stats") or {})
-        stats_path.write_text(json.dumps(stats_payload, ensure_ascii=False, indent=2), encoding="utf-8")
-        debug_log("nvtx-category stats wrote path={} windows={}".format(str(stats_path), int(stats_payload.get("window_count") or 0)))
+        stats_path.write_text(
+            json.dumps(stats_payload, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        debug_log(
+            "nvtx-category stats wrote path={} windows={}".format(
+                str(stats_path), int(stats_payload.get("window_count") or 0)
+            )
+        )
         if progress_cb:
-            progress_cb("  wrote:    nvtx-category-stats={} windows={}".format(str(stats_path), int(stats_payload.get("window_count") or 0)))
+            progress_cb(
+                "  wrote:    nvtx-category-stats={} windows={}".format(
+                    str(stats_path), int(stats_payload.get("window_count") or 0)
+                )
+            )
     return str(out)
 
 
@@ -3808,7 +4046,9 @@ def _anchor_match_score(
     target_start_ns: int,
     target_end_ns: int,
 ) -> float:
-    if _kernel_anchor_key(base_item.get("kernel_name")) != _kernel_anchor_key(target_item.get("kernel_name")):
+    if _kernel_anchor_key(base_item.get("kernel_name")) != _kernel_anchor_key(
+        target_item.get("kernel_name")
+    ):
         return 0.0
     base_time = _kernel_center_norm(
         base_item,
@@ -3946,15 +4186,22 @@ def _single_vs_multi_name_evidence(
     single_key = _kernel_anchor_key(single_name)
     multi_keys = {_kernel_anchor_key(item.get("kernel_name")) for item in multi_segment}
     fusion_hint = _kernel_name_has_fusion_hint(single_name)
-    overlap_scores = [_kernel_token_overlap(single_name, item.get("kernel_name")) for item in multi_segment]
-    covered = float(sum(1 for score in overlap_scores if score >= 0.35)) / float(max(1, len(overlap_scores)))
+    overlap_scores = [
+        _kernel_token_overlap(single_name, item.get("kernel_name"))
+        for item in multi_segment
+    ]
+    covered = float(sum(1 for score in overlap_scores if score >= 0.35)) / float(
+        max(1, len(overlap_scores))
+    )
     union_tokens: set[str] = set()
     for item in multi_segment:
         union_tokens.update(_kernel_token_set(item.get("kernel_name")))
     single_tokens = _kernel_token_set(single_name)
     union_overlap = 0.0
     if union_tokens and single_tokens:
-        union_overlap = float(len(union_tokens & single_tokens)) / float(len(union_tokens | single_tokens))
+        union_overlap = float(len(union_tokens & single_tokens)) / float(
+            len(union_tokens | single_tokens)
+        )
     score = max(0.0, (0.65 * covered) + (0.35 * union_overlap))
     reasons: List[str] = []
     if covered >= 0.66:
@@ -4069,7 +4316,9 @@ def _classify_fusion_gap(
     }
 
 
-def _timeline_stream_sequences(payload: Dict[str, object]) -> Dict[Tuple[Optional[int], int, int], List[Dict[str, object]]]:
+def _timeline_stream_sequences(
+    payload: Dict[str, object],
+) -> Dict[Tuple[Optional[int], int, int], List[Dict[str, object]]]:
     out: Dict[Tuple[Optional[int], int, int], List[Dict[str, object]]] = {}
     for group in list(payload.get("all_stream_groups") or []):
         rank_raw = group.get("rank")
@@ -4089,7 +4338,9 @@ def _build_fusion_findings(
     findings: List[Dict[str, object]] = []
     base_streams = _timeline_stream_sequences(base_payload)
     target_streams = _timeline_stream_sequences(target_payload)
-    common_keys = sorted(set(base_streams.keys()) & set(target_streams.keys()), key=_stream_key_sort_key)
+    common_keys = sorted(
+        set(base_streams.keys()) & set(target_streams.keys()), key=_stream_key_sort_key
+    )
     for key in common_keys:
         rank, dev, sid = key
         base_segment = list(base_streams.get(key) or [])
@@ -4140,7 +4391,9 @@ def _metric_focus_rank(metric_name: object) -> Tuple[int, str]:
     return len(_DEFAULT_FOCUS_METRIC_TOKENS) + 1, text
 
 
-def _aggregate_kernel_hotspots(kernels: Sequence[Dict[str, object]]) -> List[Dict[str, object]]:
+def _aggregate_kernel_hotspots(
+    kernels: Sequence[Dict[str, object]],
+) -> List[Dict[str, object]]:
     by_name: Dict[str, Dict[str, object]] = {}
     for row in kernels:
         name = str(row.get("kernel_name") or "").strip()
@@ -4163,16 +4416,26 @@ def _aggregate_kernel_hotspots(kernels: Sequence[Dict[str, object]]) -> List[Dic
         entry["max_ms"] = max(_safe_float(entry.get("max_ms")), dur_ms)
     return sorted(
         by_name.values(),
-        key=lambda x: (-_safe_float(x.get("total_ms")), -int(x.get("count") or 0), str(x.get("name") or "")),
+        key=lambda x: (
+            -_safe_float(x.get("total_ms")),
+            -int(x.get("count") or 0),
+            str(x.get("name") or ""),
+        ),
     )
 
 
-def _summarize_metric_series(metric_series: Sequence[Dict[str, object]]) -> List[Dict[str, object]]:
+def _summarize_metric_series(
+    metric_series: Sequence[Dict[str, object]],
+) -> List[Dict[str, object]]:
     rows: List[Dict[str, object]] = []
     for item in metric_series:
         name = str(item.get("name") or "").strip()
         points = list(item.get("points") or [])
-        values = [_safe_float(p[1], float("nan")) for p in points if isinstance(p, (list, tuple)) and len(p) >= 2]
+        values = [
+            _safe_float(p[1], float("nan"))
+            for p in points
+            if isinstance(p, (list, tuple)) and len(p) >= 2
+        ]
         values = [v for v in values if math.isfinite(v)]
         if not name or not values:
             continue
@@ -4204,14 +4467,21 @@ def _summarize_timeline_state(state: Dict[str, object]) -> Dict[str, object]:
     window_end_ns = _to_int(state.get("window_end_ns"), window_start_ns + 1)
     window_ms = max(0.0, float(window_end_ns - window_start_ns) / 1e6)
     merged = _merge_intervals(
-        [(_to_int(row.get("start_ns"), -1), _to_int(row.get("end_ns"), -1)) for row in kernels]
+        [
+            (_to_int(row.get("start_ns"), -1), _to_int(row.get("end_ns"), -1))
+            for row in kernels
+        ]
     )
     active_ms = sum(float(e - s) for s, e in merged) / 1e6
     stream_ids = {
         (_to_int(row.get("device_id"), -1), _to_int(row.get("stream_id"), 0))
         for row in kernels
     }
-    unique_names = {str(row.get("kernel_name") or "").strip() for row in kernels if str(row.get("kernel_name") or "").strip()}
+    unique_names = {
+        str(row.get("kernel_name") or "").strip()
+        for row in kernels
+        if str(row.get("kernel_name") or "").strip()
+    }
     hotspots = _aggregate_kernel_hotspots(kernels)
     compute_rows = [row for row in kernels if str(row.get("kind") or "") != "comm"]
     comm_rows = [row for row in kernels if str(row.get("kind") or "") == "comm"]
@@ -4235,10 +4505,14 @@ def _summarize_timeline_state(state: Dict[str, object]) -> Dict[str, object]:
         "stream_count": len(stream_ids),
         "unique_kernel_names": len(unique_names),
         "compute_count": len(compute_rows),
-        "compute_total_ms": sum(_safe_float(row.get("duration_ms")) for row in compute_rows),
+        "compute_total_ms": sum(
+            _safe_float(row.get("duration_ms")) for row in compute_rows
+        ),
         "comm_count": len(comm_rows),
         "comm_total_ms": sum(_safe_float(row.get("duration_ms")) for row in comm_rows),
-        "weighted_occupancy_pct": (occ_weight_num / occ_weight_den) if occ_weight_den > 0 else None,
+        "weighted_occupancy_pct": (occ_weight_num / occ_weight_den)
+        if occ_weight_den > 0
+        else None,
         "top_kernels": hotspots[:8],
         "top_metrics": metric_rows[:8],
         "top_categories": category_rows[:8],
@@ -4247,19 +4521,30 @@ def _summarize_timeline_state(state: Dict[str, object]) -> Dict[str, object]:
         "category_map": {str(row.get("category") or ""): row for row in category_rows},
         "category_non_overlap_ms": _safe_float(category_summary.get("non_overlap_ms")),
         "fused_kernel_groups": len(fused_hotspots),
-        "fused_kernel_total_ms": sum(_safe_float(row.get("total_ms")) for row in fused_hotspots),
+        "fused_kernel_total_ms": sum(
+            _safe_float(row.get("total_ms")) for row in fused_hotspots
+        ),
     }
 
 
-def _build_metric_deltas(base_summary: Dict[str, object], target_summary: Dict[str, object]) -> List[Dict[str, object]]:
+def _build_metric_deltas(
+    base_summary: Dict[str, object], target_summary: Dict[str, object]
+) -> List[Dict[str, object]]:
     base_map = dict(base_summary.get("metric_map") or {})
     target_map = dict(target_summary.get("metric_map") or {})
     out: List[Dict[str, object]] = []
-    for name in sorted(set(base_map.keys()) & set(target_map.keys()), key=lambda x: _metric_focus_rank(x)):
+    for name in sorted(
+        set(base_map.keys()) & set(target_map.keys()),
+        key=lambda x: _metric_focus_rank(x),
+    ):
         base_row = dict(base_map.get(name) or {})
         target_row = dict(target_map.get(name) or {})
-        delta_avg = _safe_float(target_row.get("avg")) - _safe_float(base_row.get("avg"))
-        delta_max = _safe_float(target_row.get("max")) - _safe_float(base_row.get("max"))
+        delta_avg = _safe_float(target_row.get("avg")) - _safe_float(
+            base_row.get("avg")
+        )
+        delta_max = _safe_float(target_row.get("max")) - _safe_float(
+            base_row.get("max")
+        )
         out.append(
             {
                 "name": name,
@@ -4272,7 +4557,8 @@ def _build_metric_deltas(base_summary: Dict[str, object], target_summary: Dict[s
                 "delta_max": delta_max,
                 "base_last": _safe_float(base_row.get("last")),
                 "target_last": _safe_float(target_row.get("last")),
-                "delta_last": _safe_float(target_row.get("last")) - _safe_float(base_row.get("last")),
+                "delta_last": _safe_float(target_row.get("last"))
+                - _safe_float(base_row.get("last")),
             }
         )
     out.sort(
@@ -4286,15 +4572,21 @@ def _build_metric_deltas(base_summary: Dict[str, object], target_summary: Dict[s
     return out[:10]
 
 
-def _build_kernel_deltas(base_summary: Dict[str, object], target_summary: Dict[str, object]) -> List[Dict[str, object]]:
+def _build_kernel_deltas(
+    base_summary: Dict[str, object], target_summary: Dict[str, object]
+) -> List[Dict[str, object]]:
     base_map = dict(base_summary.get("kernel_map") or {})
     target_map = dict(target_summary.get("kernel_map") or {})
     out: List[Dict[str, object]] = []
     for name in set(base_map.keys()) | set(target_map.keys()):
         base_row = dict(base_map.get(name) or {})
         target_row = dict(target_map.get(name) or {})
-        delta_total_ms = _safe_float(target_row.get("total_ms")) - _safe_float(base_row.get("total_ms"))
-        delta_count = int(target_row.get("count") or 0) - int(base_row.get("count") or 0)
+        delta_total_ms = _safe_float(target_row.get("total_ms")) - _safe_float(
+            base_row.get("total_ms")
+        )
+        delta_count = int(target_row.get("count") or 0) - int(
+            base_row.get("count") or 0
+        )
         if abs(delta_total_ms) < 1e-12 and delta_count == 0:
             continue
         out.append(
@@ -4307,7 +4599,9 @@ def _build_kernel_deltas(base_summary: Dict[str, object], target_summary: Dict[s
                 "base_count": int(base_row.get("count") or 0),
                 "target_count": int(target_row.get("count") or 0),
                 "delta_count": delta_count,
-                "fused_hint": bool(target_row.get("fused_hint") or base_row.get("fused_hint")),
+                "fused_hint": bool(
+                    target_row.get("fused_hint") or base_row.get("fused_hint")
+                ),
             }
         )
     out.sort(
@@ -4320,25 +4614,37 @@ def _build_kernel_deltas(base_summary: Dict[str, object], target_summary: Dict[s
     return out[:10]
 
 
-def _build_category_deltas(base_summary: Dict[str, object], target_summary: Dict[str, object]) -> List[Dict[str, object]]:
+def _build_category_deltas(
+    base_summary: Dict[str, object], target_summary: Dict[str, object]
+) -> List[Dict[str, object]]:
     base_map = dict(base_summary.get("category_map") or {})
     target_map = dict(target_summary.get("category_map") or {})
     out: List[Dict[str, object]] = []
     for category in set(base_map.keys()) | set(target_map.keys()):
         base_row = dict(base_map.get(category) or {})
         target_row = dict(target_map.get(category) or {})
-        delta_weighted_ms = _safe_float(target_row.get("weighted_elapsed_ms")) - _safe_float(base_row.get("weighted_elapsed_ms"))
-        delta_weighted_pct = _safe_float(target_row.get("weighted_pct_of_nonoverlap")) - _safe_float(base_row.get("weighted_pct_of_nonoverlap"))
+        delta_weighted_ms = _safe_float(
+            target_row.get("weighted_elapsed_ms")
+        ) - _safe_float(base_row.get("weighted_elapsed_ms"))
+        delta_weighted_pct = _safe_float(
+            target_row.get("weighted_pct_of_nonoverlap")
+        ) - _safe_float(base_row.get("weighted_pct_of_nonoverlap"))
         if abs(delta_weighted_ms) < 1e-9 and abs(delta_weighted_pct) < 1e-9:
             continue
         out.append(
             {
                 "category": category,
                 "base_weighted_ms": _safe_float(base_row.get("weighted_elapsed_ms")),
-                "target_weighted_ms": _safe_float(target_row.get("weighted_elapsed_ms")),
+                "target_weighted_ms": _safe_float(
+                    target_row.get("weighted_elapsed_ms")
+                ),
                 "delta_weighted_ms": delta_weighted_ms,
-                "base_weighted_pct": _safe_float(base_row.get("weighted_pct_of_nonoverlap")),
-                "target_weighted_pct": _safe_float(target_row.get("weighted_pct_of_nonoverlap")),
+                "base_weighted_pct": _safe_float(
+                    base_row.get("weighted_pct_of_nonoverlap")
+                ),
+                "target_weighted_pct": _safe_float(
+                    target_row.get("weighted_pct_of_nonoverlap")
+                ),
                 "delta_weighted_pct": delta_weighted_pct,
             }
         )
@@ -4398,7 +4704,9 @@ def export_timeline_compare_html(
 ) -> str:
     items = [str(p) for p in sqlite_paths if str(p or "").strip()]
     if len(items) < 2:
-        raise ValueError("export_timeline_compare_html requires at least two sqlite paths")
+        raise ValueError(
+            "export_timeline_compare_html requires at least two sqlite paths"
+        )
 
     compare_debug = _build_debug_logger(enabled=bool(debug), log_fn=debug_log_fn)
     kernel_rules, kernel_profile = _resolve_kernel_category_rules(
@@ -4500,12 +4808,21 @@ def export_timeline_compare_html(
                 sqlite_path,
                 len(list(state.get("kernels") or [])),
                 len(list(state.get("metric_series") or [])),
-                int(_to_int(state.get("window_end_ns"), 1) - _to_int(state.get("window_start_ns"), 0)),
+                int(
+                    _to_int(state.get("window_end_ns"), 1)
+                    - _to_int(state.get("window_start_ns"), 0)
+                ),
             )
         )
 
     natural_spans = [
-        max(1, int(_to_int(item.get("state", {}).get("window_end_ns"), 1) - _to_int(item.get("state", {}).get("window_start_ns"), 0)))
+        max(
+            1,
+            int(
+                _to_int(item.get("state", {}).get("window_end_ns"), 1)
+                - _to_int(item.get("state", {}).get("window_start_ns"), 0)
+            ),
+        )
         for item in collected
     ]
     if natural_spans:
@@ -4528,7 +4845,9 @@ def export_timeline_compare_html(
             metric_series=list(state.get("metric_series") or []),
             kernel_category_summary=dict(state.get("kernel_category_summary") or {}),
             kernel_category_profile=str(state.get("kernel_category_profile") or ""),
-            nvtx_window_category_stats=dict(state.get("nvtx_window_category_stats") or {}),
+            nvtx_window_category_stats=dict(
+                state.get("nvtx_window_category_stats") or {}
+            ),
             window_start_ns=int(state.get("window_start_ns") or 0),
             window_end_ns=int(state.get("window_end_ns") or 1),
             display_span_ns=int(normalized_compare_span_ns),
@@ -4796,7 +5115,11 @@ def export_timeline_compare_html(
                 else:
                     verdict = "Target Sequence Changed"
                 rank_text = "Rank Unknown" if rank is None else f"Rank {int(rank)}"
-                evidence = ", ".join(str(x) for x in list(item.get("evidence") or []) if str(x or "").strip())
+                evidence = ", ".join(
+                    str(x)
+                    for x in list(item.get("evidence") or [])
+                    if str(x or "").strip()
+                )
                 fusion_cards.extend(
                     [
                         "<div class='fusion-card'>",
@@ -4870,7 +5193,9 @@ def export_timeline_compare_html(
     for section_title in section_titles:
         section_cards: List[str] = []
         for idx, item in enumerate(rendered):
-            section_srcdoc = _build_section_srcdoc(str(item["srcdoc"]), panel_title=str(section_title))
+            section_srcdoc = _build_section_srcdoc(
+                str(item["srcdoc"]), panel_title=str(section_title)
+            )
             if not section_srcdoc:
                 continue
             srcdoc_attr = html.escape(str(section_srcdoc), quote=True)
@@ -4889,7 +5214,7 @@ def export_timeline_compare_html(
                     (
                         "<iframe class='compare-frame' loading='lazy' "
                         "sandbox='allow-scripts allow-same-origin' "
-                        f"srcdoc=\"{srcdoc_attr}\"></iframe>"
+                        f'srcdoc="{srcdoc_attr}"></iframe>'
                     ),
                     "</section>",
                 ]
@@ -5027,9 +5352,17 @@ def export_timeline_compare_html(
                     }
                 )
         table_path = _write_rows_table(category_table_output, merged_rows)
-        compare_debug("kernel-category table wrote path={} rows={}".format(table_path, len(merged_rows)))
+        compare_debug(
+            "kernel-category table wrote path={} rows={}".format(
+                table_path, len(merged_rows)
+            )
+        )
         if progress_cb:
-            progress_cb("kernel-category-table wrote: {} rows={}".format(table_path, len(merged_rows)))
+            progress_cb(
+                "kernel-category-table wrote: {} rows={}".format(
+                    table_path, len(merged_rows)
+                )
+            )
     stats_output = str(nvtx_category_stats_output or "").strip()
     if stats_output:
         payload_rows: List[Dict[str, object]] = []
@@ -5045,9 +5378,21 @@ def export_timeline_compare_html(
             )
         stats_path = Path(stats_output)
         stats_path.parent.mkdir(parents=True, exist_ok=True)
-        stats_path.write_text(json.dumps(payload_rows, ensure_ascii=False, indent=2), encoding="utf-8")
-        compare_debug("nvtx-category stats wrote path={} sqlite_count={}".format(str(stats_path), len(payload_rows)))
+        stats_path.write_text(
+            json.dumps(payload_rows, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        compare_debug(
+            "nvtx-category stats wrote path={} sqlite_count={}".format(
+                str(stats_path), len(payload_rows)
+            )
+        )
         if progress_cb:
-            progress_cb("nvtx-category-stats wrote: {} sqlite_count={}".format(str(stats_path), len(payload_rows)))
-    compare_debug("compare html wrote output={} sqlite_count={}".format(str(out), len(rendered)))
+            progress_cb(
+                "nvtx-category-stats wrote: {} sqlite_count={}".format(
+                    str(stats_path), len(payload_rows)
+                )
+            )
+    compare_debug(
+        "compare html wrote output={} sqlite_count={}".format(str(out), len(rendered))
+    )
     return str(out)

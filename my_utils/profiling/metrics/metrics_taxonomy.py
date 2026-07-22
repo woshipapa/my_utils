@@ -5,13 +5,13 @@ from typing import Dict, Tuple
 
 # Canonical dimensions used across providers.
 CANONICAL_METRIC_PREFIXES = (
-    "latency",   # execution time
-    "memory",    # memory usage/allocation
-    "compute",   # FLOPs, occupancy, throughput
-    "comm",      # communication/NCCL/network
-    "io",        # memcpy, storage/network bytes
-    "calls",     # call counts
-    "perf",      # perf stat counters
+    "latency",  # execution time
+    "memory",  # memory usage/allocation
+    "compute",  # FLOPs, occupancy, throughput
+    "comm",  # communication/NCCL/network
+    "io",  # memcpy, storage/network bytes
+    "calls",  # call counts
+    "perf",  # perf stat counters
 )
 
 
@@ -44,7 +44,10 @@ TOOL_METRIC_ALIASES: Dict[str, Dict[str, Tuple[str, str]]] = {
         "cuda_free_bytes": ("memory.cuda.free.bytes", "bytes"),
         "memory_pool_event": ("calls.cuda.memory_pool_event", "count"),
         "pool_min_bytes_to_keep": ("memory.cuda.pool.min_bytes_to_keep", "bytes"),
-        "pool_local_release_threshold": ("memory.cuda.pool.local_release_threshold_bytes", "bytes"),
+        "pool_local_release_threshold": (
+            "memory.cuda.pool.local_release_threshold_bytes",
+            "bytes",
+        ),
         "pool_local_size": ("memory.cuda.pool.local_size_bytes", "bytes"),
         "pool_local_utilized": ("memory.cuda.pool.local_utilized_bytes", "bytes"),
         "gpu_sm_active": ("compute.gpu.sm.active", ""),
@@ -60,9 +63,18 @@ TOOL_METRIC_ALIASES: Dict[str, Dict[str, Tuple[str, str]]] = {
         "pmu_metric": ("perf.pmu", ""),
     },
     "ncu": {
-        "sm__throughput.avg.pct_of_peak_sustained_elapsed": ("compute.sm.throughput_pct", "percent"),
-        "sm__warps_active.avg.pct_of_peak_sustained_active": ("compute.sm.occupancy_pct", "percent"),
-        "dram__throughput.avg.pct_of_peak_sustained_elapsed": ("memory.dram.throughput_pct", "percent"),
+        "sm__throughput.avg.pct_of_peak_sustained_elapsed": (
+            "compute.sm.throughput_pct",
+            "percent",
+        ),
+        "sm__warps_active.avg.pct_of_peak_sustained_active": (
+            "compute.sm.occupancy_pct",
+            "percent",
+        ),
+        "dram__throughput.avg.pct_of_peak_sustained_elapsed": (
+            "memory.dram.throughput_pct",
+            "percent",
+        ),
     },
     "cprofile": {
         "tottime": ("latency.python.self", "ms"),

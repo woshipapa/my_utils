@@ -50,15 +50,45 @@ __all__ = [
 # original list predates.
 _TENSOR_CORE_TOKENS: Tuple[str, ...] = (
     # torch-tb-profiler TC_Allowlist
-    "h884", "s884", "h1688", "s1688", "hmma", "i8816", "16816",
-    "dgrad_1x1_stride_2x2", "first_layer_wgrad_kernel", "conv1x1", "conv2d_c1_k1",
-    "direct_group", "xmma_implicit_gemm", "xmma_sparse_conv",
-    "xmma_warp_specialized_implicit_gemm", "xmma_gemm", "xmma_sparse_gemm", "c1688",
+    "h884",
+    "s884",
+    "h1688",
+    "s1688",
+    "hmma",
+    "i8816",
+    "16816",
+    "dgrad_1x1_stride_2x2",
+    "first_layer_wgrad_kernel",
+    "conv1x1",
+    "conv2d_c1_k1",
+    "direct_group",
+    "xmma_implicit_gemm",
+    "xmma_sparse_conv",
+    "xmma_warp_specialized_implicit_gemm",
+    "xmma_gemm",
+    "xmma_sparse_gemm",
+    "c1688",
     # Hopper / Blackwell / modern CUTLASS
-    "wgmma", "gmma", "qgmma", "igmma", "bgmma", "tcgen05", "utcmma", "utchmma",
-    "sm90_", "sm100_", "cutlass3x", "nvjet",
+    "wgmma",
+    "gmma",
+    "qgmma",
+    "igmma",
+    "bgmma",
+    "tcgen05",
+    "utcmma",
+    "utchmma",
+    "sm90_",
+    "sm100_",
+    "cutlass3x",
+    "nvjet",
     # dtype-tagged tensor paths
-    "imma", "bmma", "dmma", "e4m3", "e5m2", "fp8_gemm", "scaled_mm",
+    "imma",
+    "bmma",
+    "dmma",
+    "e4m3",
+    "e5m2",
+    "fp8_gemm",
+    "scaled_mm",
 )
 
 # Kernels that are matmul-shaped but explicitly NOT on tensor cores.
@@ -89,77 +119,234 @@ def uses_tensor_cores(kernel_name: str) -> Optional[bool]:
 # Ordered (category, patterns) - first match wins, so specific categories such as
 # attention must precede the generic matmul patterns they may also contain.
 KERNEL_CATEGORIES: Tuple[Tuple[str, Tuple[str, ...]], ...] = (
-    ("communication", (
-        r"^nccl", r"ncclkernel", r"nccldevkernel", r"^rccl", r"^hccl",
-        r"all_?reduce", r"all_?gather", r"reduce_?scatter", r"broadcast_?kernel",
-        r"send_?recv", r"alltoall", r"all_?to_?all", r"_a2a\b", r"\ba2a_",
-        r"nvshmem", r"\bshmem_", r"put_?block", r"pull_?kernel", r"push_?kernel",
-    )),
-    ("attention", (
-        r"flash_?fwd", r"flash_?bwd", r"flash::", r"flash_?attn", r"flashattn",
-        r"fmha", r"fused_?multihead", r"cudnn.*sdpa", r"sdpa",
-        r"attention_?kernel", r"scaled_?dot", r"multihead", r"xformers",
-        r"paged_?attention", r"ring_?attention", r"splitkv",
-    )),
-    ("matmul", (
-        r"gemm", r"cublas", r"cutlass", r"nvjet", r"matmul", r"^mm_", r"_mm_kernel",
-        r"s1688", r"s16816", r"h1688", r"h16816", r"wgmma", r"xmma",
-        r"wgrad", r"dgrad", r"fprop", r"implicit_?gemm", r"scaled_?mm",
-        r"grouped_?gemm", r"splitk", r"split_?k",
-    )),
-    ("convolution", (
-        r"conv2d", r"conv3d", r"conv1d", r"cudnn.*conv", r"winograd",
-        r"implicit_?conv", r"depthwise",
-    )),
-    ("normalization", (
-        r"layer_?norm", r"layernorm", r"rms_?norm", r"rmsnorm", r"batch_?norm",
-        r"instance_?norm", r"group_?norm", r"groupnorm", r"adanorm", r"ada_?ln",
-    )),
+    (
+        "communication",
+        (
+            r"^nccl",
+            r"ncclkernel",
+            r"nccldevkernel",
+            r"^rccl",
+            r"^hccl",
+            r"all_?reduce",
+            r"all_?gather",
+            r"reduce_?scatter",
+            r"broadcast_?kernel",
+            r"send_?recv",
+            r"alltoall",
+            r"all_?to_?all",
+            r"_a2a\b",
+            r"\ba2a_",
+            r"nvshmem",
+            r"\bshmem_",
+            r"put_?block",
+            r"pull_?kernel",
+            r"push_?kernel",
+        ),
+    ),
+    (
+        "attention",
+        (
+            r"flash_?fwd",
+            r"flash_?bwd",
+            r"flash::",
+            r"flash_?attn",
+            r"flashattn",
+            r"fmha",
+            r"fused_?multihead",
+            r"cudnn.*sdpa",
+            r"sdpa",
+            r"attention_?kernel",
+            r"scaled_?dot",
+            r"multihead",
+            r"xformers",
+            r"paged_?attention",
+            r"ring_?attention",
+            r"splitkv",
+        ),
+    ),
+    (
+        "matmul",
+        (
+            r"gemm",
+            r"cublas",
+            r"cutlass",
+            r"nvjet",
+            r"matmul",
+            r"^mm_",
+            r"_mm_kernel",
+            r"s1688",
+            r"s16816",
+            r"h1688",
+            r"h16816",
+            r"wgmma",
+            r"xmma",
+            r"wgrad",
+            r"dgrad",
+            r"fprop",
+            r"implicit_?gemm",
+            r"scaled_?mm",
+            r"grouped_?gemm",
+            r"splitk",
+            r"split_?k",
+        ),
+    ),
+    (
+        "convolution",
+        (
+            r"conv2d",
+            r"conv3d",
+            r"conv1d",
+            r"cudnn.*conv",
+            r"winograd",
+            r"implicit_?conv",
+            r"depthwise",
+        ),
+    ),
+    (
+        "normalization",
+        (
+            r"layer_?norm",
+            r"layernorm",
+            r"rms_?norm",
+            r"rmsnorm",
+            r"batch_?norm",
+            r"instance_?norm",
+            r"group_?norm",
+            r"groupnorm",
+            r"adanorm",
+            r"ada_?ln",
+        ),
+    ),
     ("softmax", (r"softmax", r"log_?softmax", r"online_?softmax")),
-    ("activation", (
-        r"gelu", r"silu", r"relu", r"sigmoid", r"\btanh\b", r"swiglu", r"geglu",
-        r"activation", r"hardswish", r"mish",
-    )),
-    ("moe", (
-        r"\bmoe\b", r"moe_", r"expert", r"top_?k_?gating", r"permute_?tokens",
-        r"unpermute", r"sinkhorn", r"router",
-    )),
-    ("embedding", (r"embedding", r"^lookup", r"vocab_?parallel", r"rotary", r"\brope\b")),
-    ("optimizer", (
-        r"adam", r"lamb", r"\bsgd\b", r"momentum", r"clip_?grad", r"optim",
-        r"weight_?update", r"multi_?tensor_?apply", r"multi_?tensor_",
-        r"foreach_", r"_fused_adam",
-    )),
-    ("quantization", (
-        r"quantize", r"dequant", r"cast_?transpose", r"fp8_?cast", r"scaled_?quant",
-        r"amax", r"scale_?inv",
-    )),
-    ("reduction", (
-        r"reduce_?kernel", r"\breduce\b", r"\bsum\b", r"\bmean\b", r"\bvar\b",
-        r"\bstd\b", r"\bmax\b", r"\bmin\b", r"cub::", r"device_?reduce",
-    )),
-    ("memory_ops", (
-        r"catarraybatchedcopy", r"direct_?copy", r"copy_?kernel", r"copy_?device",
-        r"\bfill\b", r"memset", r"\bscatter\b", r"\bgather\b", r"index_?select",
-        r"index_?put", r"\bpad\b", r"transpose", r"permute_?kernel", r"contiguous",
-        # Layout conversions: pure overhead, and a signal that a channels-last /
-        # NHWC boundary is being crossed mid-model.
-        r"nhwctonchw", r"nchwtonhwc", r"nhwc_?to_?nchw", r"nchw_?to_?nhwc",
-        r"layout_?transform", r"\bmemcpy\b",
-    )),
-    ("elementwise", (
-        r"elementwise", r"vectorized_?elementwise", r"unrolled_?elementwise",
-        r"pointwise", r"fused_?bias", r"eltwise", r"\badd_\b", r"\bmul_\b",
-        r"triton_poi", r"triton_per",
-    )),
+    (
+        "activation",
+        (
+            r"gelu",
+            r"silu",
+            r"relu",
+            r"sigmoid",
+            r"\btanh\b",
+            r"swiglu",
+            r"geglu",
+            r"activation",
+            r"hardswish",
+            r"mish",
+        ),
+    ),
+    (
+        "moe",
+        (
+            r"\bmoe\b",
+            r"moe_",
+            r"expert",
+            r"top_?k_?gating",
+            r"permute_?tokens",
+            r"unpermute",
+            r"sinkhorn",
+            r"router",
+        ),
+    ),
+    (
+        "embedding",
+        (r"embedding", r"^lookup", r"vocab_?parallel", r"rotary", r"\brope\b"),
+    ),
+    (
+        "optimizer",
+        (
+            r"adam",
+            r"lamb",
+            r"\bsgd\b",
+            r"momentum",
+            r"clip_?grad",
+            r"optim",
+            r"weight_?update",
+            r"multi_?tensor_?apply",
+            r"multi_?tensor_",
+            r"foreach_",
+            r"_fused_adam",
+        ),
+    ),
+    (
+        "quantization",
+        (
+            r"quantize",
+            r"dequant",
+            r"cast_?transpose",
+            r"fp8_?cast",
+            r"scaled_?quant",
+            r"amax",
+            r"scale_?inv",
+        ),
+    ),
+    (
+        "reduction",
+        (
+            r"reduce_?kernel",
+            r"\breduce\b",
+            r"\bsum\b",
+            r"\bmean\b",
+            r"\bvar\b",
+            r"\bstd\b",
+            r"\bmax\b",
+            r"\bmin\b",
+            r"cub::",
+            r"device_?reduce",
+        ),
+    ),
+    (
+        "memory_ops",
+        (
+            r"catarraybatchedcopy",
+            r"direct_?copy",
+            r"copy_?kernel",
+            r"copy_?device",
+            r"\bfill\b",
+            r"memset",
+            r"\bscatter\b",
+            r"\bgather\b",
+            r"index_?select",
+            r"index_?put",
+            r"\bpad\b",
+            r"transpose",
+            r"permute_?kernel",
+            r"contiguous",
+            # Layout conversions: pure overhead, and a signal that a channels-last /
+            # NHWC boundary is being crossed mid-model.
+            r"nhwctonchw",
+            r"nchwtonhwc",
+            r"nhwc_?to_?nchw",
+            r"nchw_?to_?nhwc",
+            r"layout_?transform",
+            r"\bmemcpy\b",
+        ),
+    ),
+    (
+        "elementwise",
+        (
+            r"elementwise",
+            r"vectorized_?elementwise",
+            r"unrolled_?elementwise",
+            r"pointwise",
+            r"fused_?bias",
+            r"eltwise",
+            r"\badd_\b",
+            r"\bmul_\b",
+            r"triton_poi",
+            r"triton_per",
+        ),
+    ),
     ("dropout", (r"dropout",)),
     ("loss", (r"cross_?entropy", r"nll_?loss", r"loss_?kernel", r"kl_?div")),
     ("sampling", (r"top_?p", r"top_?k_?sampling", r"multinomial", r"argmax_?sample")),
-    ("vae_upsample", (r"upsample", r"interpolate", r"pixel_?shuffle", r"resize_?nearest")),
+    (
+        "vae_upsample",
+        (r"upsample", r"interpolate", r"pixel_?shuffle", r"resize_?nearest"),
+    ),
 )
 
 _COMPILED_CATEGORIES: Tuple[Tuple[str, Tuple[re.Pattern, ...]], ...] = tuple(
-    (name, tuple(re.compile(p) for p in patterns)) for name, patterns in KERNEL_CATEGORIES
+    (name, tuple(re.compile(p) for p in patterns))
+    for name, patterns in KERNEL_CATEGORIES
 )
 
 # Framework fingerprints, checked independently of category. Order matters:
@@ -170,48 +357,60 @@ _FRAMEWORK_PATTERNS: Tuple[Tuple[str, re.Pattern], ...] = (
     # reliable fingerprints are the namespace in parameter types, the prototype
     # kernels, and the mangled forms. Note rt_bf/st_bf are `using` aliases and
     # never survive mangling - searching for them finds nothing.
-    ("thunderkittens", re.compile(
-        r"\bkittens::"
-        r"|_ZN?7kittens"
-        r"|N7kittens[0-9]*(?:2gl|2st|2rt|2sv|2rv|2tt)I"
-        r"|\b(?:fwd_attend_ker|bwd_attend_ker|bwd_attend_prep_ker"
-        r"|based_linear_attention|hedgehog_linear_attention_smd"
-        r"|layernorm_tk|fftconv_tk)\b"
-    )),
+    (
+        "thunderkittens",
+        re.compile(
+            r"\bkittens::"
+            r"|_ZN?7kittens"
+            r"|N7kittens[0-9]*(?:2gl|2st|2rt|2sv|2rv|2tt)I"
+            r"|\b(?:fwd_attend_ker|bwd_attend_ker|bwd_attend_prep_ker"
+            r"|based_linear_attention|hedgehog_linear_attention_smd"
+            r"|layernorm_tk|fftconv_tk)\b"
+        ),
+    ),
     # Triton-distributed emits plain Python function names; NVSHMEM device calls
     # are LLVM-linked into the kernel, so no nvshmem* symbols ever appear.
-    ("triton_distributed", re.compile(
-        r"\bkernel_(?:dispatch|combine|skipped)_token"
-        r"|\bmega_kernel_(?:dispatch|moe)"
-        r"|\bkernel_(?:consumer|producer|gemm_rs_producer|fused_ag_gemm|fused_gemm_allreduce)"
-        r"|\bkernel_(?:pre|post)_attn_(?:qkv_pack_)?a2a"
-        r"|\b(?:all_to_all_kernel|allreduce_(?:one|two)_shot|allreduce_double_tree"
-        r"|reduce_scatter_ring_push|consumer_(?:ring_)?all_reduce)"
-        r"|\b_forward_p(?:ull|ush)"
-        r"|\bbarrier_all_intra_node"
-        r"|\bmoe_(?:grouped|gather_(?:rs|ar)_grouped)_gemm"
-        r"|\bkernel_(?:intra_rank_|inter_rank_)?gqa_fwd_batch_decode"
-    )),
+    (
+        "triton_distributed",
+        re.compile(
+            r"\bkernel_(?:dispatch|combine|skipped)_token"
+            r"|\bmega_kernel_(?:dispatch|moe)"
+            r"|\bkernel_(?:consumer|producer|gemm_rs_producer|fused_ag_gemm|fused_gemm_allreduce)"
+            r"|\bkernel_(?:pre|post)_attn_(?:qkv_pack_)?a2a"
+            r"|\b(?:all_to_all_kernel|allreduce_(?:one|two)_shot|allreduce_double_tree"
+            r"|reduce_scatter_ring_push|consumer_(?:ring_)?all_reduce)"
+            r"|\b_forward_p(?:ull|ush)"
+            r"|\bbarrier_all_intra_node"
+            r"|\bmoe_(?:grouped|gather_(?:rs|ar)_grouped)_gemm"
+            r"|\bkernel_(?:intra_rank_|inter_rank_)?gqa_fwd_batch_decode"
+        ),
+    ),
     # ByteDance FLUX: fused comm-overlap GEMM built on CUTLASS. Two symbol
     # families - templated CUTLASS kernels carrying the bytedance::flux
     # namespace, and hand-written helpers with distinctive names.
-    ("flux", re.compile(
-        r"bytedance::flux"
-        r"|GemmV[23](?:AGKernel|ReduceScatter|CommNone|Pre?AttnAllToAllTranspose)"
-        r"|AGKernel(?:TileScheduler|StreamKScheduler)"
-        r"|\bCudaIpcBarrierAll(?:RingMode)?Kernel\b"
-        r"|\btopk_(?:gather_rs|reduce)(?:_v2)?_kernel\b"
-        r"|\bep_topk_(?:gather_rs|reduce)_kernel\b"
-        r"|\bbsr2dense_reduce_kernel\b|\bpacked_ring_reduction\b"
-        r"|\bdis_scatter_(?:forward_flatten|backward)_kernel\b"
-        r"|\b(?:pre|post)_attn_all2all(?:_transpose|_dyn_seq)?_kernel\b"
-    )),
+    (
+        "flux",
+        re.compile(
+            r"bytedance::flux"
+            r"|GemmV[23](?:AGKernel|ReduceScatter|CommNone|Pre?AttnAllToAllTranspose)"
+            r"|AGKernel(?:TileScheduler|StreamKScheduler)"
+            r"|\bCudaIpcBarrierAll(?:RingMode)?Kernel\b"
+            r"|\btopk_(?:gather_rs|reduce)(?:_v2)?_kernel\b"
+            r"|\bep_topk_(?:gather_rs|reduce)_kernel\b"
+            r"|\bbsr2dense_reduce_kernel\b|\bpacked_ring_reduction\b"
+            r"|\bdis_scatter_(?:forward_flatten|backward)_kernel\b"
+            r"|\b(?:pre|post)_attn_all2all(?:_transpose|_dyn_seq)?_kernel\b"
+        ),
+    ),
     ("triton", re.compile(r"^triton_|triton_poi_|triton_red_|triton_per_|triton_tem_")),
     ("cutlass", re.compile(r"cutlass|sm90_|sm100_|sm103_|nvjet|cute::|tcgen05")),
     ("cublas", re.compile(r"cublas|ampere_|turing_|volta_|^sm\d+_xmma")),
     ("cudnn", re.compile(r"cudnn")),
     ("flash_attention", re.compile(r"flash_?fwd|flash_?bwd|flash::|flash_?attn")),
-    ("transformer_engine", re.compile(r"^te_|transformer_engine|cast_transpose|layernorm_geglu")),
+    (
+        "transformer_engine",
+        re.compile(r"^te_|transformer_engine|cast_transpose|layernorm_geglu"),
+    ),
     ("apex", re.compile(r"multi_?tensor_apply|multi_?tensor_adam")),
     ("nccl", re.compile(r"^nccl|ncclkernel|ncclDevKernel")),
     ("nvshmem", re.compile(r"nvshmem|rocshmem|mori_shmem")),
@@ -234,6 +433,7 @@ def is_megakernel(kernel_name: str) -> bool:
     low = str(kernel_name or "").lower()
     raw = str(kernel_name or "")
     return any(p.search(raw) or p.search(low) for p in _MEGAKERNEL_PATTERNS)
+
 
 # torch.compile / Inductor kernel prefixes -> what they fused.
 _TRITON_KIND = {
@@ -319,12 +519,17 @@ def is_communication_kernel(kernel_name: str) -> bool:
     (``nsys_recipe/lib/nccl.py``), widened to the ROCm spellings.
     """
     low = str(kernel_name or "").lower()
-    return low.startswith(("nccl", "rccl", "hccl")) or "ncclkernel" in low or "ncclDevKernel".lower() in low
+    return (
+        low.startswith(("nccl", "rccl", "hccl"))
+        or "ncclkernel" in low
+        or "ncclDevKernel".lower() in low
+    )
 
 
 # ---------------------------------------------------------------------------
 # GEMM name parsing
 # ---------------------------------------------------------------------------
+
 
 @dataclass(frozen=True)
 class GemmShape:
@@ -334,7 +539,7 @@ class GemmShape:
     tile_n: Optional[int] = None
     tile_k: Optional[int] = None
     dtype: str = ""
-    layout: str = ""       # nn / nt / tn / tt
+    layout: str = ""  # nn / nt / tn / tt
     stages: Optional[int] = None
     split_k: bool = False
 
@@ -356,13 +561,22 @@ _TILE_RE = re.compile(
 _LAYOUT_RE = re.compile(r"_(nn|nt|tn|tt)(?:_|$)")
 _STAGES_RE = re.compile(r"stages?_(?:\d+x)?(\d+)")
 _DTYPE_TOKENS: Tuple[Tuple[str, str], ...] = (
-    ("bf16", "bf16"), ("bfloat16", "bf16"),
-    ("fp16", "fp16"), ("f16", "fp16"), ("half", "fp16"),
+    ("bf16", "bf16"),
+    ("bfloat16", "bf16"),
+    ("fp16", "fp16"),
+    ("f16", "fp16"),
+    ("half", "fp16"),
     ("tf32", "tf32"),
-    ("fp8", "fp8"), ("e4m3", "fp8"), ("e5m2", "fp8"),
-    ("int8", "int8"), ("i8", "int8"),
-    ("fp64", "fp64"), ("double", "fp64"),
-    ("fp32", "fp32"), ("f32", "fp32"), ("float", "fp32"),
+    ("fp8", "fp8"),
+    ("e4m3", "fp8"),
+    ("e5m2", "fp8"),
+    ("int8", "int8"),
+    ("i8", "int8"),
+    ("fp64", "fp64"),
+    ("double", "fp64"),
+    ("fp32", "fp32"),
+    ("f32", "fp32"),
+    ("float", "fp32"),
 )
 
 
@@ -431,10 +645,25 @@ _BUSBW_FACTORS: Dict[str, str] = {
 }
 
 _NCCL_COLLECTIVES: Tuple[str, ...] = (
-    "allreduce", "allgather", "reducescatter", "alltoall",
-    "broadcast", "reduce", "sendrecv", "scatter", "gather",
+    "allreduce",
+    "allgather",
+    "reducescatter",
+    "alltoall",
+    "broadcast",
+    "reduce",
+    "sendrecv",
+    "scatter",
+    "gather",
 )
-_NCCL_ALGOS: Tuple[str, ...] = ("ring", "tree", "nvls", "collnetdirect", "collnetchain", "collnet", "pat")
+_NCCL_ALGOS: Tuple[str, ...] = (
+    "ring",
+    "tree",
+    "nvls",
+    "collnetdirect",
+    "collnetchain",
+    "collnet",
+    "pat",
+)
 
 # NCCL's symmetric-memory kernels (ncclSymkDevKernel_*) encode the transport in
 # the name: LDMC/STMC are multimem.ld_reduce / multimem.st, i.e. the reduction
@@ -442,7 +671,9 @@ _NCCL_ALGOS: Tuple[str, ...] = ("ring", "tree", "nvls", "collnetdirect", "collne
 # SHARP is engaged, not merely that NVLS was requested.
 _NCCL_SYMMETRIC_RE = re.compile(r"ncclsymk", re.IGNORECASE)
 # Underscore is a word character, so \b does not fire inside "LDMC_STMC".
-_NCCL_MULTICAST_RE = re.compile(r"(?:^|[^a-z0-9])(?:ld|st)mc(?:[^a-z0-9]|$)|multimem", re.IGNORECASE)
+_NCCL_MULTICAST_RE = re.compile(
+    r"(?:^|[^a-z0-9])(?:ld|st)mc(?:[^a-z0-9]|$)|multimem", re.IGNORECASE
+)
 
 
 def uses_nvls_multicast(kernel_name: str) -> bool:
@@ -453,6 +684,8 @@ def uses_nvls_multicast(kernel_name: str) -> bool:
     multicast instructions are really being issued.
     """
     return bool(_NCCL_MULTICAST_RE.search(str(kernel_name or "")))
+
+
 _NCCL_PROTOS: Tuple[str, ...] = ("ll128", "ll", "simple")
 
 
@@ -537,13 +770,26 @@ def parse_nccl_kernel(kernel_name: str) -> Optional[NcclCollective]:
             break
 
     reduction_op = ""
-    for candidate in ("prodmax", "premulsum", "sumpostdiv", "sum", "prod", "max", "min", "avg"):
+    for candidate in (
+        "prodmax",
+        "premulsum",
+        "sumpostdiv",
+        "sum",
+        "prod",
+        "max",
+        "min",
+        "avg",
+    ):
         if candidate in low.replace("_", ""):
             reduction_op = candidate
             break
 
     dtype = ""
-    for token, canonical in _DTYPE_TOKENS + (("f32", "fp32"), ("f16", "fp16"), ("u8", "uint8")):
+    for token, canonical in _DTYPE_TOKENS + (
+        ("f32", "fp32"),
+        ("f16", "fp16"),
+        ("u8", "uint8"),
+    ):
         if token in low:
             dtype = canonical
             break
@@ -659,14 +905,35 @@ CATEGORY_EXPECTATIONS: Dict[str, Dict[str, object]] = {
         "expect_tensor_cores": False,
         "advice": "Cast/transpose kernels should be fused into the producer or consumer GEMM.",
     },
-    "embedding": {"bound": "memory", "dram_sol_pct": 40.0, "expect_tensor_cores": False,
-                  "advice": "Gather-heavy and typically uncoalesced; judge on achieved bandwidth, not SOL."},
-    "moe": {"bound": "mixed", "expect_tensor_cores": None,
-            "advice": "Expert dispatch/combine is all-to-all bound; grouped GEMMs should still hit tensor cores."},
-    "dropout": {"bound": "memory", "dram_sol_pct": 60.0, "expect_tensor_cores": False, "advice": ""},
-    "loss": {"bound": "memory", "dram_sol_pct": 40.0, "expect_tensor_cores": False, "advice": ""},
-    "vae_upsample": {"bound": "memory", "dram_sol_pct": 55.0, "expect_tensor_cores": False,
-                     "advice": "VAE decode is the usual OOM cliff in video pipelines - tile spatially and slice temporally."},
+    "embedding": {
+        "bound": "memory",
+        "dram_sol_pct": 40.0,
+        "expect_tensor_cores": False,
+        "advice": "Gather-heavy and typically uncoalesced; judge on achieved bandwidth, not SOL.",
+    },
+    "moe": {
+        "bound": "mixed",
+        "expect_tensor_cores": None,
+        "advice": "Expert dispatch/combine is all-to-all bound; grouped GEMMs should still hit tensor cores.",
+    },
+    "dropout": {
+        "bound": "memory",
+        "dram_sol_pct": 60.0,
+        "expect_tensor_cores": False,
+        "advice": "",
+    },
+    "loss": {
+        "bound": "memory",
+        "dram_sol_pct": 40.0,
+        "expect_tensor_cores": False,
+        "advice": "",
+    },
+    "vae_upsample": {
+        "bound": "memory",
+        "dram_sol_pct": 55.0,
+        "expect_tensor_cores": False,
+        "advice": "VAE decode is the usual OOM cliff in video pipelines - tile spatially and slice temporally.",
+    },
     "sampling": {"bound": "latency", "expect_tensor_cores": False, "advice": ""},
     "other": {"bound": "unknown", "expect_tensor_cores": None, "advice": ""},
     "unknown": {"bound": "unknown", "expect_tensor_cores": None, "advice": ""},
@@ -686,6 +953,7 @@ def summarize_categories(kernel_names: Sequence[str]) -> Dict[str, int]:
 # CUTLASS template symbols
 # ---------------------------------------------------------------------------
 
+
 @dataclass(frozen=True)
 class CutlassConfig:
     """Kernel configuration recovered from a demangled CUTLASS 3.x/4.x symbol.
@@ -702,16 +970,16 @@ class CutlassConfig:
     CUTLASS-generated kernels, so this describes the code, never its author.
     """
 
-    arch: str = ""                  # sm90, sm100, ...
-    stages: Optional[int] = None    # mainloop pipeline depth
-    cluster: Tuple[int, ...] = ()   # thread block cluster shape
-    tile: Tuple[int, ...] = ()      # CTA tile M x N x K
-    mma_shape: Tuple[int, ...] = () # MMA instruction shape
-    mma_kind: str = ""              # hmma / hgmma / utcqmma ...
-    operand_source: str = ""        # SS (shared/shared) or RS (register/shared)
-    schedule: str = ""              # pingpong / cooperative / ...
-    copy_atom: str = ""             # SM90_TMA_LOAD, SM80_CP_ASYNC, ...
-    swizzle: Tuple[int, int, int] = ()   # Swizzle<B, M, S>
+    arch: str = ""  # sm90, sm100, ...
+    stages: Optional[int] = None  # mainloop pipeline depth
+    cluster: Tuple[int, ...] = ()  # thread block cluster shape
+    tile: Tuple[int, ...] = ()  # CTA tile M x N x K
+    mma_shape: Tuple[int, ...] = ()  # MMA instruction shape
+    mma_kind: str = ""  # hmma / hgmma / utcqmma ...
+    operand_source: str = ""  # SS (shared/shared) or RS (register/shared)
+    schedule: str = ""  # pingpong / cooperative / ...
+    copy_atom: str = ""  # SM90_TMA_LOAD, SM80_CP_ASYNC, ...
+    swizzle: Tuple[int, int, int] = ()  # Swizzle<B, M, S>
     dtypes: Tuple[str, ...] = ()
     truncated: bool = False
 
@@ -728,7 +996,11 @@ class CutlassConfig:
                 "Shared-memory layout is unswizzled (Swizzle<0,...>), so bank conflicts "
                 "are expected on the operand path."
             )
-        if self.copy_atom and "CP_ASYNC" in self.copy_atom.upper() and self.arch >= "sm90":
+        if (
+            self.copy_atom
+            and "CP_ASYNC" in self.copy_atom.upper()
+            and self.arch >= "sm90"
+        ):
             out.append(
                 f"Uses {self.copy_atom} on {self.arch}: this is the pre-Hopper async-copy "
                 "path, not TMA. A TMA atom frees registers and enables warp specialisation."
@@ -738,7 +1010,11 @@ class CutlassConfig:
                 f"Only {self.stages} mainloop pipeline stages. If shared memory allows, more "
                 "depth hides global latency better."
             )
-        if self.cluster and len(self.cluster) >= 2 and all(c == 1 for c in self.cluster):
+        if (
+            self.cluster
+            and len(self.cluster) >= 2
+            and all(c == 1 for c in self.cluster)
+        ):
             out.append(
                 "Cluster shape is 1x1x1, so no multicast across the cluster. On Hopper and "
                 "later a larger cluster with TMA multicast can cut redundant DRAM traffic."
@@ -751,21 +1027,34 @@ class CutlassConfig:
         return out
 
 
-_CUTLASS_SYMBOL_RE = re.compile(r"cutlass::(?:device_)?[kK]ernel2?\s*<|cutlass::gemm::kernel::")
-_CUTLASS_MAINLOOP_RE = re.compile(r"Mainloop(?:Sm|sm)(?P<arch>\d+)\w*?<\s*(?P<stages>\d+)\s*,")
+_CUTLASS_SYMBOL_RE = re.compile(
+    r"cutlass::(?:device_)?[kK]ernel2?\s*<|cutlass::gemm::kernel::"
+)
+_CUTLASS_MAINLOOP_RE = re.compile(
+    r"Mainloop(?:Sm|sm)(?P<arch>\d+)\w*?<\s*(?P<stages>\d+)\s*,"
+)
 _CUTLASS_SCHEDULE_RE = re.compile(
     r"Kernel(?:Tma)?(?:WarpSpecialized)?(?P<sched>Pingpong|Cooperative|FP8FastAccum|WarpSpecialized)",
-    re.IGNORECASE)
-_CUTLASS_SWIZZLE_RE = re.compile(r"cute::Swizzle<\s*(\d+)\s*,\s*(-?\d+)\s*,\s*(-?\d+)\s*>")
-_CUTLASS_COPY_RE = re.compile(r"cute::(SM\d+_TMA_LOAD(?:_MULTICAST)?|SM\d+_TMA_STORE|SM\d+_CP_ASYNC\w*)")
+    re.IGNORECASE,
+)
+_CUTLASS_SWIZZLE_RE = re.compile(
+    r"cute::Swizzle<\s*(\d+)\s*,\s*(-?\d+)\s*,\s*(-?\d+)\s*>"
+)
+_CUTLASS_COPY_RE = re.compile(
+    r"cute::(SM\d+_TMA_LOAD(?:_MULTICAST)?|SM\d+_TMA_STORE|SM\d+_CP_ASYNC\w*)"
+)
 _CUTLASS_MMA_RE = re.compile(
-    r"MMA_(?P<m>\d+)x(?P<n>\d+)x(?P<k>\d+)_(?P<types>[A-Z0-9]+?)_(?P<src>SS|RS)\b")
-_CUTLASS_MMA_KIND_RE = re.compile(r"\b(?:op_)?(hgmma|hmma|igmma|imma|bgmma|bmma|utchmma|utcqmma|utcomma|utcimma)\b",
-                                  re.IGNORECASE)
+    r"MMA_(?P<m>\d+)x(?P<n>\d+)x(?P<k>\d+)_(?P<types>[A-Z0-9]+?)_(?P<src>SS|RS)\b"
+)
+_CUTLASS_MMA_KIND_RE = re.compile(
+    r"\b(?:op_)?(hgmma|hmma|igmma|imma|bgmma|bmma|utchmma|utcqmma|utcomma|utcimma)\b",
+    re.IGNORECASE,
+)
 _CUTE_TUPLE_RE = re.compile(r"cute::tuple<((?:\s*cute::C<-?\d+>\s*,?)+)>")
 _CUTE_C_RE = re.compile(r"cute::C<(-?\d+)>")
 _CUTLASS_DTYPE_RE = re.compile(
-    r"cutlass::(bfloat16_t|half_t|tfloat32_t|float_e4m3_t|float_e5m2_t|float_e2m1_t|int8_t|uint8_t)")
+    r"cutlass::(bfloat16_t|half_t|tfloat32_t|float_e4m3_t|float_e5m2_t|float_e2m1_t|int8_t|uint8_t)"
+)
 
 
 def parse_cutlass_symbol(kernel_name: str) -> Optional[CutlassConfig]:
@@ -844,8 +1133,16 @@ def parse_cutlass_symbol(kernel_name: str) -> Optional[CutlassConfig]:
     dtypes = tuple(dict.fromkeys(_CUTLASS_DTYPE_RE.findall(raw)))
 
     return CutlassConfig(
-        arch=arch, stages=stages, cluster=cluster, tile=tile,
-        mma_shape=mma_shape, mma_kind=mma_kind, operand_source=operand_source,
-        schedule=schedule, copy_atom=copy_atom, swizzle=swizzle,
-        dtypes=dtypes, truncated=truncated,
+        arch=arch,
+        stages=stages,
+        cluster=cluster,
+        tile=tile,
+        mma_shape=mma_shape,
+        mma_kind=mma_kind,
+        operand_source=operand_source,
+        schedule=schedule,
+        copy_atom=copy_atom,
+        swizzle=swizzle,
+        dtypes=dtypes,
+        truncated=truncated,
     )

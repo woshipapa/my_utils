@@ -23,7 +23,9 @@ class VerlAdapter(FrameworkAdapter):
             return False
         if framework == "verl":
             return True
-        if context_has_any_key(context, ("verl_trainer", "verl_config", "verl_engine", "verl_args")):
+        if context_has_any_key(
+            context, ("verl_trainer", "verl_config", "verl_engine", "verl_args")
+        ):
             return True
 
         command = context_command_text(context)

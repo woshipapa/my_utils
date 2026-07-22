@@ -15,9 +15,18 @@ from _synthetic_loader import kernel_taxonomy
         ("ncclDevKernel_AllReduce_Sum_bf16_RING_LL128", "communication"),
         ("sm90_xmma_gemm_bf16bf16_bf16f32_f32_tn_n_tilesize128x128x64", "matmul"),
         ("void flash_fwd_kernel<Flash_fwd_kernel_traits<128,128,128,4>>", "attention"),
-        ("void at::native::vectorized_elementwise_kernel<4, CUDAFunctor_add<float>>", "elementwise"),
-        ("void at::native::(anonymous namespace)::CatArrayBatchedCopy<float>", "memory_ops"),
-        ("void multi_tensor_apply_kernel<TensorListMetadata<4>, AdamFunctor<float>>", "optimizer"),
+        (
+            "void at::native::vectorized_elementwise_kernel<4, CUDAFunctor_add<float>>",
+            "elementwise",
+        ),
+        (
+            "void at::native::(anonymous namespace)::CatArrayBatchedCopy<float>",
+            "memory_ops",
+        ),
+        (
+            "void multi_tensor_apply_kernel<TensorListMetadata<4>, AdamFunctor<float>>",
+            "optimizer",
+        ),
         ("triton_red_fused_native_layer_norm_7", "normalization"),
         ("void moe_permute_topk_kernel<float>", "moe"),
         ("void te_cast_transpose_kernel<float>", "quantization"),
@@ -34,7 +43,10 @@ def test_kernel_categories(name, category):
     [
         ("void fwd_attend_ker<128, true>(fwd_globals<128>)", "thunderkittens"),
         # Mangled symbols are case-sensitive and must still be recognised.
-        ("_ZN7kittens9prototype3lcf6kernelI15matmul_templateILi2EEEEv", "thunderkittens"),
+        (
+            "_ZN7kittens9prototype3lcf6kernelI15matmul_templateILi2EEEEv",
+            "thunderkittens",
+        ),
         ("void kernel_dispatch_token(int)", "triton_distributed"),
         ("void moe_grouped_gemm_persistent_tma_kernel(int)", "triton_distributed"),
         ("triton_poi_fused_add_mul_silu_23", "triton"),
@@ -48,14 +60,19 @@ def test_framework_detection(name, framework):
 
 
 def test_megakernel_detection():
-    assert kernel_taxonomy.is_megakernel("void kittens::prototype::interpreter::kernel<config>(g)")
+    assert kernel_taxonomy.is_megakernel(
+        "void kittens::prototype::interpreter::kernel<config>(g)"
+    )
     assert kernel_taxonomy.is_megakernel("mega_kernel_dispatch_token_moe_grouped_gemm")
     assert not kernel_taxonomy.is_megakernel("ampere_bf16_s16816gemm_bf16_256x128_nn")
 
 
 def test_tensor_core_detection_distinguishes_unknown_from_absent():
     # Positive evidence.
-    assert kernel_taxonomy.uses_tensor_cores("ampere_bf16_s16816gemm_bf16_256x128_nn") is True
+    assert (
+        kernel_taxonomy.uses_tensor_cores("ampere_bf16_s16816gemm_bf16_256x128_nn")
+        is True
+    )
     # Negative evidence: an explicit SIMT/sgemm path.
     assert kernel_taxonomy.uses_tensor_cores("volta_sgemm_128x64_nn") is False
     # No evidence either way must stay None, not False - "no tensor cores" is
@@ -68,7 +85,11 @@ def test_tensor_core_detection_distinguishes_unknown_from_absent():
     [
         ("ampere_bf16_s16816gemm_bf16_256x128_ldg8_f2f_stages_64x3_nn", 256, 128),
         ("sm90_xmma_gemm_bf16bf16_bf16f32_f32_tn_n_tilesize128x128x64", 128, 128),
-        ("cutlass3x_sm90_tensorop_s64x128x16gemm_bf16_bf16_f32_void_f32_128x128x64_2x1x1", 128, 128),
+        (
+            "cutlass3x_sm90_tensorop_s64x128x16gemm_bf16_bf16_f32_void_f32_128x128x64_2x1x1",
+            128,
+            128,
+        ),
         ("volta_sgemm_128x64_nn", 128, 64),
         ("ampere_h16816gemm_256x64_ldg8_stages_32x6_tn", 256, 64),
     ],
@@ -82,7 +103,8 @@ def test_gemm_tile_parsing(name, tile_m, tile_n):
 
 def test_gemm_parsing_extracts_dtype_and_layout():
     shape = kernel_taxonomy.parse_gemm_kernel(
-        "ampere_bf16_s16816gemm_bf16_256x128_ldg8_f2f_stages_64x3_nn")
+        "ampere_bf16_s16816gemm_bf16_256x128_ldg8_f2f_stages_64x3_nn"
+    )
     assert shape.dtype == "bf16"
     assert shape.layout == "nn"
     assert shape.stages == 3
@@ -92,9 +114,18 @@ def test_gemm_parsing_extracts_dtype_and_layout():
     "name,collective,algorithm,protocol",
     [
         # The C++ argument list must not hide the protocol behind a '('.
-        ("ncclDevKernel_AllReduce_Sum_bf16_RING_LL128(ncclDevKernelArgsStorage<4096ul>)",
-         "allreduce", "ring", "ll128"),
-        ("ncclDevKernel_ReduceScatter_Sum_f32_TREE_SIMPLE", "reducescatter", "tree", "simple"),
+        (
+            "ncclDevKernel_AllReduce_Sum_bf16_RING_LL128(ncclDevKernelArgsStorage<4096ul>)",
+            "allreduce",
+            "ring",
+            "ll128",
+        ),
+        (
+            "ncclDevKernel_ReduceScatter_Sum_f32_TREE_SIMPLE",
+            "reducescatter",
+            "tree",
+            "simple",
+        ),
         ("ncclDevKernel_AllGather_NVLS_Simple", "allgather", "nvls", "simple"),
         # PAT: AllGather/ReduceScatter only, added in NCCL 2.23.4.
         ("ncclDevKernel_AllGather_PAT_SIMPLE", "allgather", "pat", "simple"),
@@ -124,7 +155,9 @@ def test_nccl_busbw_factors(collective, ranks, factor):
 
 
 def test_nccl_busbw_factor_needs_at_least_two_ranks():
-    parsed = kernel_taxonomy.parse_nccl_kernel("ncclDevKernel_AllReduce_Sum_bf16_RING_LL128")
+    parsed = kernel_taxonomy.parse_nccl_kernel(
+        "ncclDevKernel_AllReduce_Sum_bf16_RING_LL128"
+    )
     assert parsed.busbw_factor(1) is None
 
 

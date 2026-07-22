@@ -234,7 +234,9 @@ def _normalize_event(row: Dict[str, object]) -> Optional[_KernelEvent]:
     total_shared = _pick_first(row, ["total_shared_bytes"])
     if total_shared is None:
         total_shared = _to_int(static_shared, 0) + _to_int(dynamic_shared, 0)
-    occ = _maybe_float(_pick_first(row, ["occupancy_pct_h100_estimate", "occupancy_pct_estimate"]))
+    occ = _maybe_float(
+        _pick_first(row, ["occupancy_pct_h100_estimate", "occupancy_pct_estimate"])
+    )
     nvtx_start = _pick_first(row, ["nvtx_start_ns", "nvtxStartNs"])
     nvtx_end = _pick_first(row, ["nvtx_end_ns", "nvtxEndNs"])
     nvtx_start_i: Optional[int] = None
@@ -262,9 +264,15 @@ def _normalize_event(row: Dict[str, object]) -> Optional[_KernelEvent]:
         grid_y=_to_int(grid_y, -1) if grid_y is not None else None,
         grid_z=_to_int(grid_z, -1) if grid_z is not None else None,
         registers_per_thread=_to_int(regs, -1) if regs is not None else None,
-        static_shared_bytes=_to_int(static_shared, -1) if static_shared is not None else None,
-        dynamic_shared_bytes=_to_int(dynamic_shared, -1) if dynamic_shared is not None else None,
-        total_shared_bytes=_to_int(total_shared, -1) if total_shared is not None else None,
+        static_shared_bytes=_to_int(static_shared, -1)
+        if static_shared is not None
+        else None,
+        dynamic_shared_bytes=_to_int(dynamic_shared, -1)
+        if dynamic_shared is not None
+        else None,
+        total_shared_bytes=_to_int(total_shared, -1)
+        if total_shared is not None
+        else None,
         occupancy_pct=occ,
     )
 
@@ -313,18 +321,28 @@ def _build_profile(
         scope_set: Dict[Tuple[int, int, str], Dict[str, object]] = {}
         for ev in events:
             if ev.nvtx_start_ns is not None and ev.nvtx_end_ns is not None:
-                key = (int(ev.nvtx_start_ns), int(ev.nvtx_end_ns), str(ev.nvtx_text or ""))
+                key = (
+                    int(ev.nvtx_start_ns),
+                    int(ev.nvtx_end_ns),
+                    str(ev.nvtx_text or ""),
+                )
                 if key not in scope_set:
                     scope_set[key] = {
                         "nvtx_text": str(ev.nvtx_text or ""),
                         "start_ns": int(ev.nvtx_start_ns),
                         "end_ns": int(ev.nvtx_end_ns),
-                        "duration_ms": round((int(ev.nvtx_end_ns) - int(ev.nvtx_start_ns)) / 1e6, 6),
+                        "duration_ms": round(
+                            (int(ev.nvtx_end_ns) - int(ev.nvtx_start_ns)) / 1e6, 6
+                        ),
                     }
         if scope_set:
             matched_scope_rows = sorted(
                 list(scope_set.values()),
-                key=lambda x: (int(x.get("start_ns") or -1), int(x.get("end_ns") or -1), str(x.get("nvtx_text") or "")),
+                key=lambda x: (
+                    int(x.get("start_ns") or -1),
+                    int(x.get("end_ns") or -1),
+                    str(x.get("nvtx_text") or ""),
+                ),
             )
             idx = max(0, min(int(nvtx_index), len(matched_scope_rows) - 1))
             selected_scope_info = dict(matched_scope_rows[idx])
@@ -355,23 +373,40 @@ def _build_profile(
                         "end_ns": int(ev.end_ns),
                     },
                 )
-                item["start_ns"] = min(int(item.get("start_ns") or ev.start_ns), int(ev.start_ns))
-                item["end_ns"] = max(int(item.get("end_ns") or ev.end_ns), int(ev.end_ns))
+                item["start_ns"] = min(
+                    int(item.get("start_ns") or ev.start_ns), int(ev.start_ns)
+                )
+                item["end_ns"] = max(
+                    int(item.get("end_ns") or ev.end_ns), int(ev.end_ns)
+                )
             matched_scope_rows = sorted(
                 [
                     {
                         **item,
-                        "duration_ms": round((int(item.get("end_ns") or 0) - int(item.get("start_ns") or 0)) / 1e6, 6),
+                        "duration_ms": round(
+                            (
+                                int(item.get("end_ns") or 0)
+                                - int(item.get("start_ns") or 0)
+                            )
+                            / 1e6,
+                            6,
+                        ),
                     }
                     for item in by_text.values()
                 ],
-                key=lambda x: (int(x.get("start_ns") or -1), int(x.get("end_ns") or -1), str(x.get("nvtx_text") or "")),
+                key=lambda x: (
+                    int(x.get("start_ns") or -1),
+                    int(x.get("end_ns") or -1),
+                    str(x.get("nvtx_text") or ""),
+                ),
             )
             if matched_scope_rows:
                 idx = max(0, min(int(nvtx_index), len(matched_scope_rows) - 1))
                 selected_scope_info = dict(matched_scope_rows[idx])
                 selected_text = str(selected_scope_info.get("nvtx_text") or "")
-                events = [ev for ev in events if str(ev.nvtx_text or "") == selected_text]
+                events = [
+                    ev for ev in events if str(ev.nvtx_text or "") == selected_text
+                ]
 
     events.sort(key=lambda x: (x.start_ns, x.stream_id, x.end_ns, x.kernel_name))
     if not events:
@@ -449,7 +484,9 @@ def _build_profile(
         k["resource_sets"]["total_shared_bytes"].add(ev.total_shared_bytes)
         k["resource_sets"]["occupancy_pct"].add(ev.occupancy_pct)
         if ev.occupancy_pct is not None and ev.duration_ms > 0:
-            k["weighted_occ_num"] = float(k["weighted_occ_num"]) + float(ev.occupancy_pct) * float(ev.duration_ms)
+            k["weighted_occ_num"] = float(k["weighted_occ_num"]) + float(
+                ev.occupancy_pct
+            ) * float(ev.duration_ms)
             k["weighted_occ_den"] = float(k["weighted_occ_den"]) + float(ev.duration_ms)
 
         s = stream_stats.setdefault(
@@ -469,7 +506,9 @@ def _build_profile(
         s["kernel_kind_counts"][ev.kind] += 1
         s["total_kernel_ms"] = float(s["total_kernel_ms"]) + float(ev.duration_ms)
         if ev.occupancy_pct is not None and ev.duration_ms > 0:
-            s["weighted_occ_num"] = float(s["weighted_occ_num"]) + float(ev.occupancy_pct) * float(ev.duration_ms)
+            s["weighted_occ_num"] = float(s["weighted_occ_num"]) + float(
+                ev.occupancy_pct
+            ) * float(ev.duration_ms)
             s["weighted_occ_den"] = float(s["weighted_occ_den"]) + float(ev.duration_ms)
 
     kernel_rows_all: List[Dict[str, object]] = []
@@ -479,7 +518,10 @@ def _build_profile(
         occ_den = float(stats.get("weighted_occ_den", 0.0))
         occ_num = float(stats.get("weighted_occ_num", 0.0))
         resource_sets = dict(stats.get("resource_sets") or {})
-        resource_signatures = {key: _sorted_values(resource_sets.get(key, set())) for key in _KERNEL_RESOURCE_KEYS}
+        resource_signatures = {
+            key: _sorted_values(resource_sets.get(key, set()))
+            for key in _KERNEL_RESOURCE_KEYS
+        }
         kernel_rows_all.append(
             {
                 "kernel_name": name,
@@ -488,11 +530,18 @@ def _build_profile(
                 "total_ms": round(total_ms, 6),
                 "avg_ms": round(total_ms / max(1, inv), 6),
                 "stream_count": len(stats.get("streams", set())),
-                "weighted_occupancy_pct": round(occ_num / occ_den, 6) if occ_den > 0 else None,
+                "weighted_occupancy_pct": round(occ_num / occ_den, 6)
+                if occ_den > 0
+                else None,
                 "resource_signatures": resource_signatures,
             }
         )
-    kernel_rows_all.sort(key=lambda x: (-_to_float(x.get("total_ms"), 0.0), str(x.get("kernel_name") or "")))
+    kernel_rows_all.sort(
+        key=lambda x: (
+            -_to_float(x.get("total_ms"), 0.0),
+            str(x.get("kernel_name") or ""),
+        )
+    )
 
     stream_rows: List[Dict[str, object]] = []
     for stream_id, stats in stream_stats.items():
@@ -509,7 +558,9 @@ def _build_profile(
         occ_num = float(stats.get("weighted_occ_num", 0.0))
         timeline_rows: List[Dict[str, object]] = []
         for idx, ev in enumerate(s_events):
-            if int(timeline_limit_per_stream) > 0 and idx >= int(timeline_limit_per_stream):
+            if int(timeline_limit_per_stream) > 0 and idx >= int(
+                timeline_limit_per_stream
+            ):
                 break
             timeline_rows.append(
                 {
@@ -529,7 +580,9 @@ def _build_profile(
                     "static_shared_bytes": ev.static_shared_bytes,
                     "dynamic_shared_bytes": ev.dynamic_shared_bytes,
                     "total_shared_bytes": ev.total_shared_bytes,
-                    "occupancy_pct": round(ev.occupancy_pct, 6) if ev.occupancy_pct is not None else None,
+                    "occupancy_pct": round(ev.occupancy_pct, 6)
+                    if ev.occupancy_pct is not None
+                    else None,
                 }
             )
         stream_rows.append(
@@ -538,13 +591,19 @@ def _build_profile(
                 "event_count": len(s_events),
                 "kernel_set_size": len(stats.get("kernel_set", set())),
                 "kernel_kind_counts": dict(stats.get("kernel_kind_counts", {})),
-                "first_start_offset_ms": round((first_start_ns - window_start_ns) / 1e6, 6),
+                "first_start_offset_ms": round(
+                    (first_start_ns - window_start_ns) / 1e6, 6
+                ),
                 "last_end_offset_ms": round((last_end_ns - window_start_ns) / 1e6, 6),
                 "span_ms": round(span_ms, 6),
                 "busy_union_ms": round(busy_ms, 6),
                 "total_kernel_ms": round(total_ms, 6),
-                "busy_pct_of_stream_span": round((busy_ms / span_ms) * 100.0, 6) if span_ms > 0 else None,
-                "weighted_occupancy_pct": round(occ_num / occ_den, 6) if occ_den > 0 else None,
+                "busy_pct_of_stream_span": round((busy_ms / span_ms) * 100.0, 6)
+                if span_ms > 0
+                else None,
+                "weighted_occupancy_pct": round(occ_num / occ_den, 6)
+                if occ_den > 0
+                else None,
                 "kernel_set": sorted(stats.get("kernel_set", set())),
                 "kernel_sequence": [ev.kernel_name for ev in s_events],
                 "timeline_sample": timeline_rows,
@@ -576,7 +635,9 @@ def _build_profile(
             "window_span_ms": round(window_span_ms, 6),
             "total_kernel_ms": round(total_kernel_ms, 6),
             "busy_union_ms": round(busy_union_ms, 6),
-            "weighted_occupancy_pct": round(weighted_occ, 6) if weighted_occ is not None else None,
+            "weighted_occupancy_pct": round(weighted_occ, 6)
+            if weighted_occ is not None
+            else None,
         },
         "top_kernels": kernel_rows_all[: max(1, int(top_k))],
         "kernel_stats_all": kernel_rows_all,
@@ -616,14 +677,21 @@ def _diff_kernel_totals(
                 "base_total_ms": round(b_ms, 6),
                 "target_total_ms": round(t_ms, 6),
                 "delta_ms": round(t_ms - b_ms, 6),
-                "ratio_target_over_base": round(ratio, 6) if ratio is not None else None,
+                "ratio_target_over_base": round(ratio, 6)
+                if ratio is not None
+                else None,
                 "base_invocations": _to_int(b.get("invocations"), 0),
                 "target_invocations": _to_int(t.get("invocations"), 0),
                 "base_occ_pct": b.get("weighted_occupancy_pct"),
                 "target_occ_pct": t.get("weighted_occupancy_pct"),
             }
         )
-    rows.sort(key=lambda x: (-abs(_to_float(x.get("delta_ms"), 0.0)), str(x.get("kernel_name") or "")))
+    rows.sort(
+        key=lambda x: (
+            -abs(_to_float(x.get("delta_ms"), 0.0)),
+            str(x.get("kernel_name") or ""),
+        )
+    )
     return rows[: max(1, int(top_k))]
 
 
@@ -643,8 +711,14 @@ def _diff_streams(
     base_profile: Dict[str, object],
     target_profile: Dict[str, object],
 ) -> List[Dict[str, object]]:
-    base_index = {int((row or {}).get("stream_id", -1)): dict(row or {}) for row in base_profile.get("streams", [])}
-    target_index = {int((row or {}).get("stream_id", -1)): dict(row or {}) for row in target_profile.get("streams", [])}
+    base_index = {
+        int((row or {}).get("stream_id", -1)): dict(row or {})
+        for row in base_profile.get("streams", [])
+    }
+    target_index = {
+        int((row or {}).get("stream_id", -1)): dict(row or {})
+        for row in target_profile.get("streams", [])
+    }
     stream_ids = sorted(set(base_index.keys()) | set(target_index.keys()))
     rows: List[Dict[str, object]] = []
     for stream_id in stream_ids:
@@ -652,7 +726,11 @@ def _diff_streams(
         t = target_index.get(stream_id, {})
         b_seq = [str(x) for x in (b.get("kernel_sequence") or [])]
         t_seq = [str(x) for x in (t.get("kernel_sequence") or [])]
-        seq_ratio = SequenceMatcher(None, b_seq, t_seq, autojunk=False).ratio() if (b_seq or t_seq) else 1.0
+        seq_ratio = (
+            SequenceMatcher(None, b_seq, t_seq, autojunk=False).ratio()
+            if (b_seq or t_seq)
+            else 1.0
+        )
         b_set = set(b.get("kernel_set") or [])
         t_set = set(t.get("kernel_set") or [])
         base_event_count = _to_int(b.get("event_count"), 0)
@@ -674,15 +752,21 @@ def _diff_streams(
                 "base_total_kernel_ms": _to_float(b.get("total_kernel_ms"), 0.0),
                 "target_total_kernel_ms": _to_float(t.get("total_kernel_ms"), 0.0),
                 "delta_total_kernel_ms": round(
-                    _to_float(t.get("total_kernel_ms"), 0.0) - _to_float(b.get("total_kernel_ms"), 0.0), 6
+                    _to_float(t.get("total_kernel_ms"), 0.0)
+                    - _to_float(b.get("total_kernel_ms"), 0.0),
+                    6,
                 ),
                 "base_occ_pct": b.get("weighted_occupancy_pct"),
                 "target_occ_pct": t.get("weighted_occupancy_pct"),
                 "delta_occ_pct": round(
-                    _to_float(t.get("weighted_occupancy_pct"), 0.0) - _to_float(b.get("weighted_occupancy_pct"), 0.0),
+                    _to_float(t.get("weighted_occupancy_pct"), 0.0)
+                    - _to_float(b.get("weighted_occupancy_pct"), 0.0),
                     6,
                 )
-                if (b.get("weighted_occupancy_pct") is not None or t.get("weighted_occupancy_pct") is not None)
+                if (
+                    b.get("weighted_occupancy_pct") is not None
+                    or t.get("weighted_occupancy_pct") is not None
+                )
                 else None,
                 "kernel_set_added": added,
                 "kernel_set_removed": removed,
@@ -694,7 +778,12 @@ def _diff_streams(
                 "target_timeline_sample": list(t.get("timeline_sample") or []),
             }
         )
-    rows.sort(key=lambda x: (-abs(_to_float(x.get("delta_total_kernel_ms"), 0.0)), int(x.get("stream_id", -1))))
+    rows.sort(
+        key=lambda x: (
+            -abs(_to_float(x.get("delta_total_kernel_ms"), 0.0)),
+            int(x.get("stream_id", -1)),
+        )
+    )
     return rows
 
 
@@ -743,7 +832,9 @@ def _diff_kernel_resources(
         changed_rows.append(
             {
                 "kernel_name": name,
-                "change_type": "geometry_only" if only_geometry else "resource_or_impl_change",
+                "change_type": "geometry_only"
+                if only_geometry
+                else "resource_or_impl_change",
                 "changed_keys": changed_keys,
                 "resource_diffs": diff_map,
                 "base_invocations": _to_int(b.get("invocations"), 0),
@@ -758,7 +849,10 @@ def _diff_kernel_resources(
     changed_rows.sort(
         key=lambda x: (
             0 if str(x.get("change_type")) == "resource_or_impl_change" else 1,
-            -abs(_to_float(x.get("target_total_ms"), 0.0) - _to_float(x.get("base_total_ms"), 0.0)),
+            -abs(
+                _to_float(x.get("target_total_ms"), 0.0)
+                - _to_float(x.get("base_total_ms"), 0.0)
+            ),
             str(x.get("kernel_name") or ""),
         )
     )
@@ -824,18 +918,23 @@ def compare_module_kernel_rows(
 
     compare_payload = {
         "module_delta": {
-            "event_count_delta": _to_int(target_summary.get("event_count"), 0) - _to_int(base_summary.get("event_count"), 0),
-            "stream_count_delta": _to_int(target_summary.get("stream_count"), 0) - _to_int(base_summary.get("stream_count"), 0),
+            "event_count_delta": _to_int(target_summary.get("event_count"), 0)
+            - _to_int(base_summary.get("event_count"), 0),
+            "stream_count_delta": _to_int(target_summary.get("stream_count"), 0)
+            - _to_int(base_summary.get("stream_count"), 0),
             "total_kernel_ms_delta": round(
-                _to_float(target_summary.get("total_kernel_ms"), 0.0) - _to_float(base_summary.get("total_kernel_ms"), 0.0),
+                _to_float(target_summary.get("total_kernel_ms"), 0.0)
+                - _to_float(base_summary.get("total_kernel_ms"), 0.0),
                 6,
             ),
             "busy_union_ms_delta": round(
-                _to_float(target_summary.get("busy_union_ms"), 0.0) - _to_float(base_summary.get("busy_union_ms"), 0.0),
+                _to_float(target_summary.get("busy_union_ms"), 0.0)
+                - _to_float(base_summary.get("busy_union_ms"), 0.0),
                 6,
             ),
             "window_span_ms_delta": round(
-                _to_float(target_summary.get("window_span_ms"), 0.0) - _to_float(base_summary.get("window_span_ms"), 0.0),
+                _to_float(target_summary.get("window_span_ms"), 0.0)
+                - _to_float(base_summary.get("window_span_ms"), 0.0),
                 6,
             ),
             "weighted_occupancy_pct_delta": round(
@@ -843,7 +942,10 @@ def compare_module_kernel_rows(
                 - _to_float(base_summary.get("weighted_occupancy_pct"), 0.0),
                 6,
             )
-            if (base_summary.get("weighted_occupancy_pct") is not None or target_summary.get("weighted_occupancy_pct") is not None)
+            if (
+                base_summary.get("weighted_occupancy_pct") is not None
+                or target_summary.get("weighted_occupancy_pct") is not None
+            )
             else None,
         },
         "kernel_set_diff": {
@@ -854,7 +956,9 @@ def compare_module_kernel_rows(
             "removed": kernel_removed,
         },
         "kernel_resource_diff": kernel_resource_diff,
-        "top_kernel_duration_deltas": _diff_kernel_totals(base_profile, target_profile, top_k=top_k),
+        "top_kernel_duration_deltas": _diff_kernel_totals(
+            base_profile, target_profile, top_k=top_k
+        ),
         "stream_deltas": _diff_streams(base_profile, target_profile),
     }
 
@@ -907,10 +1011,18 @@ def module_kernel_compare_to_markdown(payload: Dict[str, object]) -> str:
     lines: List[str] = []
     lines.append("# NSYS Module Kernel Compare")
     lines.append("")
-    lines.append(f"- base: `{base.get('label', 'base')}` ({base.get('source_path', '')})")
-    lines.append(f"- target: `{target.get('label', 'target')}` ({target.get('source_path', '')})")
-    base_scope = dict(base.get("nvtx_scope_selection") or {}).get("selected_scope") or {}
-    target_scope = dict(target.get("nvtx_scope_selection") or {}).get("selected_scope") or {}
+    lines.append(
+        f"- base: `{base.get('label', 'base')}` ({base.get('source_path', '')})"
+    )
+    lines.append(
+        f"- target: `{target.get('label', 'target')}` ({target.get('source_path', '')})"
+    )
+    base_scope = (
+        dict(base.get("nvtx_scope_selection") or {}).get("selected_scope") or {}
+    )
+    target_scope = (
+        dict(target.get("nvtx_scope_selection") or {}).get("selected_scope") or {}
+    )
     if base_scope:
         lines.append(
             "- base_selected_nvtx: `{}` start_ns=`{}` end_ns=`{}`".format(
@@ -932,10 +1044,18 @@ def module_kernel_compare_to_markdown(payload: Dict[str, object]) -> str:
     lines.append("")
     lines.append(f"- event_count delta: `{module_delta.get('event_count_delta', 0)}`")
     lines.append(f"- stream_count delta: `{module_delta.get('stream_count_delta', 0)}`")
-    lines.append(f"- total_kernel_ms delta: `{module_delta.get('total_kernel_ms_delta', 0.0)}`")
-    lines.append(f"- busy_union_ms delta: `{module_delta.get('busy_union_ms_delta', 0.0)}`")
-    lines.append(f"- window_span_ms delta: `{module_delta.get('window_span_ms_delta', 0.0)}`")
-    lines.append(f"- weighted_occupancy_pct delta: `{module_delta.get('weighted_occupancy_pct_delta')}`")
+    lines.append(
+        f"- total_kernel_ms delta: `{module_delta.get('total_kernel_ms_delta', 0.0)}`"
+    )
+    lines.append(
+        f"- busy_union_ms delta: `{module_delta.get('busy_union_ms_delta', 0.0)}`"
+    )
+    lines.append(
+        f"- window_span_ms delta: `{module_delta.get('window_span_ms_delta', 0.0)}`"
+    )
+    lines.append(
+        f"- weighted_occupancy_pct delta: `{module_delta.get('weighted_occupancy_pct_delta')}`"
+    )
     lines.append("")
     lines.append("## Kernel Set Diff")
     lines.append("")
@@ -945,10 +1065,18 @@ def module_kernel_compare_to_markdown(payload: Dict[str, object]) -> str:
     lines.append("")
     lines.append("## Same-Kernel Resource Diff")
     lines.append("")
-    lines.append(f"- common_kernel_count: `{kernel_resource_diff.get('common_kernel_count', 0)}`")
-    lines.append(f"- changed_kernel_count: `{kernel_resource_diff.get('changed_kernel_count', 0)}`")
-    lines.append(f"- unchanged_kernel_count: `{kernel_resource_diff.get('unchanged_kernel_count', 0)}`")
-    lines.append(f"- geometry_only_changed_count: `{kernel_resource_diff.get('geometry_only_changed_count', 0)}`")
+    lines.append(
+        f"- common_kernel_count: `{kernel_resource_diff.get('common_kernel_count', 0)}`"
+    )
+    lines.append(
+        f"- changed_kernel_count: `{kernel_resource_diff.get('changed_kernel_count', 0)}`"
+    )
+    lines.append(
+        f"- unchanged_kernel_count: `{kernel_resource_diff.get('unchanged_kernel_count', 0)}`"
+    )
+    lines.append(
+        f"- geometry_only_changed_count: `{kernel_resource_diff.get('geometry_only_changed_count', 0)}`"
+    )
     lines.append(
         f"- resource_or_impl_changed_count: `{kernel_resource_diff.get('resource_or_impl_changed_count', 0)}`"
     )
@@ -960,9 +1088,13 @@ def module_kernel_compare_to_markdown(payload: Dict[str, object]) -> str:
         for row in changed_kernels:
             lines.append(
                 "| {name} | {typ} | {keys} | {b} | {t} |".format(
-                    name=_short_kernel_name(str((row or {}).get("kernel_name") or ""), width=72),
+                    name=_short_kernel_name(
+                        str((row or {}).get("kernel_name") or ""), width=72
+                    ),
                     typ=row.get("change_type", ""),
-                    keys=",".join(str(x) for x in ((row or {}).get("changed_keys") or [])),
+                    keys=",".join(
+                        str(x) for x in ((row or {}).get("changed_keys") or [])
+                    ),
                     b=_to_int((row or {}).get("base_invocations"), 0),
                     t=_to_int((row or {}).get("target_invocations"), 0),
                 )
@@ -975,7 +1107,9 @@ def module_kernel_compare_to_markdown(payload: Dict[str, object]) -> str:
     for row in compare.get("top_kernel_duration_deltas", []) or []:
         lines.append(
             "| {name} | {b} | {t} | {d} | {r} |".format(
-                name=_short_kernel_name(str((row or {}).get("kernel_name") or ""), width=72),
+                name=_short_kernel_name(
+                    str((row or {}).get("kernel_name") or ""), width=72
+                ),
                 b=row.get("base_total_ms", 0.0),
                 t=row.get("target_total_ms", 0.0),
                 d=row.get("delta_ms", 0.0),
@@ -987,10 +1121,20 @@ def module_kernel_compare_to_markdown(payload: Dict[str, object]) -> str:
     lines.append("")
     for stream in compare.get("stream_deltas", []) or []:
         stream_id = int((stream or {}).get("stream_id", -1))
-        added_list = [str(x) for x in (stream.get("kernel_set_added", []) or []) if str(x or "").strip()]
-        removed_list = [str(x) for x in (stream.get("kernel_set_removed", []) or []) if str(x or "").strip()]
+        added_list = [
+            str(x)
+            for x in (stream.get("kernel_set_added", []) or [])
+            if str(x or "").strip()
+        ]
+        removed_list = [
+            str(x)
+            for x in (stream.get("kernel_set_removed", []) or [])
+            if str(x or "").strip()
+        ]
         lines.append(f"### Stream {stream_id}")
-        lines.append(f"- event_count: `{stream.get('base_event_count', 0)} -> {stream.get('target_event_count', 0)}`")
+        lines.append(
+            f"- event_count: `{stream.get('base_event_count', 0)} -> {stream.get('target_event_count', 0)}`"
+        )
         lines.append(
             "- total_kernel_ms: `{}` -> `{}` (delta `{}`)".format(
                 stream.get("base_total_kernel_ms", 0.0),
@@ -1005,7 +1149,9 @@ def module_kernel_compare_to_markdown(payload: Dict[str, object]) -> str:
                 stream.get("delta_occ_pct"),
             )
         )
-        lines.append(f"- sequence_similarity: `{stream.get('sequence_similarity', 0.0)}`")
+        lines.append(
+            f"- sequence_similarity: `{stream.get('sequence_similarity', 0.0)}`"
+        )
         div = dict(stream.get("first_divergence") or {})
         lines.append(
             "- first_divergence: idx `{}` | base `{}` | target `{}`".format(
@@ -1014,14 +1160,22 @@ def module_kernel_compare_to_markdown(payload: Dict[str, object]) -> str:
                 _short_kernel_name(str(div.get("target_kernel") or ""), width=56),
             )
         )
-        lines.append(f"- change_hint: `{stream.get('change_hint', 'reorder_or_timing_change')}`")
+        lines.append(
+            f"- change_hint: `{stream.get('change_hint', 'reorder_or_timing_change')}`"
+        )
         lines.append(f"- kernel_set_added: `{len(added_list)}`")
         lines.append(
-            "- kernel_set_added_list: " + (", ".join(f"`{x}`" for x in added_list) if added_list else "`(none)`")
+            "- kernel_set_added_list: "
+            + (", ".join(f"`{x}`" for x in added_list) if added_list else "`(none)`")
         )
         lines.append(f"- kernel_set_removed: `{len(removed_list)}`")
         lines.append(
-            "- kernel_set_removed_list: " + (", ".join(f"`{x}`" for x in removed_list) if removed_list else "`(none)`")
+            "- kernel_set_removed_list: "
+            + (
+                ", ".join(f"`{x}`" for x in removed_list)
+                if removed_list
+                else "`(none)`"
+            )
         )
         lines.append("")
     return "\n".join(lines)
@@ -1072,7 +1226,7 @@ def module_kernel_compare_to_html(payload: Dict[str, object]) -> str:
 
     def _timeline_table(rows: Sequence[Dict[str, object]], *, label: str) -> str:
         if not rows:
-            return f"<div class='empty'>No timeline rows in { _esc(label) }.</div>"
+            return f"<div class='empty'>No timeline rows in {_esc(label)}.</div>"
         head = (
             "<tr><th>idx</th><th>kernel</th><th>kind</th><th>start_ms</th><th>dur_ms</th>"
             "<th>tpb</th><th>regs</th><th>shared_bytes</th><th>occ_pct</th></tr>"
@@ -1255,8 +1409,12 @@ def module_kernel_compare_to_html(payload: Dict[str, object]) -> str:
             f"<div class='pill'><span>removed_count</span><strong>{_fmt_i(kernel_set.get('removed_count'))}</strong></div>",
             f"<div class='pill'><span>common_count</span><strong>{_fmt_i(kernel_set.get('common_count'))}</strong></div>",
             "</div>",
-            "<div class='chip-row'><span class='chip-title'>added</span>" + _chips(kernel_set.get("added") or [], "chip-add") + "</div>",
-            "<div class='chip-row'><span class='chip-title'>removed</span>" + _chips(kernel_set.get("removed") or [], "chip-del") + "</div>",
+            "<div class='chip-row'><span class='chip-title'>added</span>"
+            + _chips(kernel_set.get("added") or [], "chip-add")
+            + "</div>",
+            "<div class='chip-row'><span class='chip-title'>removed</span>"
+            + _chips(kernel_set.get("removed") or [], "chip-del")
+            + "</div>",
             "</section>",
             "<section class='card'>",
             "<h3>Same-Kernel Resource Diff</h3>",

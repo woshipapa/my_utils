@@ -30,7 +30,7 @@ References
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 
 
@@ -38,57 +38,59 @@ from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 # Hardware specification database
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 @dataclass
 class GpuSpecs:
     """Known theoretical peak bandwidths / capacities for a GPU model."""
+
     name: str
-    hbm_peak_tbps: float          # HBM read bandwidth  (TB/s)
-    pcie_peak_gbps: float         # PCIe unidirectional bandwidth (GB/s)
-    nvlink_peak_gbps: float       # NVLink per-direction bandwidth (GB/s); 0 if absent
-    sm_count: int                 # Streaming Multiprocessors
-    fp16_tflops: float            # Peak FP16 TFLOPS (Tensor Core)
+    hbm_peak_tbps: float  # HBM read bandwidth  (TB/s)
+    pcie_peak_gbps: float  # PCIe unidirectional bandwidth (GB/s)
+    nvlink_peak_gbps: float  # NVLink per-direction bandwidth (GB/s); 0 if absent
+    sm_count: int  # Streaming Multiprocessors
+    fp16_tflops: float  # Peak FP16 TFLOPS (Tensor Core)
 
 
 # List of (substring, GpuSpecs) ordered from most-specific to least-specific.
 # Matching is case-insensitive substring of the GPU name reported by nsys.
 _GPU_DB: List[Tuple[str, GpuSpecs]] = [
     # NVIDIA H-series (Hopper)
-    ("h100 nvl",    GpuSpecs("H100 NVL",    3.93, 128.0, 450.0, 132, 989.0)),
-    ("h100 sxm5",   GpuSpecs("H100 SXM5",   3.35, 128.0, 450.0, 132, 989.0)),
-    ("h100 sxm",    GpuSpecs("H100 SXM",    3.35, 128.0, 450.0, 132, 989.0)),
-    ("h100",        GpuSpecs("H100",        3.35, 128.0, 450.0, 132, 989.0)),
+    ("h100 nvl", GpuSpecs("H100 NVL", 3.93, 128.0, 450.0, 132, 989.0)),
+    ("h100 sxm5", GpuSpecs("H100 SXM5", 3.35, 128.0, 450.0, 132, 989.0)),
+    ("h100 sxm", GpuSpecs("H100 SXM", 3.35, 128.0, 450.0, 132, 989.0)),
+    ("h100", GpuSpecs("H100", 3.35, 128.0, 450.0, 132, 989.0)),
     # NVIDIA A-series (Ampere)
-    ("a100 80gb sxm",  GpuSpecs("A100 80GB SXM",  2.0,  64.0, 300.0, 108, 312.0)),
-    ("a100 80gb",   GpuSpecs("A100 80GB",   2.0,  64.0, 300.0, 108, 312.0)),
-    ("a100 40gb",   GpuSpecs("A100 40GB",   1.555, 64.0, 300.0, 108, 312.0)),
-    ("a100",        GpuSpecs("A100",        2.0,  64.0, 300.0, 108, 312.0)),
-    ("a30",         GpuSpecs("A30",         0.933, 64.0, 200.0, 56,  165.0)),
-    ("a10g",        GpuSpecs("A10G",        0.6,  64.0,   0.0, 80,   31.2)),
-    ("a10",         GpuSpecs("A10",         0.6,  64.0,   0.0, 72,   31.2)),
-    ("a6000",       GpuSpecs("RTX A6000",   0.768, 64.0,  0.0, 84,   38.7)),
-    ("a5000",       GpuSpecs("RTX A5000",   0.576, 64.0,  0.0, 64,   27.8)),
-    ("a4000",       GpuSpecs("RTX A4000",   0.448, 32.0,  0.0, 48,   19.2)),
+    ("a100 80gb sxm", GpuSpecs("A100 80GB SXM", 2.0, 64.0, 300.0, 108, 312.0)),
+    ("a100 80gb", GpuSpecs("A100 80GB", 2.0, 64.0, 300.0, 108, 312.0)),
+    ("a100 40gb", GpuSpecs("A100 40GB", 1.555, 64.0, 300.0, 108, 312.0)),
+    ("a100", GpuSpecs("A100", 2.0, 64.0, 300.0, 108, 312.0)),
+    ("a30", GpuSpecs("A30", 0.933, 64.0, 200.0, 56, 165.0)),
+    ("a10g", GpuSpecs("A10G", 0.6, 64.0, 0.0, 80, 31.2)),
+    ("a10", GpuSpecs("A10", 0.6, 64.0, 0.0, 72, 31.2)),
+    ("a6000", GpuSpecs("RTX A6000", 0.768, 64.0, 0.0, 84, 38.7)),
+    ("a5000", GpuSpecs("RTX A5000", 0.576, 64.0, 0.0, 64, 27.8)),
+    ("a4000", GpuSpecs("RTX A4000", 0.448, 32.0, 0.0, 48, 19.2)),
     # NVIDIA V-series (Volta)
-    ("v100 sxm2",   GpuSpecs("V100 SXM2",  0.9,  32.0, 150.0, 80,  112.0)),
-    ("v100",        GpuSpecs("V100",        0.9,  32.0, 150.0, 80,  112.0)),
+    ("v100 sxm2", GpuSpecs("V100 SXM2", 0.9, 32.0, 150.0, 80, 112.0)),
+    ("v100", GpuSpecs("V100", 0.9, 32.0, 150.0, 80, 112.0)),
     # Ada Lovelace (L-series / RTX 40xx)
-    ("l40s",        GpuSpecs("L40S",        0.864, 64.0,  0.0, 142,  91.6)),
-    ("l40",         GpuSpecs("L40",         0.864, 64.0,  0.0, 142,  90.5)),
-    ("l4",          GpuSpecs("L4",          0.300, 64.0,  0.0,  58,  30.3)),
-    ("rtx 4090",    GpuSpecs("RTX 4090",    1.008, 64.0,  0.0, 128, 165.0)),
-    ("rtx 4080",    GpuSpecs("RTX 4080",    0.717, 64.0,  0.0,  76,  97.5)),
-    ("rtx 4070 ti", GpuSpecs("RTX 4070 Ti", 0.504, 64.0, 0.0,  60,  40.0)),
-    ("rtx 4070",    GpuSpecs("RTX 4070",    0.432, 32.0,  0.0,  46,  29.0)),
+    ("l40s", GpuSpecs("L40S", 0.864, 64.0, 0.0, 142, 91.6)),
+    ("l40", GpuSpecs("L40", 0.864, 64.0, 0.0, 142, 90.5)),
+    ("l4", GpuSpecs("L4", 0.300, 64.0, 0.0, 58, 30.3)),
+    ("rtx 4090", GpuSpecs("RTX 4090", 1.008, 64.0, 0.0, 128, 165.0)),
+    ("rtx 4080", GpuSpecs("RTX 4080", 0.717, 64.0, 0.0, 76, 97.5)),
+    ("rtx 4070 ti", GpuSpecs("RTX 4070 Ti", 0.504, 64.0, 0.0, 60, 40.0)),
+    ("rtx 4070", GpuSpecs("RTX 4070", 0.432, 32.0, 0.0, 46, 29.0)),
     # Turing (RTX 20xx / T-series)
-    ("t4",          GpuSpecs("T4",          0.320, 32.0,  0.0,  40,  65.0)),
-    ("rtx 3090 ti", GpuSpecs("RTX 3090 Ti", 1.008, 32.0, 0.0,  84,  40.0)),
-    ("rtx 3090",    GpuSpecs("RTX 3090",    0.936, 32.0,  0.0,  82,  35.6)),
-    ("rtx 3080 ti", GpuSpecs("RTX 3080 Ti", 0.912, 32.0, 0.0,  80,  34.1)),
-    ("rtx 3080",    GpuSpecs("RTX 3080",    0.760, 32.0,  0.0,  68,  29.8)),
+    ("t4", GpuSpecs("T4", 0.320, 32.0, 0.0, 40, 65.0)),
+    ("rtx 3090 ti", GpuSpecs("RTX 3090 Ti", 1.008, 32.0, 0.0, 84, 40.0)),
+    ("rtx 3090", GpuSpecs("RTX 3090", 0.936, 32.0, 0.0, 82, 35.6)),
+    ("rtx 3080 ti", GpuSpecs("RTX 3080 Ti", 0.912, 32.0, 0.0, 80, 34.1)),
+    ("rtx 3080", GpuSpecs("RTX 3080", 0.760, 32.0, 0.0, 68, 29.8)),
     # P-series (Pascal) – no Tensor Cores
-    ("p100",        GpuSpecs("P100",        0.732, 16.0, 80.0,  56,   0.0)),
-    ("p40",         GpuSpecs("P40",         0.346, 16.0,  0.0,  30,   0.0)),
-    ("p4",          GpuSpecs("P4",          0.192,  8.0,  0.0,  20,   0.0)),
+    ("p100", GpuSpecs("P100", 0.732, 16.0, 80.0, 56, 0.0)),
+    ("p40", GpuSpecs("P40", 0.346, 16.0, 0.0, 30, 0.0)),
+    ("p4", GpuSpecs("P4", 0.192, 8.0, 0.0, 20, 0.0)),
 ]
 
 
@@ -144,31 +146,96 @@ def lookup_gpu_specs(gpu_name: str) -> Optional[GpuSpecs]:
 
 # Ordered list of (category, [regex patterns]) – first match wins.
 _KERNEL_CATEGORIES: List[Tuple[str, List[str]]] = [
-    ("communication", [
-        r"nccl", r"all_?reduce", r"all_?gather", r"reduce_?scatter",
-        r"send_?recv", r"broadcast", r"ncclKernel",
-    ]),
-    ("matmul", [
-        r"gemm", r"cublas", r"cutlass", r"matmul", r"sgemm", r"dgemm",
-        r"hgemm", r"wgrad", r"dgrad", r"fprop", r"mm_",
-    ]),
-    ("attention", [
-        r"attention", r"flash_?attn", r"fmha", r"scaled_dot",
-        r"multihead", r"xformers",
-    ]),
-    ("softmax",       [r"softmax", r"log_?softmax"]),
-    ("normalization", [
-        r"layer_?norm", r"rmsnorm", r"batch_?norm", r"instance_?norm",
-        r"group_?norm", r"rms_norm",
-    ]),
-    ("activation",    [r"gelu", r"silu", r"relu", r"sigmoid", r"tanh", r"swiglu", r"activation"]),
-    ("elementwise",   [r"elementwise", r"pointwise", r"fused_bias", r"add_", r"mul_", r"eltwise"]),
-    ("embedding",     [r"embedding", r"lookup", r"vocab", r"token"]),
-    ("optimizer",     [r"adam", r"lamb", r"sgd", r"momentum", r"clip_grad", r"optim", r"weight_update"]),
-    ("memory_ops",    [r"copy_", r"fill", r"memset", r"scatter", r"gather", r"index_select"]),
-    ("reduction",     [r"\breduce\b", r"\bsum\b", r"\bmean\b", r"\bvar\b", r"\bstd\b", r"\bmax\b", r"\bmin\b"]),
-    ("dropout",       [r"dropout"]),
-    ("loss",          [r"cross_entropy", r"nll_loss", r"loss_kernel"]),
+    (
+        "communication",
+        [
+            r"nccl",
+            r"all_?reduce",
+            r"all_?gather",
+            r"reduce_?scatter",
+            r"send_?recv",
+            r"broadcast",
+            r"ncclKernel",
+        ],
+    ),
+    (
+        "matmul",
+        [
+            r"gemm",
+            r"cublas",
+            r"cutlass",
+            r"matmul",
+            r"sgemm",
+            r"dgemm",
+            r"hgemm",
+            r"wgrad",
+            r"dgrad",
+            r"fprop",
+            r"mm_",
+        ],
+    ),
+    (
+        "attention",
+        [
+            r"attention",
+            r"flash_?attn",
+            r"fmha",
+            r"scaled_dot",
+            r"multihead",
+            r"xformers",
+        ],
+    ),
+    ("softmax", [r"softmax", r"log_?softmax"]),
+    (
+        "normalization",
+        [
+            r"layer_?norm",
+            r"rmsnorm",
+            r"batch_?norm",
+            r"instance_?norm",
+            r"group_?norm",
+            r"rms_norm",
+        ],
+    ),
+    (
+        "activation",
+        [r"gelu", r"silu", r"relu", r"sigmoid", r"tanh", r"swiglu", r"activation"],
+    ),
+    (
+        "elementwise",
+        [r"elementwise", r"pointwise", r"fused_bias", r"add_", r"mul_", r"eltwise"],
+    ),
+    ("embedding", [r"embedding", r"lookup", r"vocab", r"token"]),
+    (
+        "optimizer",
+        [
+            r"adam",
+            r"lamb",
+            r"sgd",
+            r"momentum",
+            r"clip_grad",
+            r"optim",
+            r"weight_update",
+        ],
+    ),
+    (
+        "memory_ops",
+        [r"copy_", r"fill", r"memset", r"scatter", r"gather", r"index_select"],
+    ),
+    (
+        "reduction",
+        [
+            r"\breduce\b",
+            r"\bsum\b",
+            r"\bmean\b",
+            r"\bvar\b",
+            r"\bstd\b",
+            r"\bmax\b",
+            r"\bmin\b",
+        ],
+    ),
+    ("dropout", [r"dropout"]),
+    ("loss", [r"cross_entropy", r"nll_loss", r"loss_kernel"]),
 ]
 
 
@@ -185,6 +252,7 @@ def categorize_kernel(name: str) -> str:
 # Metric name pattern matching
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 def _match_metric(name: str, *patterns: str) -> bool:
     n = name.lower()
     return any(re.search(p, n) for p in patterns)
@@ -194,10 +262,18 @@ def _classify_metric(name: str) -> Optional[str]:
     """Map a GPU metric name to a short key (sm_active / tensor_active / dram_throughput / None)."""
     if _match_metric(name, r"sm.*active", r"smsp.*active", r"sm__active"):
         return "sm_active"
-    if _match_metric(name, r"tensor.*active", r"pipe.*tensor", r"hmma.*active", r"imma.*active"):
+    if _match_metric(
+        name, r"tensor.*active", r"pipe.*tensor", r"hmma.*active", r"imma.*active"
+    ):
         return "tensor_active"
-    if _match_metric(name, r"dram.*throughput", r"dram__throughput", r"mem_bw", r"dram_bw",
-                     r"hbm.*throughput"):
+    if _match_metric(
+        name,
+        r"dram.*throughput",
+        r"dram__throughput",
+        r"mem_bw",
+        r"dram_bw",
+        r"hbm.*throughput",
+    ):
         return "dram_throughput"
     return None
 
@@ -205,6 +281,7 @@ def _classify_metric(name: str) -> Optional[str]:
 # ─────────────────────────────────────────────────────────────────────────────
 # Helper
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 def _f(value, default: float = 0.0) -> float:
     try:
@@ -231,8 +308,8 @@ _HBM_KINDS = {"DtoD"}
 
 
 def analyze_memory_io(
-    bandwidth_rows: List[Dict],    # from memcpy_bandwidth_analysis
-    transfer_rows: List[Dict],     # from memcpy_transfers_detail
+    bandwidth_rows: List[Dict],  # from memcpy_bandwidth_analysis
+    transfer_rows: List[Dict],  # from memcpy_transfers_detail
     specs: Optional[GpuSpecs],
     total_span_ms: float,
 ) -> Dict:
@@ -250,7 +327,11 @@ def analyze_memory_io(
     by_dir: Dict[str, Dict] = {}
     for row in bandwidth_rows:
         ck = row.get("copy_kind")
-        label = _COPY_KIND_LABELS.get(int(ck), f"Kind_{ck}") if ck is not None else str(row.get("direction", ""))
+        label = (
+            _COPY_KIND_LABELS.get(int(ck), f"Kind_{ck}")
+            if ck is not None
+            else str(row.get("direction", ""))
+        )
         by_dir[label] = {
             "count": int(row.get("count") or 0),
             "total_gb": _f(row.get("total_gb")),
@@ -283,7 +364,9 @@ def analyze_memory_io(
         if specs.pcie_peak_gbps > 0 and avg_pcie_gbps > 0:
             pcie_util = round(avg_pcie_gbps / specs.pcie_peak_gbps * 100.0, 1)
         if specs.hbm_peak_tbps > 0 and avg_d2d_gbps > 0:
-            hbm_util_from_d2d = round(avg_d2d_gbps / (specs.hbm_peak_tbps * 1000.0) * 100.0, 1)
+            hbm_util_from_d2d = round(
+                avg_d2d_gbps / (specs.hbm_peak_tbps * 1000.0) * 100.0, 1
+            )
         if specs.nvlink_peak_gbps > 0 and avg_p2p_gbps > 0:
             p2p_util = round(avg_p2p_gbps / specs.nvlink_peak_gbps * 100.0, 1)
 
@@ -341,6 +424,7 @@ def analyze_memory_io(
 # 2. Stream parallelism analysis
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 def analyze_stream_parallelism(
     per_stream_rows: List[Dict],
     total_span_ms: float,
@@ -375,16 +459,24 @@ def analyze_stream_parallelism(
 
     # Detect copy streams: low kernel count AND span ≈ total span (long-lived)
     # vs compute streams: high kernel count.
-    sorted_by_count = sorted(rows, key=lambda r: _f(r.get("kernel_count")), reverse=True)
-    copy_streams = [r for r in rows if _f(r.get("kernel_count")) < 20
-                    and _f(r.get("stream_span_ms")) > max_span * 0.5]
+    sorted_by_count = sorted(
+        rows, key=lambda r: _f(r.get("kernel_count")), reverse=True
+    )
+    copy_streams = [
+        r
+        for r in rows
+        if _f(r.get("kernel_count")) < 20
+        and _f(r.get("stream_span_ms")) > max_span * 0.5
+    ]
     copy_stream_detected = len(copy_streams) > 0
 
     # Overlap score between copy and compute streams
     # If copy_stream exists and is busier, it's overlapping with compute.
     copy_busy_ms = sum(_f(r.get("kernel_busy_ms")) for r in copy_streams)
     compute_busy_ms = sum_busy - copy_busy_ms
-    copy_compute_overlap_score = _pct(copy_busy_ms, max_span) if copy_stream_detected else 0.0
+    copy_compute_overlap_score = (
+        _pct(copy_busy_ms, max_span) if copy_stream_detected else 0.0
+    )
 
     # Per-stream summary
     per_stream = [
@@ -435,6 +527,7 @@ def analyze_stream_parallelism(
 # ─────────────────────────────────────────────────────────────────────────────
 # 3. Communication (NCCL) efficiency
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 def analyze_communication(
     nccl_rows: List[Dict],
@@ -537,8 +630,15 @@ def _collective_bandwidth_coverage(nccl_rows: List[Dict]) -> Dict:
     for row in nccl_rows or ():
         name = str(row.get("kernel_name") or "")
         low = name.lower()
-        for kind in ("allreduce", "allgather", "reducescatter", "broadcast",
-                     "reduce", "alltoall", "sendrecv"):
+        for kind in (
+            "allreduce",
+            "allgather",
+            "reducescatter",
+            "broadcast",
+            "reduce",
+            "alltoall",
+            "sendrecv",
+        ):
             if kind in low.replace("_", ""):
                 collectives[kind] = collectives.get(kind, 0.0) + _f(row.get("total_ms"))
                 break
@@ -548,7 +648,9 @@ def _collective_bandwidth_coverage(nccl_rows: List[Dict]) -> Dict:
         "algbw_gbps": None,
         "busbw_gbps": None,
         "efficiency": None,
-        "collective_time_ms_by_kind": {k: round(v, 3) for k, v in sorted(collectives.items())},
+        "collective_time_ms_by_kind": {
+            k: round(v, 3) for k, v in sorted(collectives.items())
+        },
         "reason": (
             "Bus bandwidth needs message bytes and rank count; the NCCL kernel table "
             "records neither. Kernel duration alone cannot separate a collective that "
@@ -576,6 +678,7 @@ def _collective_bandwidth_coverage(nccl_rows: List[Dict]) -> Dict:
 # ─────────────────────────────────────────────────────────────────────────────
 # 4. GPU metrics distribution
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 def analyze_gpu_metrics(
     aggregate_rows: List[Dict],
@@ -707,6 +810,7 @@ def analyze_gpu_metrics(
 # 5. Kernel composition analysis
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 def analyze_kernel_composition(
     aggregate_rows: List[Dict],
     total_span_ms: float,
@@ -739,7 +843,9 @@ def analyze_kernel_composition(
             "top_kernels": d["kernels"][:3],
         }
 
-    top_cat = max(categories, key=lambda c: categories[c]["ms"]) if categories else "other"
+    top_cat = (
+        max(categories, key=lambda c: categories[c]["ms"]) if categories else "other"
+    )
     issues: List[str] = []
     comm_cat = categories.get("communication", {})
     if comm_cat.get("ms", 0) > 0:
@@ -762,6 +868,7 @@ def analyze_kernel_composition(
 # ─────────────────────────────────────────────────────────────────────────────
 # 6. CPU-GPU pipeline analysis
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 def analyze_cpu_pipeline(
     launch_gap_rows: List[Dict],
@@ -810,11 +917,19 @@ def analyze_cpu_pipeline(
             "kernel_name": worst_gap.get("kernel_name"),
             "avg_gap_us": _f(worst_gap.get("avg_gap_us")),
             "total_gap_ms": _f(worst_gap.get("total_gap_ms")),
-        } if worst_gap else {},
+        }
+        if worst_gap
+        else {},
         "top_sync_types": [
-            {"sync_type": r.get("sync_type"), "count": int(r.get("count") or 0),
-             "total_ms": _f(r.get("total_ms")), "avg_ms": _f(r.get("avg_ms"))}
-            for r in sorted(sync_rows, key=lambda r: _f(r.get("total_ms")), reverse=True)[:5]
+            {
+                "sync_type": r.get("sync_type"),
+                "count": int(r.get("count") or 0),
+                "total_ms": _f(r.get("total_ms")),
+                "avg_ms": _f(r.get("avg_ms")),
+            }
+            for r in sorted(
+                sync_rows, key=lambda r: _f(r.get("total_ms")), reverse=True
+            )[:5]
         ],
         "issues": issues,
     }
@@ -823,6 +938,7 @@ def analyze_cpu_pipeline(
 # ─────────────────────────────────────────────────────────────────────────────
 # 7. Communication health / roofline / cross-layer consistency
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 def analyze_communication_health(
     communication: Dict,
@@ -852,9 +968,13 @@ def analyze_communication_health(
             f"Communication overlap is low ({overlap_pct_comm:.1f}% of comm hidden by compute)."
         )
     if bubble_pct > 10.0:
-        issues.append(f"Communication-only bubble is high ({bubble_pct:.1f}% of total span).")
+        issues.append(
+            f"Communication-only bubble is high ({bubble_pct:.1f}% of total span)."
+        )
     if compute_comm_ratio < 3.0:
-        issues.append(f"Compute/comm ratio is low ({compute_comm_ratio:.2f}x, recommended >=5x).")
+        issues.append(
+            f"Compute/comm ratio is low ({compute_comm_ratio:.2f}x, recommended >=5x)."
+        )
     if op_skew > 2.0:
         issues.append(f"NCCL op-time skew is high (max/mean={op_skew:.2f}).")
 
@@ -925,7 +1045,9 @@ def analyze_roofline_gap(
         # sm_active would report ~890 TFLOP/s on an H100 for a kernel that
         # issued no math at all, which is the dimensional error this guards.
         achieved_compute_tflops = (
-            round(specs.fp16_tflops * compute_avg / 100.0, 2) if compute_avg > 0 else None
+            round(specs.fp16_tflops * compute_avg / 100.0, 2)
+            if compute_avg > 0
+            else None
         )
         memory_bw_gbps = round(specs.hbm_peak_tbps * 1000.0 * memory_avg / 100.0, 2)
 
@@ -937,7 +1059,8 @@ def analyze_roofline_gap(
         "bottleneck_hint": bottleneck,
         "achieved_compute_tflops_est": achieved_compute_tflops,
         "achieved_compute_basis": (
-            "tensor_pipe_active" if compute_avg > 0
+            "tensor_pipe_active"
+            if compute_avg > 0
             else "unavailable: no tensor-pipe activity was sampled"
         ),
         "sm_residency_pct": round(residency_avg, 1),
@@ -963,14 +1086,18 @@ def analyze_cross_layer_consistency(
         if str(name).lower() == "communication":
             continue
         compute_ms += _f(item.get("total_ms"))
-    comm_ms = _f((communication or {}).get("comm_total_ms")) or _f((communication or {}).get("nccl_total_ms"))
+    comm_ms = _f((communication or {}).get("comm_total_ms")) or _f(
+        (communication or {}).get("nccl_total_ms")
+    )
     cpu_sync_ms = _f((cpu_pipeline or {}).get("total_sync_ms"))
     launch_gap_ms = _f((cpu_pipeline or {}).get("total_launch_gap_ms"))
     stream_parallelism_ratio = _f((stream_parallelism or {}).get("parallelism_ratio"))
 
     modeled_ms = compute_ms + comm_ms + cpu_sync_ms
     coverage_ratio = modeled_ms / span_ms if span_ms > 0 else 0.0
-    busy_alignment_ratio = busy_ms / max(compute_ms + comm_ms, 1e-6) if (compute_ms + comm_ms) > 0 else 0.0
+    busy_alignment_ratio = (
+        busy_ms / max(compute_ms + comm_ms, 1e-6) if (compute_ms + comm_ms) > 0 else 0.0
+    )
 
     issues: List[str] = []
     if span_ms > 0 and coverage_ratio < 0.45:
@@ -981,7 +1108,11 @@ def analyze_cross_layer_consistency(
         issues.append(
             f"GPU busy/model alignment is inconsistent (ratio={busy_alignment_ratio:.2f}); verify time-window and layer attribution."
         )
-    if stream_parallelism_ratio > 1.05 and launch_gap_ms > 0 and (launch_gap_ms / max(span_ms, 1e-6)) > 0.05:
+    if (
+        stream_parallelism_ratio > 1.05
+        and launch_gap_ms > 0
+        and (launch_gap_ms / max(span_ms, 1e-6)) > 0.05
+    ):
         issues.append(
             "Kernel launch gap is still high despite stream parallelism; CPU dispatch remains a bottleneck."
         )
@@ -1011,6 +1142,7 @@ def analyze_cross_layer_consistency(
 # ─────────────────────────────────────────────────────────────────────────────
 # 8. Multi-dimensional performance scoring (0-100)
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 def compute_performance_scores(
     util_pct: Optional[float],
@@ -1043,22 +1175,24 @@ def compute_performance_scores(
 
     # 1. GPU Utilisation
     if util_pct is not None:
-        gpu_util_score = _clamp(util_pct * 1.1)   # 91% util → ~100 score
+        gpu_util_score = _clamp(util_pct * 1.1)  # 91% util → ~100 score
     elif gpu_metrics.get("available"):
         sm = _f(gpu_metrics.get("sm_active", {}).get("avg"))
         gpu_util_score = _clamp(sm * 1.1)
     else:
-        gpu_util_score = 50.0   # unknown
+        gpu_util_score = 50.0  # unknown
 
     # 2. Memory Efficiency  (PCIe + D2D utilisation)
-    pcie_u = gpu_metrics.get("hbm_utilisation_pct") or memory_io.get("hbm_utilisation_from_d2d_pct")
+    pcie_u = gpu_metrics.get("hbm_utilisation_pct") or memory_io.get(
+        "hbm_utilisation_from_d2d_pct"
+    )
     if pcie_u is not None:
         # HBM near-saturation is BAD for latency-bound workloads but expected
         # for memory-bound ones. Score peaks at 70-80% utilisation.
         mem_score = _clamp(100.0 - abs(pcie_u - 75.0) * 1.3)
     elif memory_io.get("pcie_utilisation_pct") is not None:
         pu = _f(memory_io.get("pcie_utilisation_pct"))
-        mem_score = _clamp(pu * 1.2)   # higher PCIe util = better data-fed GPU
+        mem_score = _clamp(pu * 1.2)  # higher PCIe util = better data-fed GPU
     else:
         mem_score = 50.0
 
@@ -1085,7 +1219,7 @@ def compute_performance_scores(
 
     # 4. Communication Efficiency
     if communication.get("nccl_total_ms", 0) == 0:
-        comm_score = 100.0   # no NCCL → perfect comm score
+        comm_score = 100.0  # no NCCL → perfect comm score
     else:
         ov_pct = _f(communication.get("overlap_pct_of_comm"))
         bubble = _f(communication.get("pipeline_bubble_pct"))
@@ -1113,7 +1247,11 @@ def compute_performance_scores(
     unmeasured = [k for k, v, _ in weights if v is None]
 
     total_weight = sum(w for _, _, w in measured)
-    overall = round(sum(v * w for _, v, w in measured) / total_weight, 1) if total_weight else 0.0
+    overall = (
+        round(sum(v * w for _, v, w in measured) / total_weight, 1)
+        if total_weight
+        else 0.0
+    )
 
     scores = {k: round(v, 1) for k, v, _ in measured}
     for key in unmeasured:
@@ -1132,6 +1270,7 @@ def compute_performance_scores(
 # ─────────────────────────────────────────────────────────────────────────────
 # 8. Recommendation generation
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 def generate_recommendations(
     scores: Dict,
@@ -1155,7 +1294,9 @@ def generate_recommendations(
     """
     recs: List[Dict] = []
 
-    def _add(score: float, category: str, title: str, detail: str, refs: List[str]) -> None:
+    def _add(
+        score: float, category: str, title: str, detail: str, refs: List[str]
+    ) -> None:
         if score < 30:
             priority = "critical"
         elif score < 50:
@@ -1164,69 +1305,93 @@ def generate_recommendations(
             priority = "medium"
         else:
             priority = "low"
-        recs.append({
-            "priority": priority,
-            "score": round(score, 1),
-            "category": category,
-            "title": title,
-            "detail": detail,
-            "references": refs,
-        })
+        recs.append(
+            {
+                "priority": priority,
+                "score": round(score, 1),
+                "category": category,
+                "title": title,
+                "detail": detail,
+                "references": refs,
+            }
+        )
 
     # --- GPU Utilisation ---
     gu = _f(scores.get("gpu_utilisation"))
     if gu < 70:
-        _add(gu, "gpu_utilisation",
-             "Increase GPU utilisation",
-             f"GPU utilisation is {gu:.0f}%. The primary driver is likely one of: "
-             "(a) excessive CPU↔GPU synchronisation (check sync_breakdown), "
-             "(b) CPU-bound data loading or preprocessing stalling the GPU, "
-             "(c) small batch size limiting parallelism, or "
-             "(d) many short <10 µs kernels causing launch overhead. "
-             "Prioritise resolving the CUDA stream synchronisation pattern and "
-             "increase batch size if memory allows.",
-             ["https://docs.nvidia.com/deeplearning/performance/",
-              "https://docs.nvidia.com/cuda/cuda-c-best-practices-guide/"])
+        _add(
+            gu,
+            "gpu_utilisation",
+            "Increase GPU utilisation",
+            f"GPU utilisation is {gu:.0f}%. The primary driver is likely one of: "
+            "(a) excessive CPU↔GPU synchronisation (check sync_breakdown), "
+            "(b) CPU-bound data loading or preprocessing stalling the GPU, "
+            "(c) small batch size limiting parallelism, or "
+            "(d) many short <10 µs kernels causing launch overhead. "
+            "Prioritise resolving the CUDA stream synchronisation pattern and "
+            "increase batch size if memory allows.",
+            [
+                "https://docs.nvidia.com/deeplearning/performance/",
+                "https://docs.nvidia.com/cuda/cuda-c-best-practices-guide/",
+            ],
+        )
 
     # --- Stream Parallelism ---
     sp = _f(scores.get("stream_parallelism"))
     if sp < 50:
-        detail = "No async copy-compute pipeline detected. " if not stream_parallelism.get("copy_stream_detected") else ""
-        _add(sp, "stream_parallelism",
-             "Enable copy-compute pipeline with async streams",
-             detail +
-             "Launch H↔D memory transfers on a dedicated non-default stream using "
-             "cudaMemcpyAsync. This overlaps data movement with GPU compute and can "
-             "eliminate idle time between mini-batches. In PyTorch: use pin_memory=True "
-             "and num_workers>0 in DataLoader, or use torch.cuda.Stream() explicitly.",
-             ["https://docs.nvidia.com/cuda/cuda-c-best-practices-guide/#asynchronous-transfers",
-              "https://docs.nvidia.com/deeplearning/performance/dl-performance-getting-started/"])
+        detail = (
+            "No async copy-compute pipeline detected. "
+            if not stream_parallelism.get("copy_stream_detected")
+            else ""
+        )
+        _add(
+            sp,
+            "stream_parallelism",
+            "Enable copy-compute pipeline with async streams",
+            detail
+            + "Launch H↔D memory transfers on a dedicated non-default stream using "
+            "cudaMemcpyAsync. This overlaps data movement with GPU compute and can "
+            "eliminate idle time between mini-batches. In PyTorch: use pin_memory=True "
+            "and num_workers>0 in DataLoader, or use torch.cuda.Stream() explicitly.",
+            [
+                "https://docs.nvidia.com/cuda/cuda-c-best-practices-guide/#asynchronous-transfers",
+                "https://docs.nvidia.com/deeplearning/performance/dl-performance-getting-started/",
+            ],
+        )
 
     # --- Communication Efficiency ---
     ce = _f(scores.get("communication"))
     if ce < 60 and _f(communication.get("nccl_total_ms")) > 0:
         overlap_pct = _f(communication.get("overlap_pct_of_comm"))
-        _add(ce, "communication",
-             "Improve compute-communication overlap",
-             f"NCCL all-reduce overlaps with compute only {overlap_pct:.0f}% of the time. "
-             "Use non-blocking collectives (async_op=True in PyTorch DDP), or switch to "
-             "ZeRO-2/ZeRO-3 with overlap_comm=True. Gradient bucketing size matters: "
-             "larger buckets reduce NCCL call frequency but increase latency. "
-             "For pipeline parallelism: 1F1B schedule hides inter-stage all-reduce.",
-             ["https://docs.nvidia.com/deeplearning/nccl/user-guide/",
-              "https://deepspeed.readthedocs.io/en/latest/zero3.html"])
+        _add(
+            ce,
+            "communication",
+            "Improve compute-communication overlap",
+            f"NCCL all-reduce overlaps with compute only {overlap_pct:.0f}% of the time. "
+            "Use non-blocking collectives (async_op=True in PyTorch DDP), or switch to "
+            "ZeRO-2/ZeRO-3 with overlap_comm=True. Gradient bucketing size matters: "
+            "larger buckets reduce NCCL call frequency but increase latency. "
+            "For pipeline parallelism: 1F1B schedule hides inter-stage all-reduce.",
+            [
+                "https://docs.nvidia.com/deeplearning/nccl/user-guide/",
+                "https://deepspeed.readthedocs.io/en/latest/zero3.html",
+            ],
+        )
 
     # --- Communication Health ---
     ch_score = _f(communication_health.get("health_score"))
     if ch_score < 70:
-        _add(ch_score, "communication_health",
-             "Stabilize communication health and tail latency",
-             f"Communication health score is {ch_score:.0f}. "
-             f"overlap={communication_health.get('overlap_pct_of_comm', 0):.1f}% "
-             f"bubble={communication_health.get('pipeline_bubble_pct', 0):.1f}% "
-             f"op_skew={communication_health.get('op_skew_ratio_max_over_mean', 0):.2f}. "
-             "Inspect rank-level stragglers, NCCL algorithm/protocol choice, and transport-level RAS counters.",
-             ["https://docs.nvidia.com/deeplearning/nccl/user-guide/"])
+        _add(
+            ch_score,
+            "communication_health",
+            "Stabilize communication health and tail latency",
+            f"Communication health score is {ch_score:.0f}. "
+            f"overlap={communication_health.get('overlap_pct_of_comm', 0):.1f}% "
+            f"bubble={communication_health.get('pipeline_bubble_pct', 0):.1f}% "
+            f"op_skew={communication_health.get('op_skew_ratio_max_over_mean', 0):.2f}. "
+            "Inspect rank-level stragglers, NCCL algorithm/protocol choice, and transport-level RAS counters.",
+            ["https://docs.nvidia.com/deeplearning/nccl/user-guide/"],
+        )
 
     # --- Memory Efficiency ---
     me = _f(scores.get("memory_efficiency"))
@@ -1244,18 +1409,26 @@ def generate_recommendations(
                 f"PCIe utilisation is only {pcie_util:.1f}%. Use pinned (page-locked) host "
                 "memory to maximise PCIe throughput."
             )
-        hbm = gpu_metrics.get("hbm_utilisation_pct") or memory_io.get("hbm_utilisation_from_d2d_pct")
+        hbm = gpu_metrics.get("hbm_utilisation_pct") or memory_io.get(
+            "hbm_utilisation_from_d2d_pct"
+        )
         if hbm and _f(hbm) > 80:
             detail_parts.append(
                 f"HBM bandwidth at {hbm:.0f}% — near saturation. Increase operator fusion to "
                 "reduce repeated global memory reads. Flash-Attention, Triton fused kernels, "
                 "or torch.compile with fusion can help."
             )
-        _add(me, "memory_efficiency",
-             "Improve memory transfer and HBM efficiency",
-             " ".join(detail_parts) or "Review memory access patterns and transfer sizes.",
-             ["https://docs.nvidia.com/cuda/cuda-c-best-practices-guide/#memory-optimizations",
-              "https://arxiv.org/abs/2205.14135"])  # FlashAttention
+        _add(
+            me,
+            "memory_efficiency",
+            "Improve memory transfer and HBM efficiency",
+            " ".join(detail_parts)
+            or "Review memory access patterns and transfer sizes.",
+            [
+                "https://docs.nvidia.com/cuda/cuda-c-best-practices-guide/#memory-optimizations",
+                "https://arxiv.org/abs/2205.14135",
+            ],
+        )  # FlashAttention
 
     # --- CPU Pipeline ---
     cp = _f(scores.get("cpu_pipeline"))
@@ -1275,37 +1448,49 @@ def generate_recommendations(
                 f"({sync_pct:.1f}%). Replace blocking syncs with CUDA events; batch "
                 "CPU-side checks to avoid serialising the dispatch thread."
             )
-        _add(cp, "cpu_pipeline",
-             "Reduce CPU-side dispatch and synchronisation overhead",
-             " ".join(detail_parts) or "Profile CPU-side dispatch bottlenecks.",
-             ["https://developer.nvidia.com/blog/cuda-graphs/",
-              "https://docs.nvidia.com/cuda/cuda-c-best-practices-guide/#asynchronous-transfers"])
+        _add(
+            cp,
+            "cpu_pipeline",
+            "Reduce CPU-side dispatch and synchronisation overhead",
+            " ".join(detail_parts) or "Profile CPU-side dispatch bottlenecks.",
+            [
+                "https://developer.nvidia.com/blog/cuda-graphs/",
+                "https://docs.nvidia.com/cuda/cuda-c-best-practices-guide/#asynchronous-transfers",
+            ],
+        )
 
     # --- Roofline Gap ---
     rg_gap = _f(roofline_gap.get("roofline_gap_pct"))
     if rg_gap > 15:
-        _add(max(0.0, 100.0 - rg_gap), "roofline",
-             "Close roofline gap between memory and compute",
-             f"Roofline gap is {rg_gap:.1f} points "
-             f"(compute={roofline_gap.get('compute_util_pct', 0):.1f}%, "
-             f"memory={roofline_gap.get('memory_util_pct', 0):.1f}%, "
-             f"hint={roofline_gap.get('bottleneck_hint', 'balanced')}). "
-             "For memory-bound windows, prioritize memory traffic reduction and fusion; "
-             "for compute-bound windows, improve occupancy and tensor-core utilization.",
-             ["https://docs.nvidia.com/nsight-compute/",
-              "https://crd.lbl.gov/departments/computer-science/PAR/research/roofline/"])
+        _add(
+            max(0.0, 100.0 - rg_gap),
+            "roofline",
+            "Close roofline gap between memory and compute",
+            f"Roofline gap is {rg_gap:.1f} points "
+            f"(compute={roofline_gap.get('compute_util_pct', 0):.1f}%, "
+            f"memory={roofline_gap.get('memory_util_pct', 0):.1f}%, "
+            f"hint={roofline_gap.get('bottleneck_hint', 'balanced')}). "
+            "For memory-bound windows, prioritize memory traffic reduction and fusion; "
+            "for compute-bound windows, improve occupancy and tensor-core utilization.",
+            [
+                "https://docs.nvidia.com/nsight-compute/",
+                "https://crd.lbl.gov/departments/computer-science/PAR/research/roofline/",
+            ],
+        )
 
     # --- Cross-layer consistency ---
     cl_score = _f(cross_layer_consistency.get("consistency_score"))
     if cl_score < 75:
-        _add(cl_score, "cross_layer_consistency",
-             "Improve cross-layer observability consistency",
-             f"Consistency score is {cl_score:.0f} "
-             f"(coverage={_f(cross_layer_consistency.get('coverage_ratio')) * 100.0:.1f}%, "
-             f"busy_alignment={cross_layer_consistency.get('busy_alignment_ratio', 0):.2f}). "
-             "Align step/rank tags and units across CPU, communication, and GPU events to reduce attribution ambiguity.",
-             ["https://perfetto.dev/docs/",
-              "https://opentelemetry.io/docs/"])
+        _add(
+            cl_score,
+            "cross_layer_consistency",
+            "Improve cross-layer observability consistency",
+            f"Consistency score is {cl_score:.0f} "
+            f"(coverage={_f(cross_layer_consistency.get('coverage_ratio')) * 100.0:.1f}%, "
+            f"busy_alignment={cross_layer_consistency.get('busy_alignment_ratio', 0):.2f}). "
+            "Align step/rank tags and units across CPU, communication, and GPU events to reduce attribution ambiguity.",
+            ["https://perfetto.dev/docs/", "https://opentelemetry.io/docs/"],
+        )
 
     # --- Short kernels / launch overhead ---
     short_pct = 0.0
@@ -1313,28 +1498,38 @@ def generate_recommendations(
         if str(r.get("duration_bracket", "")).startswith(("a_", "b_")):
             short_pct += _f(r.get("pct_count"))
     if short_pct > 25:
-        _add(max(100 - short_pct * 2, 0), "kernel_efficiency",
-             "Fuse short kernels or use CUDA Graphs",
-             f"{short_pct:.0f}% of kernel invocations are <10 µs. "
-             "Each kernel launch carries ~2-5 µs of CPU overhead + ~5-10 µs GPU scheduling. "
-             "Fuse elementwise/activation ops with torch.compile, or record the full "
-             "forward-backward pass as a CUDAGraph for overhead-free replay.",
-             ["https://pytorch.org/docs/stable/torch.compiler.html",
-              "https://developer.nvidia.com/blog/cuda-graphs/"])
+        _add(
+            max(100 - short_pct * 2, 0),
+            "kernel_efficiency",
+            "Fuse short kernels or use CUDA Graphs",
+            f"{short_pct:.0f}% of kernel invocations are <10 µs. "
+            "Each kernel launch carries ~2-5 µs of CPU overhead + ~5-10 µs GPU scheduling. "
+            "Fuse elementwise/activation ops with torch.compile, or record the full "
+            "forward-backward pass as a CUDAGraph for overhead-free replay.",
+            [
+                "https://pytorch.org/docs/stable/torch.compiler.html",
+                "https://developer.nvidia.com/blog/cuda-graphs/",
+            ],
+        )
 
     # --- Kernel jitter ---
     high_jitter = [r for r in kernel_jitter if _f(r.get("cv_pct")) > 50]
     if high_jitter:
         worst = high_jitter[0]
-        _add(50.0, "kernel_efficiency",
-             "Fix high-variance kernels (execution jitter)",
-             f"'{worst.get('kernel_name')}' CV={worst.get('cv_pct')}% "
-             f"(avg={worst.get('avg_ms')} ms, stddev={worst.get('stddev_ms')} ms). "
-             "High CV indicates wavefront imbalance, dynamic branching, or "
-             "irregular memory access patterns. Profile with Nsight Compute for "
-             "warp stall reasons and shared memory bank conflicts.",
-             ["https://docs.nvidia.com/nsight-compute/",
-              "https://docs.nvidia.com/cuda/cuda-c-best-practices-guide/#control-flow"])
+        _add(
+            50.0,
+            "kernel_efficiency",
+            "Fix high-variance kernels (execution jitter)",
+            f"'{worst.get('kernel_name')}' CV={worst.get('cv_pct')}% "
+            f"(avg={worst.get('avg_ms')} ms, stddev={worst.get('stddev_ms')} ms). "
+            "High CV indicates wavefront imbalance, dynamic branching, or "
+            "irregular memory access patterns. Profile with Nsight Compute for "
+            "warp stall reasons and shared memory bank conflicts.",
+            [
+                "https://docs.nvidia.com/nsight-compute/",
+                "https://docs.nvidia.com/cuda/cuda-c-best-practices-guide/#control-flow",
+            ],
+        )
 
     # Sort: critical first, then by score ascending (worst first)
     priority_order = {"critical": 0, "high": 1, "medium": 2, "low": 3}
@@ -1345,6 +1540,7 @@ def generate_recommendations(
 # ─────────────────────────────────────────────────────────────────────────────
 # Main orchestrator
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 def analyze_kernel_attribution(aggregate_kernels: List[Dict]) -> Dict:
     """Fuse per-kernel evidence and surface the places a name cannot be trusted.
@@ -1378,11 +1574,13 @@ def analyze_kernel_attribution(aggregate_kernels: List[Dict]) -> Dict:
             stub_named += 1
 
         if warnings:
-            caveats.append({
-                "kernel": name[:120],
-                "total_ms": _f(row.get("total_ms") or row.get("total_time_ms")),
-                "warnings": warnings,
-            })
+            caveats.append(
+                {
+                    "kernel": name[:120],
+                    "total_ms": _f(row.get("total_ms") or row.get("total_time_ms")),
+                    "warnings": warnings,
+                }
+            )
 
     caveats.sort(key=lambda c: c["total_ms"], reverse=True)
     notes: List[str] = []
@@ -1477,9 +1675,10 @@ def _assess_quality(inputs: Optional[Dict], aggregate_kernels: List[Dict]) -> Di
     from ..analyzers.trace_quality import assess_trace_quality  # local: avoid cycle
 
     payload = dict(inputs)
-    payload.setdefault("kernel_names", [
-        str(r.get("kernel_name") or "") for r in (aggregate_kernels or ())
-    ])
+    payload.setdefault(
+        "kernel_names",
+        [str(r.get("kernel_name") or "") for r in (aggregate_kernels or ())],
+    )
     result = assess_trace_quality(**payload)
     result["checked"] = True
     return result
@@ -1548,7 +1747,9 @@ def build_comprehensive_analysis(
     util_pct_raw = timing.get("utilization_pct")
     util_pct = _f(util_pct_raw) if util_pct_raw is not None else None
 
-    mem_io = analyze_memory_io(memcpy_bandwidth, memcpy_transfers_detail, specs, span_ms)
+    mem_io = analyze_memory_io(
+        memcpy_bandwidth, memcpy_transfers_detail, specs, span_ms
+    )
     stream_para = analyze_stream_parallelism(per_stream_utilization, span_ms)
     comm = analyze_communication(nccl_breakdown, overlap, span_ms)
     gm = analyze_gpu_metrics(gpu_metrics_aggregate, gpu_metrics_percentiles, specs)
@@ -1565,18 +1766,39 @@ def build_comprehensive_analysis(
     )
 
     scores = compute_performance_scores(
-        util_pct, mem_io, stream_para, comm, gm, cpu_pipe,
+        util_pct,
+        mem_io,
+        stream_para,
+        comm,
+        gm,
+        cpu_pipe,
     )
     recs = generate_recommendations(
-        scores, mem_io, stream_para, comm, comm_health, gm, roofline_gap, kernel_comp, cpu_pipe, cross_layer_consistency,
-        util_pct, short_kernels, kernel_duration_stats,
+        scores,
+        mem_io,
+        stream_para,
+        comm,
+        comm_health,
+        gm,
+        roofline_gap,
+        kernel_comp,
+        cpu_pipe,
+        cross_layer_consistency,
+        util_pct,
+        short_kernels,
+        kernel_duration_stats,
     )
 
     # The verdict leads. A reader who stops after one line should still get the
     # dominant cause rather than having to rank nine dimension scores themselves.
     triage = _triage_from_tables(
-        summary, aggregate_kernels, nccl_breakdown, memcpy_bandwidth,
-        sync_breakdown, cpu_launch_gap, kernel_duration_stats,
+        summary,
+        aggregate_kernels,
+        nccl_breakdown,
+        memcpy_bandwidth,
+        sync_breakdown,
+        cpu_launch_gap,
+        kernel_duration_stats,
     )
     attribution = analyze_kernel_attribution(aggregate_kernels)
 
@@ -1600,7 +1822,9 @@ def build_comprehensive_analysis(
                 "nvlink_peak_gbps": specs.nvlink_peak_gbps if specs else None,
                 "sm_count": specs.sm_count if specs else None,
                 "fp16_tflops": specs.fp16_tflops if specs else None,
-            } if specs else {},
+            }
+            if specs
+            else {},
         },
         "memory_io": mem_io,
         "stream_parallelism": stream_para,
@@ -1622,10 +1846,10 @@ def build_comprehensive_analysis(
 
 _SCORE_EMOJI = {
     (90, 101): "✅",
-    (70,  90): "🟡",
-    (50,  70): "🟠",
-    (30,  50): "🔴",
-    (0,   30): "💀",
+    (70, 90): "🟡",
+    (50, 70): "🟠",
+    (30, 50): "🔴",
+    (0, 30): "💀",
 }
 
 
@@ -1666,15 +1890,19 @@ def comprehensive_to_markdown(analysis: Dict) -> str:
             for key, value in list(evidence.items())[:8]:
                 if value is None:
                     continue
-                shown = f"{value:.3g}" if isinstance(value, (int, float)) else str(value)
+                shown = (
+                    f"{value:.3g}" if isinstance(value, (int, float)) else str(value)
+                )
                 lines.append(f"- {key}: {shown}")
         if conf in ("low", "unknown"):
-            lines.extend([
-                "",
-                "> Confidence is limited by what this trace carries. The nsys summary "
-                "tables give totals rather than intervals, so overlap between "
-                "communication and compute could not be measured directly.",
-            ])
+            lines.extend(
+                [
+                    "",
+                    "> Confidence is limited by what this trace carries. The nsys summary "
+                    "tables give totals rather than intervals, so overlap between "
+                    "communication and compute could not be measured directly.",
+                ]
+            )
 
     attribution = a.get("kernel_attribution") or {}
     if attribution.get("notes") or attribution.get("caveats"):
@@ -1704,7 +1932,9 @@ def comprehensive_to_markdown(analysis: Dict) -> str:
     scores = a.get("performance_scores", {})
     overall = _f(scores.get("overall"))
     primary = str(scores.get("primary_bottleneck", "unknown")).replace("_", " ").title()
-    secondary = str(scores.get("secondary_bottleneck", "none")).replace("_", " ").title()
+    secondary = (
+        str(scores.get("secondary_bottleneck", "none")).replace("_", " ").title()
+    )
     lines.append(f"**Overall Score: {overall:.0f} / 100** {_score_emoji(overall)}")
     lines.append(f"Primary bottleneck: **{primary}** · Secondary: **{secondary}**")
     lines.append("")
@@ -1752,17 +1982,25 @@ def comprehensive_to_markdown(analysis: Dict) -> str:
     # ── Memory IO ────────────────────────────────────────────────────────────
     h2("💾 Memory IO Analysis")
     mi = a.get("memory_io", {})
-    lines.append(tbl_row("Direction", "Volume (GB)", "Duration (ms)", "Avg BW (GB/s)", "Peak Util %"))
+    lines.append(
+        tbl_row(
+            "Direction", "Volume (GB)", "Duration (ms)", "Avg BW (GB/s)", "Peak Util %"
+        )
+    )
     lines.append(tbl_row("---", "---", "---", "---", "---"))
     by_dir = mi.get("by_direction", {})
-    for label, d in sorted(by_dir.items(), key=lambda x: x[1].get("total_ms", 0), reverse=True):
-        lines.append(tbl_row(
-            label,
-            f"{d.get('total_gb', 0):.3f}",
-            f"{d.get('total_ms', 0):.1f}",
-            f"{d.get('avg_gbps', 0):.1f}",
-            "—",
-        ))
+    for label, d in sorted(
+        by_dir.items(), key=lambda x: x[1].get("total_ms", 0), reverse=True
+    ):
+        lines.append(
+            tbl_row(
+                label,
+                f"{d.get('total_gb', 0):.3f}",
+                f"{d.get('total_ms', 0):.1f}",
+                f"{d.get('avg_gbps', 0):.1f}",
+                "—",
+            )
+        )
     pcie_u = mi.get("pcie_utilisation_pct")
     hbm_u = mi.get("hbm_utilisation_from_d2d_pct")
     if pcie_u is not None:
@@ -1782,24 +2020,32 @@ def comprehensive_to_markdown(analysis: Dict) -> str:
     h2("🔀 Stream Parallelism")
     sp_data = a.get("stream_parallelism", {})
     lines.append(f"**Streams detected:** {sp_data.get('stream_count', 0)}")
-    lines.append(f"**Parallelism ratio:** {sp_data.get('parallelism_ratio', 0):.2f}x "
-                 f"(>1.0 = concurrent execution)")
+    lines.append(
+        f"**Parallelism ratio:** {sp_data.get('parallelism_ratio', 0):.2f}x "
+        f"(>1.0 = concurrent execution)"
+    )
     copy_det = sp_data.get("copy_stream_detected", False)
     lines.append(f"**Dedicated copy stream:** {'Yes ✅' if copy_det else 'No ⚠️'}")
     per_stream = sp_data.get("per_stream", [])
     if per_stream:
         lines.append("")
-        lines.append(tbl_row("Stream ID", "Role", "Kernel Count", "Busy (ms)", "Span (ms)", "Util %"))
+        lines.append(
+            tbl_row(
+                "Stream ID", "Role", "Kernel Count", "Busy (ms)", "Span (ms)", "Util %"
+            )
+        )
         lines.append(tbl_row("---", "---", "---", "---", "---", "---"))
         for r in per_stream[:10]:
-            lines.append(tbl_row(
-                r.get("stream_id", "?"),
-                r.get("role", "compute"),
-                r.get("kernel_count", 0),
-                f"{r.get('kernel_busy_ms', 0):.1f}",
-                f"{r.get('stream_span_ms', 0):.1f}",
-                f"{r.get('utilisation_pct', 0):.1f}",
-            ))
+            lines.append(
+                tbl_row(
+                    r.get("stream_id", "?"),
+                    r.get("role", "compute"),
+                    r.get("kernel_count", 0),
+                    f"{r.get('kernel_busy_ms', 0):.1f}",
+                    f"{r.get('stream_span_ms', 0):.1f}",
+                    f"{r.get('utilisation_pct', 0):.1f}",
+                )
+            )
     for issue in sp_data.get("issues", []):
         lines.append(f"\n> ⚠️  {issue}")
 
@@ -1828,8 +2074,14 @@ def comprehensive_to_markdown(analysis: Dict) -> str:
             lines.append(tbl_row("---", "---", "---", "---"))
             for op in top_ops[:6]:
                 name = str(op.get("kernel_name") or "")[:60]
-                lines.append(tbl_row(name, f"{op.get('total_ms', 0):.1f}",
-                                     op.get("count", 0), f"{op.get('avg_ms', 0):.2f}"))
+                lines.append(
+                    tbl_row(
+                        name,
+                        f"{op.get('total_ms', 0):.1f}",
+                        op.get("count", 0),
+                        f"{op.get('avg_ms', 0):.2f}",
+                    )
+                )
     for issue in comm.get("issues", []):
         lines.append(f"\n> ⚠️  {issue}")
 
@@ -1863,7 +2115,9 @@ def comprehensive_to_markdown(analysis: Dict) -> str:
         lines.append(f"**Detected bottleneck type:** {bt}")
         hbm_u = gm.get("hbm_utilisation_pct")
         if hbm_u is not None:
-            lines.append(f"**HBM bandwidth utilisation:** {hbm_u:.1f}%  {_bar(hbm_u, 15)}")
+            lines.append(
+                f"**HBM bandwidth utilisation:** {hbm_u:.1f}%  {_bar(hbm_u, 15)}"
+            )
         lines.append("")
         lines.append(tbl_row("Metric", "Avg", "P50", "P75", "P95", "Max", "StdDev"))
         lines.append(tbl_row("---", "---", "---", "---", "---", "---", "---"))
@@ -1873,11 +2127,17 @@ def comprehensive_to_markdown(analysis: Dict) -> str:
             if not d:
                 return
             fmt = lambda v: f"{v:.1f}" if v is not None else "—"
-            lines.append(tbl_row(
-                label,
-                fmt(d.get("avg")), fmt(d.get("p50")), fmt(d.get("p75")),
-                fmt(d.get("p95")), fmt(d.get("max")), fmt(d.get("stddev")),
-            ))
+            lines.append(
+                tbl_row(
+                    label,
+                    fmt(d.get("avg")),
+                    fmt(d.get("p50")),
+                    fmt(d.get("p75")),
+                    fmt(d.get("p95")),
+                    fmt(d.get("max")),
+                    fmt(d.get("stddev")),
+                )
+            )
 
         _mrow("sm_active", "SM Active (%)")
         _mrow("tensor_active", "Tensor Active (%)")
@@ -1898,9 +2158,13 @@ def comprehensive_to_markdown(analysis: Dict) -> str:
     if ai_proxy is not None:
         lines.append(f"Arithmetic intensity proxy: **{_f(ai_proxy):.3f}**")
     if rg.get("achieved_compute_tflops_est") is not None:
-        lines.append(f"Estimated achieved compute: **{_f(rg.get('achieved_compute_tflops_est')):.2f} TFLOPS**")
+        lines.append(
+            f"Estimated achieved compute: **{_f(rg.get('achieved_compute_tflops_est')):.2f} TFLOPS**"
+        )
     if rg.get("achieved_memory_gbps_est") is not None:
-        lines.append(f"Estimated achieved memory BW: **{_f(rg.get('achieved_memory_gbps_est')):.2f} GB/s**")
+        lines.append(
+            f"Estimated achieved memory BW: **{_f(rg.get('achieved_memory_gbps_est')):.2f} GB/s**"
+        )
     for issue in rg.get("issues", []):
         lines.append(f"\n> ⚠️  {issue}")
 
@@ -1909,17 +2173,27 @@ def comprehensive_to_markdown(analysis: Dict) -> str:
     kc = a.get("kernel_composition", {})
     cats = kc.get("categories", {})
     if cats:
-        lines.append(tbl_row("Category", "GPU Time (ms)", "% of Kernel Time", "Kernel Count", "Visual"))
+        lines.append(
+            tbl_row(
+                "Category",
+                "GPU Time (ms)",
+                "% of Kernel Time",
+                "Kernel Count",
+                "Visual",
+            )
+        )
         lines.append(tbl_row("---", "---", "---", "---", "---"))
         for cat, d in cats.items():
             pct_v = _f(d.get("pct_of_gpu_time"))
-            lines.append(tbl_row(
-                cat.replace("_", " ").title(),
-                f"{d.get('total_ms', 0):.1f}",
-                f"{pct_v:.1f}",
-                d.get("kernel_count", 0),
-                _bar(pct_v, 15),
-            ))
+            lines.append(
+                tbl_row(
+                    cat.replace("_", " ").title(),
+                    f"{d.get('total_ms', 0):.1f}",
+                    f"{pct_v:.1f}",
+                    d.get("kernel_count", 0),
+                    _bar(pct_v, 15),
+                )
+            )
     for issue in kc.get("issues", []):
         lines.append(f"\n> ⚠️  {issue}")
 
@@ -1946,10 +2220,14 @@ def comprehensive_to_markdown(analysis: Dict) -> str:
         lines.append(tbl_row("Sync Type", "Count", "Total (ms)", "Avg (ms)"))
         lines.append(tbl_row("---", "---", "---", "---"))
         for r in top_sync:
-            lines.append(tbl_row(
-                r.get("sync_type", "?"), r.get("count", 0),
-                f"{r.get('total_ms', 0):.1f}", f"{r.get('avg_ms', 0):.2f}",
-            ))
+            lines.append(
+                tbl_row(
+                    r.get("sync_type", "?"),
+                    r.get("count", 0),
+                    f"{r.get('total_ms', 0):.1f}",
+                    f"{r.get('avg_ms', 0):.2f}",
+                )
+            )
     for issue in cp.get("issues", []):
         lines.append(f"\n> ⚠️  {issue}")
 
@@ -1988,6 +2266,8 @@ def comprehensive_to_markdown(analysis: Dict) -> str:
             lines.append(f"\n{rec.get('detail', '')}")
             refs = rec.get("references", [])
             if refs:
-                lines.append("\nReferences: " + " · ".join(f"[link]({r})" for r in refs))
+                lines.append(
+                    "\nReferences: " + " · ".join(f"[link]({r})" for r in refs)
+                )
 
     return "\n".join(lines)

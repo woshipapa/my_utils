@@ -31,7 +31,7 @@ def _package(name: str) -> types.ModuleType:
     if name in sys.modules:
         return sys.modules[name]
     module = types.ModuleType(name)
-    module.__path__ = []          # marks it as a package
+    module.__path__ = []  # marks it as a package
     sys.modules[name] = module
     if "." in name:
         parent, _, child = name.rpartition(".")
@@ -75,7 +75,9 @@ axes = _load("analyzers.axes", "analyzers/axes.py")
 shipped_rules = _load("ncu.shipped_rules", "ncu/shipped_rules.py")
 ncu_report_tools = _load("ncu.ncu_report_tools", "ncu/ncu_report_tools.py")
 nsys_auto = _load("sources.nsys_auto_analysis", "sources/nsys_auto_analysis.py")
-measurement_context = _load("analyzers.measurement_context", "analyzers/measurement_context.py")
+measurement_context = _load(
+    "analyzers.measurement_context", "analyzers/measurement_context.py"
+)
 sampling_validity = _load("ncu.sampling_validity", "ncu/sampling_validity.py")
 source_correlation = _load("ncu.source_correlation", "ncu/source_correlation.py")
 signal_scan = _load("ncu.signal_scan", "ncu/signal_scan.py")
@@ -132,10 +134,70 @@ def _init_sqlite(path: Path, *, scale: float = 1.0) -> None:
     cur.executemany(
         "INSERT INTO CUPTI_ACTIVITY_KIND_KERNEL VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         [
-            (0,           int(10000*s), 7, 1, 1, 1, 0, 128, 1, 1, 32, 4096, 0,    87.5),  # gemm stream7
-            (int(8000*s), int(20000*s), 8, 2, 2, 2, 0, 256, 1, 1, 40, 0,    0,    62.5),  # nccl  stream8
-            (int(25000*s),int(35000*s), 7, 3, 1, 1, 0, 128, 1, 1, 32, 4096, 0,    87.5),  # gemm stream7
-            (int(5000*s), int(12000*s), 9, 4, 5, 5, 0,  64, 1, 1, 48, 8192, 2048, 50.0),  # attention stream9
+            (
+                0,
+                int(10000 * s),
+                7,
+                1,
+                1,
+                1,
+                0,
+                128,
+                1,
+                1,
+                32,
+                4096,
+                0,
+                87.5,
+            ),  # gemm stream7
+            (
+                int(8000 * s),
+                int(20000 * s),
+                8,
+                2,
+                2,
+                2,
+                0,
+                256,
+                1,
+                1,
+                40,
+                0,
+                0,
+                62.5,
+            ),  # nccl  stream8
+            (
+                int(25000 * s),
+                int(35000 * s),
+                7,
+                3,
+                1,
+                1,
+                0,
+                128,
+                1,
+                1,
+                32,
+                4096,
+                0,
+                87.5,
+            ),  # gemm stream7
+            (
+                int(5000 * s),
+                int(12000 * s),
+                9,
+                4,
+                5,
+                5,
+                0,
+                64,
+                1,
+                1,
+                48,
+                8192,
+                2048,
+                50.0,
+            ),  # attention stream9
         ],
     )
 
@@ -147,10 +209,10 @@ def _init_sqlite(path: Path, *, scale: float = 1.0) -> None:
     cur.executemany(
         "INSERT INTO CUPTI_ACTIVITY_KIND_RUNTIME VALUES (?, ?, ?, ?, ?)",
         [
-            (0,              int(2000*s),  1, 3, 12345678),
-            (int(7000*s),    int(9000*s),  2, 3, 12345678),
-            (int(24000*s),   int(24500*s), 3, 3, 12345678),
-            (int(4500*s),    int(5000*s),  4, 3, 12345678),
+            (0, int(2000 * s), 1, 3, 12345678),
+            (int(7000 * s), int(9000 * s), 2, 3, 12345678),
+            (int(24000 * s), int(24500 * s), 3, 3, 12345678),
+            (int(4500 * s), int(5000 * s), 4, 3, 12345678),
         ],
     )
 
@@ -162,10 +224,17 @@ def _init_sqlite(path: Path, *, scale: float = 1.0) -> None:
     cur.executemany(
         "INSERT INTO NVTX_EVENTS VALUES (?, ?, ?, ?, ?, ?)",
         [
-            (0,              int(22000*s), "sample_0 step=1 rank=0", None, 59, 12345678),
-            (int(23000*s),   int(36000*s), "sample_0 step=2 rank=0", None, 59, 12345678),
-            (0,              int(10000*s), "forward",                None, 59, 12345678),
-            (int(10000*s),   int(20000*s), "backward",               None, 59, 12345678),
+            (0, int(22000 * s), "sample_0 step=1 rank=0", None, 59, 12345678),
+            (
+                int(23000 * s),
+                int(36000 * s),
+                "sample_0 step=2 rank=0",
+                None,
+                59,
+                12345678,
+            ),
+            (0, int(10000 * s), "forward", None, 59, 12345678),
+            (int(10000 * s), int(20000 * s), "backward", None, 59, 12345678),
         ],
     )
 
@@ -177,9 +246,9 @@ def _init_sqlite(path: Path, *, scale: float = 1.0) -> None:
     cur.executemany(
         "INSERT INTO CUPTI_ACTIVITY_KIND_MEMCPY VALUES (?, ?, ?, ?, ?)",
         [
-            (0,            int(1000*s), 1, int(1024*1024),   0),   # H2D 1 MB
-            (int(3000*s),  int(6000*s), 2, int(2*1024*1024), 0),   # D2H 2 MB
-            (int(12000*s), int(15000*s),8, int(4*1024*1024), 0),   # D2D 4 MB
+            (0, int(1000 * s), 1, int(1024 * 1024), 0),  # H2D 1 MB
+            (int(3000 * s), int(6000 * s), 2, int(2 * 1024 * 1024), 0),  # D2H 2 MB
+            (int(12000 * s), int(15000 * s), 8, int(4 * 1024 * 1024), 0),  # D2D 4 MB
         ],
     )
 
@@ -191,9 +260,9 @@ def _init_sqlite(path: Path, *, scale: float = 1.0) -> None:
     cur.executemany(
         "INSERT INTO CUPTI_ACTIVITY_KIND_MEMSET VALUES (?, ?, ?, ?, ?)",
         [
-            (0,           int(500*s),  int(8*1024*1024), 0, 0),   # zero-init 8 MB
-            (int(500*s),  int(600*s),  int(1024*1024),   0, 0),   # zero-init 1 MB
-            (int(1000*s), int(1100*s), int(512*1024),    1, 0),   # custom fill
+            (0, int(500 * s), int(8 * 1024 * 1024), 0, 0),  # zero-init 8 MB
+            (int(500 * s), int(600 * s), int(1024 * 1024), 0, 0),  # zero-init 1 MB
+            (int(1000 * s), int(1100 * s), int(512 * 1024), 1, 0),  # custom fill
         ],
     )
 
@@ -205,9 +274,9 @@ def _init_sqlite(path: Path, *, scale: float = 1.0) -> None:
     cur.executemany(
         "INSERT INTO CUPTI_ACTIVITY_KIND_SYNCHRONIZATION VALUES (?, ?, ?, ?, ?)",
         [
-            (int(20000*s), int(21000*s), 1, 7, 0),   # cudaStreamSync
-            (int(35000*s), int(35500*s), 2, 0, 0),   # cudaDeviceSync
-            (int(36000*s), int(36100*s), 1, 8, 0),   # cudaStreamSync
+            (int(20000 * s), int(21000 * s), 1, 7, 0),  # cudaStreamSync
+            (int(35000 * s), int(35500 * s), 2, 0, 0),  # cudaDeviceSync
+            (int(36000 * s), int(36100 * s), 1, 8, 0),  # cudaStreamSync
         ],
     )
 
@@ -216,8 +285,8 @@ def _init_sqlite(path: Path, *, scale: float = 1.0) -> None:
     cur.executemany(
         "INSERT INTO COMPOSITE_EVENTS VALUES (?, ?)",
         [
-            (12345678, int(1000*s)),
-            (22345678, int(500*s)),
+            (12345678, int(1000 * s)),
+            (22345678, int(500 * s)),
         ],
     )
     cur.execute("CREATE TABLE ThreadNames (globalTid INTEGER, nameId INTEGER)")
@@ -256,9 +325,9 @@ def _init_sqlite(path: Path, *, scale: float = 1.0) -> None:
 
 
 def _show(title: str, rows, *, limit: int = 5) -> None:
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print(f"  {title}")
-    print(f"{'='*60}")
+    print(f"{'=' * 60}")
     if isinstance(rows, list):
         for r in rows[:limit]:
             print(" ", r)

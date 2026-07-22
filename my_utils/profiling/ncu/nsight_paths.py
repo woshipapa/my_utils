@@ -45,8 +45,8 @@ NSIGHT_COMPUTE_HOME_ENV = "NSIGHT_COMPUTE_HOME"
 
 # Relative locations of each resource inside the two install layouts.
 _SECTIONS_LAYOUTS: Tuple[Tuple[str, ...], ...] = (
-    ("sections",),                              # Linux / CUDA-bundled
-    ("Contents", "Resources", "sections"),      # macOS app bundle
+    ("sections",),  # Linux / CUDA-bundled
+    ("Contents", "Resources", "sections"),  # macOS app bundle
 )
 _PYTHON_LAYOUTS: Tuple[Tuple[str, ...], ...] = (
     ("extras", "python"),

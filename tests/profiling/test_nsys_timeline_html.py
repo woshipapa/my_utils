@@ -40,7 +40,9 @@ def _extract_compare_payloads(html_text: str) -> List[dict]:
     return payloads
 
 
-def test_timeline_kernel_collection_keeps_duplicate_nvtx_attribution_rows(tmp_path: Path) -> None:
+def test_timeline_kernel_collection_keeps_duplicate_nvtx_attribution_rows(
+    tmp_path: Path,
+) -> None:
     db = tmp_path / "timeline_keep_duplicate_nvtx_rows.sqlite"
     _init_sqlite(db)
 
@@ -51,7 +53,9 @@ def test_timeline_kernel_collection_keeps_duplicate_nvtx_attribution_rows(tmp_pa
         device_id=0,
         limit=1000,
     )
-    windows = _pick_nvtx_windows(_select_nvtx_windows(provider, nvtx_text="%"), nvtx_index=-1)
+    windows = _pick_nvtx_windows(
+        _select_nvtx_windows(provider, nvtx_text="%"), nvtx_index=-1
+    )
     collected = _collect_kernels_in_window(
         provider,
         start_ns=0,
@@ -85,9 +89,15 @@ def test_timeline_debug_logs_emit_matched_kernel_counts(tmp_path: Path) -> None:
         progress_cb=progress_messages.append,
     )
 
-    assert any("matched kernels total=" in msg for msg in debug_messages), debug_messages
-    assert any("collect_kernels matched_kernels=" in msg for msg in debug_messages), debug_messages
-    assert any("matched_kernels=" in msg for msg in progress_messages), progress_messages
+    assert any("matched kernels total=" in msg for msg in debug_messages), (
+        debug_messages
+    )
+    assert any("collect_kernels matched_kernels=" in msg for msg in debug_messages), (
+        debug_messages
+    )
+    assert any("matched_kernels=" in msg for msg in progress_messages), (
+        progress_messages
+    )
 
 
 def test_timeline_progress_emits_selected_nvtx_full_name(tmp_path: Path) -> None:
@@ -108,11 +118,18 @@ def test_timeline_progress_emits_selected_nvtx_full_name(tmp_path: Path) -> None
         progress_cb=progress_messages.append,
     )
 
-    assert any("nvtx_match_count=" in msg for msg in progress_messages), progress_messages
-    assert any("selected_nvtx[0] full_name=sample_0 step=2 rank=0" in msg for msg in progress_messages), progress_messages
+    assert any("nvtx_match_count=" in msg for msg in progress_messages), (
+        progress_messages
+    )
+    assert any(
+        "selected_nvtx[0] full_name=sample_0 step=2 rank=0" in msg
+        for msg in progress_messages
+    ), progress_messages
 
 
-def test_timeline_compare_progress_emits_selected_nvtx_full_name(tmp_path: Path) -> None:
+def test_timeline_compare_progress_emits_selected_nvtx_full_name(
+    tmp_path: Path,
+) -> None:
     db_a = tmp_path / "timeline_compare_progress_a.sqlite"
     db_b = tmp_path / "timeline_compare_progress_b.sqlite"
     _init_sqlite(db_a)
@@ -132,8 +149,14 @@ def test_timeline_compare_progress_emits_selected_nvtx_full_name(tmp_path: Path)
         progress_cb=progress_messages.append,
     )
 
-    assert any("[1/2]" in msg and "selected_nvtx[0] full_name=sample_0 step=2 rank=0" in msg for msg in progress_messages), progress_messages
-    assert any("[2/2]" in msg and "selected_nvtx[0] full_name=sample_0 step=2 rank=0" in msg for msg in progress_messages), progress_messages
+    assert any(
+        "[1/2]" in msg and "selected_nvtx[0] full_name=sample_0 step=2 rank=0" in msg
+        for msg in progress_messages
+    ), progress_messages
+    assert any(
+        "[2/2]" in msg and "selected_nvtx[0] full_name=sample_0 step=2 rank=0" in msg
+        for msg in progress_messages
+    ), progress_messages
 
 
 def test_timeline_nvtx_text_requires_explicit_wildcard(tmp_path: Path) -> None:
@@ -151,7 +174,9 @@ def test_timeline_nvtx_text_requires_explicit_wildcard(tmp_path: Path) -> None:
         debug=False,
         progress_cb=exact_progress.append,
     )
-    assert any("nvtx_match_count=0 selected_count=0" in msg for msg in exact_progress), exact_progress
+    assert any(
+        "nvtx_match_count=0 selected_count=0" in msg for msg in exact_progress
+    ), exact_progress
 
     out_like = tmp_path / "timeline_nvtx_like.html"
     like_progress: List[str] = []
@@ -164,10 +189,14 @@ def test_timeline_nvtx_text_requires_explicit_wildcard(tmp_path: Path) -> None:
         debug=False,
         progress_cb=like_progress.append,
     )
-    assert any("nvtx_match_count=2 selected_count=2" in msg for msg in like_progress), like_progress
+    assert any("nvtx_match_count=2 selected_count=2" in msg for msg in like_progress), (
+        like_progress
+    )
 
 
-def test_timeline_allstream_js_not_blocked_when_metrics_disabled(tmp_path: Path) -> None:
+def test_timeline_allstream_js_not_blocked_when_metrics_disabled(
+    tmp_path: Path,
+) -> None:
     db = tmp_path / "timeline_no_metrics_allstream.sqlite"
     _init_sqlite(db)
 
@@ -254,11 +283,13 @@ def test_timeline_metrics_disable_per_series_downsample(tmp_path: Path) -> None:
         metric_name_like="%sm__active%",
         include_all_sources=False,
         device_id=-1,
-        limit=-1,                  # no global sampling
+        limit=-1,  # no global sampling
         max_points_per_series=-1,  # no per-series downsample
     )
     assert series, "expected at least one metric series"
-    sm_series = next((s for s in series if "sm__active" in str(s.get("name", ""))), None)
+    sm_series = next(
+        (s for s in series if "sm__active" in str(s.get("name", ""))), None
+    )
     assert sm_series is not None, series
     # selected window covers only injected range, so all 5000 injected points should remain.
     assert len(sm_series.get("points", [])) == 5000
@@ -305,7 +336,9 @@ def test_timeline_metrics_require_timestamp_column(tmp_path: Path) -> None:
     assert not rows, "expected no rows when metrics table lacks timestamp column"
 
 
-def test_timeline_metrics_no_raw_timestamp_fallback_when_timestamp_window_misses(tmp_path: Path) -> None:
+def test_timeline_metrics_no_raw_timestamp_fallback_when_timestamp_window_misses(
+    tmp_path: Path,
+) -> None:
     db = tmp_path / "raw_ts_fallback.sqlite"
     conn = sqlite3.connect(str(db))
     cur = conn.cursor()
@@ -339,10 +372,14 @@ def test_timeline_metrics_no_raw_timestamp_fallback_when_timestamp_window_misses
         device_id=-1,
         limit=100,
     )
-    assert not rows, "expected no rows when timestamp misses window and rawTimestamp fallback is disabled"
+    assert not rows, (
+        "expected no rows when timestamp misses window and rawTimestamp fallback is disabled"
+    )
 
 
-def test_timeline_metrics_use_gpu_kernel_window_not_nvtx_cpu_window(tmp_path: Path) -> None:
+def test_timeline_metrics_use_gpu_kernel_window_not_nvtx_cpu_window(
+    tmp_path: Path,
+) -> None:
     db = tmp_path / "gpu_window_vs_nvtx.sqlite"
     _init_sqlite(db)
 
@@ -397,7 +434,9 @@ def test_timeline_metrics_use_gpu_kernel_window_not_nvtx_cpu_window(tmp_path: Pa
     assert int(payload.get("window_end_ns") or 0) >= 101_500
 
 
-def test_timeline_kernel_occupancy_fallback_to_h100_formula_when_sqlite_missing(tmp_path: Path) -> None:
+def test_timeline_kernel_occupancy_fallback_to_h100_formula_when_sqlite_missing(
+    tmp_path: Path,
+) -> None:
     db = tmp_path / "timeline_occ_fallback.sqlite"
     _init_sqlite(db)
 
@@ -427,8 +466,8 @@ def test_timeline_kernel_occupancy_fallback_to_h100_formula_when_sqlite_missing(
     assert groups, payload
     occ_values = []
     for g in groups:
-        for srow in (g.get("streams") or []):
-            for k in (srow.get("kernels") or []):
+        for srow in g.get("streams") or []:
+            for k in srow.get("kernels") or []:
                 occ = k.get("occupancy_pct_estimate")
                 if occ is None:
                     continue
@@ -456,9 +495,9 @@ def test_timeline_kernel_fallback_keeps_overlap_rows(tmp_path: Path) -> None:
     cur.executemany(
         "INSERT INTO CUPTI_ACTIVITY_KIND_KERNEL VALUES (?, ?, ?, ?, ?, ?, ?)",
         [
-            (100, 220, 7, 1, 1, 1, 0),   # overlaps [150, 210]
-            (160, 170, 7, 2, 2, 2, 0),   # inside [150, 210]
-            (0, 50, 7, 3, 3, 3, 0),      # outside
+            (100, 220, 7, 1, 1, 1, 0),  # overlaps [150, 210]
+            (160, 170, 7, 2, 2, 2, 0),  # inside [150, 210]
+            (0, 50, 7, 3, 3, 3, 0),  # outside
         ],
     )
     conn.commit()
@@ -478,7 +517,10 @@ def test_timeline_kernel_fallback_keeps_overlap_rows(tmp_path: Path) -> None:
     assert "k_overlap" in names, names
     assert "k_inside" in names, names
     assert "k_outside" not in names, names
-    assert any((int(r.get("start_ns") or 0), int(r.get("end_ns") or 0)) == (100, 220) for r in rows), rows
+    assert any(
+        (int(r.get("start_ns") or 0), int(r.get("end_ns") or 0)) == (100, 220)
+        for r in rows
+    ), rows
 
 
 def test_timeline_compare_html_embeds_multiple_sqlites(tmp_path: Path) -> None:
@@ -505,7 +547,10 @@ def test_timeline_compare_html_embeds_multiple_sqlites(tmp_path: Path) -> None:
     assert text.count("<iframe") == 8, text
     assert str(db_a) in text, text
     assert str(db_b) in text, text
-    assert "Each compare section groups the same timeline panel across all sqlite files" in text
+    assert (
+        "Each compare section groups the same timeline panel across all sqlite files"
+        in text
+    )
     assert "equal-duration kernels render with equal widths" in text
     assert ".compare-root" in text
     assert "min-height:140px" in text
@@ -518,10 +563,14 @@ def test_timeline_compare_html_embeds_multiple_sqlites(tmp_path: Path) -> None:
     assert "Matched NVTX Scopes" in text
     assert "Kernel Timeline By Stream" in text
     assert "GPU Metrics In Window" in text
-    assert text.index("All Streams Overlap + Metrics Alignment") < text.index("Matched NVTX Scopes"), text
+    assert text.index("All Streams Overlap + Metrics Alignment") < text.index(
+        "Matched NVTX Scopes"
+    ), text
     payloads = _extract_compare_payloads(text)
     assert payloads, text
-    display_spans = {int(p.get("display_span_ns") or p.get("span_ns") or 0) for p in payloads}
+    display_spans = {
+        int(p.get("display_span_ns") or p.get("span_ns") or 0) for p in payloads
+    }
     assert len(display_spans) == 1, display_spans
     data_spans = {int(p.get("data_span_ns") or p.get("span_ns") or 0) for p in payloads}
     assert len(data_spans) > 1, data_spans
@@ -557,10 +606,70 @@ def test_timeline_compare_html_reports_fusion_candidates(tmp_path: Path) -> None
                 (200_070, 200_080, 8104, 3, 12345678),
             ]
             kernels = [
-                (200_300, 200_360, 88, 8101, 8011, 8011, 0, 128, 1, 1, 32, 4096, 0, 87.5),
-                (200_370, 200_430, 88, 8102, 8012, 8012, 0, 128, 1, 1, 32, 4096, 0, 87.5),
-                (200_440, 200_520, 88, 8103, 8013, 8013, 0, 128, 1, 1, 32, 4096, 0, 87.5),
-                (200_530, 200_590, 88, 8104, 8014, 8014, 0, 128, 1, 1, 32, 4096, 0, 87.5),
+                (
+                    200_300,
+                    200_360,
+                    88,
+                    8101,
+                    8011,
+                    8011,
+                    0,
+                    128,
+                    1,
+                    1,
+                    32,
+                    4096,
+                    0,
+                    87.5,
+                ),
+                (
+                    200_370,
+                    200_430,
+                    88,
+                    8102,
+                    8012,
+                    8012,
+                    0,
+                    128,
+                    1,
+                    1,
+                    32,
+                    4096,
+                    0,
+                    87.5,
+                ),
+                (
+                    200_440,
+                    200_520,
+                    88,
+                    8103,
+                    8013,
+                    8013,
+                    0,
+                    128,
+                    1,
+                    1,
+                    32,
+                    4096,
+                    0,
+                    87.5,
+                ),
+                (
+                    200_530,
+                    200_590,
+                    88,
+                    8104,
+                    8014,
+                    8014,
+                    0,
+                    128,
+                    1,
+                    1,
+                    32,
+                    4096,
+                    0,
+                    87.5,
+                ),
             ]
         else:
             runtimes = [
@@ -569,11 +678,58 @@ def test_timeline_compare_html_reports_fusion_candidates(tmp_path: Path) -> None
                 (200_050, 200_060, 8203, 3, 12345678),
             ]
             kernels = [
-                (200_300, 200_360, 88, 8201, 8011, 8011, 0, 128, 1, 1, 32, 4096, 0, 87.5),
-                (200_370, 200_520, 88, 8202, 8015, 8015, 0, 128, 1, 1, 32, 4096, 0, 87.5),
-                (200_530, 200_590, 88, 8203, 8014, 8014, 0, 128, 1, 1, 32, 4096, 0, 87.5),
+                (
+                    200_300,
+                    200_360,
+                    88,
+                    8201,
+                    8011,
+                    8011,
+                    0,
+                    128,
+                    1,
+                    1,
+                    32,
+                    4096,
+                    0,
+                    87.5,
+                ),
+                (
+                    200_370,
+                    200_520,
+                    88,
+                    8202,
+                    8015,
+                    8015,
+                    0,
+                    128,
+                    1,
+                    1,
+                    32,
+                    4096,
+                    0,
+                    87.5,
+                ),
+                (
+                    200_530,
+                    200_590,
+                    88,
+                    8203,
+                    8014,
+                    8014,
+                    0,
+                    128,
+                    1,
+                    1,
+                    32,
+                    4096,
+                    0,
+                    87.5,
+                ),
             ]
-        conn.executemany("INSERT INTO CUPTI_ACTIVITY_KIND_RUNTIME VALUES (?, ?, ?, ?, ?)", runtimes)
+        conn.executemany(
+            "INSERT INTO CUPTI_ACTIVITY_KIND_RUNTIME VALUES (?, ?, ?, ?, ?)", runtimes
+        )
         conn.executemany(
             "INSERT INTO CUPTI_ACTIVITY_KIND_KERNEL VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             kernels,
@@ -604,7 +760,9 @@ def test_timeline_compare_html_reports_fusion_candidates(tmp_path: Path) -> None
     assert "stream 88" in text
 
 
-def test_timeline_compare_html_avoids_false_positive_when_kernel_is_only_removed(tmp_path: Path) -> None:
+def test_timeline_compare_html_avoids_false_positive_when_kernel_is_only_removed(
+    tmp_path: Path,
+) -> None:
     db_a = tmp_path / "delete_base.sqlite"
     db_b = tmp_path / "delete_target.sqlite"
     _init_sqlite(db_a)
@@ -633,10 +791,70 @@ def test_timeline_compare_html_avoids_false_positive_when_kernel_is_only_removed
                 (210_070, 210_080, 9104, 3, 998877),
             ]
             kernels = [
-                (210_300, 210_360, 41, 9101, 8111, 8111, 0, 128, 1, 1, 32, 4096, 0, 87.5),
-                (210_370, 210_430, 41, 9102, 8112, 8112, 0, 128, 1, 1, 32, 4096, 0, 87.5),
-                (210_440, 210_500, 41, 9103, 8113, 8113, 0, 128, 1, 1, 32, 4096, 0, 87.5),
-                (210_510, 210_570, 41, 9104, 8114, 8114, 0, 128, 1, 1, 32, 4096, 0, 87.5),
+                (
+                    210_300,
+                    210_360,
+                    41,
+                    9101,
+                    8111,
+                    8111,
+                    0,
+                    128,
+                    1,
+                    1,
+                    32,
+                    4096,
+                    0,
+                    87.5,
+                ),
+                (
+                    210_370,
+                    210_430,
+                    41,
+                    9102,
+                    8112,
+                    8112,
+                    0,
+                    128,
+                    1,
+                    1,
+                    32,
+                    4096,
+                    0,
+                    87.5,
+                ),
+                (
+                    210_440,
+                    210_500,
+                    41,
+                    9103,
+                    8113,
+                    8113,
+                    0,
+                    128,
+                    1,
+                    1,
+                    32,
+                    4096,
+                    0,
+                    87.5,
+                ),
+                (
+                    210_510,
+                    210_570,
+                    41,
+                    9104,
+                    8114,
+                    8114,
+                    0,
+                    128,
+                    1,
+                    1,
+                    32,
+                    4096,
+                    0,
+                    87.5,
+                ),
             ]
         else:
             runtimes = [
@@ -645,11 +863,58 @@ def test_timeline_compare_html_avoids_false_positive_when_kernel_is_only_removed
                 (210_050, 210_060, 9203, 3, 998877),
             ]
             kernels = [
-                (210_300, 210_360, 41, 9201, 8111, 8111, 0, 128, 1, 1, 32, 4096, 0, 87.5),
-                (210_370, 210_430, 41, 9202, 8112, 8112, 0, 128, 1, 1, 32, 4096, 0, 87.5),
-                (210_510, 210_570, 41, 9203, 8114, 8114, 0, 128, 1, 1, 32, 4096, 0, 87.5),
+                (
+                    210_300,
+                    210_360,
+                    41,
+                    9201,
+                    8111,
+                    8111,
+                    0,
+                    128,
+                    1,
+                    1,
+                    32,
+                    4096,
+                    0,
+                    87.5,
+                ),
+                (
+                    210_370,
+                    210_430,
+                    41,
+                    9202,
+                    8112,
+                    8112,
+                    0,
+                    128,
+                    1,
+                    1,
+                    32,
+                    4096,
+                    0,
+                    87.5,
+                ),
+                (
+                    210_510,
+                    210_570,
+                    41,
+                    9203,
+                    8114,
+                    8114,
+                    0,
+                    128,
+                    1,
+                    1,
+                    32,
+                    4096,
+                    0,
+                    87.5,
+                ),
             ]
-        conn.executemany("INSERT INTO CUPTI_ACTIVITY_KIND_RUNTIME VALUES (?, ?, ?, ?, ?)", runtimes)
+        conn.executemany(
+            "INSERT INTO CUPTI_ACTIVITY_KIND_RUNTIME VALUES (?, ?, ?, ?, ?)", runtimes
+        )
         conn.executemany(
             "INSERT INTO CUPTI_ACTIVITY_KIND_KERNEL VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             kernels,
@@ -676,7 +941,9 @@ def test_timeline_compare_html_avoids_false_positive_when_kernel_is_only_removed
     assert "No strong fusion candidates detected" in text
 
 
-def test_nvtx_kernel_sm_detail_cross_thread_runtime_fallback_keeps_kernels(tmp_path: Path) -> None:
+def test_nvtx_kernel_sm_detail_cross_thread_runtime_fallback_keeps_kernels(
+    tmp_path: Path,
+) -> None:
     db = tmp_path / "cross_thread_nvtx.sqlite"
     _init_sqlite(db)
 

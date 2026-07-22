@@ -12,7 +12,8 @@ from _synthetic_loader import metric_catalog, section_index
 def test_metric_name_decoding():
     """The name grammar carries unit / quantity / rollup / submetric."""
     decoded = section_index.decode_metric_name(
-        "sm__throughput.avg.pct_of_peak_sustained_elapsed")
+        "sm__throughput.avg.pct_of_peak_sustained_elapsed"
+    )
     assert decoded["unit"] == "sm"
     assert decoded["quantity"] == "throughput"
     assert decoded["rollup"] == "avg"
@@ -76,23 +77,33 @@ class TestMetricGrammar:
         orphans = []
         for spec in metric_catalog.METRIC_CATALOG.values():
             for name in spec.names:
-                unit = (section_index.decode_metric_name(name).get("unit")
-                        or section_index._legacy_unit(name))
+                unit = section_index.decode_metric_name(name).get(
+                    "unit"
+                ) or section_index._legacy_unit(name)
                 if unit and unit not in section_index.UNIT_AXIS:
                     orphans.append((name, unit))
         assert not orphans, f"metric units with no axis: {sorted(set(orphans))}"
 
     def test_active_and_elapsed_denominators_are_distinguished(self):
         """Mixing the two is how an idle unit gets ranked as the bottleneck."""
-        assert section_index.denominator_of(
-            "sm__throughput.avg.pct_of_peak_sustained_active") == "active"
-        assert section_index.denominator_of(
-            "sm__throughput.avg.pct_of_peak_sustained_elapsed") == "elapsed"
+        assert (
+            section_index.denominator_of(
+                "sm__throughput.avg.pct_of_peak_sustained_active"
+            )
+            == "active"
+        )
+        assert (
+            section_index.denominator_of(
+                "sm__throughput.avg.pct_of_peak_sustained_elapsed"
+            )
+            == "elapsed"
+        )
         assert section_index.denominator_of("dram__bytes.sum") == ""
 
     def test_collection_prefixes_are_stripped(self):
         parts = section_index.decode_metric_name(
-            "pmsampling:smsp__warps_issue_stalled_barrier.avg")
+            "pmsampling:smsp__warps_issue_stalled_barrier.avg"
+        )
         assert parts["prefix"] == "pmsampling"
         assert parts["unit"] == "smsp" and parts["rollup"] == "avg"
 
@@ -103,8 +114,10 @@ class TestMetricGrammar:
 
     def test_uncatalogued_metrics_are_counted_not_dropped(self):
         grouped = section_index.group_report_metrics(
-            ["sm__throughput.avg.pct_of_peak_sustained_elapsed",
-             "lts__t_sectors_srcunit_tex_op_read.sum"],
+            [
+                "sm__throughput.avg.pct_of_peak_sustained_elapsed",
+                "lts__t_sectors_srcunit_tex_op_read.sum",
+            ],
             catalog=metric_catalog.METRIC_CATALOG,
         )
         assert grouped["total"] == 2
@@ -120,7 +133,9 @@ class TestCatalogAgainstShippedSections:
     """Ground-truth check when a local Nsight Compute install is present."""
 
     def test_catalog_names_resolve_or_are_explained(self):
-        audit = section_index.audit_catalog_against_sections(metric_catalog.METRIC_CATALOG)
+        audit = section_index.audit_catalog_against_sections(
+            metric_catalog.METRIC_CATALOG
+        )
         if not audit.get("available"):
             pytest.skip("no local Nsight Compute install")
         # Section-backed names must dominate; a large unknown set means drift.

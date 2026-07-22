@@ -16,7 +16,9 @@ from typing import Any
 def _load_runtime_symbols() -> tuple[type[Any], Any]:
     try:
         from my_utils.profiling.runtime.config import NsysLaunchConfig as _Cfg
-        from my_utils.profiling.runtime.frameworkless import build_nsys_launch_prefix as _Builder
+        from my_utils.profiling.runtime.frameworkless import (
+            build_nsys_launch_prefix as _Builder,
+        )
 
         return _Cfg, _Builder
     except Exception:
@@ -57,7 +59,9 @@ def _load_yaml_payload(path: str) -> dict[str, Any]:
     try:
         import yaml
     except ImportError as exc:
-        raise RuntimeError("PyYAML is required. Install with: pip install pyyaml") from exc
+        raise RuntimeError(
+            "PyYAML is required. Install with: pip install pyyaml"
+        ) from exc
 
     payload = yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
     if not isinstance(payload, dict):
@@ -71,7 +75,11 @@ def _coerce_command(value: Any) -> list[str]:
         if not parts:
             raise ValueError("command string is empty.")
         return parts
-    if isinstance(value, list) and value and all(isinstance(item, (str, int, float)) for item in value):
+    if (
+        isinstance(value, list)
+        and value
+        and all(isinstance(item, (str, int, float)) for item in value)
+    ):
         return [str(item) for item in value]
     raise ValueError("command must be a non-empty string or list.")
 
@@ -146,7 +154,9 @@ def _serialize_profile_switches(profile_switches: dict[str, Any]) -> list[str]:
                 else:
                     args.append(f"{opt}={text}")
             continue
-        raise ValueError(f"Unsupported value type for nsys switch '{name}': {type(value).__name__}")
+        raise ValueError(
+            f"Unsupported value type for nsys switch '{name}': {type(value).__name__}"
+        )
     return args
 
 
@@ -168,12 +178,20 @@ def _drop_prefix_options(prefix: list[str], option_names: set[str]) -> list[str]
     return out
 
 
-def _resolve_output(default_output_dir: str, default_output_prefix: str, cfg_dict: dict[str, Any]) -> str:
+def _resolve_output(
+    default_output_dir: str, default_output_prefix: str, cfg_dict: dict[str, Any]
+) -> str:
     output = str(cfg_dict.get("output", "")).strip()
     if output:
         return output
-    output_dir = str(cfg_dict.get("output_dir", default_output_dir)).strip() or default_output_dir
-    output_prefix = str(cfg_dict.get("output_prefix", default_output_prefix)).strip() or default_output_prefix
+    output_dir = (
+        str(cfg_dict.get("output_dir", default_output_dir)).strip()
+        or default_output_dir
+    )
+    output_prefix = (
+        str(cfg_dict.get("output_prefix", default_output_prefix)).strip()
+        or default_output_prefix
+    )
     return str(Path(output_dir) / output_prefix)
 
 
@@ -185,12 +203,18 @@ def build_command_from_payload(
     if not isinstance(nsys_raw, dict):
         raise ValueError("nsys_launch must be a mapping.")
 
-    command = override_command if override_command else _coerce_command(payload.get("command"))
+    command = (
+        override_command
+        if override_command
+        else _coerce_command(payload.get("command"))
+    )
     env_updates = _coerce_env(payload.get("env"))
     extra_profile_args = _coerce_extra_profile_args(nsys_raw.get("extra_profile_args"))
     profile_switches = _coerce_profile_switches(nsys_raw.get("profile_switches"))
     profile_switch_args = _serialize_profile_switches(profile_switches)
-    explicit_option_names = {name for name in (_option_name(item) for item in profile_switch_args) if name}
+    explicit_option_names = {
+        name for name in (_option_name(item) for item in profile_switch_args) if name
+    }
 
     launch_fields = {item.name for item in dataclasses.fields(NsysLaunchConfig)}
     launch_kwargs: dict[str, Any] = {}
@@ -210,9 +234,15 @@ def build_command_from_payload(
     if prefix and explicit_option_names:
         prefix = _drop_prefix_options(prefix, explicit_option_names)
     if prefix:
-        return (prefix + profile_switch_args + extra_profile_args + command, env_updates)
+        return (
+            prefix + profile_switch_args + extra_profile_args + command,
+            env_updates,
+        )
     if profile_switch_args or extra_profile_args:
-        return (["nsys", "profile"] + profile_switch_args + extra_profile_args + command, env_updates)
+        return (
+            ["nsys", "profile"] + profile_switch_args + extra_profile_args + command,
+            env_updates,
+        )
     return (command, env_updates)
 
 
@@ -245,7 +275,9 @@ def main(argv: list[str] | None = None) -> int:
         override_command = None
 
     payload = _load_yaml_payload(args.config)
-    cmd, env_updates = build_command_from_payload(payload, override_command=override_command)
+    cmd, env_updates = build_command_from_payload(
+        payload, override_command=override_command
+    )
 
     runtime_env = os.environ.copy()
     runtime_env.update(env_updates)

@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
-from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 
 from .metric_catalog import (
     BENIGN_STALL_KEYS,
@@ -78,10 +78,10 @@ SOL_THRESHOLDS = {
     # `compute_bound_compute`/`compute_bound_memory` and has been removed: it
     # appears in no shipped rule, nothing read it, and keeping an unverified
     # threshold beside verified ones invites someone to trust it equally.
-    "balanced_delta": 10.0,      # |compute - memory| below this => balanced
-    "latency_bound": 60.0,       # both SOL below this => latency issue
-    "saturated": 80.0,           # either SOL at/above this => genuinely bound
-    "waves_small_grid": 1.0,     # below one wave => small grid
+    "balanced_delta": 10.0,  # |compute - memory| below this => balanced
+    "latency_bound": 60.0,  # both SOL below this => latency issue
+    "saturated": 80.0,  # either SOL at/above this => genuinely bound
+    "waves_small_grid": 1.0,  # below one wave => small grid
     # CPIStall
     "issue_active_stall_gate": 0.8,
     "stall_share_gate": 0.3,
@@ -116,13 +116,13 @@ class Finding:
     category: str
     title: str
     summary: str
-    severity: str = "info"           # info | low | medium | high
-    confidence: str = "medium"       # low | medium | high
+    severity: str = "info"  # info | low | medium | high
+    confidence: str = "medium"  # low | medium | high
     evidence: Dict[str, Any] = field(default_factory=dict)
     actions: Tuple[str, ...] = ()
     # Upper bound on the win, as a multiplier (1.25 == "up to 25% faster").
     speedup_ceiling: Optional[float] = None
-    source: str = "heuristic"        # heuristic | ncu_rule | expectation
+    source: str = "heuristic"  # heuristic | ncu_rule | expectation
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -141,6 +141,7 @@ class Finding:
 # ---------------------------------------------------------------------------
 # Metric access
 # ---------------------------------------------------------------------------
+
 
 class MetricView:
     """Read-only view over one kernel's metrics, resolving catalog keys to values.
@@ -198,7 +199,9 @@ class MetricView:
         return list(self._raw)
 
 
-def build_metric_view(metric_stats: Iterable[Mapping[str, Any]], *, stat: str = "avg") -> MetricView:
+def build_metric_view(
+    metric_stats: Iterable[Mapping[str, Any]], *, stat: str = "avg"
+) -> MetricView:
     """Build a :class:`MetricView` from ``ncu_report_tools`` metric-stat rows.
 
     Rows look like ``{"metric_name": ..., "avg": ..., "max": ...}``; ``value`` is
@@ -228,6 +231,7 @@ def _pct(value: Optional[float]) -> Optional[float]:
 # ---------------------------------------------------------------------------
 # Bottleneck classification
 # ---------------------------------------------------------------------------
+
 
 def classify_bottleneck(view: MetricView) -> Dict[str, Any]:
     """Four-way roofline classification following NVIDIA's SOLBottleneck rule.
@@ -259,10 +263,13 @@ def classify_bottleneck(view: MetricView) -> Dict[str, Any]:
 
     best = max(compute, memory)
     result["grade"] = (
-        "excellent" if best >= 80 else
-        "good" if best >= 60 else
-        "fair" if best >= 40 else
-        "poor"
+        "excellent"
+        if best >= 80
+        else "good"
+        if best >= 60
+        else "fair"
+        if best >= 40
+        else "poor"
     )
 
     t = SOL_THRESHOLDS
@@ -349,6 +356,7 @@ def classify_bottleneck(view: MetricView) -> Dict[str, Any]:
 # Warp stalls
 # ---------------------------------------------------------------------------
 
+
 def analyze_stalls(view: MetricView, *, top_k: int = 6) -> Dict[str, Any]:
     """Rank warp-stall reasons and turn the dominant ones into findings.
 
@@ -365,16 +373,18 @@ def analyze_stalls(view: MetricView, *, top_k: int = 6) -> Dict[str, Any]:
         if value is None:
             continue
         share = (value / total_latency) if total_latency else None
-        rows.append({
-            "key": key,
-            "display": reason.display,
-            "bucket": reason.bucket,
-            "cycles_per_issued_inst": value,
-            "share_of_warp_latency": share,
-            "meaning": reason.meaning,
-            "fixes": list(reason.fixes),
-            "benign": key in BENIGN_STALL_KEYS,
-        })
+        rows.append(
+            {
+                "key": key,
+                "display": reason.display,
+                "bucket": reason.bucket,
+                "cycles_per_issued_inst": value,
+                "share_of_warp_latency": share,
+                "meaning": reason.meaning,
+                "fixes": list(reason.fixes),
+                "benign": key in BENIGN_STALL_KEYS,
+            }
+        )
     rows.sort(key=lambda r: r["cycles_per_issued_inst"], reverse=True)
 
     actionable = [r for r in rows if not r["benign"]]
@@ -399,49 +409,61 @@ def analyze_stalls(view: MetricView, *, top_k: int = 6) -> Dict[str, Any]:
         # document a case where Stall GMMA + Stall Barrier summed to within 3%
         # of Stall Long Scoreboard. Advising better coalescing there sends the
         # author after memory latency that is really pipeline sync.
-        confounded = (
-            row["key"] == "long_scoreboard"
-            and (view.get("inst_pipe_gmma") or view.get("pipe_tma_util"))
+        confounded = row["key"] == "long_scoreboard" and (
+            view.get("inst_pipe_gmma") or view.get("pipe_tma_util")
         )
-        findings.append(Finding(
-            category=f"stall_{row['key']}",
-            title=f"Warp stalls dominated by {row['display']}",
-            summary=(
-                f"{row['display']} accounts for {share * 100:.0f}% of warp cycles per issued "
-                f"instruction ({row['cycles_per_issued_inst']:.2f} cycles). {row['meaning']}"
-                + (
-                    " NOTE: this kernel uses warpgroup MMA or TMA, and on such kernels "
-                    "Long Scoreboard absorbs warpgroup synchronisation as well as "
-                    "global-memory latency -- NVIDIA staff document a case where GMMA "
-                    "and Barrier stalls summed to within 3% of it. Read it together "
-                    "with the gmma and barrier stalls below before concluding memory."
-                    if confounded else ""
-                )
-            ),
-            severity=("medium" if confounded else ("high" if share > 0.5 else "medium")),
-            confidence="high",
-            evidence={
-                "stall_metric": STALL_REASONS[row["key"]].metric_name,
-                "cycles_per_issued_inst": row["cycles_per_issued_inst"],
-                "share_of_warp_latency": share,
-                "warp_cycles_per_issued_inst": total_latency,
-                "issue_active": issue_active,
-            },
-            actions=(
-                tuple(f for f in row["fixes"]
-                      if "coalesc" not in f.lower() and "locality" not in f.lower())
-                + ("Check the gmma and barrier stalls first: on a warpgroup-MMA "
-                   "kernel those are part of what Long Scoreboard is counting.",)
-                if confounded else tuple(row["fixes"])
-            ),
-            speedup_ceiling=ceiling,
-            source="ncu_rule",
-        ))
+        findings.append(
+            Finding(
+                category=f"stall_{row['key']}",
+                title=f"Warp stalls dominated by {row['display']}",
+                summary=(
+                    f"{row['display']} accounts for {share * 100:.0f}% of warp cycles per issued "
+                    f"instruction ({row['cycles_per_issued_inst']:.2f} cycles). {row['meaning']}"
+                    + (
+                        " NOTE: this kernel uses warpgroup MMA or TMA, and on such kernels "
+                        "Long Scoreboard absorbs warpgroup synchronisation as well as "
+                        "global-memory latency -- NVIDIA staff document a case where GMMA "
+                        "and Barrier stalls summed to within 3% of it. Read it together "
+                        "with the gmma and barrier stalls below before concluding memory."
+                        if confounded
+                        else ""
+                    )
+                ),
+                severity=(
+                    "medium" if confounded else ("high" if share > 0.5 else "medium")
+                ),
+                confidence="high",
+                evidence={
+                    "stall_metric": STALL_REASONS[row["key"]].metric_name,
+                    "cycles_per_issued_inst": row["cycles_per_issued_inst"],
+                    "share_of_warp_latency": share,
+                    "warp_cycles_per_issued_inst": total_latency,
+                    "issue_active": issue_active,
+                },
+                actions=(
+                    tuple(
+                        f
+                        for f in row["fixes"]
+                        if "coalesc" not in f.lower() and "locality" not in f.lower()
+                    )
+                    + (
+                        "Check the gmma and barrier stalls first: on a warpgroup-MMA "
+                        "kernel those are part of what Long Scoreboard is counting.",
+                    )
+                    if confounded
+                    else tuple(row["fixes"])
+                ),
+                speedup_ceiling=ceiling,
+                source="ncu_rule",
+            )
+        )
 
     # Bucket rollup gives the DrGPU-style top-down view.
     buckets: Dict[str, float] = {}
     for row in actionable:
-        buckets[row["bucket"]] = buckets.get(row["bucket"], 0.0) + row["cycles_per_issued_inst"]
+        buckets[row["bucket"]] = (
+            buckets.get(row["bucket"], 0.0) + row["cycles_per_issued_inst"]
+        )
 
     # Closed accounting, after GCStack (ISCA 2025). Its central argument is
     # that a cycle stack which does not sum to the total cannot say how much of
@@ -457,8 +479,11 @@ def analyze_stalls(view: MetricView, *, top_k: int = 6) -> Dict[str, Any]:
     # metrics, the shares silently under-account and nothing says so. Measured
     # on a real H100 report the 19 reasons sum to 21.682 against a total of
     # 21.664 -- 0.08% apart.
-    accounted = sum(row["cycles_per_issued_inst"] for row in rows
-                    if row["cycles_per_issued_inst"] is not None)
+    accounted = sum(
+        row["cycles_per_issued_inst"]
+        for row in rows
+        if row["cycles_per_issued_inst"] is not None
+    )
     residual = (total_latency - accounted) if total_latency else None
     explained = (accounted / total_latency) if total_latency else None
 
@@ -471,51 +496,65 @@ def analyze_stalls(view: MetricView, *, top_k: int = 6) -> Dict[str, Any]:
     # an ordinary number while every share was computed against a total its own
     # components exceeded.
     if explained is not None and explained > 1.02:
-        findings.append(Finding(
-            category="measurement_above_physical_limit",
-            title="Stall states sum to more than the total they partition",
-            summary=(
-                f"The stall reasons account for {explained * 100:.1f}% of warp "
-                f"latency ({accounted:.2f} against a reported {total_latency:.2f} "
-                "cycles per issued instruction). These states are disjoint, so they "
-                "cannot exceed their own total: the two figures come from different "
-                "replay passes and disagree. Every share below is computed against "
-                "the smaller of them and is correspondingly inflated."
-            ),
-            severity="medium",
-            confidence="high",
-            evidence={"accounted": accounted, "total": total_latency,
-                      "explained_share": explained,
-                      "residual": residual,
-                      "shares_recomputed_against_sum": {
-                          row["key"]: (row["cycles_per_issued_inst"] / accounted)
-                          for row in rows[:5]
-                          if row["cycles_per_issued_inst"] is not None and accounted
-                      }},
-            actions=("Re-collect with locked clocks; a cross-pass disagreement of "
-                     "this size makes severity boundaries unreliable.",),
-            source="heuristic",
-        ))
+        findings.append(
+            Finding(
+                category="measurement_above_physical_limit",
+                title="Stall states sum to more than the total they partition",
+                summary=(
+                    f"The stall reasons account for {explained * 100:.1f}% of warp "
+                    f"latency ({accounted:.2f} against a reported {total_latency:.2f} "
+                    "cycles per issued instruction). These states are disjoint, so they "
+                    "cannot exceed their own total: the two figures come from different "
+                    "replay passes and disagree. Every share below is computed against "
+                    "the smaller of them and is correspondingly inflated."
+                ),
+                severity="medium",
+                confidence="high",
+                evidence={
+                    "accounted": accounted,
+                    "total": total_latency,
+                    "explained_share": explained,
+                    "residual": residual,
+                    "shares_recomputed_against_sum": {
+                        row["key"]: (row["cycles_per_issued_inst"] / accounted)
+                        for row in rows[:5]
+                        if row["cycles_per_issued_inst"] is not None and accounted
+                    },
+                },
+                actions=(
+                    "Re-collect with locked clocks; a cross-pass disagreement of "
+                    "this size makes severity boundaries unreliable.",
+                ),
+                source="heuristic",
+            )
+        )
     if explained is not None and explained < 0.9:
-        findings.append(Finding(
-            category="measurement_caveat",
-            title="Stall accounting does not close",
-            summary=(
-                f"The stall reasons present account for {explained * 100:.0f}% of "
-                f"warp latency ({accounted:.2f} of {total_latency:.2f} cycles per "
-                "issued instruction). The rest is not unexplained stalling -- it is "
-                "stall reasons this report does not carry, so every share below is "
-                "computed against a total the report cannot fully break down."
-            ),
-            severity="medium",
-            confidence="high",
-            evidence={"accounted": accounted, "total": total_latency,
-                      "explained_share": explained,
-                      "reasons_present": len(rows)},
-            actions=("Collect --section WarpStateStats in full; partial stall "
-                     "coverage makes every stall share an underestimate.",),
-            source="heuristic",
-        ))
+        findings.append(
+            Finding(
+                category="measurement_caveat",
+                title="Stall accounting does not close",
+                summary=(
+                    f"The stall reasons present account for {explained * 100:.0f}% of "
+                    f"warp latency ({accounted:.2f} of {total_latency:.2f} cycles per "
+                    "issued instruction). The rest is not unexplained stalling -- it is "
+                    "stall reasons this report does not carry, so every share below is "
+                    "computed against a total the report cannot fully break down."
+                ),
+                severity="medium",
+                confidence="high",
+                evidence={
+                    "accounted": accounted,
+                    "total": total_latency,
+                    "explained_share": explained,
+                    "reasons_present": len(rows),
+                },
+                actions=(
+                    "Collect --section WarpStateStats in full; partial stall "
+                    "coverage makes every stall share an underestimate.",
+                ),
+                source="heuristic",
+            )
+        )
 
     return {
         "warp_cycles_per_issued_inst": total_latency,
@@ -532,19 +571,24 @@ def analyze_stalls(view: MetricView, *, top_k: int = 6) -> Dict[str, Any]:
         # states themselves, which is coherent by construction. They differ
         # exactly when the report does not close.
         "share_basis_disagreement": (
-            abs(explained - 1.0) if explained is not None else None),
+            abs(explained - 1.0) if explained is not None else None
+        ),
         "reasons_present": len(rows),
         "top_stalls_explain": (
-            sum(r["cycles_per_issued_inst"] or 0.0 for r in rows[:top_k]) / total_latency
-            if total_latency else None
+            sum(r["cycles_per_issued_inst"] or 0.0 for r in rows[:top_k])
+            / total_latency
+            if total_latency
+            else None
         ),
         "accounting_note": (
-            (f"The {len(rows)} stall reasons in this report account for "
-             f"{explained * 100:.1f}% of warp latency; the top {min(top_k, len(rows))} "
-             f"account for "
-             f"{sum(r['cycles_per_issued_inst'] or 0.0 for r in rows[:top_k]) / total_latency * 100:.1f}%.")
-            if explained is not None else
-            "Warp latency total is absent, so the shares below have no denominator "
+            (
+                f"The {len(rows)} stall reasons in this report account for "
+                f"{explained * 100:.1f}% of warp latency; the top {min(top_k, len(rows))} "
+                f"account for "
+                f"{sum(r['cycles_per_issued_inst'] or 0.0 for r in rows[:top_k]) / total_latency * 100:.1f}%."
+            )
+            if explained is not None
+            else "Warp latency total is absent, so the shares below have no denominator "
             "and cannot be read as fractions of anything."
         ),
         "findings": findings,
@@ -555,8 +599,12 @@ def analyze_stalls(view: MetricView, *, top_k: int = 6) -> Dict[str, Any]:
 # Roofline
 # ---------------------------------------------------------------------------
 
+
 def _roofline_dtype_basis(
-    view: MetricView, *, fp16_flops: Optional[float], fp64_flops: Optional[float],
+    view: MetricView,
+    *,
+    fp16_flops: Optional[float],
+    fp64_flops: Optional[float],
 ) -> Tuple[str, str, Tuple[str, ...]]:
     """Decide which precision's peak the roofline is measured against.
 
@@ -593,7 +641,11 @@ def _roofline_dtype_basis(
     if tensor_util and tensor_util > 1.0:
         # Every dtype the MMA pipes support is a candidate, and on Hopper their
         # peaks differ by 4x between fp8 and tf32.
-        return "fp16", "tensor_pipe_active_precision_unknown", ("fp8", "fp16", "bf16", "tf32")
+        return (
+            "fp16",
+            "tensor_pipe_active_precision_unknown",
+            ("fp8", "fp16", "bf16", "tf32"),
+        )
 
     if fp16_flops:
         # Half-precision in the CUDA cores, not on tensor cores.
@@ -635,7 +687,11 @@ def compute_roofline(view: MetricView, gpu_spec: Any = None) -> Dict[str, Any]:
     cc_major = view.get("cc_major")
     cc_minor = view.get("cc_minor")
     packed_fp32_applied = False
-    if cc_major is not None and int(cc_major) == 10 and (cc_minor is None or int(cc_minor) in (0, 3)):
+    if (
+        cc_major is not None
+        and int(cc_major) == 10
+        and (cc_minor is None or int(cc_minor) in (0, 3))
+    ):
         fadd2 = view.get("flop_fadd2")
         fmul2 = view.get("flop_fmul2")
         ffma2 = view.get("flop_ffma2")
@@ -682,7 +738,12 @@ def compute_roofline(view: MetricView, gpu_spec: Any = None) -> Dict[str, Any]:
         "findings": [],
     }
 
-    if cc_major is not None and int(cc_major) == 10 and not packed_fp32_applied and fp32_flops:
+    if (
+        cc_major is not None
+        and int(cc_major) == 10
+        and not packed_fp32_applied
+        and fp32_flops
+    ):
         result["caveats"].append(
             "Compute capability 10.x packs two FP32 ops per instruction, but the packed "
             "counters (fadd2/fmul2/ffma2) are absent from this report, so FP32 FLOPs may be "
@@ -709,8 +770,13 @@ def compute_roofline(view: MetricView, gpu_spec: Any = None) -> Dict[str, Any]:
     achieved_gbps = result.get("achieved_dram_gbps")
 
     best_peak = max(
-        (p for p in (gpu_spec.peak_tflops(d) for d in ("fp8", "fp16", "bf16", "tf32", "fp32"))
-         if p is not None),
+        (
+            p
+            for p in (
+                gpu_spec.peak_tflops(d) for d in ("fp8", "fp16", "bf16", "tf32", "fp32")
+            )
+            if p is not None
+        ),
         default=None,
     )
     if achieved_tflops and best_peak and achieved_tflops > best_peak * 1.05:
@@ -718,7 +784,11 @@ def compute_roofline(view: MetricView, gpu_spec: Any = None) -> Dict[str, Any]:
             f"Measured {achieved_tflops:.1f} TFLOP/s exceeds the {gpu_spec.name} peak of "
             f"{best_peak:.1f} TFLOP/s. The FLOP model or the GPU identification is wrong."
         )
-    if achieved_gbps and gpu_spec.hbm_bandwidth_gbps and achieved_gbps > gpu_spec.hbm_bandwidth_gbps * 1.05:
+    if (
+        achieved_gbps
+        and gpu_spec.hbm_bandwidth_gbps
+        and achieved_gbps > gpu_spec.hbm_bandwidth_gbps * 1.05
+    ):
         sanity.append(
             f"Measured {achieved_gbps:.0f} GB/s exceeds the {gpu_spec.name} HBM peak of "
             f"{gpu_spec.hbm_bandwidth_gbps:.0f} GB/s. Traffic served from cache is not DRAM "
@@ -732,7 +802,9 @@ def compute_roofline(view: MetricView, gpu_spec: Any = None) -> Dict[str, Any]:
     # it is. The tensor-op counters say which pipe actually ran, so they decide
     # this whenever they are present -- the kernel name does not.
     dtype, dtype_source, dtype_alternatives = _roofline_dtype_basis(
-        view, fp16_flops=fp16_flops, fp64_flops=fp64_flops,
+        view,
+        fp16_flops=fp16_flops,
+        fp64_flops=fp64_flops,
     )
     ridge = gpu_spec.ridge_point(dtype)
     result["ridge_point"] = ridge
@@ -785,25 +857,31 @@ def compute_roofline(view: MetricView, gpu_spec: Any = None) -> Dict[str, Any]:
 
     findings: List[Finding] = []
     if sanity:
-        findings.append(Finding(
-            category="measurement_above_physical_limit",
-            title="Measurement exceeds hardware limits - do not trust this number",
-            summary=(
-                " ".join(sanity)
-                + " Every downstream conclusion drawn from this measurement is suspect until "
-                "the discrepancy is explained."
-            ),
-            severity="high",
-            confidence="high",
-            evidence={"achieved_tflops": achieved_tflops, "achieved_dram_gbps": achieved_gbps,
-                      "gpu": gpu_spec.name, "peak_tflops": best_peak,
-                      "hbm_peak_gbps": gpu_spec.hbm_bandwidth_gbps},
-            actions=(
-                "Confirm the GPU identification matches the machine that produced the report.",
-                "Check the FLOP model: tensor-core work is not visible to the CUDA-core counters.",
-                "For bandwidth, confirm the counter measures DRAM rather than cache traffic.",
-            ),
-        ))
+        findings.append(
+            Finding(
+                category="measurement_above_physical_limit",
+                title="Measurement exceeds hardware limits - do not trust this number",
+                summary=(
+                    " ".join(sanity)
+                    + " Every downstream conclusion drawn from this measurement is suspect until "
+                    "the discrepancy is explained."
+                ),
+                severity="high",
+                confidence="high",
+                evidence={
+                    "achieved_tflops": achieved_tflops,
+                    "achieved_dram_gbps": achieved_gbps,
+                    "gpu": gpu_spec.name,
+                    "peak_tflops": best_peak,
+                    "hbm_peak_gbps": gpu_spec.hbm_bandwidth_gbps,
+                },
+                actions=(
+                    "Confirm the GPU identification matches the machine that produced the report.",
+                    "Check the FLOP model: tensor-core work is not visible to the CUDA-core counters.",
+                    "For bandwidth, confirm the counter measures DRAM rather than cache traffic.",
+                ),
+            )
+        )
         # Refuse to draw roofline conclusions on top of an impossible measurement.
         result["findings"] = findings
         return result
@@ -814,45 +892,66 @@ def compute_roofline(view: MetricView, gpu_spec: Any = None) -> Dict[str, Any]:
     # Never claim a kernel is far below its ceiling when speed-of-light already
     # says a unit is saturated - in that case the FLOP model is what is wrong,
     # not the kernel.
-    sol_says_saturated = max(
-        [v for v in (compute_sol, memory_sol) if v is not None], default=0.0
-    ) >= SOL_THRESHOLDS["latency_bound"]
+    sol_says_saturated = (
+        max([v for v in (compute_sol, memory_sol) if v is not None], default=0.0)
+        >= SOL_THRESHOLDS["latency_bound"]
+    )
 
-    if pct is not None and pct < 50.0 and not flops_undercounted and not sol_says_saturated:
-        findings.append(Finding(
-            category="below_roofline",
-            title="Kernel sits well below its roofline ceiling",
-            summary=(
-                f"Achieved {result['achieved_tflops']:.1f} TFLOP/s against an attainable "
-                f"{result['attainable_tflops']:.1f} TFLOP/s at arithmetic intensity "
-                f"{ai:.1f} FLOP/byte ({pct:.0f}% of ceiling). Being far below *both* roofs "
-                "points at latency or occupancy rather than bandwidth or math."
-            ),
-            severity="medium",
-            confidence="medium",
-            evidence={k: result[k] for k in
-                      ("achieved_tflops", "attainable_tflops", "arithmetic_intensity", "ridge_point")},
-            actions=(
-                "Check warp stalls and occupancy before optimising math or memory layout.",
-                "Confirm the kernel is large enough to fill the GPU (waves per SM >= 1).",
-            ),
-        ))
+    if (
+        pct is not None
+        and pct < 50.0
+        and not flops_undercounted
+        and not sol_says_saturated
+    ):
+        findings.append(
+            Finding(
+                category="below_roofline",
+                title="Kernel sits well below its roofline ceiling",
+                summary=(
+                    f"Achieved {result['achieved_tflops']:.1f} TFLOP/s against an attainable "
+                    f"{result['attainable_tflops']:.1f} TFLOP/s at arithmetic intensity "
+                    f"{ai:.1f} FLOP/byte ({pct:.0f}% of ceiling). Being far below *both* roofs "
+                    "points at latency or occupancy rather than bandwidth or math."
+                ),
+                severity="medium",
+                confidence="medium",
+                evidence={
+                    k: result[k]
+                    for k in (
+                        "achieved_tflops",
+                        "attainable_tflops",
+                        "arithmetic_intensity",
+                        "ridge_point",
+                    )
+                },
+                actions=(
+                    "Check warp stalls and occupancy before optimising math or memory layout.",
+                    "Confirm the kernel is large enough to fill the GPU (waves per SM >= 1).",
+                ),
+            )
+        )
     elif pct is not None and pct < 50.0 and flops_undercounted:
-        findings.append(Finding(
-            category="roofline_needs_tensor_counters",
-            title="Roofline is unreliable: tensor-core FLOPs were not collected",
-            summary=(
-                f"The measured {result['achieved_tflops']:.1f} TFLOP/s counts only CUDA-core "
-                f"instructions while the tensor pipe ran at {tensor_util:.0f}%. Collect "
-                "sm__ops_path_tensor_* (the SpeedOfLight_HierarchicalTensorRooflineChart section) "
-                "before drawing any roofline conclusion for this kernel."
-            ),
-            severity="info",
-            confidence="high",
-            evidence={"achieved_tflops_cuda_core_only": result["achieved_tflops"],
-                      "pipe_tensor_util_pct": tensor_util},
-            actions=("Re-profile with --set full or add the hierarchical tensor roofline section.",),
-        ))
+        findings.append(
+            Finding(
+                category="roofline_needs_tensor_counters",
+                title="Roofline is unreliable: tensor-core FLOPs were not collected",
+                summary=(
+                    f"The measured {result['achieved_tflops']:.1f} TFLOP/s counts only CUDA-core "
+                    f"instructions while the tensor pipe ran at {tensor_util:.0f}%. Collect "
+                    "sm__ops_path_tensor_* (the SpeedOfLight_HierarchicalTensorRooflineChart section) "
+                    "before drawing any roofline conclusion for this kernel."
+                ),
+                severity="info",
+                confidence="high",
+                evidence={
+                    "achieved_tflops_cuda_core_only": result["achieved_tflops"],
+                    "pipe_tensor_util_pct": tensor_util,
+                },
+                actions=(
+                    "Re-profile with --set full or add the hierarchical tensor roofline section.",
+                ),
+            )
+        )
     result["findings"] = findings
     return result
 
@@ -864,14 +963,18 @@ def compute_roofline(view: MetricView, gpu_spec: Any = None) -> Dict[str, Any]:
 _LIMITER_ADVICE = {
     "registers": (
         "Occupancy is register limited.",
-        ("Add __launch_bounds__ or -maxrregcount to cap register usage.",
-         "Shorten live ranges; recompute cheap values instead of holding them.",
-         "Watch for spilling after capping registers - trading spills for occupancy usually loses."),
+        (
+            "Add __launch_bounds__ or -maxrregcount to cap register usage.",
+            "Shorten live ranges; recompute cheap values instead of holding them.",
+            "Watch for spilling after capping registers - trading spills for occupancy usually loses.",
+        ),
     ),
     "shared_mem": (
         "Occupancy is shared-memory limited.",
-        ("Shrink the tile, or reuse one shared buffer for multiple phases.",
-         "Check the carveout: cudaFuncAttributePreferredSharedMemoryCarveout."),
+        (
+            "Shrink the tile, or reuse one shared buffer for multiple phases.",
+            "Check the carveout: cudaFuncAttributePreferredSharedMemoryCarveout.",
+        ),
     ),
     "blocks": (
         "Occupancy is limited by the blocks-per-SM hardware cap.",
@@ -986,56 +1089,66 @@ def analyze_occupancy(view: MetricView) -> Dict[str, Any]:
         and latency_failing is not False
     ):
         title, actions = _LIMITER_ADVICE.get(binding, ("Occupancy is limited.", ()))
-        hedge = "" if latency_failing else (
-            " Note that no scheduler-starvation signal was collected, so this may be a deliberate "
-            "design point rather than a defect."
+        hedge = (
+            ""
+            if latency_failing
+            else (
+                " Note that no scheduler-starvation signal was collected, so this may be a deliberate "
+                "design point rather than a defect."
+            )
         )
-        findings.append(Finding(
-            category=f"occupancy_limited_{binding}",
-            title=f"Theoretical occupancy capped at {theoretical:.0f}% by {binding}",
-            summary=(
-                f"{title} The launch configuration alone caps occupancy at {theoretical:.0f}%; "
-                f"the binding resource allows {present[binding]:.0f} warps.{hedge}"
-            ),
-            severity="medium" if theoretical < 50 else "low",
-            confidence="high" if latency_failing else "low",
-            evidence={
-                "theoretical_occupancy_pct": theoretical,
-                "achieved_occupancy_pct": achieved,
-                "limiters": present,
-                "binding_limiter": binding,
-                "registers_per_thread": view.get("registers_per_thread"),
-                "shared_mem_per_block": view.get("shared_mem_per_block"),
-                "block_size": view.get("block_size"),
-            },
-            actions=actions,
-            source="ncu_rule",
-        ))
+        findings.append(
+            Finding(
+                category=f"occupancy_limited_{binding}",
+                title=f"Theoretical occupancy capped at {theoretical:.0f}% by {binding}",
+                summary=(
+                    f"{title} The launch configuration alone caps occupancy at {theoretical:.0f}%; "
+                    f"the binding resource allows {present[binding]:.0f} warps.{hedge}"
+                ),
+                severity="medium" if theoretical < 50 else "low",
+                confidence="high" if latency_failing else "low",
+                evidence={
+                    "theoretical_occupancy_pct": theoretical,
+                    "achieved_occupancy_pct": achieved,
+                    "limiters": present,
+                    "binding_limiter": binding,
+                    "registers_per_thread": view.get("registers_per_thread"),
+                    "shared_mem_per_block": view.get("shared_mem_per_block"),
+                    "block_size": view.get("block_size"),
+                },
+                actions=actions,
+                source="ncu_rule",
+            )
+        )
 
     if achieved is not None and theoretical is not None:
         gap = theoretical - achieved
         if gap > t["achieved_vs_theoretical_gap_pp"]:
-            findings.append(Finding(
-                category="occupancy_achieved_gap",
-                title="Achieved occupancy trails theoretical occupancy",
-                summary=(
-                    f"Achieved {achieved:.0f}% against a theoretical {theoretical:.0f}% "
-                    f"({gap:.0f} points short). The launch config is not the constraint - "
-                    "this is scheduling overhead, a tail wave, or imbalance between warps."
-                ),
-                severity="medium",
-                confidence="high",
-                evidence={"achieved_occupancy_pct": achieved,
-                          "theoretical_occupancy_pct": theoretical,
-                          "gap_pp": gap,
-                          "waves_per_sm": view.get("waves_per_sm")},
-                actions=(
-                    "Check waves per SM for a partial tail wave.",
-                    "Look for per-block work imbalance (variable-length sequences, ragged batches).",
-                ),
-                speedup_ceiling=(theoretical / achieved) if achieved > 0 else None,
-                source="ncu_rule",
-            ))
+            findings.append(
+                Finding(
+                    category="occupancy_achieved_gap",
+                    title="Achieved occupancy trails theoretical occupancy",
+                    summary=(
+                        f"Achieved {achieved:.0f}% against a theoretical {theoretical:.0f}% "
+                        f"({gap:.0f} points short). The launch config is not the constraint - "
+                        "this is scheduling overhead, a tail wave, or imbalance between warps."
+                    ),
+                    severity="medium",
+                    confidence="high",
+                    evidence={
+                        "achieved_occupancy_pct": achieved,
+                        "theoretical_occupancy_pct": theoretical,
+                        "gap_pp": gap,
+                        "waves_per_sm": view.get("waves_per_sm"),
+                    },
+                    actions=(
+                        "Check waves per SM for a partial tail wave.",
+                        "Look for per-block work imbalance (variable-length sequences, ragged batches).",
+                    ),
+                    speedup_ceiling=(theoretical / achieved) if achieved > 0 else None,
+                    source="ncu_rule",
+                )
+            )
 
     return {
         "achieved_occupancy_pct": achieved,
@@ -1047,7 +1160,9 @@ def analyze_occupancy(view: MetricView) -> Dict[str, Any]:
 
 
 def analyze_launch_config(
-    view: MetricView, *, gemm_shape: Any = None,
+    view: MetricView,
+    *,
+    gemm_shape: Any = None,
     problem_shape: Optional[Mapping[str, int]] = None,
 ) -> Dict[str, Any]:
     """Block-size, small-grid, tail-effect and tile-quantisation checks.
@@ -1080,44 +1195,55 @@ def analyze_launch_config(
     t = SOL_THRESHOLDS
 
     if block is not None and block % 32 != 0:
-        findings.append(Finding(
-            category="block_size_not_warp_multiple",
-            title=f"Block size {int(block)} is not a multiple of 32",
-            summary=(
-                f"A block of {int(block)} threads leaves {32 - int(block) % 32} lanes of the last "
-                "warp masked off for the whole kernel."
-            ),
-            severity="medium",
-            confidence="high",
-            evidence={"block_size": block},
-            actions=("Round the block size to a multiple of 32; 128-256 threads is the usual range.",),
-            source="ncu_rule",
-        ))
+        findings.append(
+            Finding(
+                category="block_size_not_warp_multiple",
+                title=f"Block size {int(block)} is not a multiple of 32",
+                summary=(
+                    f"A block of {int(block)} threads leaves {32 - int(block) % 32} lanes of the last "
+                    "warp masked off for the whole kernel."
+                ),
+                severity="medium",
+                confidence="high",
+                evidence={"block_size": block},
+                actions=(
+                    "Round the block size to a multiple of 32; 128-256 threads is the usual range.",
+                ),
+                source="ncu_rule",
+            )
+        )
 
     if grid is not None and sm_count and grid < sm_count:
         scope = (
             f"its green-context partition of {int(sm_count)} SMs"
-            if partitioned else f"a {int(sm_count)}-SM GPU"
+            if partitioned
+            else f"a {int(sm_count)}-SM GPU"
         )
-        findings.append(Finding(
-            category="small_grid",
-            title=f"Grid of {int(grid)} blocks cannot fill {int(sm_count)} SMs",
-            summary=(
-                f"With {int(grid)} blocks on {scope}, at least "
-                f"{int(sm_count - grid)} SMs are idle for the entire kernel."
-            ),
-            severity="high",
-            confidence="high",
-            evidence={"grid_size": grid, "sm_count": sm_count, "waves_per_sm": waves,
-                      "sm_count_source": "launch" if launch_sm_count else "device",
-                      "green_context": in_green_context},
-            actions=(
-                "Expose more parallelism (larger batch, split reductions, persistent kernels).",
-                "Fuse with neighbouring kernels so one launch covers more work.",
-            ),
-            speedup_ceiling=(sm_count / grid) if grid else None,
-            source="ncu_rule",
-        ))
+        findings.append(
+            Finding(
+                category="small_grid",
+                title=f"Grid of {int(grid)} blocks cannot fill {int(sm_count)} SMs",
+                summary=(
+                    f"With {int(grid)} blocks on {scope}, at least "
+                    f"{int(sm_count - grid)} SMs are idle for the entire kernel."
+                ),
+                severity="high",
+                confidence="high",
+                evidence={
+                    "grid_size": grid,
+                    "sm_count": sm_count,
+                    "waves_per_sm": waves,
+                    "sm_count_source": "launch" if launch_sm_count else "device",
+                    "green_context": in_green_context,
+                },
+                actions=(
+                    "Expose more parallelism (larger batch, split reductions, persistent kernels).",
+                    "Fuse with neighbouring kernels so one launch covers more work.",
+                ),
+                speedup_ceiling=(sm_count / grid) if grid else None,
+                source="ncu_rule",
+            )
+        )
 
     # Tail effect: a partial final wave costs a whole wave of time.
     if waves is not None and waves >= 1.0:
@@ -1126,32 +1252,43 @@ def analyze_launch_config(
         if frac > 0:
             potential = 1.0 / (whole + 1.0)
             occupancy_confirms = (
-                achieved is not None and theoretical is not None and achieved < 0.8 * theoretical
+                achieved is not None
+                and theoretical is not None
+                and achieved < 0.8 * theoretical
             )
             if potential >= t["tail_effect_min_speedup"]:
-                findings.append(Finding(
-                    category="tail_wave_quantization",
-                    title=f"Partial tail wave after {whole} full wave(s)",
-                    summary=(
-                        f"The grid is {waves:.2f} waves: {whole} full plus a {frac:.2f} tail. "
-                        f"The tail occupies a whole wave of time while using only {frac * 100:.0f}% "
-                        f"of the machine, so up to {potential * 100:.0f}% of the runtime is wasted."
-                        + ("" if occupancy_confirms else
-                           " (Achieved occupancy does not clearly confirm this - treat as a hypothesis.)")
-                    ),
-                    severity="medium" if potential >= 0.25 else "low",
-                    confidence="high" if occupancy_confirms else "medium",
-                    evidence={"waves_per_sm": waves, "full_waves": whole, "tail_fraction": frac,
-                              "achieved_occupancy_pct": achieved,
-                              "theoretical_occupancy_pct": theoretical},
-                    actions=(
-                        "Size the grid to a whole number of waves.",
-                        "Shrink the tile so more, smaller blocks divide evenly across SMs.",
-                        "Consider a persistent kernel with a grid of exactly one wave.",
-                    ),
-                    speedup_ceiling=1.0 / (1.0 - potential),
-                    source="ncu_rule",
-                ))
+                findings.append(
+                    Finding(
+                        category="tail_wave_quantization",
+                        title=f"Partial tail wave after {whole} full wave(s)",
+                        summary=(
+                            f"The grid is {waves:.2f} waves: {whole} full plus a {frac:.2f} tail. "
+                            f"The tail occupies a whole wave of time while using only {frac * 100:.0f}% "
+                            f"of the machine, so up to {potential * 100:.0f}% of the runtime is wasted."
+                            + (
+                                ""
+                                if occupancy_confirms
+                                else " (Achieved occupancy does not clearly confirm this - treat as a hypothesis.)"
+                            )
+                        ),
+                        severity="medium" if potential >= 0.25 else "low",
+                        confidence="high" if occupancy_confirms else "medium",
+                        evidence={
+                            "waves_per_sm": waves,
+                            "full_waves": whole,
+                            "tail_fraction": frac,
+                            "achieved_occupancy_pct": achieved,
+                            "theoretical_occupancy_pct": theoretical,
+                        },
+                        actions=(
+                            "Size the grid to a whole number of waves.",
+                            "Shrink the tile so more, smaller blocks divide evenly across SMs.",
+                            "Consider a persistent kernel with a grid of exactly one wave.",
+                        ),
+                        speedup_ceiling=1.0 / (1.0 - potential),
+                        source="ncu_rule",
+                    )
+                )
 
     result: Dict[str, Any] = {
         "grid_size": grid,
@@ -1162,7 +1299,11 @@ def analyze_launch_config(
     }
 
     # Tile quantisation needs the GEMM tile shape from the kernel name.
-    if gemm_shape is not None and getattr(gemm_shape, "tile_m", None) and getattr(gemm_shape, "tile_n", None):
+    if (
+        gemm_shape is not None
+        and getattr(gemm_shape, "tile_m", None)
+        and getattr(gemm_shape, "tile_n", None)
+    ):
         result["tile_m"] = gemm_shape.tile_m
         result["tile_n"] = gemm_shape.tile_n
         if grid and sm_count:
@@ -1183,25 +1324,30 @@ def analyze_launch_config(
         # come from NVTX, from the framework, or from the caller. Without it we
         # say what is missing rather than quietly skipping the check.
         if not problem_shape:
-            findings.append(Finding(
-                category="tile_quantization",
-                title="Tile quantisation could not be checked",
-                summary=(
-                    f"The symbol gives a {gemm_shape.tile_m}x{gemm_shape.tile_n} tile but "
-                    "carries no problem shape, and no problem shape was supplied. Whether "
-                    "the boundary tiles are computing padding is therefore unknown -- this "
-                    "is an unasked question, not a clean result."
-                ),
-                severity="info",
-                confidence="high",
-                evidence={"tile_m": gemm_shape.tile_m, "tile_n": gemm_shape.tile_n,
-                          "problem_shape": None},
-                actions=(
-                    "Pass problem_shape={'m': M, 'n': N, 'k': K}, or wrap the call in an "
-                    "NVTX range carrying the shape, to enable this check.",
-                ),
-                source="heuristic",
-            ))
+            findings.append(
+                Finding(
+                    category="tile_quantization",
+                    title="Tile quantisation could not be checked",
+                    summary=(
+                        f"The symbol gives a {gemm_shape.tile_m}x{gemm_shape.tile_n} tile but "
+                        "carries no problem shape, and no problem shape was supplied. Whether "
+                        "the boundary tiles are computing padding is therefore unknown -- this "
+                        "is an unasked question, not a clean result."
+                    ),
+                    severity="info",
+                    confidence="high",
+                    evidence={
+                        "tile_m": gemm_shape.tile_m,
+                        "tile_n": gemm_shape.tile_n,
+                        "problem_shape": None,
+                    },
+                    actions=(
+                        "Pass problem_shape={'m': M, 'n': N, 'k': K}, or wrap the call in an "
+                        "NVTX range carrying the shape, to enable this check.",
+                    ),
+                    source="heuristic",
+                )
+            )
         for dim, tile in (("m", gemm_shape.tile_m), ("n", gemm_shape.tile_n)):
             problem = (problem_shape or {}).get(dim)
             if not problem or not tile:
@@ -1213,37 +1359,44 @@ def analyze_launch_config(
             # One-eighth wasted is roughly where the padding costs more than the
             # simplest fix (padding the problem up to a tile multiple) saves.
             if waste > 0.125:
-                findings.append(Finding(
-                    category="tile_quantization",
-                    title=f"Problem dimension {dim.upper()} does not fill its tiles",
-                    summary=(
-                        f"{dim.upper()}={int(problem)} against a tile of {int(tile)} needs "
-                        f"{tiles_needed} tiles covering {int(covered)}, so "
-                        f"{waste * 100:.0f}% of the work in that dimension is padding. "
-                        "Throughput is not monotonic in problem size when this happens."
-                    ),
-                    severity="medium" if waste > 0.25 else "low",
-                    confidence="medium",
-                    evidence={
-                        f"{dim}": problem, f"tile_{dim}": tile,
-                        "tiles_needed": tiles_needed, "covered": covered,
-                        "waste_fraction": round(waste, 4),
-                        "shape_source": "parsed from the kernel symbol",
-                    },
-                    actions=(
-                        f"Pad {dim.upper()} up to a multiple of {int(tile)}, or pick a "
-                        f"kernel whose tile divides {int(problem)} evenly.",
-                    ),
-                    # The ceiling is the padding you stop computing.
-                    speedup_ceiling=round(1.0 / (1.0 - waste), 3) if waste < 0.9 else None,
-                    source="heuristic",
-                ))
+                findings.append(
+                    Finding(
+                        category="tile_quantization",
+                        title=f"Problem dimension {dim.upper()} does not fill its tiles",
+                        summary=(
+                            f"{dim.upper()}={int(problem)} against a tile of {int(tile)} needs "
+                            f"{tiles_needed} tiles covering {int(covered)}, so "
+                            f"{waste * 100:.0f}% of the work in that dimension is padding. "
+                            "Throughput is not monotonic in problem size when this happens."
+                        ),
+                        severity="medium" if waste > 0.25 else "low",
+                        confidence="medium",
+                        evidence={
+                            f"{dim}": problem,
+                            f"tile_{dim}": tile,
+                            "tiles_needed": tiles_needed,
+                            "covered": covered,
+                            "waste_fraction": round(waste, 4),
+                            "shape_source": "parsed from the kernel symbol",
+                        },
+                        actions=(
+                            f"Pad {dim.upper()} up to a multiple of {int(tile)}, or pick a "
+                            f"kernel whose tile divides {int(problem)} evenly.",
+                        ),
+                        # The ceiling is the padding you stop computing.
+                        speedup_ceiling=round(1.0 / (1.0 - waste), 3)
+                        if waste < 0.9
+                        else None,
+                        source="heuristic",
+                    )
+                )
     return result
 
 
 # ---------------------------------------------------------------------------
 # Memory access patterns
 # ---------------------------------------------------------------------------
+
 
 def analyze_coalescing(view: MetricView) -> Dict[str, Any]:
     """Global-access coalescing: sectors per request, bytes per sector, excess sectors."""
@@ -1254,66 +1407,94 @@ def analyze_coalescing(view: MetricView) -> Dict[str, Any]:
     ideal = view.get("l2_sectors_global_ideal")
     if excessive is not None and excessive > 0:
         share = (excessive / actual) if actual else None
-        findings.append(Finding(
-            category="uncoalesced_global_access",
-            title="Uncoalesced global accesses",
-            summary=(
-                f"{excessive:,.0f} sectors above the ideal"
-                + (f" ({share * 100:.0f}% of all global sectors)" if share else "")
-                + ". Each excess sector is bandwidth spent moving bytes the warp never uses."
-            ),
-            severity="high" if (share or 0) > 0.3 else "medium",
-            confidence="high",
-            evidence={"sectors_actual": actual, "sectors_ideal": ideal, "sectors_excessive": excessive},
-            actions=(
-                "Make consecutive threads read consecutive addresses.",
-                "Change the data layout (AoS to SoA) or transpose during a shared-memory staging step.",
-                "Vectorise to 128-bit accesses once the pattern is contiguous.",
-            ),
-            speedup_ceiling=(1.0 / (1.0 - share)) if share and share < 0.95 else None,
-            source="ncu_rule",
-        ))
+        findings.append(
+            Finding(
+                category="uncoalesced_global_access",
+                title="Uncoalesced global accesses",
+                summary=(
+                    f"{excessive:,.0f} sectors above the ideal"
+                    + (f" ({share * 100:.0f}% of all global sectors)" if share else "")
+                    + ". Each excess sector is bandwidth spent moving bytes the warp never uses."
+                ),
+                severity="high" if (share or 0) > 0.3 else "medium",
+                confidence="high",
+                evidence={
+                    "sectors_actual": actual,
+                    "sectors_ideal": ideal,
+                    "sectors_excessive": excessive,
+                },
+                actions=(
+                    "Make consecutive threads read consecutive addresses.",
+                    "Change the data layout (AoS to SoA) or transpose during a shared-memory staging step.",
+                    "Vectorise to 128-bit accesses once the pattern is contiguous.",
+                ),
+                speedup_ceiling=(1.0 / (1.0 - share))
+                if share and share < 0.95
+                else None,
+                source="ncu_rule",
+            )
+        )
 
-    for key, label in (("global_ld_sectors_per_request", "load"),
-                       ("global_st_sectors_per_request", "store")):
+    for key, label in (
+        ("global_ld_sectors_per_request", "load"),
+        ("global_st_sectors_per_request", "store"),
+    ):
         value = view.get(key)
         if value is None:
             continue
         spec = METRIC_CATALOG[key]
         if spec.warn_above is not None and value > spec.warn_above:
-            findings.append(Finding(
-                category=f"uncoalesced_global_{label}",
-                title=f"Global {label}s touch {value:.1f} sectors per request",
-                summary=(
-                    f"A fully coalesced fp32 warp {label} touches {spec.ideal:.0f} sectors; this kernel "
-                    f"touches {value:.1f}, i.e. {value / (spec.ideal or 1):.1f}x the necessary traffic."
-                ),
-                severity="high" if value > 16 else "medium",
-                confidence="high",
-                evidence={"metric": spec.names[0], "sectors_per_request": value, "ideal": spec.ideal},
-                actions=("Rework the lane-to-address mapping so a warp covers contiguous 128-byte lines.",),
-            ))
+            findings.append(
+                Finding(
+                    category=f"uncoalesced_global_{label}",
+                    title=f"Global {label}s touch {value:.1f} sectors per request",
+                    summary=(
+                        f"A fully coalesced fp32 warp {label} touches {spec.ideal:.0f} sectors; this kernel "
+                        f"touches {value:.1f}, i.e. {value / (spec.ideal or 1):.1f}x the necessary traffic."
+                    ),
+                    severity="high" if value > 16 else "medium",
+                    confidence="high",
+                    evidence={
+                        "metric": spec.names[0],
+                        "sectors_per_request": value,
+                        "ideal": spec.ideal,
+                    },
+                    actions=(
+                        "Rework the lane-to-address mapping so a warp covers contiguous 128-byte lines.",
+                    ),
+                )
+            )
 
-    for key, label in (("global_ld_bytes_per_sector", "load"),
-                       ("global_st_bytes_per_sector", "store")):
+    for key, label in (
+        ("global_ld_bytes_per_sector", "load"),
+        ("global_st_bytes_per_sector", "store"),
+    ):
         value = view.get(key)
         if value is None:
             continue
         spec = METRIC_CATALOG[key]
         if spec.warn_below is not None and 0 < value < spec.warn_below:
             waste = 1.0 - value / 32.0
-            findings.append(Finding(
-                category=f"sparse_global_{label}",
-                title=f"Only {value:.1f} of 32 bytes per {label} sector are used",
-                summary=(
-                    f"{waste * 100:.0f}% of the bandwidth spent on global {label}s moves bytes the "
-                    "kernel never reads. Typical of strided or predicated access."
-                ),
-                severity="medium",
-                confidence="high",
-                evidence={"metric": spec.names[0], "bytes_per_sector": value, "wasted_fraction": waste},
-                actions=("Coalesce or compact the access; consider gathering into shared memory first.",),
-            ))
+            findings.append(
+                Finding(
+                    category=f"sparse_global_{label}",
+                    title=f"Only {value:.1f} of 32 bytes per {label} sector are used",
+                    summary=(
+                        f"{waste * 100:.0f}% of the bandwidth spent on global {label}s moves bytes the "
+                        "kernel never reads. Typical of strided or predicated access."
+                    ),
+                    severity="medium",
+                    confidence="high",
+                    evidence={
+                        "metric": spec.names[0],
+                        "bytes_per_sector": value,
+                        "wasted_fraction": waste,
+                    },
+                    actions=(
+                        "Coalesce or compact the access; consider gathering into shared memory first.",
+                    ),
+                )
+            )
 
     l1_hit = view.get("l1_hit_rate")
     l2_hit = view.get("l2_hit_rate")
@@ -1324,23 +1505,29 @@ def analyze_coalescing(view: MetricView) -> Dict[str, Any]:
     # best-tuned kernels in the trace.
     tma_active = view.get("pipe_tma_util") or 0.0
     if (
-        l1_hit is not None and l2_hit is not None
-        and l1_hit < 50.0 and l2_hit < 50.0
+        l1_hit is not None
+        and l2_hit is not None
+        and l1_hit < 50.0
+        and l2_hit < 50.0
         and tma_active <= 0.0
     ):
-        findings.append(Finding(
-            category="poor_cache_locality",
-            title="Both L1 and L2 hit rates are low",
-            summary=(
-                f"L1 {l1_hit:.0f}% / L2 {l2_hit:.0f}%: nearly every access reaches DRAM. "
-                "Either the working set genuinely exceeds cache, or the traversal order destroys locality."
-            ),
-            severity="medium",
-            confidence="medium",
-            evidence={"l1_hit_rate_pct": l1_hit, "l2_hit_rate_pct": l2_hit},
-            actions=("Tile the computation so the working set fits L2.",
-                     "Reorder loops/blocks for locality (threadblock swizzle for GEMM-like kernels)."),
-        ))
+        findings.append(
+            Finding(
+                category="poor_cache_locality",
+                title="Both L1 and L2 hit rates are low",
+                summary=(
+                    f"L1 {l1_hit:.0f}% / L2 {l2_hit:.0f}%: nearly every access reaches DRAM. "
+                    "Either the working set genuinely exceeds cache, or the traversal order destroys locality."
+                ),
+                severity="medium",
+                confidence="medium",
+                evidence={"l1_hit_rate_pct": l1_hit, "l2_hit_rate_pct": l2_hit},
+                actions=(
+                    "Tile the computation so the working set fits L2.",
+                    "Reorder loops/blocks for locality (threadblock swizzle for GEMM-like kernels).",
+                ),
+            )
+        )
 
     return {
         "sectors_per_ld_request": view.get("global_ld_sectors_per_request"),
@@ -1367,25 +1554,30 @@ def analyze_shared_memory(view: MetricView) -> Dict[str, Any]:
         details[f"{op}_wavefronts"] = wavefronts
         details[f"{op}_conflict_share"] = share
         if share >= SOL_THRESHOLDS["bank_conflict_share"]:
-            findings.append(Finding(
-                category=f"shared_bank_conflicts_{op}",
-                title=f"Shared-memory {op} bank conflicts on {share * 100:.0f}% of wavefronts",
-                summary=(
-                    f"{conflicts:,.0f} conflicts across {wavefronts:,.0f} {op} wavefronts. Conflicting "
-                    "lanes serialise, so the shared-memory pipe delivers a fraction of its bandwidth."
-                ),
-                severity="medium",
-                confidence="high",
-                evidence={f"bank_conflicts_{op}": conflicts, f"wavefronts_{op}": wavefronts,
-                          "conflict_share": share},
-                actions=(
-                    "Pad the shared array's leading dimension (classic +1 element padding).",
-                    "Swizzle the shared layout so a warp's lanes hit distinct banks.",
-                    "For tensor-core tiles, use the CUTLASS-style XOR swizzle instead of padding.",
-                ),
-                speedup_ceiling=1.0 / (1.0 - min(share, 0.9)),
-                source="ncu_rule",
-            ))
+            findings.append(
+                Finding(
+                    category=f"shared_bank_conflicts_{op}",
+                    title=f"Shared-memory {op} bank conflicts on {share * 100:.0f}% of wavefronts",
+                    summary=(
+                        f"{conflicts:,.0f} conflicts across {wavefronts:,.0f} {op} wavefronts. Conflicting "
+                        "lanes serialise, so the shared-memory pipe delivers a fraction of its bandwidth."
+                    ),
+                    severity="medium",
+                    confidence="high",
+                    evidence={
+                        f"bank_conflicts_{op}": conflicts,
+                        f"wavefronts_{op}": wavefronts,
+                        "conflict_share": share,
+                    },
+                    actions=(
+                        "Pad the shared array's leading dimension (classic +1 element padding).",
+                        "Swizzle the shared layout so a warp's lanes hit distinct banks.",
+                        "For tensor-core tiles, use the CUTLASS-style XOR swizzle instead of padding.",
+                    ),
+                    speedup_ceiling=1.0 / (1.0 - min(share, 0.9)),
+                    source="ncu_rule",
+                )
+            )
 
     nway = view.get("shared_conflicts_nway")
     if nway is not None and nway > 1.5:
@@ -1405,27 +1597,31 @@ def analyze_divergence(view: MetricView) -> Dict[str, Any]:
     gate = SOL_THRESHOLDS["threads_per_inst_low"]
     worst = min([v for v in (threads_per_inst, pred_on) if v is not None], default=None)
     if worst is not None and worst < gate:
-        findings.append(Finding(
-            category="thread_divergence",
-            title=f"Only {worst:.1f} of 32 threads active per instruction",
-            summary=(
-                f"Warps execute with {worst:.1f}/32 lanes active on average "
-                f"({worst / 32 * 100:.0f}% efficiency). Divergent branches or predication are "
-                "wasting most of each warp's width."
-            ),
-            severity="high" if worst < 16 else "medium",
-            confidence="high",
-            evidence={"threads_per_inst": threads_per_inst,
-                      "threads_per_inst_pred_on": pred_on,
-                      "branch_efficiency_pct": branch_eff},
-            actions=(
-                "Group data so threads in a warp take the same path (sort/bucket by branch condition).",
-                "Replace short divergent branches with predicated arithmetic or select().",
-                "Move the branch up to block granularity where possible.",
-            ),
-            speedup_ceiling=32.0 / worst if worst > 0 else None,
-            source="ncu_rule",
-        ))
+        findings.append(
+            Finding(
+                category="thread_divergence",
+                title=f"Only {worst:.1f} of 32 threads active per instruction",
+                summary=(
+                    f"Warps execute with {worst:.1f}/32 lanes active on average "
+                    f"({worst / 32 * 100:.0f}% efficiency). Divergent branches or predication are "
+                    "wasting most of each warp's width."
+                ),
+                severity="high" if worst < 16 else "medium",
+                confidence="high",
+                evidence={
+                    "threads_per_inst": threads_per_inst,
+                    "threads_per_inst_pred_on": pred_on,
+                    "branch_efficiency_pct": branch_eff,
+                },
+                actions=(
+                    "Group data so threads in a warp take the same path (sort/bucket by branch condition).",
+                    "Replace short divergent branches with predicated arithmetic or select().",
+                    "Move the branch up to block granularity where possible.",
+                ),
+                speedup_ceiling=32.0 / worst if worst > 0 else None,
+                source="ncu_rule",
+            )
+        )
 
     return {
         "threads_per_inst": threads_per_inst,
@@ -1508,7 +1704,9 @@ def analyze_spilling(view: MetricView) -> Dict[str, Any]:
         extra = ""
         if share is not None and share >= SOL_THRESHOLDS["local_inst_share"]:
             severity = "high"
-            extra = f" Local traffic is {share * 100:.0f}% of all executed instructions."
+            extra = (
+                f" Local traffic is {share * 100:.0f}% of all executed instructions."
+            )
         if local_hit is not None and local_hit < SOL_THRESHOLDS["local_hit_rate_low"]:
             severity = "high"
             extra += (
@@ -1529,33 +1727,45 @@ def analyze_spilling(view: MetricView) -> Dict[str, Any]:
                 "usually the producer, whose budget after warpgroup_reg_dealloc "
                 "is far smaller than the number above, and only the source shows it."
             )
-        findings.append(Finding(
-            category="register_spilling",
-            title="Register spilling to local memory",
-            summary=(
-                f"{local_ld:,.0f} local loads and {local_st:,.0f} local stores with "
-                f"{regs:.0f} registers/thread." if regs else
-                f"{local_ld:,.0f} local loads and {local_st:,.0f} local stores."
-            ) + extra,
-            severity=severity,
-            confidence="high",
-            evidence={"local_ld_inst": local_ld, "local_st_inst": local_st,
-                      "local_share_of_inst": share, "registers_per_thread": regs,
-                      "local_ld_hit_rate_pct": local_hit,
-                      "register_allocation_deliberate": deliberate},
-            actions=(
-                "Shorten live ranges or recompute values instead of keeping them alive.",
-                "Reduce the per-thread tile so the working set fits in registers.",
-                "If __launch_bounds__ is capping registers, weigh the spills against the occupancy gained.",
-                "Check for dynamically indexed local arrays - those always spill.",
-            ),
-            source="ncu_rule",
-        ))
+        findings.append(
+            Finding(
+                category="register_spilling",
+                title="Register spilling to local memory",
+                summary=(
+                    f"{local_ld:,.0f} local loads and {local_st:,.0f} local stores with "
+                    f"{regs:.0f} registers/thread."
+                    if regs
+                    else f"{local_ld:,.0f} local loads and {local_st:,.0f} local stores."
+                )
+                + extra,
+                severity=severity,
+                confidence="high",
+                evidence={
+                    "local_ld_inst": local_ld,
+                    "local_st_inst": local_st,
+                    "local_share_of_inst": share,
+                    "registers_per_thread": regs,
+                    "local_ld_hit_rate_pct": local_hit,
+                    "register_allocation_deliberate": deliberate,
+                },
+                actions=(
+                    "Shorten live ranges or recompute values instead of keeping them alive.",
+                    "Reduce the per-thread tile so the working set fits in registers.",
+                    "If __launch_bounds__ is capping registers, weigh the spills against the occupancy gained.",
+                    "Check for dynamically indexed local arrays - those always spill.",
+                ),
+                source="ncu_rule",
+            )
+        )
 
-    return {"local_ld_inst": local_ld, "local_st_inst": local_st,
-            "local_share_of_inst": share, "registers_per_thread": regs,
-            "register_allocation_deliberate": deliberate,
-            "findings": findings}
+    return {
+        "local_ld_inst": local_ld,
+        "local_st_inst": local_st,
+        "local_share_of_inst": share,
+        "registers_per_thread": regs,
+        "register_allocation_deliberate": deliberate,
+        "findings": findings,
+    }
 
 
 def analyze_pipes(view: MetricView) -> Dict[str, Any]:
@@ -1576,31 +1786,42 @@ def analyze_pipes(view: MetricView) -> Dict[str, Any]:
 
     fp64 = pipes.get("fp64")
     if fp64 is not None and fp64 > SOL_THRESHOLDS.get("fp64_warn", 15.0):
-        findings.append(Finding(
-            category="unexpected_fp64",
-            title=f"FP64 pipe is {fp64:.0f}% utilised",
-            summary=(
-                "Significant FP64 activity. In a BF16/FP16 training kernel this usually comes from "
-                "stray double literals, math functions without the f suffix, or an accidental "
-                "float64 tensor - and FP64 runs at a small fraction of the FP32 rate on data-centre parts."
-            ),
-            severity="medium",
-            confidence="medium",
-            evidence={"pipe_fp64_util_pct": fp64, "pipe_fma_util_pct": pipes.get("fma")},
-            actions=("Audit floating-point literals (1.0 vs 1.0f) and math calls (exp vs expf).",
-                     "Check for a float64 tensor sneaking in from numpy or a Python scalar."),
-        ))
+        findings.append(
+            Finding(
+                category="unexpected_fp64",
+                title=f"FP64 pipe is {fp64:.0f}% utilised",
+                summary=(
+                    "Significant FP64 activity. In a BF16/FP16 training kernel this usually comes from "
+                    "stray double literals, math functions without the f suffix, or an accidental "
+                    "float64 tensor - and FP64 runs at a small fraction of the FP32 rate on data-centre parts."
+                ),
+                severity="medium",
+                confidence="medium",
+                evidence={
+                    "pipe_fp64_util_pct": fp64,
+                    "pipe_fma_util_pct": pipes.get("fma"),
+                },
+                actions=(
+                    "Audit floating-point literals (1.0 vs 1.0f) and math calls (exp vs expf).",
+                    "Check for a float64 tensor sneaking in from numpy or a Python scalar.",
+                ),
+            )
+        )
 
     if present and busiest and present[busiest] >= 80.0:
-        findings.append(Finding(
-            category="pipe_saturated",
-            title=f"{busiest.upper()} pipe is saturated at {present[busiest]:.0f}%",
-            summary=f"The {busiest} pipeline is the throughput limiter for this kernel.",
-            severity="info",
-            confidence="high",
-            evidence={"pipes": present},
-            actions=(f"Move work off the {busiest} pipe or reduce the instruction count it sees.",),
-        ))
+        findings.append(
+            Finding(
+                category="pipe_saturated",
+                title=f"{busiest.upper()} pipe is saturated at {present[busiest]:.0f}%",
+                summary=f"The {busiest} pipeline is the throughput limiter for this kernel.",
+                severity="info",
+                confidence="high",
+                evidence={"pipes": present},
+                actions=(
+                    f"Move work off the {busiest} pipe or reduce the instruction count it sees.",
+                ),
+            )
+        )
 
     return {"pipes": present, "busiest": busiest, "findings": findings}
 
@@ -1612,23 +1833,43 @@ def analyze_pipes(view: MetricView) -> Dict[str, Any]:
 _INSTRUCTION_PIPES: Tuple[Tuple[str, str, str], ...] = (
     ("inst_pipe_fma", "FMA (fp32/int)", ""),
     ("inst_pipe_alu", "ALU (integer, logic)", ""),
-    ("inst_pipe_fp64", "FP64", "FP64 is 1/64 rate on consumer and 1/2 on datacenter parts; "
-                              "unintended doubles are a common accidental slowdown."),
-    ("inst_pipe_fp16", "FP16 in the FMA pipe", "Half precision running in FMA rather than "
-                                               "on tensor cores leaves most of the peak unused."),
-    ("inst_pipe_xu", "XU (transcendental: rsqrt, exp, sin)",
-     "The XU pipe is roughly a quarter rate. Softmax and normalisation land here, "
-     "and the cost does not appear in the compute SOL figure."),
-    ("inst_pipe_lsu", "LSU (load/store issue)",
-     "A saturated LSU is an instruction-issue limit, not a bandwidth limit: the fix "
-     "is fewer, wider accesses, not faster memory."),
-    ("inst_pipe_adu", "ADU (address arithmetic)",
-     "Address computation dominating usually means indexing that could be strength-"
-     "reduced or hoisted out of the inner loop."),
+    (
+        "inst_pipe_fp64",
+        "FP64",
+        "FP64 is 1/64 rate on consumer and 1/2 on datacenter parts; "
+        "unintended doubles are a common accidental slowdown.",
+    ),
+    (
+        "inst_pipe_fp16",
+        "FP16 in the FMA pipe",
+        "Half precision running in FMA rather than "
+        "on tensor cores leaves most of the peak unused.",
+    ),
+    (
+        "inst_pipe_xu",
+        "XU (transcendental: rsqrt, exp, sin)",
+        "The XU pipe is roughly a quarter rate. Softmax and normalisation land here, "
+        "and the cost does not appear in the compute SOL figure.",
+    ),
+    (
+        "inst_pipe_lsu",
+        "LSU (load/store issue)",
+        "A saturated LSU is an instruction-issue limit, not a bandwidth limit: the fix "
+        "is fewer, wider accesses, not faster memory.",
+    ),
+    (
+        "inst_pipe_adu",
+        "ADU (address arithmetic)",
+        "Address computation dominating usually means indexing that could be strength-"
+        "reduced or hoisted out of the inner loop.",
+    ),
     ("inst_pipe_tex", "TEX (texture/surface)", ""),
     ("inst_pipe_uniform", "Uniform datapath", ""),
-    ("inst_pipe_cbu", "CBU (convergence/branch)",
-     "Convergence-unit pressure accompanies heavy branching or warp synchronisation."),
+    (
+        "inst_pipe_cbu",
+        "CBU (convergence/branch)",
+        "Convergence-unit pressure accompanies heavy branching or warp synchronisation.",
+    ),
     ("inst_pipe_tmem", "Tensor memory (Blackwell)", ""),
     ("inst_pipe_gmma", "GMMA (Hopper warpgroup MMA)", ""),
     ("inst_pipe_tensor_dmma", "DMMA (fp64 tensor)", ""),
@@ -1670,71 +1911,77 @@ def analyze_instruction_mix(view: MetricView) -> Dict[str, Any]:
     # classify_bottleneck uses. The finding says so rather than inviting the
     # reader to rank them against the SOL numbers.
     if top_value >= 60.0:
-        findings.append(Finding(
-            category="pipe_saturated",
-            title=f"{top_label} is the busiest instruction pipe",
-            summary=(
-                f"The {top_label} pipe runs at {top_value:.0f}% of its peak while the SM "
-                f"is active. " + (top_note + " " if top_note else "") +
-                "Speed-of-light compute throughput is a maximum over pipes, so a kernel "
-                "limited by this pipe can still show a modest compute SOL and be "
-                "misread as latency bound."
-            ),
-            severity="medium" if top_value >= 80.0 else "low",
-            confidence="high",
-            evidence={
-                "pipe": top_key,
-                "pct_of_peak_active": top_value,
-                "all_pipes": {label: value for _k, label, value, _n in pipes},
-                "denominator": "active (not comparable with _elapsed SOL figures)",
-            },
-            actions=(
-                _PIPE_ACTIONS.get(top_key,
-                                  "Reduce the instruction count landing in this pipe."),
-            ),
-            source="heuristic",
-        ))
+        findings.append(
+            Finding(
+                category="pipe_saturated",
+                title=f"{top_label} is the busiest instruction pipe",
+                summary=(
+                    f"The {top_label} pipe runs at {top_value:.0f}% of its peak while the SM "
+                    f"is active. "
+                    + (top_note + " " if top_note else "")
+                    + "Speed-of-light compute throughput is a maximum over pipes, so a kernel "
+                    "limited by this pipe can still show a modest compute SOL and be "
+                    "misread as latency bound."
+                ),
+                severity="medium" if top_value >= 80.0 else "low",
+                confidence="high",
+                evidence={
+                    "pipe": top_key,
+                    "pct_of_peak_active": top_value,
+                    "all_pipes": {label: value for _k, label, value, _n in pipes},
+                    "denominator": "active (not comparable with _elapsed SOL figures)",
+                },
+                actions=(
+                    _PIPE_ACTIONS.get(
+                        top_key, "Reduce the instruction count landing in this pipe."
+                    ),
+                ),
+                source="heuristic",
+            )
+        )
 
     # FP64 where nobody asked for it. Distinct from the pipe-saturation finding
     # above: even a few percent of FP64 on a part with a 1/64 rate is a large
     # share of the time.
     fp64 = view.get("inst_pipe_fp64")
     if fp64 is not None and fp64 > 1.0 and top_key != "inst_pipe_fp64":
-        findings.append(Finding(
-            category="unexpected_fp64",
-            title="FP64 instructions are executing",
-            summary=(
-                f"The FP64 pipe is at {fp64:.1f}% of peak. On parts where FP64 runs at "
-                "1/64 rate, even a small instruction share can dominate the time. This "
-                "is usually an unintended double: a literal without an f suffix, or a "
-                "math function that defaulted to the double overload."
-            ),
-            severity="medium",
-            confidence="medium",
-            evidence={"inst_pipe_fp64_pct_active": fp64},
-            actions=(
-                "Check for double literals (1.0 vs 1.0f) and double-precision math "
-                "calls (exp vs expf) in the kernel.",
-            ),
-            source="heuristic",
-        ))
+        findings.append(
+            Finding(
+                category="unexpected_fp64",
+                title="FP64 instructions are executing",
+                summary=(
+                    f"The FP64 pipe is at {fp64:.1f}% of peak. On parts where FP64 runs at "
+                    "1/64 rate, even a small instruction share can dominate the time. This "
+                    "is usually an unintended double: a literal without an f suffix, or a "
+                    "math function that defaulted to the double overload."
+                ),
+                severity="medium",
+                confidence="medium",
+                evidence={"inst_pipe_fp64_pct_active": fp64},
+                actions=(
+                    "Check for double literals (1.0 vs 1.0f) and double-precision math "
+                    "calls (exp vs expf) in the kernel.",
+                ),
+                source="heuristic",
+            )
+        )
     return result
 
 
 _PIPE_ACTIONS: Dict[str, str] = {
     "inst_pipe_xu": "Cut transcendental calls: reuse computed values, use the fast-math "
-                    "intrinsics (__expf, __frcp_rn) where the accuracy allows, or "
-                    "restructure softmax/normalisation to evaluate fewer of them.",
+    "intrinsics (__expf, __frcp_rn) where the accuracy allows, or "
+    "restructure softmax/normalisation to evaluate fewer of them.",
     "inst_pipe_lsu": "Issue fewer, wider memory instructions: vectorise to 128-bit "
-                     "accesses so the same bytes move in a quarter of the instructions.",
+    "accesses so the same bytes move in a quarter of the instructions.",
     "inst_pipe_adu": "Hoist address arithmetic out of the inner loop, or strength-reduce "
-                     "the indexing to pointer increments.",
+    "the indexing to pointer increments.",
     "inst_pipe_fp64": "Remove unintended double precision: check for literals without an "
-                      "f suffix and for double-overload math calls.",
+    "f suffix and for double-overload math calls.",
     "inst_pipe_fp16": "Half-precision work is running in the FMA pipe rather than on "
-                      "tensor cores. Check the shapes and the layout permit an MMA path.",
+    "tensor cores. Check the shapes and the layout permit an MMA path.",
     "inst_pipe_alu": "Reduce integer and logic work in the inner loop; it is often index "
-                     "arithmetic that can be hoisted or precomputed.",
+    "arithmetic that can be hoisted or precomputed.",
     "inst_pipe_cbu": "Reduce branching and warp-level synchronisation in the hot path.",
 }
 
@@ -1800,7 +2047,10 @@ def hierarchical_roofline(view: MetricView, gpu_spec: Any = None) -> Dict[str, A
             return direct, "byte counter"
         sectors = view.get(sector_key)
         if sectors is not None:
-            return sectors * _BYTES_PER_SECTOR, f"{sector_key} x {_BYTES_PER_SECTOR:.0f}"
+            return (
+                sectors * _BYTES_PER_SECTOR,
+                f"{sector_key} x {_BYTES_PER_SECTOR:.0f}",
+            )
         return None, ""
 
     l1_bytes, l1_source = _bytes("l1_bytes_total", "l1_sectors_total")
@@ -1836,7 +2086,8 @@ def hierarchical_roofline(view: MetricView, gpu_spec: Any = None) -> Dict[str, A
     # Shared memory is invisible to the L1 byte counter, and the kernels this
     # matters most for are precisely the ones worth profiling.
     shared_active = (
-        view.get("shared_wavefronts_ld") or view.get("shared_wavefronts_st")
+        view.get("shared_wavefronts_ld")
+        or view.get("shared_wavefronts_st")
         or view.get("shared_pipe_util")
     )
     if "l1" in levels and shared_active:
@@ -1862,66 +2113,78 @@ def hierarchical_roofline(view: MetricView, gpu_spec: Any = None) -> Dict[str, A
         ratio = ai_l2 / ai_l1
         result["l1_to_l2_intensity_ratio"] = ratio
         if ratio < 1.5:
-            findings.append(Finding(
-                category="poor_cache_locality",
-                title="L1 is not capturing reuse",
-                summary=(
-                    f"Arithmetic intensity is {ai_l1:.2f} FLOP/byte at L1 and {ai_l2:.2f} "
-                    f"at L2, a ratio of {ratio:.2f}. Nearly every byte that leaves L1 "
-                    "reaches L2, so L1 is passing traffic through rather than serving it. "
-                    "The stock DRAM-only roofline cannot show this."
-                ),
-                severity="medium",
-                confidence="high",
-                evidence={"ai_l1": ai_l1, "ai_l2": ai_l2, "ratio": ratio,
-                          "l1_byte_source": levels["l1"]["byte_source"]},
-                actions=(
-                    "Block for L1: shrink the working set of the inner loop so each "
-                    "fetched line is reused before it is evicted.",
-                ),
-                source="heuristic",
-            ))
+            findings.append(
+                Finding(
+                    category="poor_cache_locality",
+                    title="L1 is not capturing reuse",
+                    summary=(
+                        f"Arithmetic intensity is {ai_l1:.2f} FLOP/byte at L1 and {ai_l2:.2f} "
+                        f"at L2, a ratio of {ratio:.2f}. Nearly every byte that leaves L1 "
+                        "reaches L2, so L1 is passing traffic through rather than serving it. "
+                        "The stock DRAM-only roofline cannot show this."
+                    ),
+                    severity="medium",
+                    confidence="high",
+                    evidence={
+                        "ai_l1": ai_l1,
+                        "ai_l2": ai_l2,
+                        "ratio": ratio,
+                        "l1_byte_source": levels["l1"]["byte_source"],
+                    },
+                    actions=(
+                        "Block for L1: shrink the working set of the inner loop so each "
+                        "fetched line is reused before it is evicted.",
+                    ),
+                    source="heuristic",
+                )
+            )
 
     if ai_l2 and ai_dram:
         ratio = ai_dram / ai_l2
         result["l2_to_dram_intensity_ratio"] = ratio
         if ratio < 1.5:
-            findings.append(Finding(
-                category="poor_cache_locality",
-                title="L2 is not capturing reuse either",
-                summary=(
-                    f"Arithmetic intensity is {ai_l2:.2f} FLOP/byte at L2 and "
-                    f"{ai_dram:.2f} at DRAM, a ratio of {ratio:.2f}. Traffic missing L2 "
-                    "goes almost entirely to device memory, so the working set does not "
-                    "fit in L2 at the current tile size."
-                ),
-                severity="medium",
-                confidence="high",
-                evidence={"ai_l2": ai_l2, "ai_dram": ai_dram, "ratio": ratio},
-                actions=(
-                    "Reduce the tile or batch size so the working set fits in L2, or "
-                    "reorder the traversal so reuse happens before eviction.",
-                ),
-                source="heuristic",
-            ))
+            findings.append(
+                Finding(
+                    category="poor_cache_locality",
+                    title="L2 is not capturing reuse either",
+                    summary=(
+                        f"Arithmetic intensity is {ai_l2:.2f} FLOP/byte at L2 and "
+                        f"{ai_dram:.2f} at DRAM, a ratio of {ratio:.2f}. Traffic missing L2 "
+                        "goes almost entirely to device memory, so the working set does not "
+                        "fit in L2 at the current tile size."
+                    ),
+                    severity="medium",
+                    confidence="high",
+                    evidence={"ai_l2": ai_l2, "ai_dram": ai_dram, "ratio": ratio},
+                    actions=(
+                        "Reduce the tile or batch size so the working set fits in L2, or "
+                        "reorder the traversal so reuse happens before eviction.",
+                    ),
+                    source="heuristic",
+                )
+            )
 
     if ai_l1 and ai_dram and ai_dram / ai_l1 >= 4.0:
         result["locality_verdict"] = "healthy"
-        findings.append(Finding(
-            category="poor_cache_locality",
-            title="Cache hierarchy is already capturing most reuse",
-            summary=(
-                f"Arithmetic intensity rises from {ai_l1:.2f} FLOP/byte at L1 to "
-                f"{ai_dram:.2f} at DRAM, a {ai_dram / ai_l1:.1f}x spread. The caches are "
-                "absorbing the traffic they should. Locality is not where the remaining "
-                "time is; look elsewhere before restructuring for cache behaviour."
-            ),
-            severity="info",
-            confidence="high",
-            evidence={"ai_l1": ai_l1, "ai_dram": ai_dram},
-            actions=("Do not spend effort on blocking or tiling; it is already working.",),
-            source="heuristic",
-        ))
+        findings.append(
+            Finding(
+                category="poor_cache_locality",
+                title="Cache hierarchy is already capturing most reuse",
+                summary=(
+                    f"Arithmetic intensity rises from {ai_l1:.2f} FLOP/byte at L1 to "
+                    f"{ai_dram:.2f} at DRAM, a {ai_dram / ai_l1:.1f}x spread. The caches are "
+                    "absorbing the traffic they should. Locality is not where the remaining "
+                    "time is; look elsewhere before restructuring for cache behaviour."
+                ),
+                severity="info",
+                confidence="high",
+                evidence={"ai_l1": ai_l1, "ai_dram": ai_dram},
+                actions=(
+                    "Do not spend effort on blocking or tiling; it is already working.",
+                ),
+                source="heuristic",
+            )
+        )
     elif ai_l1 and ai_dram:
         result["locality_verdict"] = "leaking"
 
@@ -1956,34 +2219,41 @@ def analyze_memory_hierarchy(view: MetricView) -> Dict[str, Any]:
     # Which level is the tightest. Only _elapsed percentages are comparable, and
     # every SOL key above resolves to an _elapsed spelling for exactly that
     # reason -- mixing in an _active figure would rank the idlest unit first.
-    levels = [(n, v) for n, v in (("L2", l2_sol), ("DRAM", dram_sol), ("L1/TEX", l1_sol))
-              if v is not None]
+    levels = [
+        (n, v)
+        for n, v in (("L2", l2_sol), ("DRAM", dram_sol), ("L1/TEX", l1_sol))
+        if v is not None
+    ]
     if levels:
         tightest, tightest_val = max(levels, key=lambda kv: kv[1])
         result["tightest_level"] = tightest
         result["tightest_level_pct"] = tightest_val
         if tightest_val >= 70.0 and tightest != "DRAM":
-            findings.append(Finding(
-                category="memory",
-                title=f"{tightest} is the saturated level, not DRAM",
-                summary=(
-                    f"{tightest} runs at {tightest_val:.0f}% of peak while DRAM is at "
-                    f"{dram_sol:.0f}%. " if dram_sol is not None else
-                    f"{tightest} runs at {tightest_val:.0f}% of peak. "
-                ) + (
-                    "Adding DRAM bandwidth will not help; the fix is to cut requests "
-                    "at this level -- larger tiles, better reuse, or vectorised access."
-                ),
-                severity="medium",
-                confidence="high",
-                evidence={n: v for n, v in levels},
-                actions=(
-                    f"Reduce {tightest} traffic rather than DRAM traffic: increase reuse "
-                    "per byte fetched, or widen each access so fewer requests move the "
-                    "same bytes.",
-                ),
-                source="heuristic",
-            ))
+            findings.append(
+                Finding(
+                    category="memory",
+                    title=f"{tightest} is the saturated level, not DRAM",
+                    summary=(
+                        f"{tightest} runs at {tightest_val:.0f}% of peak while DRAM is at "
+                        f"{dram_sol:.0f}%. "
+                        if dram_sol is not None
+                        else f"{tightest} runs at {tightest_val:.0f}% of peak. "
+                    )
+                    + (
+                        "Adding DRAM bandwidth will not help; the fix is to cut requests "
+                        "at this level -- larger tiles, better reuse, or vectorised access."
+                    ),
+                    severity="medium",
+                    confidence="high",
+                    evidence={n: v for n, v in levels},
+                    actions=(
+                        f"Reduce {tightest} traffic rather than DRAM traffic: increase reuse "
+                        "per byte fetched, or widen each access so fewer requests move the "
+                        "same bytes.",
+                    ),
+                    source="heuristic",
+                )
+            )
 
     # Read/write asymmetry. A write-heavy kernel behaves differently from a
     # read-heavy one at the same total bandwidth: writes cannot be prefetched,
@@ -1996,26 +2266,31 @@ def analyze_memory_hierarchy(view: MetricView) -> Dict[str, Any]:
         result["dram_write_bytes"] = wr
         result["dram_write_share"] = write_share
         if write_share > 0.6:
-            findings.append(Finding(
-                category="memory",
-                title="DRAM traffic is write-dominated",
-                summary=(
-                    f"{write_share * 100:.0f}% of device-memory traffic is writes "
-                    f"({wr / 1e6:.1f} MB written against {rd / 1e6:.1f} MB read). Writes "
-                    "cannot be prefetched, and a partially-written sector costs a read "
-                    "as well, so write-heavy kernels reach a lower fraction of peak "
-                    "bandwidth than read-heavy ones."
-                ),
-                severity="low",
-                confidence="high",
-                evidence={"dram_bytes_read": rd, "dram_bytes_write": wr,
-                          "write_share": round(write_share, 3)},
-                actions=(
-                    "Write whole sectors: make the store pattern contiguous and aligned "
-                    "so no sector is partially written.",
-                ),
-                source="heuristic",
-            ))
+            findings.append(
+                Finding(
+                    category="memory",
+                    title="DRAM traffic is write-dominated",
+                    summary=(
+                        f"{write_share * 100:.0f}% of device-memory traffic is writes "
+                        f"({wr / 1e6:.1f} MB written against {rd / 1e6:.1f} MB read). Writes "
+                        "cannot be prefetched, and a partially-written sector costs a read "
+                        "as well, so write-heavy kernels reach a lower fraction of peak "
+                        "bandwidth than read-heavy ones."
+                    ),
+                    severity="low",
+                    confidence="high",
+                    evidence={
+                        "dram_bytes_read": rd,
+                        "dram_bytes_write": wr,
+                        "write_share": round(write_share, 3),
+                    },
+                    actions=(
+                        "Write whole sectors: make the store pattern contiguous and aligned "
+                        "so no sector is partially written.",
+                    ),
+                    source="heuristic",
+                )
+            )
 
     # Read vs write hit rate. One low half is invisible in the aggregate.
     rd_hit = view.get("l2_read_hit_rate")
@@ -2025,23 +2300,25 @@ def analyze_memory_hierarchy(view: MetricView) -> Dict[str, Any]:
         result["l2_write_hit_rate"] = wr_hit
         if abs(rd_hit - wr_hit) > 30.0:
             low, high = ("read", "write") if rd_hit < wr_hit else ("write", "read")
-            findings.append(Finding(
-                category="poor_cache_locality",
-                title=f"L2 {low} hit rate is far below the {high} hit rate",
-                summary=(
-                    f"L2 hits {rd_hit:.0f}% of reads and {wr_hit:.0f}% of writes. The "
-                    f"aggregate hit rate hides this: the {low} path is missing to DRAM "
-                    "while the other is served from cache."
-                ),
-                severity="medium",
-                confidence="high",
-                evidence={"l2_read_hit_rate": rd_hit, "l2_write_hit_rate": wr_hit},
-                actions=(
-                    f"Look at the {low} access pattern specifically -- the aggregate "
-                    "hit rate will not show the improvement or the regression.",
-                ),
-                source="heuristic",
-            ))
+            findings.append(
+                Finding(
+                    category="poor_cache_locality",
+                    title=f"L2 {low} hit rate is far below the {high} hit rate",
+                    summary=(
+                        f"L2 hits {rd_hit:.0f}% of reads and {wr_hit:.0f}% of writes. The "
+                        f"aggregate hit rate hides this: the {low} path is missing to DRAM "
+                        "while the other is served from cache."
+                    ),
+                    severity="medium",
+                    confidence="high",
+                    evidence={"l2_read_hit_rate": rd_hit, "l2_write_hit_rate": wr_hit},
+                    actions=(
+                        f"Look at the {low} access pattern specifically -- the aggregate "
+                        "hit rate will not show the improvement or the regression.",
+                    ),
+                    source="heuristic",
+                )
+            )
 
     # Traffic leaving the device. This is the one that turns a "slow kernel"
     # into "this kernel is touching host or peer memory", which is a different
@@ -2055,25 +2332,27 @@ def analyze_memory_hierarchy(view: MetricView) -> Dict[str, Any]:
         if value is None or value <= 0:
             continue
         result[f"{label}_aperture_sectors"] = value
-        findings.append(Finding(
-            category="memory",
-            title=f"Kernel is reaching {label} memory, not just device memory",
-            summary=(
-                f"{value:,.0f} L2 sectors missed to the {label} aperture, meaning the "
-                f"kernel accessed {detail}. That path is roughly an order of magnitude "
-                "slower than HBM, so a small number of these accesses can dominate the "
-                "kernel's time while barely showing up in DRAM throughput."
-            ),
-            severity="high",
-            confidence="high",
-            evidence={f"l2_aperture_{label}_miss_sectors": value},
-            actions=(
-                "Check for unified/managed memory that has not migrated, or a pointer "
-                "that should have been a device allocation. cudaMemPrefetchAsync or an "
-                "explicit device copy usually removes this entirely.",
-            ),
-            source="heuristic",
-        ))
+        findings.append(
+            Finding(
+                category="memory",
+                title=f"Kernel is reaching {label} memory, not just device memory",
+                summary=(
+                    f"{value:,.0f} L2 sectors missed to the {label} aperture, meaning the "
+                    f"kernel accessed {detail}. That path is roughly an order of magnitude "
+                    "slower than HBM, so a small number of these accesses can dominate the "
+                    "kernel's time while barely showing up in DRAM throughput."
+                ),
+                severity="high",
+                confidence="high",
+                evidence={f"l2_aperture_{label}_miss_sectors": value},
+                actions=(
+                    "Check for unified/managed memory that has not migrated, or a pointer "
+                    "that should have been a device allocation. cudaMemPrefetchAsync or an "
+                    "explicit device copy usually removes this entirely.",
+                ),
+                source="heuristic",
+            )
+        )
 
     # No caveat when the counters are absent: `analysis_coverage` already
     # reports memory_hierarchy as skipped, and saying it twice turns a real
@@ -2095,9 +2374,11 @@ def analyze_issue_efficiency(view: MetricView) -> Dict[str, Any]:
     issue = view.get("issue_slot_util")
     eligible = view.get("warps_eligible_per_scheduler")
     active = view.get("warps_active_per_scheduler")
-    for key, value in (("issue_slot_util", issue),
-                       ("warps_eligible_per_scheduler", eligible),
-                       ("warps_active_per_scheduler", active)):
+    for key, value in (
+        ("issue_slot_util", issue),
+        ("warps_eligible_per_scheduler", eligible),
+        ("warps_active_per_scheduler", active),
+    ):
         if value is not None:
             result[key] = value
 
@@ -2126,29 +2407,33 @@ def analyze_issue_efficiency(view: MetricView) -> Dict[str, Any]:
                 "the resident warps are stalled rather than absent. Raising occupancy "
                 "would add more stalled warps."
             )
-        findings.append(Finding(
-            category="occupancy",
-            title="Schedulers had less than one eligible warp per cycle",
-            summary=(
-                f"{eligible:.2f} warps were eligible to issue per scheduler per active "
-                f"cycle. Below 1.0 the scheduler has nothing to switch to the moment "
-                f"the selected warp stalls, so stall latency is exposed directly."
-                + detail
-            ),
-            severity="medium",
-            confidence="high",
-            evidence={"warps_eligible_per_scheduler": eligible,
-                      "warps_active_per_scheduler": active,
-                      "issue_slot_util_pct": issue},
-            actions=(
-                "Read the stall breakdown before changing occupancy: it names what the "
-                "resident warps are waiting on."
-                if (active or 0) > 4.0 else
-                "Increase occupancy so the scheduler has warps to switch to, or shorten "
-                "the dependency chains that make each warp ineligible.",
-            ),
-            source="ncu_rule",
-        ))
+        findings.append(
+            Finding(
+                category="occupancy",
+                title="Schedulers had less than one eligible warp per cycle",
+                summary=(
+                    f"{eligible:.2f} warps were eligible to issue per scheduler per active "
+                    f"cycle. Below 1.0 the scheduler has nothing to switch to the moment "
+                    f"the selected warp stalls, so stall latency is exposed directly."
+                    + detail
+                ),
+                severity="medium",
+                confidence="high",
+                evidence={
+                    "warps_eligible_per_scheduler": eligible,
+                    "warps_active_per_scheduler": active,
+                    "issue_slot_util_pct": issue,
+                },
+                actions=(
+                    "Read the stall breakdown before changing occupancy: it names what the "
+                    "resident warps are waiting on."
+                    if (active or 0) > 4.0
+                    else "Increase occupancy so the scheduler has warps to switch to, or shorten "
+                    "the dependency chains that make each warp ineligible.",
+                ),
+                source="ncu_rule",
+            )
+        )
     return result
 
 
@@ -2169,24 +2454,32 @@ def analyze_imbalance(view: MetricView) -> Dict[str, Any]:
         imbalance = 1.0 - (avg / peak)
         details[f"{unit}_imbalance"] = imbalance
         if imbalance >= SOL_THRESHOLDS["imbalance_min_speedup"]:
-            findings.append(Finding(
-                category=f"{unit}_load_imbalance",
-                title=f"{unit.upper()} load imbalance of {imbalance * 100:.0f}%",
-                summary=(
-                    f"The busiest {unit} unit is active for {peak:,.0f} cycles against an average of "
-                    f"{avg:,.0f}. Work is unevenly spread, so the kernel waits on its slowest unit."
-                ),
-                severity="medium" if imbalance > 0.2 else "low",
-                confidence="medium",
-                evidence={f"{unit}_cycles_avg": avg, f"{unit}_cycles_max": peak, "imbalance": imbalance},
-                actions=(
-                    "Use grid-stride loops so blocks self-balance."
-                    if unit == "sm" else
-                    "Check for hot spots in the address pattern (bank/partition camping).",
-                ),
-                speedup_ceiling=1.0 / (1.0 - imbalance) if imbalance < 0.95 else None,
-                source="ncu_rule",
-            ))
+            findings.append(
+                Finding(
+                    category=f"{unit}_load_imbalance",
+                    title=f"{unit.upper()} load imbalance of {imbalance * 100:.0f}%",
+                    summary=(
+                        f"The busiest {unit} unit is active for {peak:,.0f} cycles against an average of "
+                        f"{avg:,.0f}. Work is unevenly spread, so the kernel waits on its slowest unit."
+                    ),
+                    severity="medium" if imbalance > 0.2 else "low",
+                    confidence="medium",
+                    evidence={
+                        f"{unit}_cycles_avg": avg,
+                        f"{unit}_cycles_max": peak,
+                        "imbalance": imbalance,
+                    },
+                    actions=(
+                        "Use grid-stride loops so blocks self-balance."
+                        if unit == "sm"
+                        else "Check for hot spots in the address pattern (bank/partition camping).",
+                    ),
+                    speedup_ceiling=1.0 / (1.0 - imbalance)
+                    if imbalance < 0.95
+                    else None,
+                    source="ncu_rule",
+                )
+            )
 
     details["findings"] = findings
     return details
@@ -2195,6 +2488,7 @@ def analyze_imbalance(view: MetricView) -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 # Workload expectations
 # ---------------------------------------------------------------------------
+
 
 def _article(word: str) -> str:
     """Pick "a" or "an" so generated sentences read naturally."""
@@ -2217,30 +2511,34 @@ def _expectation_findings(
     ``kernel_kernel_0`` from CuTe DSL would otherwise fall through to "no
     expectations matched", which reads exactly like "nothing is wrong".
     """
-    from ..sources.kernel_taxonomy import CATEGORY_EXPECTATIONS  # local import: avoid cycle
+    from ..sources.kernel_taxonomy import (
+        CATEGORY_EXPECTATIONS,
+    )  # local import: avoid cycle
 
     findings: List[Finding] = []
 
     if not name_is_informative:
-        return [Finding(
-            category="unattributable_kernel",
-            title="Kernel name carries no workload information",
-            summary=(
-                "This symbol identifies no workload category, so the checks that compare a "
-                "kernel against what its category should achieve could not run. That is a gap "
-                "in coverage, not a clean result. CuTe DSL kernels default to this shape and "
-                "FlashAttention-4 ships that way."
-            ),
-            severity="info",
-            confidence="high",
-            evidence={"kernel_name": getattr(kernel_info, "name", "")},
-            actions=(
-                "Call set_name_prefix() at the launch site to make the kernel attributable.",
-                "Until then, judge this kernel from counters alone: tensor pipe, DRAM SOL, "
-                "and the stall profile do not depend on the name.",
-            ),
-            source="expectation",
-        )]
+        return [
+            Finding(
+                category="unattributable_kernel",
+                title="Kernel name carries no workload information",
+                summary=(
+                    "This symbol identifies no workload category, so the checks that compare a "
+                    "kernel against what its category should achieve could not run. That is a gap "
+                    "in coverage, not a clean result. CuTe DSL kernels default to this shape and "
+                    "FlashAttention-4 ships that way."
+                ),
+                severity="info",
+                confidence="high",
+                evidence={"kernel_name": getattr(kernel_info, "name", "")},
+                actions=(
+                    "Call set_name_prefix() at the launch site to make the kernel attributable.",
+                    "Until then, judge this kernel from counters alone: tensor pipe, DRAM SOL, "
+                    "and the stall profile do not depend on the name.",
+                ),
+                source="expectation",
+            )
+        ]
 
     if kernel_info is None:
         return []
@@ -2251,81 +2549,111 @@ def _expectation_findings(
     category = kernel_info.category
     # A name-derived category never supports better than medium confidence, and
     # an advisory one (truncated symbol, cuBLASLt-embedded CUTLASS) drops to low.
-    capped = {"high": "medium", "medium": "medium", "low": "low"}.get(category_confidence, "low")
+    capped = {"high": "medium", "medium": "medium", "low": "low"}.get(
+        category_confidence, "low"
+    )
 
     want_tc = expectation.get("expect_tensor_cores")
     tensor_util = view.get("pipe_tensor_util")
     if want_tc is True and tensor_util is not None and tensor_util < 1.0:
-        findings.append(Finding(
-            category="tensor_cores_idle",
-            title=f"{category} kernel is not using tensor cores",
-            summary=(
-                f"The tensor pipe is {tensor_util:.1f}% utilised on a {category} kernel that should be "
-                "running MMA instructions. Check dtype (fp32 instead of bf16/fp16), operand alignment, "
-                "and whether a fallback path was selected."
-            ),
-            severity="high",
-            confidence=capped,
-            evidence={"pipe_tensor_util_pct": tensor_util,
-                      "category_provenance": "kernel_name",
-                      "pipe_fma_util_pct": view.get("pipe_fma_util"),
-                      "kernel_category": category,
-                      "kernel_name": getattr(kernel_info, "name", "")},
-            actions=(
-                "Enable AMP / cast to bf16 or fp16.",
-                "Align M/N/K: multiples of 8 for fp16, 16 for int8, 4 for tf32 (64/128/32 for best A100 rates).",
-                "Confirm the library picked a tensor-core kernel - a *simt* or sgemm name means it did not.",
-            ),
-            source="expectation",
-        ))
+        findings.append(
+            Finding(
+                category="tensor_cores_idle",
+                title=f"{category} kernel is not using tensor cores",
+                summary=(
+                    f"The tensor pipe is {tensor_util:.1f}% utilised on a {category} kernel that should be "
+                    "running MMA instructions. Check dtype (fp32 instead of bf16/fp16), operand alignment, "
+                    "and whether a fallback path was selected."
+                ),
+                severity="high",
+                confidence=capped,
+                evidence={
+                    "pipe_tensor_util_pct": tensor_util,
+                    "category_provenance": "kernel_name",
+                    "pipe_fma_util_pct": view.get("pipe_fma_util"),
+                    "kernel_category": category,
+                    "kernel_name": getattr(kernel_info, "name", ""),
+                },
+                actions=(
+                    "Enable AMP / cast to bf16 or fp16.",
+                    "Align M/N/K: multiples of 8 for fp16, 16 for int8, 4 for tf32 (64/128/32 for best A100 rates).",
+                    "Confirm the library picked a tensor-core kernel - a *simt* or sgemm name means it did not.",
+                ),
+                source="expectation",
+            )
+        )
 
     dram_floor = expectation.get("dram_sol_pct")
     dram_sol = view.get("dram_sol")
-    if isinstance(dram_floor, (int, float)) and dram_sol is not None and dram_sol < dram_floor:
+    if (
+        isinstance(dram_floor, (int, float))
+        and dram_sol is not None
+        and dram_sol < dram_floor
+    ):
         duration_ns = view.get("duration_ns")
         waves = view.get("waves_per_sm")
         reason = ""
-        if duration_ns is not None and duration_ns < SOL_THRESHOLDS["short_kernel_us"] * 1000:
+        if (
+            duration_ns is not None
+            and duration_ns < SOL_THRESHOLDS["short_kernel_us"] * 1000
+        ):
             reason = " The kernel is very short, so launch and ramp-up dominate."
         elif waves is not None and waves < 1:
             reason = " The grid is under one wave, so most SMs never participate."
-        findings.append(Finding(
-            category="memory_bound_kernel_below_expectation",
-            title=f"{category} kernel reaches only {dram_sol:.0f}% of DRAM peak",
-            summary=(
-                f"{_article(category).capitalize()} {category} kernel is bandwidth bound by nature and should approach "
-                f"{dram_floor:.0f}%+ of DRAM speed-of-light.{reason} "
-                + str(expectation.get("advice") or "")
-            ),
-            severity="medium",
-            confidence="medium",
-            evidence={"dram_sol_pct": dram_sol, "expected_min_pct": dram_floor,
-                      "duration_ns": duration_ns, "waves_per_sm": waves,
-                      "kernel_category": category},
-            actions=(
-                "Fuse with neighbouring elementwise work to amortise the traffic.",
-                "Check coalescing and vectorisation of the access pattern.",
-            ),
-            source="expectation",
-        ))
+        findings.append(
+            Finding(
+                category="memory_bound_kernel_below_expectation",
+                title=f"{category} kernel reaches only {dram_sol:.0f}% of DRAM peak",
+                summary=(
+                    f"{_article(category).capitalize()} {category} kernel is bandwidth bound by nature and should approach "
+                    f"{dram_floor:.0f}%+ of DRAM speed-of-light.{reason} "
+                    + str(expectation.get("advice") or "")
+                ),
+                severity="medium",
+                confidence="medium",
+                evidence={
+                    "dram_sol_pct": dram_sol,
+                    "expected_min_pct": dram_floor,
+                    "duration_ns": duration_ns,
+                    "waves_per_sm": waves,
+                    "kernel_category": category,
+                },
+                actions=(
+                    "Fuse with neighbouring elementwise work to amortise the traffic.",
+                    "Check coalescing and vectorisation of the access pattern.",
+                ),
+                source="expectation",
+            )
+        )
 
     compute_floor = expectation.get("compute_sol_pct")
     compute_sol = view.get("compute_sol")
-    if isinstance(compute_floor, (int, float)) and compute_sol is not None and compute_sol < compute_floor:
-        findings.append(Finding(
-            category="compute_bound_kernel_below_expectation",
-            title=f"{category} kernel reaches only {compute_sol:.0f}% of compute peak",
-            summary=(
-                f"{_article(category).capitalize()} {category} kernel should be compute bound and clear {compute_floor:.0f}% SM "
-                f"throughput. " + str(expectation.get("advice") or "")
-            ),
-            severity="medium",
-            confidence="medium",
-            evidence={"compute_sol_pct": compute_sol, "expected_min_pct": compute_floor,
-                      "kernel_category": category},
-            actions=("Check tile/wave quantisation and tensor-core engagement first.",),
-            source="expectation",
-        ))
+    if (
+        isinstance(compute_floor, (int, float))
+        and compute_sol is not None
+        and compute_sol < compute_floor
+    ):
+        findings.append(
+            Finding(
+                category="compute_bound_kernel_below_expectation",
+                title=f"{category} kernel reaches only {compute_sol:.0f}% of compute peak",
+                summary=(
+                    f"{_article(category).capitalize()} {category} kernel should be compute bound and clear {compute_floor:.0f}% SM "
+                    f"throughput. " + str(expectation.get("advice") or "")
+                ),
+                severity="medium",
+                confidence="medium",
+                evidence={
+                    "compute_sol_pct": compute_sol,
+                    "expected_min_pct": compute_floor,
+                    "kernel_category": category,
+                },
+                actions=(
+                    "Check tile/wave quantisation and tensor-core engagement first.",
+                ),
+                source="expectation",
+            )
+        )
 
     return findings
 
@@ -2335,7 +2663,6 @@ def _expectation_findings(
 # ---------------------------------------------------------------------------
 
 _SEVERITY_ORDER = {"high": 0, "medium": 1, "low": 2, "info": 3}
-
 
 
 # Which catalog metric each analysis needs before it can say anything at all.
@@ -2350,30 +2677,52 @@ _SEVERITY_ORDER = {"high": 0, "medium": 1, "low": 2, "info": 3}
 # had run and emitted findings. A coverage report that lies is worse than none,
 # so `test_coverage_keys_exist_in_catalog` now pins every key to the catalog.
 _ANALYSIS_REQUIREMENTS: Dict[str, Tuple[Tuple[str, ...], str]] = {
-    "bottleneck":    (("compute_sol", "memory_sol"), "SpeedOfLight"),
-    "roofline":      (("dram_bytes", "duration_ns"), "SpeedOfLight + MemoryWorkloadAnalysis"),
-    "stalls":        (("warp_cycles_per_issued_inst", "issue_active"), "WarpStateStats"),
-    "occupancy":     (("achieved_occupancy", "theoretical_occupancy"), "Occupancy"),
-    "launch":        (("grid_size", "block_size"), "LaunchStats"),
-    "coalescing":    (("global_ld_sectors_per_request", "global_ld_bytes_per_sector",
-                       "l2_sectors_global_excessive"),
-                      "MemoryWorkloadAnalysis_Tables"),
-    "shared_memory": (("shared_bank_conflicts_ld", "shared_bank_conflicts_st"),
-                      "MemoryWorkloadAnalysis_Tables"),
-    "divergence":    (("warp_exec_efficiency", "branch_efficiency"),
-                      "InstructionStats / SourceCounters"),
-    "spilling":      (("local_ld_inst", "local_st_inst", "registers_per_thread"),
-                      "SourceCounters + LaunchStats"),
-    "pipes":         (("pipe_tensor_util", "pipe_fma_util"), "ComputeWorkloadAnalysis"),
-    "imbalance":     (("sm_cycles_active", "sm_cycles_active_max"), "WorkloadDistribution"),
-    "memory_hierarchy": (("l2_sol", "l1_sol", "dram_bytes_read", "l2_read_hit_rate"),
-                         "MemoryWorkloadAnalysis"),
-    "issue_efficiency": (("warps_eligible_per_scheduler", "issue_slot_util"),
-                         "SchedulerStats"),
-    "instruction_mix": (("inst_pipe_fma", "inst_pipe_alu", "inst_pipe_xu",
-                         "inst_pipe_lsu"), "ComputeWorkloadAnalysis"),
-    "hierarchical_roofline": (("l1_sectors_total", "l2_sectors_total", "l1_bytes_total"),
-                              "MemoryWorkloadAnalysis + FLOP counters"),
+    "bottleneck": (("compute_sol", "memory_sol"), "SpeedOfLight"),
+    "roofline": (
+        ("dram_bytes", "duration_ns"),
+        "SpeedOfLight + MemoryWorkloadAnalysis",
+    ),
+    "stalls": (("warp_cycles_per_issued_inst", "issue_active"), "WarpStateStats"),
+    "occupancy": (("achieved_occupancy", "theoretical_occupancy"), "Occupancy"),
+    "launch": (("grid_size", "block_size"), "LaunchStats"),
+    "coalescing": (
+        (
+            "global_ld_sectors_per_request",
+            "global_ld_bytes_per_sector",
+            "l2_sectors_global_excessive",
+        ),
+        "MemoryWorkloadAnalysis_Tables",
+    ),
+    "shared_memory": (
+        ("shared_bank_conflicts_ld", "shared_bank_conflicts_st"),
+        "MemoryWorkloadAnalysis_Tables",
+    ),
+    "divergence": (
+        ("warp_exec_efficiency", "branch_efficiency"),
+        "InstructionStats / SourceCounters",
+    ),
+    "spilling": (
+        ("local_ld_inst", "local_st_inst", "registers_per_thread"),
+        "SourceCounters + LaunchStats",
+    ),
+    "pipes": (("pipe_tensor_util", "pipe_fma_util"), "ComputeWorkloadAnalysis"),
+    "imbalance": (("sm_cycles_active", "sm_cycles_active_max"), "WorkloadDistribution"),
+    "memory_hierarchy": (
+        ("l2_sol", "l1_sol", "dram_bytes_read", "l2_read_hit_rate"),
+        "MemoryWorkloadAnalysis",
+    ),
+    "issue_efficiency": (
+        ("warps_eligible_per_scheduler", "issue_slot_util"),
+        "SchedulerStats",
+    ),
+    "instruction_mix": (
+        ("inst_pipe_fma", "inst_pipe_alu", "inst_pipe_xu", "inst_pipe_lsu"),
+        "ComputeWorkloadAnalysis",
+    ),
+    "hierarchical_roofline": (
+        ("l1_sectors_total", "l2_sectors_total", "l1_bytes_total"),
+        "MemoryWorkloadAnalysis + FLOP counters",
+    ),
 }
 
 
@@ -2391,11 +2740,13 @@ def analysis_coverage(view: MetricView) -> Dict[str, Any]:
         if any(view.get(key) is not None for key in keys):
             ran.append(analysis)
         else:
-            skipped.append({
-                "analysis": analysis,
-                "needs_section": section,
-                "missing_metrics": ", ".join(keys),
-            })
+            skipped.append(
+                {
+                    "analysis": analysis,
+                    "needs_section": section,
+                    "missing_metrics": ", ".join(keys),
+                }
+            )
     total = len(_ANALYSIS_REQUIREMENTS)
     return {
         "ran": ran,
@@ -2406,12 +2757,14 @@ def analysis_coverage(view: MetricView) -> Dict[str, Any]:
             + (
                 f"{len(skipped)} could not: the required metrics are absent from this report, "
                 "so those questions were not asked - this is missing coverage, not a clean result."
-                if skipped else "Full coverage."
+                if skipped
+                else "Full coverage."
             )
         ),
         "remedy": (
             "Collect with --set full, or add the named sections with --section, to close the gap."
-            if skipped else ""
+            if skipped
+            else ""
         ),
     }
 
@@ -2467,7 +2820,10 @@ def diagnose_kernel(
     than dropped.  Omitting them changes nothing except that the findings say so.
     """
     from ..analyzers.evidence import attribute_kernel  # local import: avoid cycle
-    from ..sources.kernel_taxonomy import classify_kernel, parse_gemm_kernel  # local import
+    from ..sources.kernel_taxonomy import (
+        classify_kernel,
+        parse_gemm_kernel,
+    )  # local import
 
     view = metrics if isinstance(metrics, MetricView) else MetricView(metrics)
 
@@ -2484,7 +2840,9 @@ def diagnose_kernel(
     stalls = analyze_stalls(view)
     roofline = compute_roofline(view, gpu_spec)
     occupancy = analyze_occupancy(view)
-    launch = analyze_launch_config(view, gemm_shape=gemm_shape, problem_shape=problem_shape)
+    launch = analyze_launch_config(
+        view, gemm_shape=gemm_shape, problem_shape=problem_shape
+    )
     coalescing = analyze_coalescing(view)
     shared = analyze_shared_memory(view)
     divergence = analyze_divergence(view)
@@ -2523,50 +2881,63 @@ def diagnose_kernel(
         # findings list. A measurement known to be wrong must appear there, or a
         # silently halved FP32 figure reads as a clean result.
         for caveat in section.get("caveats") or ():
-            findings.append(Finding(
-                category="measurement_caveat",
-                title=f"{section_name} measurement is known to be incomplete",
-                summary=str(caveat),
-                severity="medium",
-                confidence="high",
-                evidence={"section": section_name},
-                actions=("Collect the missing counters before using this number.",),
-                source="heuristic",
-            ))
+            findings.append(
+                Finding(
+                    category="measurement_caveat",
+                    title=f"{section_name} measurement is known to be incomplete",
+                    summary=str(caveat),
+                    severity="medium",
+                    confidence="high",
+                    evidence={"section": section_name},
+                    actions=("Collect the missing counters before using this number.",),
+                    source="heuristic",
+                )
+            )
     # Route the classification through the evidence layer so a name that
     # disagrees with the counters is reported as a contradiction rather than
     # silently winning.
     fused, name_warnings = attribute_kernel(kernel_name or "", metrics=view)
     category_attr = fused.get("category")
     informative_attr = fused.get("name_is_informative")
-    findings.extend(_expectation_findings(
-        view, kernel_info,
-        category_confidence=(category_attr.confidence if category_attr else "low"),
-        name_is_informative=(informative_attr.value is not False) if informative_attr else True,
-    ))
+    findings.extend(
+        _expectation_findings(
+            view,
+            kernel_info,
+            category_confidence=(category_attr.confidence if category_attr else "low"),
+            name_is_informative=(informative_attr.value is not False)
+            if informative_attr
+            else True,
+        )
+    )
     for warning in name_warnings:
         # Two different situations arrive here: the name asserting something the
         # counters contradict, and the name asserting nothing at all. Only the
         # first is a conflict, and calling the second one that would be wrong.
         uninformative = "carries no shape or dtype" in warning
-        findings.append(Finding(
-            category="uninformative_name" if uninformative else "evidence_conflict",
-            title=(
-                "Kernel name carries no shape or dtype information"
-                if uninformative
-                else "Kernel name disagrees with the measured counters"
-            ),
-            summary=warning,
-            severity="low" if uninformative else "medium",
-            confidence="high",
-            evidence={"kernel_name": kernel_name},
-            actions=(
-                ("Read shape and dtype from the counters or from NVTX; the symbol has neither.",)
-                if uninformative
-                else ("Trust the counters. The symbol is the weakest evidence in the report.",)
-            ),
-            source="evidence",
-        ))
+        findings.append(
+            Finding(
+                category="uninformative_name" if uninformative else "evidence_conflict",
+                title=(
+                    "Kernel name carries no shape or dtype information"
+                    if uninformative
+                    else "Kernel name disagrees with the measured counters"
+                ),
+                summary=warning,
+                severity="low" if uninformative else "medium",
+                confidence="high",
+                evidence={"kernel_name": kernel_name},
+                actions=(
+                    (
+                        "Read shape and dtype from the counters or from NVTX; the symbol has neither.",
+                    )
+                    if uninformative
+                    else (
+                        "Trust the counters. The symbol is the weakest evidence in the report.",
+                    )
+                ),
+                source="evidence",
+            )
+        )
 
     # Clock throttling first: it decides whether any of the above is attributable
     # to the code at all. Nsight Compute has no metric for the clock a kernel ran
@@ -2578,36 +2949,46 @@ def diagnose_kernel(
         throttle_result = analyze_throttling(**dict(throttling))
         invalidated = list(throttle_result.get("invalidates") or ())
         if invalidated:
-            findings.append(Finding(
-                category="throttling",
-                title="The GPU was throttled during this measurement",
-                summary=(
-                    f"{throttle_result['clock_events'].get('detail', '')} "
-                    f"Derived figures that assume a steady clock are not "
-                    f"attributable to the code: {', '.join(invalidated)}."
-                ).strip(),
-                severity="high",
-                confidence="high",
-                evidence={"throttling": throttle_result},
-                actions=tuple(throttle_result["clock_events"].get("remedies") or ())
-                        or ("Lock clocks with nvidia-smi -lgc before re-measuring.",),
-                source="heuristic",
-            ))
+            findings.append(
+                Finding(
+                    category="throttling",
+                    title="The GPU was throttled during this measurement",
+                    summary=(
+                        f"{throttle_result['clock_events'].get('detail', '')} "
+                        f"Derived figures that assume a steady clock are not "
+                        f"attributable to the code: {', '.join(invalidated)}."
+                    ).strip(),
+                    severity="high",
+                    confidence="high",
+                    evidence={"throttling": throttle_result},
+                    actions=tuple(throttle_result["clock_events"].get("remedies") or ())
+                    or ("Lock clocks with nvidia-smi -lgc before re-measuring.",),
+                    source="heuristic",
+                )
+            )
             # A throttled run measures the clock, not the kernel. Any finding
             # that rests on an invalidated figure must stop claiming certainty.
             demoted = {"compute", "memory_bandwidth"}
             from ..analyzers.axes import axis_for_category as _axis_of
 
             findings = [
-                f if _axis_of(f.category) not in demoted or f.confidence == "low"
+                f
+                if _axis_of(f.category) not in demoted or f.confidence == "low"
                 else Finding(
-                    category=f.category, title=f.title, summary=f.summary,
-                    severity=f.severity, confidence="low",
-                    evidence={**f.evidence, "throttled": True,
-                              "confidence_reduced_because":
-                                  "the GPU was throttled, so this figure reflects "
-                                  "the clock rather than the code"},
-                    actions=f.actions, speedup_ceiling=f.speedup_ceiling, source=f.source,
+                    category=f.category,
+                    title=f.title,
+                    summary=f.summary,
+                    severity=f.severity,
+                    confidence="low",
+                    evidence={
+                        **f.evidence,
+                        "throttled": True,
+                        "confidence_reduced_because": "the GPU was throttled, so this figure reflects "
+                        "the clock rather than the code",
+                    },
+                    actions=f.actions,
+                    speedup_ceiling=f.speedup_ceiling,
+                    source=f.source,
                 )
                 for f in findings
             ]
@@ -2618,16 +2999,21 @@ def diagnose_kernel(
         normalize_shipped_rules,
         reconcile_with_shipped_rules,
     )
+
     normalized_shipped = normalize_shipped_rules(shipped_rules or ())
     reconciliation = reconcile_with_shipped_rules(
-        findings, normalized_shipped, our_verdict=str(bottleneck.get("verdict") or ""),
+        findings,
+        normalized_shipped,
+        our_verdict=str(bottleneck.get("verdict") or ""),
     )
     findings = list(reconciliation["findings"])
 
-    findings.sort(key=lambda f: (
-        _SEVERITY_ORDER.get(f.severity, 9),
-        -(f.speedup_ceiling or 1.0),
-    ))
+    findings.sort(
+        key=lambda f: (
+            _SEVERITY_ORDER.get(f.severity, 9),
+            -(f.speedup_ceiling or 1.0),
+        )
+    )
 
     coverage = analysis_coverage(view)
 
@@ -2673,15 +3059,17 @@ def diagnose_kernel(
     # above, which decides what they may be compared against.
     from ..analyzers.measurement_context import describe_collection_mode
 
-    context = describe_collection_mode(**{
-        "source": "ncu",
-        # The clock the kernel actually ran at. A duration measured at one
-        # clock is not comparable with one measured at another, and on a real
-        # pair of reports half an apparent 12.4% speedup was the clock.
-        "sm_clock_hz": view.get("sm_clock_hz"),
-        "gpc_clock_hz": view.get("gpc_clock_hz"),
-        **dict(collection or {}),
-    })
+    context = describe_collection_mode(
+        **{
+            "source": "ncu",
+            # The clock the kernel actually ran at. A duration measured at one
+            # clock is not comparable with one measured at another, and on a real
+            # pair of reports half an apparent 12.4% speedup was the clock.
+            "sm_clock_hz": view.get("sm_clock_hz"),
+            "gpc_clock_hz": view.get("gpc_clock_hz"),
+            **dict(collection or {}),
+        }
+    )
 
     return {
         "kernel_name": kernel_name,
@@ -2692,11 +3080,19 @@ def diagnose_kernel(
         "measurement_context": context.to_dict(),
         "corroboration": {
             key: reconciliation[key]
-            for key in ("shipped_rules_available", "corroborated", "uncorroborated",
-                        "ncu_only", "conflicts", "note")
+            for key in (
+                "shipped_rules_available",
+                "corroborated",
+                "uncorroborated",
+                "ncu_only",
+                "conflicts",
+                "note",
+            )
         },
         "kernel_category": getattr(kernel_info, "category", "") if kernel_info else "",
-        "kernel_framework": getattr(kernel_info, "framework", "") if kernel_info else "",
+        "kernel_framework": getattr(kernel_info, "framework", "")
+        if kernel_info
+        else "",
         "architecture": arch,
         "gpu": getattr(gpu_spec, "name", "") if gpu_spec else "",
         "verdict": bottleneck.get("verdict"),

@@ -33,7 +33,9 @@ class MetricsReportRenderer:
             lines.append("- None")
         else:
             for item in report.findings:
-                lines.append(f"- **{item.severity.upper()}** `{item.finding_type}`: {item.title}")
+                lines.append(
+                    f"- **{item.severity.upper()}** `{item.finding_type}`: {item.title}"
+                )
                 lines.append(f"  - {item.description}")
                 if item.data:
                     lines.append(f"  - data keys: {', '.join(item.data.keys())}")
@@ -50,7 +52,8 @@ class MetricsReportRenderer:
 
     def to_html(self, report: AnalysisReport) -> str:
         summary_items = "".join(
-            f"<li><b>{escape(str(k))}</b>: {escape(str(v))}</li>" for k, v in report.summary.items()
+            f"<li><b>{escape(str(k))}</b>: {escape(str(v))}</li>"
+            for k, v in report.summary.items()
         )
         findings_html = "".join(
             (
@@ -67,7 +70,9 @@ class MetricsReportRenderer:
 
         score_html = ""
         if report.overall_score is not None:
-            score_html = f"<p><b>Overall Score:</b> {escape(str(report.overall_score))}</p>"
+            score_html = (
+                f"<p><b>Overall Score:</b> {escape(str(report.overall_score))}</p>"
+            )
 
         return f"""<!doctype html>
 <html lang="en">
@@ -130,7 +135,9 @@ class MetricsReportRenderer:
             return self.to_html(report)
         raise ValueError(f"Unsupported report format: {fmt}")
 
-    def write(self, report: AnalysisReport, output_path: str, *, fmt: Optional[str] = None) -> str:
+    def write(
+        self, report: AnalysisReport, output_path: str, *, fmt: Optional[str] = None
+    ) -> str:
         path = Path(output_path)
         target_fmt = fmt or path.suffix.lstrip(".") or "json"
         content = self.render(report, target_fmt)
@@ -152,7 +159,8 @@ class MetricsReportRenderer:
                 f"- base={total.get('base', 0)} target={total.get('target', 0)} delta={total.get('delta', 0)}"
             )
         for key, item in (diff.finding_delta.get("by_type", {}) or {}).items():
-            lines.append(f"- `{key}`: {item.get('base', 0)} -> {item.get('target', 0)} (delta {item.get('delta', 0)})")
+            lines.append(
+                f"- `{key}`: {item.get('base', 0)} -> {item.get('target', 0)} (delta {item.get('delta', 0)})"
+            )
         lines.append("")
         return "\n".join(lines)
-

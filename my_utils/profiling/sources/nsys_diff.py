@@ -7,7 +7,9 @@ from typing import Dict, List, Tuple
 from .nsys_sql_skills import NsysSqlSkillEngine
 
 
-def _index_by_name(rows: List[Dict[str, object]], key: str) -> Dict[str, Dict[str, object]]:
+def _index_by_name(
+    rows: List[Dict[str, object]], key: str
+) -> Dict[str, Dict[str, object]]:
     out: Dict[str, Dict[str, object]] = {}
     for row in rows:
         name = str(row.get(key) or "")
@@ -54,7 +56,12 @@ def _analyze_side(
     start_ns: int = -1,
     end_ns: int = -1,
     top_k: int = 20,
-) -> Tuple[Dict[str, object], Dict[str, object], List[Dict[str, object]], List[Dict[str, object]]]:
+) -> Tuple[
+    Dict[str, object],
+    Dict[str, object],
+    List[Dict[str, object]],
+    List[Dict[str, object]],
+]:
     """Open one SQLite file, run all needed analyses, return (summary, overlap, kernels, nvtx)."""
     conn = sqlite3.connect(sqlite_path)
     conn.row_factory = sqlite3.Row
@@ -66,7 +73,9 @@ def _analyze_side(
         overlap = engine.analyze_compute_comm_overlap(
             device_id=device_id, start_ns=start_ns, end_ns=end_ns
         )
-        kernel_rows = engine.execute("aggregate_kernels", device_id=device_id, limit=5000)
+        kernel_rows = engine.execute(
+            "aggregate_kernels", device_id=device_id, limit=5000
+        )
         try:
             nvtx_rows = engine.execute("aggregate_nvtx_ranges", limit=5000)
         except Exception:
@@ -86,7 +95,11 @@ def diff_nsys_sqlite(
     top_k: int = 20,
 ) -> Dict[str, object]:
     before_summary, before_overlap, before_k, before_nvtx = _analyze_side(
-        before_sqlite, device_id=device_id, start_ns=start_ns, end_ns=end_ns, top_k=top_k
+        before_sqlite,
+        device_id=device_id,
+        start_ns=start_ns,
+        end_ns=end_ns,
+        top_k=top_k,
     )
     after_summary, after_overlap, after_k, after_nvtx = _analyze_side(
         after_sqlite, device_id=device_id, start_ns=start_ns, end_ns=end_ns, top_k=top_k
@@ -107,8 +120,12 @@ def diff_nsys_sqlite(
         top_k=top_k,
     )
 
-    before_util = float(((before_summary.get("timing") or {}).get("utilization_pct") or 0.0))
-    after_util = float(((after_summary.get("timing") or {}).get("utilization_pct") or 0.0))
+    before_util = float(
+        ((before_summary.get("timing") or {}).get("utilization_pct") or 0.0)
+    )
+    after_util = float(
+        ((after_summary.get("timing") or {}).get("utilization_pct") or 0.0)
+    )
     before_overlap_ms = float((before_overlap.get("overlap_ms") or 0.0))
     after_overlap_ms = float((after_overlap.get("overlap_ms") or 0.0))
 
@@ -154,14 +171,18 @@ def diff_to_markdown(payload: Dict[str, object]) -> str:
     lines.append("## Kernel Diff Top")
     lines.append("")
     lines.append("```json")
-    lines.append(json.dumps(payload.get("kernel_diff_top", []), ensure_ascii=False, indent=2))
+    lines.append(
+        json.dumps(payload.get("kernel_diff_top", []), ensure_ascii=False, indent=2)
+    )
     lines.append("```")
     lines.append("")
 
     lines.append("## NVTX Diff Top")
     lines.append("")
     lines.append("```json")
-    lines.append(json.dumps(payload.get("nvtx_diff_top", []), ensure_ascii=False, indent=2))
+    lines.append(
+        json.dumps(payload.get("nvtx_diff_top", []), ensure_ascii=False, indent=2)
+    )
     lines.append("```")
     lines.append("")
     return "\n".join(lines)

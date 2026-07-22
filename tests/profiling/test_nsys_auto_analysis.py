@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 
-
-
 from _synthetic_loader import nsys_auto
 
 
@@ -13,7 +11,12 @@ class TestCollectiveBandwidthHonesty:
 
     def test_bandwidth_is_reported_as_unmeasurable(self):
         cov = nsys_auto._collective_bandwidth_coverage(
-            [{"kernel_name": "ncclDevKernel_AllReduce_Sum_f32_RING_LL", "total_ms": 12.0}]
+            [
+                {
+                    "kernel_name": "ncclDevKernel_AllReduce_Sum_f32_RING_LL",
+                    "total_ms": 12.0,
+                }
+            ]
         )
         assert cov["measurable"] is False
         assert cov["busbw_gbps"] is None and cov["algbw_gbps"] is None
@@ -22,7 +25,12 @@ class TestCollectiveBandwidthHonesty:
 
     def test_collective_kind_is_read_but_algorithm_is_caveated(self):
         cov = nsys_auto._collective_bandwidth_coverage(
-            [{"kernel_name": "ncclDevKernel_AllReduce_Sum_f32_RING_LL", "total_ms": 12.0}]
+            [
+                {
+                    "kernel_name": "ncclDevKernel_AllReduce_Sum_f32_RING_LL",
+                    "total_ms": 12.0,
+                }
+            ]
         )
         assert cov["collective_time_ms_by_kind"] == {"allreduce": 12.0}
         assert "NOT reliable" in cov["caveat"] or "NOT" in cov["caveat"]

@@ -80,7 +80,9 @@ class SqlSkill:
             elif param.default is not None:
                 value = param.default
             elif param.required:
-                raise ValueError(f"skill '{self.name}' missing parameter '{param.name}'")
+                raise ValueError(
+                    f"skill '{self.name}' missing parameter '{param.name}'"
+                )
             else:
                 continue
 
@@ -110,7 +112,9 @@ class SqlSkill:
         resolved = self._resolve_params(local_kwargs)
         sql = self.sql.format(**resolved) if resolved else self.sql
         if debug:
-            debug_log(f"skill={self.name} params={json.dumps(resolved, ensure_ascii=False)}")
+            debug_log(
+                f"skill={self.name} params={json.dumps(resolved, ensure_ascii=False)}"
+            )
             debug_log(f"skill={self.name} sql={sql}")
         try:
             cursor = conn.execute(sql)
@@ -123,7 +127,9 @@ class SqlSkill:
         if debug:
             debug_log(f"skill={self.name} rows={len(rows)} columns={columns}")
             if rows:
-                debug_log(f"skill={self.name} sample={_preview_rows(rows, limit=debug_rows_i)}")
+                debug_log(
+                    f"skill={self.name} sample={_preview_rows(rows, limit=debug_rows_i)}"
+                )
         return rows
 
     def run(self, conn: sqlite3.Connection, **kwargs) -> object:
@@ -152,7 +158,9 @@ def _covered_ns(intervals: Sequence[Tuple[int, int]]) -> int:
     return int(sum((end - start) for start, end in intervals))
 
 
-def _intersection_coverage_ns(a: Sequence[Tuple[int, int]], b: Sequence[Tuple[int, int]]) -> int:
+def _intersection_coverage_ns(
+    a: Sequence[Tuple[int, int]], b: Sequence[Tuple[int, int]]
+) -> int:
     if not a or not b:
         return 0
     i = 0
@@ -291,7 +299,9 @@ def _build_builtin_skills(schema: NsightSchema) -> Dict[str, SqlSkill]:
         name_expr = "s.value"
     if string_table and demangled_col:
         string_table_ident = _ident(string_table)
-        name_join += f" LEFT JOIN {string_table_ident} d ON k.{_ident(demangled_col)} = d.id "
+        name_join += (
+            f" LEFT JOIN {string_table_ident} d ON k.{_ident(demangled_col)} = d.id "
+        )
         if short_col:
             name_expr = "COALESCE(d.value, s.value)"
         else:
@@ -299,7 +309,9 @@ def _build_builtin_skills(schema: NsightSchema) -> Dict[str, SqlSkill]:
 
     kernel_where_device = ""
     if device_col:
-        kernel_where_device = f" AND ({{device_id}} < 0 OR k.{_ident(device_col)} = {{device_id}})"
+        kernel_where_device = (
+            f" AND ({{device_id}} < 0 OR k.{_ident(device_col)} = {{device_id}})"
+        )
 
     skill_map: Dict[str, SqlSkill] = {}
 
@@ -325,7 +337,9 @@ def _build_builtin_skills(schema: NsightSchema) -> Dict[str, SqlSkill]:
             f"LIMIT {{limit}}"
         ),
         params=[
-            SqlSkillParam("device_id", "CUDA deviceId, -1 means all devices", "int", False, -1),
+            SqlSkillParam(
+                "device_id", "CUDA deviceId, -1 means all devices", "int", False, -1
+            ),
             SqlSkillParam("limit", "max rows", "int", False, 20),
         ],
         tags=["kernel", "aggregate", "hotspot"],
@@ -339,7 +353,9 @@ def _build_builtin_skills(schema: NsightSchema) -> Dict[str, SqlSkill]:
         category="kernels",
         sql=skill_map["aggregate_kernels"].sql,
         params=[
-            SqlSkillParam("device_id", "CUDA deviceId, -1 means all devices", "int", False, -1),
+            SqlSkillParam(
+                "device_id", "CUDA deviceId, -1 means all devices", "int", False, -1
+            ),
             SqlSkillParam("limit", "max rows", "int", False, 15),
         ],
         tags=["kernel", "hotspot", "top"],
@@ -403,9 +419,19 @@ def _build_builtin_skills(schema: NsightSchema) -> Dict[str, SqlSkill]:
                     "ORDER BY total_ms DESC"
                 ),
                 params=[
-                    SqlSkillParam("device_id", "CUDA deviceId, -1 means all devices", "int", False, -1),
-                    SqlSkillParam("start_ns", "window start ns, -1 to disable", "int", False, -1),
-                    SqlSkillParam("end_ns", "window end ns, -1 to disable", "int", False, -1),
+                    SqlSkillParam(
+                        "device_id",
+                        "CUDA deviceId, -1 means all devices",
+                        "int",
+                        False,
+                        -1,
+                    ),
+                    SqlSkillParam(
+                        "start_ns", "window start ns, -1 to disable", "int", False, -1
+                    ),
+                    SqlSkillParam(
+                        "end_ns", "window end ns, -1 to disable", "int", False, -1
+                    ),
                 ],
                 tags=["memcpy", "copykind", "window"],
             )
@@ -422,7 +448,11 @@ def _build_builtin_skills(schema: NsightSchema) -> Dict[str, SqlSkill]:
                 f"k.{_ident(start_col)} AS start_ns, "
                 f"k.[{_ident(end_col)}] AS end_ns, "
                 f"k.{_ident(stream_col)} AS stream_id, "
-                + (f"k.{_ident(device_col)} AS device_id, " if device_col else "NULL AS device_id, ")
+                + (
+                    f"k.{_ident(device_col)} AS device_id, "
+                    if device_col
+                    else "NULL AS device_id, "
+                )
                 + f"{name_expr} AS kernel_name "
                 f"FROM {kernel_table} k "
                 f"{name_join} "
@@ -435,9 +465,15 @@ def _build_builtin_skills(schema: NsightSchema) -> Dict[str, SqlSkill]:
                 "LIMIT {limit}"
             ),
             params=[
-                SqlSkillParam("device_id", "CUDA deviceId, -1 means all devices", "int", False, -1),
-                SqlSkillParam("start_ns", "window start ns, -1 to disable", "int", False, -1),
-                SqlSkillParam("end_ns", "window end ns, -1 to disable", "int", False, -1),
+                SqlSkillParam(
+                    "device_id", "CUDA deviceId, -1 means all devices", "int", False, -1
+                ),
+                SqlSkillParam(
+                    "start_ns", "window start ns, -1 to disable", "int", False, -1
+                ),
+                SqlSkillParam(
+                    "end_ns", "window end ns, -1 to disable", "int", False, -1
+                ),
                 SqlSkillParam("limit", "max rows", "int", False, 2000),
             ],
             tags=["kernel", "correlation", "map"],
@@ -474,7 +510,9 @@ def _build_builtin_skills(schema: NsightSchema) -> Dict[str, SqlSkill]:
                 "LIMIT {limit}"
             ),
             params=[
-                SqlSkillParam("device_id", "CUDA deviceId, -1 means all devices", "int", False, -1),
+                SqlSkillParam(
+                    "device_id", "CUDA deviceId, -1 means all devices", "int", False, -1
+                ),
                 SqlSkillParam("min_gap_ns", "minimum gap ns", "int", False, 1_000_000),
                 SqlSkillParam("limit", "max rows", "int", False, 20),
             ],
@@ -488,14 +526,16 @@ def _build_builtin_skills(schema: NsightSchema) -> Dict[str, SqlSkill]:
     if all([runtime_corr_col, runtime_start_col, runtime_end_col, corr_col]):
         runtime_api_name_expr = "NULL"
         runtime_api_name_join = ""
-        runtime_name_id_col = schema.resolve_column(runtime_table, ("nameId", "name_id"))
+        runtime_name_id_col = schema.resolve_column(
+            runtime_table, ("nameId", "name_id")
+        )
         if string_table and runtime_name_id_col:
-            runtime_api_name_join = (
-                f" LEFT JOIN {_ident(string_table)} rs ON r.{_ident(runtime_name_id_col)} = rs.id "
-            )
+            runtime_api_name_join = f" LEFT JOIN {_ident(string_table)} rs ON r.{_ident(runtime_name_id_col)} = rs.id "
             runtime_api_name_expr = "rs.value"
         else:
-            runtime_cbid_col = schema.resolve_column(runtime_table, ("cbid", "apiId", "functionId"))
+            runtime_cbid_col = schema.resolve_column(
+                runtime_table, ("cbid", "apiId", "functionId")
+            )
             if runtime_cbid_col:
                 runtime_api_name_expr = f"CAST(r.{_ident(runtime_cbid_col)} AS TEXT)"
         skill_map["kernel_launch_overhead"] = SqlSkill(
@@ -519,7 +559,9 @@ def _build_builtin_skills(schema: NsightSchema) -> Dict[str, SqlSkill]:
                 "LIMIT {limit}"
             ),
             params=[
-                SqlSkillParam("device_id", "CUDA deviceId, -1 means all devices", "int", False, -1),
+                SqlSkillParam(
+                    "device_id", "CUDA deviceId, -1 means all devices", "int", False, -1
+                ),
                 SqlSkillParam("limit", "max rows", "int", False, 30),
             ],
             tags=["launch", "overhead", "cpu_gpu_latency"],
@@ -561,8 +603,12 @@ def _build_builtin_skills(schema: NsightSchema) -> Dict[str, SqlSkill]:
             "LIMIT {limit}"
         ),
         params=[
-            SqlSkillParam("device_id", "CUDA deviceId, -1 means all devices", "int", False, -1),
-            SqlSkillParam("start_ns", "window start ns, -1 to disable", "int", False, -1),
+            SqlSkillParam(
+                "device_id", "CUDA deviceId, -1 means all devices", "int", False, -1
+            ),
+            SqlSkillParam(
+                "start_ns", "window start ns, -1 to disable", "int", False, -1
+            ),
             SqlSkillParam("end_ns", "window end ns, -1 to disable", "int", False, -1),
             SqlSkillParam("limit", "max rows", "int", False, 30),
         ],
@@ -576,7 +622,16 @@ def _build_builtin_skills(schema: NsightSchema) -> Dict[str, SqlSkill]:
     nvtx_end_col = schema.resolve_column(nvtx_table, ("end",))
     runtime_start_for_nvtx = schema.resolve_column(runtime_table, ("start",))
     runtime_end_for_nvtx = schema.resolve_column(runtime_table, ("end",))
-    if all([runtime_corr_col, corr_col, nvtx_start_col, nvtx_end_col, runtime_start_for_nvtx, runtime_end_for_nvtx]):
+    if all(
+        [
+            runtime_corr_col,
+            corr_col,
+            nvtx_start_col,
+            nvtx_end_col,
+            runtime_start_for_nvtx,
+            runtime_end_for_nvtx,
+        ]
+    ):
         nvtx_text_expr = "n.text"
         nvtx_join = ""
         if schema.string_table:
@@ -615,9 +670,15 @@ def _build_builtin_skills(schema: NsightSchema) -> Dict[str, SqlSkill]:
                 "LIMIT {limit}"
             ),
             params=[
-                SqlSkillParam("device_id", "CUDA deviceId, -1 means all devices", "int", False, -1),
-                SqlSkillParam("start_ns", "window start ns, -1 to disable", "int", False, -1),
-                SqlSkillParam("end_ns", "window end ns, -1 to disable", "int", False, -1),
+                SqlSkillParam(
+                    "device_id", "CUDA deviceId, -1 means all devices", "int", False, -1
+                ),
+                SqlSkillParam(
+                    "start_ns", "window start ns, -1 to disable", "int", False, -1
+                ),
+                SqlSkillParam(
+                    "end_ns", "window end ns, -1 to disable", "int", False, -1
+                ),
                 SqlSkillParam("limit", "max rows", "int", False, 1000),
             ],
             tags=["nvtx", "kernel", "mapping", "attribution"],
@@ -640,7 +701,9 @@ def _build_builtin_skills(schema: NsightSchema) -> Dict[str, SqlSkill]:
             "LIMIT {limit}"
         ),
         params=[
-            SqlSkillParam("table_like", "SQL LIKE expression for table name", "str", False, "%"),
+            SqlSkillParam(
+                "table_like", "SQL LIKE expression for table name", "str", False, "%"
+            ),
             SqlSkillParam("limit", "max rows", "int", False, 10000),
         ],
         tags=["schema", "tables", "columns"],
@@ -650,21 +713,37 @@ def _build_builtin_skills(schema: NsightSchema) -> Dict[str, SqlSkill]:
     if schema.metrics_table:
         metrics_table = _ident(schema.metrics_table)
         metrics_ts_col = schema.resolve_column(metrics_table, ("timestamp",))
-        metrics_id_col = schema.metrics_id_col or schema.resolve_column(metrics_table, ("metricId", "nameId", "eventId"))
-        metrics_value_col = schema.metrics_value_col or schema.resolve_column(metrics_table, ("value", "metricValue", "val"))
+        metrics_id_col = schema.metrics_id_col or schema.resolve_column(
+            metrics_table, ("metricId", "nameId", "eventId")
+        )
+        metrics_value_col = schema.metrics_value_col or schema.resolve_column(
+            metrics_table, ("value", "metricValue", "val")
+        )
         if metrics_ts_col and metrics_id_col and metrics_value_col:
             metrics_name_expr = ""
             metrics_name_join = ""
             metrics_name_not_null = ""
 
             # Prefer dedicated GPU metric dictionary table when available.
-            gpu_info_table = "TARGET_INFO_GPU_METRICS" if schema.table_exists("TARGET_INFO_GPU_METRICS") else None
+            gpu_info_table = (
+                "TARGET_INFO_GPU_METRICS"
+                if schema.table_exists("TARGET_INFO_GPU_METRICS")
+                else None
+            )
             if gpu_info_table:
                 gpu_info_tbl = _ident(gpu_info_table)
-                gpu_info_id_col = schema.resolve_column(gpu_info_tbl, ("metricId", "id", "metric_id"))
-                gpu_info_name_col = schema.resolve_column(gpu_info_tbl, ("name", "metricName", "metric_name", "value"))
-                metrics_type_col = schema.resolve_column(metrics_table, ("typeId", "type_id", "eventType", "event_type"))
-                gpu_info_type_col = schema.resolve_column(gpu_info_tbl, ("typeId", "type_id", "eventType", "event_type"))
+                gpu_info_id_col = schema.resolve_column(
+                    gpu_info_tbl, ("metricId", "id", "metric_id")
+                )
+                gpu_info_name_col = schema.resolve_column(
+                    gpu_info_tbl, ("name", "metricName", "metric_name", "value")
+                )
+                metrics_type_col = schema.resolve_column(
+                    metrics_table, ("typeId", "type_id", "eventType", "event_type")
+                )
+                gpu_info_type_col = schema.resolve_column(
+                    gpu_info_tbl, ("typeId", "type_id", "eventType", "event_type")
+                )
                 if gpu_info_id_col and gpu_info_name_col:
                     if metrics_type_col and gpu_info_type_col:
                         metrics_name_join = (
@@ -678,7 +757,9 @@ def _build_builtin_skills(schema: NsightSchema) -> Dict[str, SqlSkill]:
                             f"ON g.{_ident(metrics_id_col)} = gm.{_ident(gpu_info_id_col)} "
                         )
                     metrics_name_expr = f"gm.{_ident(gpu_info_name_col)}"
-                    metrics_name_not_null = f"AND gm.{_ident(gpu_info_name_col)} IS NOT NULL "
+                    metrics_name_not_null = (
+                        f"AND gm.{_ident(gpu_info_name_col)} IS NOT NULL "
+                    )
             metrics_has_gpu_info_mapping = bool(metrics_name_expr.startswith("gm."))
 
             # Fallback to StringIds only when GPU metric dictionary is unavailable.
@@ -697,18 +778,26 @@ def _build_builtin_skills(schema: NsightSchema) -> Dict[str, SqlSkill]:
             metrics_source_where = ""
             metrics_source_name_expr = "NULL"
             metrics_source_key_expr = ""
-            metrics_source_col = schema.resolve_column(metrics_table, ("sourceId", "source_id"))
+            metrics_source_col = schema.resolve_column(
+                metrics_table, ("sourceId", "source_id")
+            )
             if metrics_source_col:
                 metrics_source_key_expr = f"g.{_ident(metrics_source_col)}"
             elif metrics_has_gpu_info_mapping:
-                metrics_gm_source_col = schema.resolve_column(gpu_info_tbl, ("sourceId", "source_id"))
+                metrics_gm_source_col = schema.resolve_column(
+                    gpu_info_tbl, ("sourceId", "source_id")
+                )
                 if metrics_gm_source_col:
                     metrics_source_key_expr = f"gm.{_ident(metrics_gm_source_col)}"
 
             if metrics_source_key_expr and schema.table_exists("GENERIC_EVENT_SOURCES"):
                 ges_tbl = _ident("GENERIC_EVENT_SOURCES")
-                ges_id_col = schema.resolve_column(ges_tbl, ("sourceId", "id", "source_id"))
-                ges_name_col = schema.resolve_column(ges_tbl, ("name", "source", "sourceName"))
+                ges_id_col = schema.resolve_column(
+                    ges_tbl, ("sourceId", "id", "source_id")
+                )
+                ges_name_col = schema.resolve_column(
+                    ges_tbl, ("name", "source", "sourceName")
+                )
                 ges_name_id_col = schema.resolve_column(ges_tbl, ("nameId", "name_id"))
                 if ges_id_col:
                     metrics_source_join = (
@@ -735,7 +824,9 @@ def _build_builtin_skills(schema: NsightSchema) -> Dict[str, SqlSkill]:
 
             metrics_device_expr = "'unknown'"
             metrics_device_where = ""
-            metrics_device_col = schema.resolve_column(metrics_table, ("deviceId", "gpuId", "device", "gpu"))
+            metrics_device_col = schema.resolve_column(
+                metrics_table, ("deviceId", "gpuId", "device", "gpu")
+            )
             if metrics_device_col:
                 metrics_device_expr = f"CAST(g.{_ident(metrics_device_col)} AS TEXT)"
                 metrics_device_where = f"AND ({{device_id}} < 0 OR g.{_ident(metrics_device_col)} = {{device_id}}) "
@@ -773,10 +864,26 @@ def _build_builtin_skills(schema: NsightSchema) -> Dict[str, SqlSkill]:
                     "LIMIT {limit}"
                 ),
                 params=[
-                    SqlSkillParam("start_ns", "window start ns, -1 to disable", "int", False, -1),
-                    SqlSkillParam("end_ns", "window end ns, -1 to disable", "int", False, -1),
-                    SqlSkillParam("metric_name_like", "metric name SQL LIKE pattern", "str", False, "%"),
-                    SqlSkillParam("device_id", "CUDA deviceId if metrics table provides it, -1 means all", "int", False, -1),
+                    SqlSkillParam(
+                        "start_ns", "window start ns, -1 to disable", "int", False, -1
+                    ),
+                    SqlSkillParam(
+                        "end_ns", "window end ns, -1 to disable", "int", False, -1
+                    ),
+                    SqlSkillParam(
+                        "metric_name_like",
+                        "metric name SQL LIKE pattern",
+                        "str",
+                        False,
+                        "%",
+                    ),
+                    SqlSkillParam(
+                        "device_id",
+                        "CUDA deviceId if metrics table provides it, -1 means all",
+                        "int",
+                        False,
+                        -1,
+                    ),
                     SqlSkillParam(
                         "include_all_sources",
                         "1 to include all generic sources (ETW/FTrace/etc), 0 to prefer GPU metrics sources only",
@@ -791,14 +898,23 @@ def _build_builtin_skills(schema: NsightSchema) -> Dict[str, SqlSkill]:
 
     # 12) Thread utilization
     if schema.table_exists("COMPOSITE_EVENTS"):
-        ce_cpu_col = schema.resolve_column("COMPOSITE_EVENTS", ("cpuCycles", "cycles", "CpuCycles"))
-        ce_tid_col = schema.resolve_column("COMPOSITE_EVENTS", ("globalTid", "global_tid"))
+        ce_cpu_col = schema.resolve_column(
+            "COMPOSITE_EVENTS", ("cpuCycles", "cycles", "CpuCycles")
+        )
+        ce_tid_col = schema.resolve_column(
+            "COMPOSITE_EVENTS", ("globalTid", "global_tid")
+        )
         tn_tid_col = schema.resolve_column("ThreadNames", ("globalTid", "global_tid"))
         tn_name_col = schema.resolve_column("ThreadNames", ("nameId", "name_id"))
         if ce_cpu_col and ce_tid_col:
             thread_name_expr = "NULL"
             thread_name_join = ""
-            if schema.table_exists("ThreadNames") and schema.string_table and tn_tid_col and tn_name_col:
+            if (
+                schema.table_exists("ThreadNames")
+                and schema.string_table
+                and tn_tid_col
+                and tn_name_col
+            ):
                 thread_name_join = (
                     f" LEFT JOIN ThreadNames tn ON ce.{_ident(ce_tid_col)} = tn.{_ident(tn_tid_col)} "
                     f" LEFT JOIN {_ident(schema.string_table)} ts ON tn.{_ident(tn_name_col)} = ts.id "
@@ -828,7 +944,9 @@ def _build_builtin_skills(schema: NsightSchema) -> Dict[str, SqlSkill]:
 
     # 12) Memcpy bandwidth analysis
     if schema.table_exists(memcpy_table):
-        bw_bytes_col = schema.resolve_column(memcpy_table, ("bytes", "srcSize", "numBytes"))
+        bw_bytes_col = schema.resolve_column(
+            memcpy_table, ("bytes", "srcSize", "numBytes")
+        )
         bw_ck_col = schema.resolve_column(memcpy_table, ("copyKind",))
         bw_dev_col = schema.resolve_column(memcpy_table, ("deviceId",))
         bw_start_col = schema.resolve_column(memcpy_table, ("start",))
@@ -881,9 +999,19 @@ def _build_builtin_skills(schema: NsightSchema) -> Dict[str, SqlSkill]:
                     "ORDER BY total_ms DESC"
                 ),
                 params=[
-                    SqlSkillParam("device_id", "CUDA deviceId, -1 means all devices", "int", False, -1),
-                    SqlSkillParam("start_ns", "window start ns, -1 to disable", "int", False, -1),
-                    SqlSkillParam("end_ns", "window end ns, -1 to disable", "int", False, -1),
+                    SqlSkillParam(
+                        "device_id",
+                        "CUDA deviceId, -1 means all devices",
+                        "int",
+                        False,
+                        -1,
+                    ),
+                    SqlSkillParam(
+                        "start_ns", "window start ns, -1 to disable", "int", False, -1
+                    ),
+                    SqlSkillParam(
+                        "end_ns", "window end ns, -1 to disable", "int", False, -1
+                    ),
                 ],
                 tags=["memcpy", "bandwidth", "pcie", "nvlink", "memory"],
             )
@@ -931,9 +1059,19 @@ def _build_builtin_skills(schema: NsightSchema) -> Dict[str, SqlSkill]:
                     "LIMIT {limit}"
                 ),
                 params=[
-                    SqlSkillParam("device_id", "CUDA deviceId, -1 means all devices", "int", False, -1),
-                    SqlSkillParam("start_ns", "window start ns, -1 to disable", "int", False, -1),
-                    SqlSkillParam("end_ns", "window end ns, -1 to disable", "int", False, -1),
+                    SqlSkillParam(
+                        "device_id",
+                        "CUDA deviceId, -1 means all devices",
+                        "int",
+                        False,
+                        -1,
+                    ),
+                    SqlSkillParam(
+                        "start_ns", "window start ns, -1 to disable", "int", False, -1
+                    ),
+                    SqlSkillParam(
+                        "end_ns", "window end ns, -1 to disable", "int", False, -1
+                    ),
                     SqlSkillParam("limit", "max rows", "int", False, 50),
                 ],
                 tags=["sync", "synchronization", "overhead", "pipeline"],
@@ -977,7 +1115,13 @@ def _build_builtin_skills(schema: NsightSchema) -> Dict[str, SqlSkill]:
                     "LIMIT {limit}"
                 ),
                 params=[
-                    SqlSkillParam("device_id", "CUDA deviceId, -1 means all devices", "int", False, -1),
+                    SqlSkillParam(
+                        "device_id",
+                        "CUDA deviceId, -1 means all devices",
+                        "int",
+                        False,
+                        -1,
+                    ),
                     SqlSkillParam("limit", "max rows", "int", False, 20),
                 ],
                 tags=["memset", "zero-init", "memory", "overhead"],
@@ -992,7 +1136,12 @@ def _build_builtin_skills(schema: NsightSchema) -> Dict[str, SqlSkill]:
     occ_dyn_smem = schema.resolve_column(kernel_table, ("dynamicSharedMemory",))
     occ_theoretical_col = schema.resolve_column(
         kernel_table,
-        ("theoreticalOccupancyPct", "theoreticalOccupancy", "theoretical_occupancy_pct", "theoretical_occupancy"),
+        (
+            "theoreticalOccupancyPct",
+            "theoreticalOccupancy",
+            "theoretical_occupancy_pct",
+            "theoretical_occupancy",
+        ),
     )
     if occ_block_x and occ_block_y and occ_block_z:
         if occ_static_smem and occ_dyn_smem:
@@ -1008,7 +1157,9 @@ def _build_builtin_skills(schema: NsightSchema) -> Dict[str, SqlSkill]:
         occ_reg_expr = f"k.{_ident(occ_reg_col)}" if occ_reg_col else "NULL"
         occ_tpb_expr = f"(k.{_ident(occ_block_x)} * k.{_ident(occ_block_y)} * k.{_ident(occ_block_z)})"
         if occ_theoretical_col:
-            occ_estimate_expr = f"ROUND(AVG(CAST(k.{_ident(occ_theoretical_col)} AS REAL)), 3)"
+            occ_estimate_expr = (
+                f"ROUND(AVG(CAST(k.{_ident(occ_theoretical_col)} AS REAL)), 3)"
+            )
         else:
             occ_estimate_expr = "NULL"
         skill_map["kernel_occupancy_estimate"] = SqlSkill(
@@ -1041,7 +1192,9 @@ def _build_builtin_skills(schema: NsightSchema) -> Dict[str, SqlSkill]:
                 "LIMIT {limit}"
             ),
             params=[
-                SqlSkillParam("device_id", "CUDA deviceId, -1 means all devices", "int", False, -1),
+                SqlSkillParam(
+                    "device_id", "CUDA deviceId, -1 means all devices", "int", False, -1
+                ),
                 SqlSkillParam("limit", "max rows", "int", False, 30),
             ],
             tags=["occupancy", "compute", "launch_config", "register", "shared_memory"],
@@ -1051,7 +1204,9 @@ def _build_builtin_skills(schema: NsightSchema) -> Dict[str, SqlSkill]:
     if stream_col:
         sp_device_where = ""
         if device_col:
-            sp_device_where = f" AND ({{device_id}} < 0 OR k.{_ident(device_col)} = {{device_id}})"
+            sp_device_where = (
+                f" AND ({{device_id}} < 0 OR k.{_ident(device_col)} = {{device_id}})"
+            )
         skill_map["stream_parallelism"] = SqlSkill(
             name="stream_parallelism",
             title="Stream Parallelism",
@@ -1091,8 +1246,16 @@ def _build_builtin_skills(schema: NsightSchema) -> Dict[str, SqlSkill]:
                 "FROM bucket_streams"
             ),
             params=[
-                SqlSkillParam("device_id", "CUDA deviceId, -1 means all devices", "int", False, -1),
-                SqlSkillParam("bucket_ns", "time bucket size in nanoseconds", "int", False, 1_000_000),
+                SqlSkillParam(
+                    "device_id", "CUDA deviceId, -1 means all devices", "int", False, -1
+                ),
+                SqlSkillParam(
+                    "bucket_ns",
+                    "time bucket size in nanoseconds",
+                    "int",
+                    False,
+                    1_000_000,
+                ),
             ],
             tags=["stream", "parallelism", "concurrent", "pipeline", "overlap"],
         )
@@ -1101,7 +1264,9 @@ def _build_builtin_skills(schema: NsightSchema) -> Dict[str, SqlSkill]:
     if schema.table_exists(nvtx_table) and schema.table_exists(memcpy_table):
         nm_nvtx_start = schema.resolve_column(nvtx_table, ("start",))
         nm_nvtx_end = schema.resolve_column(nvtx_table, ("end",))
-        nm_bytes_col = schema.resolve_column(memcpy_table, ("bytes", "srcSize", "numBytes"))
+        nm_bytes_col = schema.resolve_column(
+            memcpy_table, ("bytes", "srcSize", "numBytes")
+        )
         nm_mc_start = schema.resolve_column(memcpy_table, ("start",))
         nm_mc_end = schema.resolve_column(memcpy_table, ("end",))
         nm_ck_col = schema.resolve_column(memcpy_table, ("copyKind",))
@@ -1149,11 +1314,21 @@ def _build_builtin_skills(schema: NsightSchema) -> Dict[str, SqlSkill]:
     if schema.table_exists(nvtx_table) and schema.metrics_table:
         ngm_metrics_table = _ident(schema.metrics_table)
         ngm_ts_col = schema.resolve_column(ngm_metrics_table, ("timestamp",))
-        ngm_id_col = schema.metrics_id_col or schema.resolve_column(ngm_metrics_table, ("metricId", "nameId", "eventId"))
-        ngm_val_col = schema.metrics_value_col or schema.resolve_column(ngm_metrics_table, ("value", "metricValue", "val"))
+        ngm_id_col = schema.metrics_id_col or schema.resolve_column(
+            ngm_metrics_table, ("metricId", "nameId", "eventId")
+        )
+        ngm_val_col = schema.metrics_value_col or schema.resolve_column(
+            ngm_metrics_table, ("value", "metricValue", "val")
+        )
         ngm_nvtx_start = schema.resolve_column(nvtx_table, ("start",))
         ngm_nvtx_end = schema.resolve_column(nvtx_table, ("end",))
-        if ngm_ts_col and ngm_id_col and ngm_val_col and ngm_nvtx_start and ngm_nvtx_end:
+        if (
+            ngm_ts_col
+            and ngm_id_col
+            and ngm_val_col
+            and ngm_nvtx_start
+            and ngm_nvtx_end
+        ):
             ngm_nvtx_text_expr = "n.text"
             ngm_nvtx_text_join = ""
             if string_table:
@@ -1166,13 +1341,25 @@ def _build_builtin_skills(schema: NsightSchema) -> Dict[str, SqlSkill]:
             ngm_metric_name_join = ""
             ngm_metric_name_not_null = ""
 
-            ngm_gpu_info_table = "TARGET_INFO_GPU_METRICS" if schema.table_exists("TARGET_INFO_GPU_METRICS") else None
+            ngm_gpu_info_table = (
+                "TARGET_INFO_GPU_METRICS"
+                if schema.table_exists("TARGET_INFO_GPU_METRICS")
+                else None
+            )
             if ngm_gpu_info_table:
                 ngm_gi_tbl = _ident(ngm_gpu_info_table)
-                ngm_gi_id_col = schema.resolve_column(ngm_gi_tbl, ("metricId", "id", "metric_id"))
-                ngm_gi_name_col = schema.resolve_column(ngm_gi_tbl, ("name", "metricName", "metric_name", "value"))
-                ngm_type_col = schema.resolve_column(ngm_metrics_table, ("typeId", "type_id", "eventType", "event_type"))
-                ngm_gi_type_col = schema.resolve_column(ngm_gi_tbl, ("typeId", "type_id", "eventType", "event_type"))
+                ngm_gi_id_col = schema.resolve_column(
+                    ngm_gi_tbl, ("metricId", "id", "metric_id")
+                )
+                ngm_gi_name_col = schema.resolve_column(
+                    ngm_gi_tbl, ("name", "metricName", "metric_name", "value")
+                )
+                ngm_type_col = schema.resolve_column(
+                    ngm_metrics_table, ("typeId", "type_id", "eventType", "event_type")
+                )
+                ngm_gi_type_col = schema.resolve_column(
+                    ngm_gi_tbl, ("typeId", "type_id", "eventType", "event_type")
+                )
                 if ngm_gi_id_col and ngm_gi_name_col:
                     if ngm_type_col and ngm_gi_type_col:
                         ngm_metric_name_join = (
@@ -1186,13 +1373,17 @@ def _build_builtin_skills(schema: NsightSchema) -> Dict[str, SqlSkill]:
                             f"ON g.{_ident(ngm_id_col)} = gm.{_ident(ngm_gi_id_col)} "
                         )
                     ngm_metric_name_expr = f"gm.{_ident(ngm_gi_name_col)}"
-                    ngm_metric_name_not_null = f"AND gm.{_ident(ngm_gi_name_col)} IS NOT NULL "
+                    ngm_metric_name_not_null = (
+                        f"AND gm.{_ident(ngm_gi_name_col)} IS NOT NULL "
+                    )
             ngm_has_gpu_info_mapping = bool(ngm_metric_name_expr.startswith("gm."))
 
             if not ngm_metric_name_expr and schema.string_table:
                 ngm_string_table = _ident(schema.string_table)
                 ngm_metric_name_expr = "s.value"
-                ngm_metric_name_join = f"JOIN {ngm_string_table} s ON g.{_ident(ngm_id_col)} = s.id "
+                ngm_metric_name_join = (
+                    f"JOIN {ngm_string_table} s ON g.{_ident(ngm_id_col)} = s.id "
+                )
                 ngm_metric_name_not_null = "AND s.value IS NOT NULL "
 
             if not ngm_metric_name_expr:
@@ -1203,19 +1394,29 @@ def _build_builtin_skills(schema: NsightSchema) -> Dict[str, SqlSkill]:
             ngm_source_where = ""
             ngm_source_name_expr = "NULL"
             ngm_source_key_expr = ""
-            ngm_source_col = schema.resolve_column(ngm_metrics_table, ("sourceId", "source_id"))
+            ngm_source_col = schema.resolve_column(
+                ngm_metrics_table, ("sourceId", "source_id")
+            )
             if ngm_source_col:
                 ngm_source_key_expr = f"g.{_ident(ngm_source_col)}"
             elif ngm_has_gpu_info_mapping:
-                ngm_gm_source_col = schema.resolve_column(ngm_gi_tbl, ("sourceId", "source_id"))
+                ngm_gm_source_col = schema.resolve_column(
+                    ngm_gi_tbl, ("sourceId", "source_id")
+                )
                 if ngm_gm_source_col:
                     ngm_source_key_expr = f"gm.{_ident(ngm_gm_source_col)}"
 
             if ngm_source_key_expr and schema.table_exists("GENERIC_EVENT_SOURCES"):
                 ngm_ges_tbl = _ident("GENERIC_EVENT_SOURCES")
-                ngm_ges_id_col = schema.resolve_column(ngm_ges_tbl, ("sourceId", "id", "source_id"))
-                ngm_ges_name_col = schema.resolve_column(ngm_ges_tbl, ("name", "source", "sourceName"))
-                ngm_ges_name_id_col = schema.resolve_column(ngm_ges_tbl, ("nameId", "name_id"))
+                ngm_ges_id_col = schema.resolve_column(
+                    ngm_ges_tbl, ("sourceId", "id", "source_id")
+                )
+                ngm_ges_name_col = schema.resolve_column(
+                    ngm_ges_tbl, ("name", "source", "sourceName")
+                )
+                ngm_ges_name_id_col = schema.resolve_column(
+                    ngm_ges_tbl, ("nameId", "name_id")
+                )
                 if ngm_ges_id_col:
                     ngm_source_join = (
                         f"LEFT JOIN {ngm_ges_tbl} gs2 "
@@ -1240,7 +1441,9 @@ def _build_builtin_skills(schema: NsightSchema) -> Dict[str, SqlSkill]:
                         )
 
             ngm_device_where = ""
-            ngm_device_col = schema.resolve_column(ngm_metrics_table, ("deviceId", "gpuId", "device", "gpu"))
+            ngm_device_col = schema.resolve_column(
+                ngm_metrics_table, ("deviceId", "gpuId", "device", "gpu")
+            )
             if ngm_device_col:
                 ngm_device_where = f"AND ({{device_id}} < 0 OR g.{_ident(ngm_device_col)} = {{device_id}}) "
                 ngm_metric_device_expr = f"CAST(g.{_ident(ngm_device_col)} AS TEXT)"
@@ -1258,9 +1461,17 @@ def _build_builtin_skills(schema: NsightSchema) -> Dict[str, SqlSkill]:
             )
             ngm_nvtx_tid_select = ""
             ngm_tid_join = ""
-            if ngm_can_use_corr_mapping and runtime_global_tid_col and nvtx_global_tid_col:
-                ngm_nvtx_tid_select = f", n.{_ident(nvtx_global_tid_col)} AS _nvtx_gtid "
-                ngm_tid_join = f" AND nr._nvtx_gtid = r.{_ident(runtime_global_tid_col)} "
+            if (
+                ngm_can_use_corr_mapping
+                and runtime_global_tid_col
+                and nvtx_global_tid_col
+            ):
+                ngm_nvtx_tid_select = (
+                    f", n.{_ident(nvtx_global_tid_col)} AS _nvtx_gtid "
+                )
+                ngm_tid_join = (
+                    f" AND nr._nvtx_gtid = r.{_ident(runtime_global_tid_col)} "
+                )
             ngm_kernel_device_where = (
                 f"AND ({{device_id}} < 0 OR k.{_ident(device_col)} = {{device_id}}) "
                 if device_col
@@ -1323,8 +1534,7 @@ def _build_builtin_skills(schema: NsightSchema) -> Dict[str, SqlSkill]:
                     "), "
                     "gpu_bounds AS ( "
                     "  SELECT MIN(gpu_start_ns) AS min_gpu_start_ns, MAX(gpu_end_ns) AS max_gpu_end_ns "
-                    "  FROM gpu_windows "
-                    + "), "
+                    "  FROM gpu_windows " + "), "
                     "metric_points AS ( "
                     "  SELECT "
                     "         gw.nvtx_text, gw.nvtx_start_ns, gw.nvtx_end_ns, "
@@ -1412,11 +1622,37 @@ def _build_builtin_skills(schema: NsightSchema) -> Dict[str, SqlSkill]:
                 category="metrics",
                 sql=ngm_sql,
                 params=[
-                    SqlSkillParam("nvtx_text", "NVTX text LIKE pattern, default %", "str", False, "%"),
-                    SqlSkillParam("metric_name_like", "metric name SQL LIKE pattern", "str", False, "%"),
-                    SqlSkillParam("device_id", "CUDA deviceId if metric table provides it, -1 means all", "int", False, -1),
-                    SqlSkillParam("start_ns", "NVTX window start ns, -1 to disable", "int", False, -1),
-                    SqlSkillParam("end_ns", "NVTX window end ns, -1 to disable", "int", False, -1),
+                    SqlSkillParam(
+                        "nvtx_text",
+                        "NVTX text LIKE pattern, default %",
+                        "str",
+                        False,
+                        "%",
+                    ),
+                    SqlSkillParam(
+                        "metric_name_like",
+                        "metric name SQL LIKE pattern",
+                        "str",
+                        False,
+                        "%",
+                    ),
+                    SqlSkillParam(
+                        "device_id",
+                        "CUDA deviceId if metric table provides it, -1 means all",
+                        "int",
+                        False,
+                        -1,
+                    ),
+                    SqlSkillParam(
+                        "start_ns",
+                        "NVTX window start ns, -1 to disable",
+                        "int",
+                        False,
+                        -1,
+                    ),
+                    SqlSkillParam(
+                        "end_ns", "NVTX window end ns, -1 to disable", "int", False, -1
+                    ),
                     SqlSkillParam(
                         "include_all_sources",
                         "1 to include all generic sources (ETW/FTrace/etc), 0 to prefer GPU metrics sources only",
@@ -1426,7 +1662,15 @@ def _build_builtin_skills(schema: NsightSchema) -> Dict[str, SqlSkill]:
                     ),
                     SqlSkillParam("limit", "max rows", "int", False, 5000),
                 ],
-                tags=["nvtx", "gpu_metrics", "sampling", "phase", "sm_active", "tensor_active", "dram"],
+                tags=[
+                    "nvtx",
+                    "gpu_metrics",
+                    "sampling",
+                    "phase",
+                    "sm_active",
+                    "tensor_active",
+                    "dram",
+                ],
             )
 
     # 19) NVTX kernel SM/memory detail
@@ -1464,11 +1708,18 @@ def _build_builtin_skills(schema: NsightSchema) -> Dict[str, SqlSkill]:
         sk18_local = schema.resolve_column(kernel_table, ("localMemoryPerThread",))
         sk18_theoretical_occ = schema.resolve_column(
             kernel_table,
-            ("theoreticalOccupancyPct", "theoreticalOccupancy", "theoretical_occupancy_pct", "theoretical_occupancy"),
+            (
+                "theoreticalOccupancyPct",
+                "theoreticalOccupancy",
+                "theoretical_occupancy_pct",
+                "theoretical_occupancy",
+            ),
         )
 
         if sk18_bx and sk18_by and sk18_bz:
-            sk18_tpb = f"(k.{_ident(sk18_bx)} * k.{_ident(sk18_by)} * k.{_ident(sk18_bz)})"
+            sk18_tpb = (
+                f"(k.{_ident(sk18_bx)} * k.{_ident(sk18_by)} * k.{_ident(sk18_bz)})"
+            )
         else:
             sk18_tpb = "NULL"
         # Prefer sqlite theoretical occupancy when present; otherwise Python side can estimate.
@@ -1491,7 +1742,8 @@ def _build_builtin_skills(schema: NsightSchema) -> Dict[str, SqlSkill]:
 
         sk18_device_where = (
             f"AND ({{device_id}} < 0 OR k.{_ident(device_col)} = {{device_id}}) "
-            if device_col else ""
+            if device_col
+            else ""
         )
 
         # Optional columns: grid dims, local memory (present only in real nsys exports)
@@ -1563,8 +1815,16 @@ def _build_builtin_skills(schema: NsightSchema) -> Dict[str, SqlSkill]:
                 f"k.{_ident(start_col)} AS kernel_start_ns, "
                 f"k.[{_ident(end_col)}] AS kernel_end_ns, "
                 f"ROUND((k.[{_ident(end_col)}] - k.{_ident(start_col)}) / 1e6, 3) AS duration_ms, "
-                + (f"k.{_ident(stream_col)} AS stream_id, " if stream_col else "NULL AS stream_id, ")
-                + (f"k.{_ident(device_col)} AS device_id, " if device_col else "NULL AS device_id, ")
+                + (
+                    f"k.{_ident(stream_col)} AS stream_id, "
+                    if stream_col
+                    else "NULL AS stream_id, "
+                )
+                + (
+                    f"k.{_ident(device_col)} AS device_id, "
+                    if device_col
+                    else "NULL AS device_id, "
+                )
                 + f"{sk18_tpb} AS threads_per_block, "
                 + optional_cols
                 + f"{sk18_static_expr} AS static_shared_bytes, "
@@ -1601,8 +1861,16 @@ def _build_builtin_skills(schema: NsightSchema) -> Dict[str, SqlSkill]:
                 f"k.{_ident(start_col)} AS kernel_start_ns, "
                 f"k.[{_ident(end_col)}] AS kernel_end_ns, "
                 f"ROUND((k.[{_ident(end_col)}] - k.{_ident(start_col)}) / 1e6, 3) AS duration_ms, "
-                + (f"k.{_ident(stream_col)} AS stream_id, " if stream_col else "NULL AS stream_id, ")
-                + (f"k.{_ident(device_col)} AS device_id, " if device_col else "NULL AS device_id, ")
+                + (
+                    f"k.{_ident(stream_col)} AS stream_id, "
+                    if stream_col
+                    else "NULL AS stream_id, "
+                )
+                + (
+                    f"k.{_ident(device_col)} AS device_id, "
+                    if device_col
+                    else "NULL AS device_id, "
+                )
                 + f"{sk18_tpb} AS threads_per_block, "
                 + optional_cols
                 + f"{sk18_static_expr} AS static_shared_bytes, "
@@ -1646,10 +1914,20 @@ def _build_builtin_skills(schema: NsightSchema) -> Dict[str, SqlSkill]:
                     "str",
                     True,
                 ),
-                SqlSkillParam("device_id", "CUDA deviceId, -1 means all devices", "int", False, -1),
+                SqlSkillParam(
+                    "device_id", "CUDA deviceId, -1 means all devices", "int", False, -1
+                ),
                 SqlSkillParam("limit", "max rows", "int", False, 2000),
             ],
-            tags=["nvtx", "kernel", "sm", "occupancy", "shared_memory", "launch_config", "detail"],
+            tags=[
+                "nvtx",
+                "kernel",
+                "sm",
+                "occupancy",
+                "shared_memory",
+                "launch_config",
+                "detail",
+            ],
         )
 
     # 20) NVTX ranges hierarchy (raw rows + parent/child relation)
@@ -1657,7 +1935,9 @@ def _build_builtin_skills(schema: NsightSchema) -> Dict[str, SqlSkill]:
         sk19_start_col = schema.resolve_column(nvtx_table, ("start",))
         sk19_end_col = schema.resolve_column(nvtx_table, ("end",))
         sk19_tid_col = schema.resolve_column(nvtx_table, ("globalTid", "global_tid"))
-        sk19_event_type_col = schema.resolve_column(nvtx_table, ("eventType", "event_type", "type"))
+        sk19_event_type_col = schema.resolve_column(
+            nvtx_table, ("eventType", "event_type", "type")
+        )
         if sk19_start_col and sk19_end_col:
             sk19_text_expr = "n.text"
             sk19_nvtx_join = ""
@@ -1667,9 +1947,15 @@ def _build_builtin_skills(schema: NsightSchema) -> Dict[str, SqlSkill]:
                     sk19_nvtx_join = f" LEFT JOIN {_ident(string_table)} sv19 ON n.{_ident(sk19_text_id)} = sv19.id "
                     sk19_text_expr = "COALESCE(n.text, sv19.value)"
 
-            sk19_tid_select = f"n.{_ident(sk19_tid_col)} AS global_tid, " if sk19_tid_col else "NULL AS global_tid, "
+            sk19_tid_select = (
+                f"n.{_ident(sk19_tid_col)} AS global_tid, "
+                if sk19_tid_col
+                else "NULL AS global_tid, "
+            )
             sk19_event_type_select = (
-                f"n.{_ident(sk19_event_type_col)} AS event_type " if sk19_event_type_col else "NULL AS event_type "
+                f"n.{_ident(sk19_event_type_col)} AS event_type "
+                if sk19_event_type_col
+                else "NULL AS event_type "
             )
 
             skill_map["nvtx_ranges_hierarchy"] = SqlSkill(
@@ -1697,8 +1983,20 @@ def _build_builtin_skills(schema: NsightSchema) -> Dict[str, SqlSkill]:
                     "LIMIT {limit}"
                 ),
                 params=[
-                    SqlSkillParam("nvtx_text", "NVTX text LIKE pattern, default % for all ranges", "str", False, "%"),
-                    SqlSkillParam("top_level_only", "1 to keep only root ranges, 0 for full hierarchy", "bool", False, False),
+                    SqlSkillParam(
+                        "nvtx_text",
+                        "NVTX text LIKE pattern, default % for all ranges",
+                        "str",
+                        False,
+                        "%",
+                    ),
+                    SqlSkillParam(
+                        "top_level_only",
+                        "1 to keep only root ranges, 0 for full hierarchy",
+                        "bool",
+                        False,
+                        False,
+                    ),
                     SqlSkillParam("limit", "max rows", "int", False, 5000),
                 ],
                 tags=["nvtx", "hierarchy", "parent", "child", "ranges", "raw"],
@@ -1745,8 +2043,16 @@ def _build_builtin_skills(schema: NsightSchema) -> Dict[str, SqlSkill]:
                     "LIMIT {limit}"
                 ),
                 params=[
-                    SqlSkillParam("start_ns", "window start ns, -1 means no filter", "int", False, -1),
-                    SqlSkillParam("end_ns", "window end ns, -1 means no filter", "int", False, -1),
+                    SqlSkillParam(
+                        "start_ns",
+                        "window start ns, -1 means no filter",
+                        "int",
+                        False,
+                        -1,
+                    ),
+                    SqlSkillParam(
+                        "end_ns", "window end ns, -1 means no filter", "int", False, -1
+                    ),
                     SqlSkillParam("limit", "max rows", "int", False, 100),
                 ],
                 tags=["nvtx", "subphase", "timing", "breakdown", "aggregate", "window"],
@@ -1806,10 +2112,18 @@ def _build_builtin_skills(schema: NsightSchema) -> Dict[str, SqlSkill]:
                 "LIMIT {limit}"
             ),
             params=[
-                SqlSkillParam("device_id", "CUDA deviceId, -1 means all devices", "int", False, -1),
-                SqlSkillParam("start_ns", "window start ns, -1 to disable", "int", False, -1),
-                SqlSkillParam("end_ns", "window end ns, -1 to disable", "int", False, -1),
-                SqlSkillParam("min_invocations", "minimum invocations to include", "int", False, 3),
+                SqlSkillParam(
+                    "device_id", "CUDA deviceId, -1 means all devices", "int", False, -1
+                ),
+                SqlSkillParam(
+                    "start_ns", "window start ns, -1 to disable", "int", False, -1
+                ),
+                SqlSkillParam(
+                    "end_ns", "window end ns, -1 to disable", "int", False, -1
+                ),
+                SqlSkillParam(
+                    "min_invocations", "minimum invocations to include", "int", False, 3
+                ),
                 SqlSkillParam("limit", "max rows", "int", False, 30),
             ],
             tags=["kernel", "jitter", "variance", "stddev", "cv", "imbalance"],
@@ -1875,9 +2189,15 @@ def _build_builtin_skills(schema: NsightSchema) -> Dict[str, SqlSkill]:
                 "ORDER BY bucket ASC"
             ),
             params=[
-                SqlSkillParam("device_id", "CUDA deviceId, -1 means all devices", "int", False, -1),
-                SqlSkillParam("start_ns", "window start ns, -1 to disable", "int", False, -1),
-                SqlSkillParam("end_ns", "window end ns, -1 to disable", "int", False, -1),
+                SqlSkillParam(
+                    "device_id", "CUDA deviceId, -1 means all devices", "int", False, -1
+                ),
+                SqlSkillParam(
+                    "start_ns", "window start ns, -1 to disable", "int", False, -1
+                ),
+                SqlSkillParam(
+                    "end_ns", "window end ns, -1 to disable", "int", False, -1
+                ),
             ],
             tags=["kernel", "launch_overhead", "micro_kernel", "cuda_graph", "fusion"],
         )
@@ -1911,12 +2231,11 @@ def _build_builtin_skills(schema: NsightSchema) -> Dict[str, SqlSkill]:
         nwe_tid_join = ""
         if runtime_global_tid_col and nvtx_global_tid_col:
             nwe_nvtx_tid_select = f", n.{_ident(nvtx_global_tid_col)} AS _nvtx_gtid "
-            nwe_tid_join = (
-                f" AND nr._nvtx_gtid = r.{_ident(runtime_global_tid_col)} "
-            )
+            nwe_tid_join = f" AND nr._nvtx_gtid = r.{_ident(runtime_global_tid_col)} "
         nwe_device_where = (
             f"AND ({{device_id}} < 0 OR k.{_ident(device_col)} = {{device_id}}) "
-            if device_col else ""
+            if device_col
+            else ""
         )
         skill_map["nvtx_wall_efficiency"] = SqlSkill(
             name="nvtx_wall_efficiency",
@@ -1970,11 +2289,25 @@ def _build_builtin_skills(schema: NsightSchema) -> Dict[str, SqlSkill]:
                 "ORDER BY nr.wall_ms DESC"
             ),
             params=[
-                SqlSkillParam("nvtx_text", "NVTX text LIKE pattern, default % for all ranges", "str", False, "%"),
-                SqlSkillParam("device_id", "CUDA deviceId, -1 means all devices", "int", False, -1),
-                SqlSkillParam("start_ns", "window start ns, -1 to disable", "int", False, -1),
-                SqlSkillParam("end_ns", "window end ns, -1 to disable", "int", False, -1),
-                SqlSkillParam("limit", "max NVTX ranges to evaluate", "int", False, 500),
+                SqlSkillParam(
+                    "nvtx_text",
+                    "NVTX text LIKE pattern, default % for all ranges",
+                    "str",
+                    False,
+                    "%",
+                ),
+                SqlSkillParam(
+                    "device_id", "CUDA deviceId, -1 means all devices", "int", False, -1
+                ),
+                SqlSkillParam(
+                    "start_ns", "window start ns, -1 to disable", "int", False, -1
+                ),
+                SqlSkillParam(
+                    "end_ns", "window end ns, -1 to disable", "int", False, -1
+                ),
+                SqlSkillParam(
+                    "limit", "max NVTX ranges to evaluate", "int", False, 500
+                ),
             ],
             tags=["nvtx", "efficiency", "idle", "pipeline", "sync", "wall_clock"],
         )
@@ -1986,7 +2319,8 @@ def _build_builtin_skills(schema: NsightSchema) -> Dict[str, SqlSkill]:
     if stream_col and start_col and end_col:
         psu_device_where = (
             f" AND ({{device_id}} < 0 OR k.{_ident(device_col)} = {{device_id}})"
-            if device_col else ""
+            if device_col
+            else ""
         )
         skill_map["per_stream_utilization"] = SqlSkill(
             name="per_stream_utilization",
@@ -2037,9 +2371,15 @@ def _build_builtin_skills(schema: NsightSchema) -> Dict[str, SqlSkill]:
                 "LIMIT {limit}"
             ),
             params=[
-                SqlSkillParam("device_id", "CUDA deviceId, -1 means all devices", "int", False, -1),
-                SqlSkillParam("start_ns", "window start ns, -1 to disable", "int", False, -1),
-                SqlSkillParam("end_ns", "window end ns, -1 to disable", "int", False, -1),
+                SqlSkillParam(
+                    "device_id", "CUDA deviceId, -1 means all devices", "int", False, -1
+                ),
+                SqlSkillParam(
+                    "start_ns", "window start ns, -1 to disable", "int", False, -1
+                ),
+                SqlSkillParam(
+                    "end_ns", "window end ns, -1 to disable", "int", False, -1
+                ),
                 SqlSkillParam("limit", "max rows", "int", False, 50),
             ],
             tags=["stream", "utilization", "load_balance", "pipeline", "copy_engine"],
@@ -2052,9 +2392,15 @@ def _build_builtin_skills(schema: NsightSchema) -> Dict[str, SqlSkill]:
     # Reference: NVIDIA Nsight Systems metrics naming conventions.
     if schema.metrics_table:
         _pm_metrics_tbl = _ident(schema.metrics_table)
-        _pm_ts_col = schema.metrics_timestamp_col or schema.resolve_column(_pm_metrics_tbl, ("timestamp", "rawTimestamp", "start", "time"))
-        _pm_id_col = schema.metrics_id_col or schema.resolve_column(_pm_metrics_tbl, ("metricId", "nameId", "eventId"))
-        _pm_val_col = schema.metrics_value_col or schema.resolve_column(_pm_metrics_tbl, ("value", "metricValue", "val"))
+        _pm_ts_col = schema.metrics_timestamp_col or schema.resolve_column(
+            _pm_metrics_tbl, ("timestamp", "rawTimestamp", "start", "time")
+        )
+        _pm_id_col = schema.metrics_id_col or schema.resolve_column(
+            _pm_metrics_tbl, ("metricId", "nameId", "eventId")
+        )
+        _pm_val_col = schema.metrics_value_col or schema.resolve_column(
+            _pm_metrics_tbl, ("value", "metricValue", "val")
+        )
         if _pm_ts_col and _pm_id_col and _pm_val_col:
             # Reuse metric name / join / device expressions already built for gpu_metrics_aggregate
             skill_map["gpu_metrics_percentiles"] = SqlSkill(
@@ -2103,19 +2449,51 @@ def _build_builtin_skills(schema: NsightSchema) -> Dict[str, SqlSkill]:
                     "LIMIT {limit}"
                 ),
                 params=[
-                    SqlSkillParam("start_ns", "window start ns, -1 to disable", "int", False, -1),
-                    SqlSkillParam("end_ns", "window end ns, -1 to disable", "int", False, -1),
-                    SqlSkillParam("metric_name_like", "metric name SQL LIKE pattern", "str", False, "%"),
-                    SqlSkillParam("device_id", "CUDA deviceId if metrics table provides it, -1 means all", "int", False, -1),
+                    SqlSkillParam(
+                        "start_ns", "window start ns, -1 to disable", "int", False, -1
+                    ),
+                    SqlSkillParam(
+                        "end_ns", "window end ns, -1 to disable", "int", False, -1
+                    ),
+                    SqlSkillParam(
+                        "metric_name_like",
+                        "metric name SQL LIKE pattern",
+                        "str",
+                        False,
+                        "%",
+                    ),
+                    SqlSkillParam(
+                        "device_id",
+                        "CUDA deviceId if metrics table provides it, -1 means all",
+                        "int",
+                        False,
+                        -1,
+                    ),
                     SqlSkillParam(
                         "include_all_sources",
                         "1 to include all generic sources, 0 to prefer GPU metrics sources only",
-                        "bool", False, False,
+                        "bool",
+                        False,
+                        False,
                     ),
-                    SqlSkillParam("min_samples", "minimum samples per metric to include", "int", False, 5),
+                    SqlSkillParam(
+                        "min_samples",
+                        "minimum samples per metric to include",
+                        "int",
+                        False,
+                        5,
+                    ),
                     SqlSkillParam("limit", "max rows", "int", False, 200),
                 ],
-                tags=["gpu_metrics", "percentiles", "distribution", "p50", "p95", "sm_active", "dram"],
+                tags=[
+                    "gpu_metrics",
+                    "percentiles",
+                    "distribution",
+                    "p50",
+                    "p95",
+                    "sm_active",
+                    "dram",
+                ],
             )
 
     # ── Skill 26: Per-transfer memcpy detail ──────────────────────────────────
@@ -2133,10 +2511,19 @@ def _build_builtin_skills(schema: NsightSchema) -> Dict[str, SqlSkill]:
         if _mt_bytes and _mt_ck and _mt_start and _mt_end:
             _mt_dev_where = (
                 f"AND ({{device_id}} < 0 OR m.{_ident(_mt_dev)} = {{device_id}}) "
-                if _mt_dev else ""
+                if _mt_dev
+                else ""
             )
-            _mt_stream_sel = f"m.{_ident(_mt_stream)} AS stream_id, " if _mt_stream else "NULL AS stream_id, "
-            _mt_dev_sel = f"m.{_ident(_mt_dev)} AS device_id, " if _mt_dev else "NULL AS device_id, "
+            _mt_stream_sel = (
+                f"m.{_ident(_mt_stream)} AS stream_id, "
+                if _mt_stream
+                else "NULL AS stream_id, "
+            )
+            _mt_dev_sel = (
+                f"m.{_ident(_mt_dev)} AS device_id, "
+                if _mt_dev
+                else "NULL AS device_id, "
+            )
             skill_map["memcpy_transfers_detail"] = SqlSkill(
                 name="memcpy_transfers_detail",
                 title="Memcpy Transfers Detail",
@@ -2171,9 +2558,19 @@ def _build_builtin_skills(schema: NsightSchema) -> Dict[str, SqlSkill]:
                     "LIMIT {limit}"
                 ),
                 params=[
-                    SqlSkillParam("device_id", "CUDA deviceId, -1 means all devices", "int", False, -1),
-                    SqlSkillParam("start_ns", "window start ns, -1 to disable", "int", False, -1),
-                    SqlSkillParam("end_ns", "window end ns, -1 to disable", "int", False, -1),
+                    SqlSkillParam(
+                        "device_id",
+                        "CUDA deviceId, -1 means all devices",
+                        "int",
+                        False,
+                        -1,
+                    ),
+                    SqlSkillParam(
+                        "start_ns", "window start ns, -1 to disable", "int", False, -1
+                    ),
+                    SqlSkillParam(
+                        "end_ns", "window end ns, -1 to disable", "int", False, -1
+                    ),
                     SqlSkillParam("limit", "max rows", "int", False, 500),
                 ],
                 tags=["memcpy", "transfers", "pcie", "nvlink", "memory", "bandwidth"],
@@ -2192,7 +2589,8 @@ def _build_builtin_skills(schema: NsightSchema) -> Dict[str, SqlSkill]:
         if _rlt_start and _rlt_end and _rlt_corr and corr_col and start_col and end_col:
             _rlt_dev_where = (
                 f"AND ({{device_id}} < 0 OR k.{_ident(device_col)} = {{device_id}}) "
-                if device_col else ""
+                if device_col
+                else ""
             )
             skill_map["cpu_launch_gap"] = SqlSkill(
                 name="cpu_launch_gap",
@@ -2231,13 +2629,35 @@ def _build_builtin_skills(schema: NsightSchema) -> Dict[str, SqlSkill]:
                     "LIMIT {limit}"
                 ),
                 params=[
-                    SqlSkillParam("device_id", "CUDA deviceId, -1 means all devices", "int", False, -1),
-                    SqlSkillParam("start_ns", "window start ns, -1 to disable", "int", False, -1),
-                    SqlSkillParam("end_ns", "window end ns, -1 to disable", "int", False, -1),
-                    SqlSkillParam("min_invocations", "minimum kernel invocations to report", "int", False, 3),
+                    SqlSkillParam(
+                        "device_id",
+                        "CUDA deviceId, -1 means all devices",
+                        "int",
+                        False,
+                        -1,
+                    ),
+                    SqlSkillParam(
+                        "start_ns", "window start ns, -1 to disable", "int", False, -1
+                    ),
+                    SqlSkillParam(
+                        "end_ns", "window end ns, -1 to disable", "int", False, -1
+                    ),
+                    SqlSkillParam(
+                        "min_invocations",
+                        "minimum kernel invocations to report",
+                        "int",
+                        False,
+                        3,
+                    ),
                     SqlSkillParam("limit", "max rows", "int", False, 30),
                 ],
-                tags=["pipeline", "launch_gap", "cpu_overhead", "scheduling", "dispatch"],
+                tags=[
+                    "pipeline",
+                    "launch_gap",
+                    "cpu_overhead",
+                    "scheduling",
+                    "dispatch",
+                ],
             )
 
     return skill_map
@@ -2251,14 +2671,18 @@ class NsysSqlSkillEngine:
         self.schema = NsightSchema(conn)
         self._skills = _build_builtin_skills(self.schema)
         # Cache schema fragments for internal kernel queries (avoids rebuilding per call)
-        self._kernel_table = _ident(self.schema.kernel_table or "CUPTI_ACTIVITY_KIND_KERNEL")
+        self._kernel_table = _ident(
+            self.schema.kernel_table or "CUPTI_ACTIVITY_KIND_KERNEL"
+        )
         self._start_col = self.schema.resolve_column(self._kernel_table, ("start",))
         self._end_col = self.schema.resolve_column(self._kernel_table, ("end",))
         self._device_col = self.schema.resolve_column(self._kernel_table, ("deviceId",))
         self._stream_col = self.schema.resolve_column(self._kernel_table, ("streamId",))
         _string_table = self.schema.string_table
         _short_col = self.schema.resolve_column(self._kernel_table, ("shortName",))
-        _demangled_col = self.schema.resolve_column(self._kernel_table, ("demangledName",))
+        _demangled_col = self.schema.resolve_column(
+            self._kernel_table, ("demangledName",)
+        )
         self._name_expr = "CAST(k.shortName AS TEXT)"
         self._name_join = ""
         if _string_table and _short_col:
@@ -2267,7 +2691,9 @@ class NsysSqlSkillEngine:
             self._name_expr = "s.value"
         if _string_table and _demangled_col:
             _st = _ident(_string_table)
-            self._name_join += f" LEFT JOIN {_st} d ON k.{_ident(_demangled_col)} = d.id"
+            self._name_join += (
+                f" LEFT JOIN {_st} d ON k.{_ident(_demangled_col)} = d.id"
+            )
             self._name_expr = "COALESCE(d.value, s.value)" if _short_col else "d.value"
 
     def list_skills(self) -> List[str]:
@@ -2322,7 +2748,9 @@ class NsysSqlSkillEngine:
             return False
         return bool(default)
 
-    def _build_nvtx_hierarchy(self, rows: Sequence[Dict[str, object]], *, top_level_only: bool) -> List[Dict[str, object]]:
+    def _build_nvtx_hierarchy(
+        self, rows: Sequence[Dict[str, object]], *, top_level_only: bool
+    ) -> List[Dict[str, object]]:
         """
         Build NVTX parent/child hierarchy in O(N) using per-thread stacks.
         Input rows must be sorted by (global_tid, start_ns asc, end_ns desc).
@@ -2343,7 +2771,10 @@ class NsysSqlSkillEngine:
                 continue
 
             # Pop finished/non-containing ancestors.
-            while stack and (start_ns >= int(stack[-1]["end_ns"]) or end_ns > int(stack[-1]["end_ns"])):
+            while stack and (
+                start_ns >= int(stack[-1]["end_ns"])
+                or end_ns > int(stack[-1]["end_ns"])
+            ):
                 stack.pop()
 
             parent = stack[-1] if stack else None
@@ -2373,14 +2804,22 @@ class NsysSqlSkillEngine:
 
         local_kwargs = dict(kwargs)
         debug = self._as_bool(local_kwargs.pop("debug", False), default=False)
-        debug = debug or self._as_bool(local_kwargs.pop("__debug", False), default=False)
-        debug_rows_raw = local_kwargs.pop("debug_rows", local_kwargs.pop("__debug_rows", 3))
+        debug = debug or self._as_bool(
+            local_kwargs.pop("__debug", False), default=False
+        )
+        debug_rows_raw = local_kwargs.pop(
+            "debug_rows", local_kwargs.pop("__debug_rows", 3)
+        )
         try:
             debug_rows = max(0, int(debug_rows_raw))
         except Exception:
             debug_rows = 3
-        debug_log_fn = local_kwargs.pop("debug_log_fn", local_kwargs.pop("__debug_log_fn", None))
-        debug_log = _build_debug_logger(enabled=bool(debug), log_fn=debug_log_fn if callable(debug_log_fn) else None)
+        debug_log_fn = local_kwargs.pop(
+            "debug_log_fn", local_kwargs.pop("__debug_log_fn", None)
+        )
+        debug_log = _build_debug_logger(
+            enabled=bool(debug), log_fn=debug_log_fn if callable(debug_log_fn) else None
+        )
         if debug:
             debug_log(
                 "execute skill={} category={} schema(kernel={}, runtime={}, nvtx={}, metrics={})".format(
@@ -2403,24 +2842,34 @@ class NsysSqlSkillEngine:
         if skill_name == "nvtx_ranges_hierarchy":
             hier = self._build_nvtx_hierarchy(
                 rows,
-                top_level_only=self._as_bool(local_kwargs.get("top_level_only"), default=False),
+                top_level_only=self._as_bool(
+                    local_kwargs.get("top_level_only"), default=False
+                ),
             )
             if debug:
                 debug_log(
                     "skill={} hierarchy_rows={} top_level_only={}".format(
                         skill_name,
                         len(hier),
-                        int(self._as_bool(local_kwargs.get("top_level_only"), default=False)),
+                        int(
+                            self._as_bool(
+                                local_kwargs.get("top_level_only"), default=False
+                            )
+                        ),
                     )
                 )
                 if hier:
-                    debug_log(f"skill={skill_name} hierarchy_sample={_preview_rows(hier, limit=debug_rows)}")
+                    debug_log(
+                        f"skill={skill_name} hierarchy_sample={_preview_rows(hier, limit=debug_rows)}"
+                    )
             return hier
         if debug and not rows:
             debug_log(f"skill={skill_name} returned 0 rows")
         return rows
 
-    def execute_kernel_occupancy_estimate_h100(self, **kwargs) -> List[Dict[str, object]]:
+    def execute_kernel_occupancy_estimate_h100(
+        self, **kwargs
+    ) -> List[Dict[str, object]]:
         """
         Execute `kernel_occupancy_estimate` and attach H100(sm_90) occupancy estimate in Python.
         """
@@ -2612,7 +3061,9 @@ class NsysSqlSkillEngine:
         compute_only_ns = max(0, compute_ns - overlap_ns)
         comm_only_ns = max(0, comm_ns - overlap_ns)
         overlap_pct_of_comm = (100.0 * overlap_ns / comm_ns) if comm_ns > 0 else 0.0
-        overlap_pct_of_compute = (100.0 * overlap_ns / compute_ns) if compute_ns > 0 else 0.0
+        overlap_pct_of_compute = (
+            (100.0 * overlap_ns / compute_ns) if compute_ns > 0 else 0.0
+        )
 
         return {
             "device_id": int(device_id),
@@ -2671,7 +3122,9 @@ class NsysSqlSkillEngine:
         idle_ns = max(0, span_ns - busy_ns)
         util_pct = (100.0 * busy_ns / span_ns) if span_ns > 0 else 0.0
 
-        top_rows = self.execute("top_kernels", device_id=device_id, limit=max(1, int(top_k)))
+        top_rows = self.execute(
+            "top_kernels", device_id=device_id, limit=max(1, int(top_k))
+        )
 
         return {
             "device_id": int(device_id),
@@ -2757,13 +3210,17 @@ class NsysSqlSkillEngine:
             overlap_ns_val = _intersection_coverage_ns(compute_m, comm_m)
             total_active_ns = compute_ns_val + comm_ns_val - overlap_ns_val
             entry = dict(it)
-            entry.update({
-                "compute_ms": round(compute_ns_val / 1e6, 3),
-                "comm_ms": round(comm_ns_val / 1e6, 3),
-                "overlap_ms": round(overlap_ns_val / 1e6, 3),
-                "comm_pct": round(100.0 * comm_ns_val / total_active_ns, 2) if total_active_ns > 0 else 0.0,
-                "kernel_count": len(triples),
-            })
+            entry.update(
+                {
+                    "compute_ms": round(compute_ns_val / 1e6, 3),
+                    "comm_ms": round(comm_ns_val / 1e6, 3),
+                    "overlap_ms": round(overlap_ns_val / 1e6, 3),
+                    "comm_pct": round(100.0 * comm_ns_val / total_active_ns, 2)
+                    if total_active_ns > 0
+                    else 0.0,
+                    "kernel_count": len(triples),
+                }
+            )
             result.append(entry)
         return result
 
@@ -2807,7 +3264,7 @@ class NsysSqlSkillEngine:
         else:
             median = sorted_d[n // 2]
         variance = sum((x - mean) ** 2 for x in durations) / max(1, n - 1)
-        std = variance ** 0.5
+        std = variance**0.5
         p95 = sorted_d[min(int(0.95 * n), n - 1)]
         p99 = sorted_d[min(int(0.99 * n), n - 1)]
 
@@ -2827,11 +3284,13 @@ class NsysSqlSkillEngine:
                 continue
             sigma = abs(d - median) / std if std > 0 else 0.0
             if sigma > threshold_sigma:
-                outliers.append({
-                    "iteration": i,
-                    "duration_ms": round(d, 3),
-                    "deviation_sigma": round(sigma, 3),
-                })
+                outliers.append(
+                    {
+                        "iteration": i,
+                        "duration_ms": round(d, 3),
+                        "deviation_sigma": round(sigma, 3),
+                    }
+                )
         return {"stats": stats, "outliers": outliers}
 
     def analyze_rank_straggler(
@@ -2889,7 +3348,7 @@ class NsysSqlSkillEngine:
             sv = sorted(values)
             median = (sv[n // 2 - 1] + sv[n // 2]) / 2.0 if n % 2 == 0 else sv[n // 2]
             variance = sum((x - mean) ** 2 for x in values) / max(1, n - 1)
-            std = variance ** 0.5
+            std = variance**0.5
             return {
                 "count": n,
                 "mean_ms": round(mean, 3),
@@ -2915,7 +3374,12 @@ class NsysSqlSkillEngine:
                 else 0.0
             )
             is_straggler = rank_median > global_median * straggler_threshold
-            entry: Dict[str, object] = {"rank": rank_key, **rst, "delta_vs_global_pct": delta_pct, "is_straggler": is_straggler}
+            entry: Dict[str, object] = {
+                "rank": rank_key,
+                **rst,
+                "delta_vs_global_pct": delta_pct,
+                "is_straggler": is_straggler,
+            }
             per_rank.append(entry)
             if is_straggler:
                 stragglers.append(rank_key)
@@ -2987,11 +3451,18 @@ class NsysSqlSkillEngine:
                 bucket["sm_active"] = max(bucket.get("sm_active", 0.0), avg_val)
             elif any(kw in mname for kw in ("tensor_active", "tensor__active")):
                 bucket["tensor_active"] = max(bucket.get("tensor_active", 0.0), avg_val)
-            elif any(kw in mname for kw in ("dram_throughput", "dram__throughput", "memory.gpu.dram")):
-                bucket["dram_throughput"] = max(bucket.get("dram_throughput", 0.0), avg_val)
+            elif any(
+                kw in mname
+                for kw in ("dram_throughput", "dram__throughput", "memory.gpu.dram")
+            ):
+                bucket["dram_throughput"] = max(
+                    bucket.get("dram_throughput", 0.0), avg_val
+                )
 
         result: List[Dict[str, object]] = []
-        for (ntext, nstart, nend), metrics in sorted(grouped.items(), key=lambda x: x[0][1]):
+        for (ntext, nstart, nend), metrics in sorted(
+            grouped.items(), key=lambda x: x[0][1]
+        ):
             sm_active = metrics.get("sm_active", 0.0)
             tensor_active = metrics.get("tensor_active", 0.0)
             dram_throughput = metrics.get("dram_throughput", 0.0)
@@ -3013,14 +3484,16 @@ class NsysSqlSkillEngine:
                 bottleneck = "latency_bound"
                 confidence = "medium"
 
-            result.append({
-                "nvtx_text": ntext,
-                "nvtx_start_ns": nstart,
-                "nvtx_end_ns": nend,
-                "sm_active_avg": round(sm_active, 1),
-                "tensor_active_avg": round(tensor_active, 1),
-                "dram_throughput_avg": round(dram_throughput, 1),
-                "bottleneck": bottleneck,
-                "bottleneck_confidence": confidence,
-            })
+            result.append(
+                {
+                    "nvtx_text": ntext,
+                    "nvtx_start_ns": nstart,
+                    "nvtx_end_ns": nend,
+                    "sm_active_avg": round(sm_active, 1),
+                    "tensor_active_avg": round(tensor_active, 1),
+                    "dram_throughput_avg": round(dram_throughput, 1),
+                    "bottleneck": bottleneck,
+                    "bottleneck_confidence": confidence,
+                }
+            )
         return result

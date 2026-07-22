@@ -1,9 +1,8 @@
 from __future__ import annotations
 
-from typing import Any, Dict, Iterable, List, Mapping, Optional
+from typing import Any, Dict, List, Mapping, Optional
 
 from ..pipeline.metrics_collector import MetricsCollector
-from ..metrics.provider_registry import ProviderSpec
 from .base import FrameworkAdapter
 from .deepspeed import DeepSpeedAdapter
 from .huggingface import HuggingFaceAdapter

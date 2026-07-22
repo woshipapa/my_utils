@@ -22,8 +22,8 @@ declaring a run host-bound, and that is reproduced here.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field, replace
-from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 __all__ = [
     "TriageThresholds",
@@ -40,9 +40,16 @@ __all__ = [
 # Interval helpers
 # ---------------------------------------------------------------------------
 
-def merge_intervals(intervals: Sequence[Tuple[float, float]]) -> List[Tuple[float, float]]:
+
+def merge_intervals(
+    intervals: Sequence[Tuple[float, float]],
+) -> List[Tuple[float, float]]:
     """Merge overlapping [start, end) intervals into a disjoint, sorted list."""
-    clean = [(float(s), float(e)) for s, e in intervals if e is not None and s is not None and e > s]
+    clean = [
+        (float(s), float(e))
+        for s, e in intervals
+        if e is not None and s is not None and e > s
+    ]
     if not clean:
         return []
     clean.sort()
@@ -94,6 +101,7 @@ def interval_overlap_ns(
 # Thresholds
 # ---------------------------------------------------------------------------
 
+
 @dataclass(frozen=True)
 class TriageThresholds:
     """Tunable gates for the triage tree.
@@ -104,24 +112,24 @@ class TriageThresholds:
     launch gaps.
     """
 
-    gpu_idle_ratio: float = 0.30            # M1: idle share above this is suspicious
-    gpu_idle_ratio_graphs: float = 0.15     # ... when CUDA graphs are in use
-    launch_overhead_ratio: float = 0.10     # M2: cudaLaunchKernel time / wall
-    gpu_utilization_floor: float = 0.60     # M4
+    gpu_idle_ratio: float = 0.30  # M1: idle share above this is suspicious
+    gpu_idle_ratio_graphs: float = 0.15  # ... when CUDA graphs are in use
+    launch_overhead_ratio: float = 0.10  # M2: cudaLaunchKernel time / wall
+    gpu_utilization_floor: float = 0.60  # M4
     gpu_utilization_floor_graphs: float = 0.80
-    comm_ratio: float = 0.20                # M5: nccl time / gpu active
-    host_bound_signals_required: int = 2    # NVIDIA's ">= 2 metrics crossing" rule
+    comm_ratio: float = 0.20  # M5: nccl time / gpu active
+    host_bound_signals_required: int = 2  # NVIDIA's ">= 2 metrics crossing" rule
 
-    exposed_comm_ratio: float = 0.15        # exposed comm / step time
-    memcpy_ratio: float = 0.10              # H2D+D2H time / step time
-    sync_ratio: float = 0.05                # blocking sync API time / wall
+    exposed_comm_ratio: float = 0.15  # exposed comm / step time
+    memcpy_ratio: float = 0.10  # H2D+D2H time / step time
+    sync_ratio: float = 0.05  # blocking sync API time / wall
 
     # HTA constants
-    short_kernel_us: float = 10.0           # kernels below this are launch-dominated
-    short_kernel_share: float = 0.25        # ... and this share of launches trips a finding
+    short_kernel_us: float = 10.0  # kernels below this are launch-dominated
+    short_kernel_share: float = 0.25  # ... and this share of launches trips a finding
     launch_delay_outlier_us: float = 100.0  # HTA launch_delay_cutoff
-    runtime_outlier_us: float = 50.0        # HTA runtime_cutoff
-    max_launch_queue: int = 1024            # HTA CUDA_MAX_LAUNCH_QUEUE_PER_STREAM
+    runtime_outlier_us: float = 50.0  # HTA runtime_cutoff
+    max_launch_queue: int = 1024  # HTA CUDA_MAX_LAUNCH_QUEUE_PER_STREAM
 
     # nsys expert-system defaults, tightened for ML steps (500 ms is far too
     # coarse to see a dataloader stall inside a 200 ms iteration).
@@ -133,12 +141,17 @@ class TriageThresholds:
         return self.gpu_idle_ratio_graphs if self.cuda_graphs else self.gpu_idle_ratio
 
     def utilization_gate(self) -> float:
-        return self.gpu_utilization_floor_graphs if self.cuda_graphs else self.gpu_utilization_floor
+        return (
+            self.gpu_utilization_floor_graphs
+            if self.cuda_graphs
+            else self.gpu_utilization_floor
+        )
 
 
 # ---------------------------------------------------------------------------
 # Signals and verdict
 # ---------------------------------------------------------------------------
+
 
 @dataclass
 class TriageSignal:
@@ -149,7 +162,7 @@ class TriageSignal:
     value: Optional[float]
     threshold: float
     crossed: bool
-    direction: str          # "above" | "below"
+    direction: str  # "above" | "below"
     detail: str = ""
 
     def to_dict(self) -> Dict[str, Any]:
@@ -218,7 +231,9 @@ def triage_step(
     """
     t = thresholds or TriageThresholds()
 
-    gpu_intervals = list(compute_intervals) + list(comm_intervals) + list(memcpy_intervals)
+    gpu_intervals = (
+        list(compute_intervals) + list(comm_intervals) + list(memcpy_intervals)
+    )
     gpu_active_ns = interval_union_ns(gpu_intervals)
     compute_ns = interval_union_ns(compute_intervals)
     comm_ns = interval_union_ns(comm_intervals)
@@ -237,44 +252,99 @@ def triage_step(
     memcpy_ratio = _ratio(memcpy_ns, wall_ns)
     overlap_pct_of_comm = _ratio(overlap_ns, comm_ns)
 
-    short_kernels = [d for d in kernel_durations_ns if d is not None and d < t.short_kernel_us * 1000]
-    short_share = _ratio(len(short_kernels), len(kernel_durations_ns)) if kernel_durations_ns else None
-    delay_outliers = [d for d in launch_delays_ns if d is not None and d > t.launch_delay_outlier_us * 1000]
-    delay_outlier_share = _ratio(len(delay_outliers), len(launch_delays_ns)) if launch_delays_ns else None
+    short_kernels = [
+        d for d in kernel_durations_ns if d is not None and d < t.short_kernel_us * 1000
+    ]
+    short_share = (
+        _ratio(len(short_kernels), len(kernel_durations_ns))
+        if kernel_durations_ns
+        else None
+    )
+    delay_outliers = [
+        d
+        for d in launch_delays_ns
+        if d is not None and d > t.launch_delay_outlier_us * 1000
+    ]
+    delay_outlier_share = (
+        _ratio(len(delay_outliers), len(launch_delays_ns)) if launch_delays_ns else None
+    )
 
     signals: List[TriageSignal] = [
-        TriageSignal("gpu_idle_ratio", "GPU idle share of wall time",
-                     idle_ratio, t.idle_gate(),
-                     bool(idle_ratio is not None and idle_ratio > t.idle_gate()), "above",
-                     "Time with no kernel, memcpy or collective resident."),
-        TriageSignal("launch_overhead_ratio", "cudaLaunchKernel time / wall",
-                     launch_ratio, t.launch_overhead_ratio,
-                     bool(launch_ratio is not None and launch_ratio > t.launch_overhead_ratio), "above",
-                     "Host time spent purely issuing work."),
-        TriageSignal("gpu_utilization", "GPU busy share of wall time",
-                     utilization, t.utilization_gate(),
-                     bool(utilization is not None and utilization < t.utilization_gate()), "below",
-                     "Fraction of the window with the GPU doing something."),
-        TriageSignal("comm_ratio", "Collective time / GPU busy time",
-                     comm_ratio, t.comm_ratio,
-                     bool(comm_ratio is not None and comm_ratio > t.comm_ratio), "above",
-                     "How much of the GPU's work is communication."),
-        TriageSignal("exposed_comm_ratio", "Non-overlapped collective time / wall",
-                     exposed_comm_ratio, t.exposed_comm_ratio,
-                     bool(exposed_comm_ratio is not None and exposed_comm_ratio > t.exposed_comm_ratio),
-                     "above", "Communication with no compute running underneath it."),
-        TriageSignal("memcpy_ratio", "H2D/D2H time / wall",
-                     memcpy_ratio, t.memcpy_ratio,
-                     bool(memcpy_ratio is not None and memcpy_ratio > t.memcpy_ratio), "above",
-                     "Host-device transfer time."),
-        TriageSignal("sync_ratio", "Blocking sync API time / wall",
-                     sync_ratio, t.sync_ratio,
-                     bool(sync_ratio is not None and sync_ratio > t.sync_ratio), "above",
-                     "cudaDeviceSynchronize / cudaStreamSynchronize / event syncs."),
-        TriageSignal("short_kernel_share", "Share of kernels under the launch-overhead floor",
-                     short_share, t.short_kernel_share,
-                     bool(short_share is not None and short_share > t.short_kernel_share), "above",
-                     f"Kernels shorter than {t.short_kernel_us:.0f} us cost more to launch than to run."),
+        TriageSignal(
+            "gpu_idle_ratio",
+            "GPU idle share of wall time",
+            idle_ratio,
+            t.idle_gate(),
+            bool(idle_ratio is not None and idle_ratio > t.idle_gate()),
+            "above",
+            "Time with no kernel, memcpy or collective resident.",
+        ),
+        TriageSignal(
+            "launch_overhead_ratio",
+            "cudaLaunchKernel time / wall",
+            launch_ratio,
+            t.launch_overhead_ratio,
+            bool(launch_ratio is not None and launch_ratio > t.launch_overhead_ratio),
+            "above",
+            "Host time spent purely issuing work.",
+        ),
+        TriageSignal(
+            "gpu_utilization",
+            "GPU busy share of wall time",
+            utilization,
+            t.utilization_gate(),
+            bool(utilization is not None and utilization < t.utilization_gate()),
+            "below",
+            "Fraction of the window with the GPU doing something.",
+        ),
+        TriageSignal(
+            "comm_ratio",
+            "Collective time / GPU busy time",
+            comm_ratio,
+            t.comm_ratio,
+            bool(comm_ratio is not None and comm_ratio > t.comm_ratio),
+            "above",
+            "How much of the GPU's work is communication.",
+        ),
+        TriageSignal(
+            "exposed_comm_ratio",
+            "Non-overlapped collective time / wall",
+            exposed_comm_ratio,
+            t.exposed_comm_ratio,
+            bool(
+                exposed_comm_ratio is not None
+                and exposed_comm_ratio > t.exposed_comm_ratio
+            ),
+            "above",
+            "Communication with no compute running underneath it.",
+        ),
+        TriageSignal(
+            "memcpy_ratio",
+            "H2D/D2H time / wall",
+            memcpy_ratio,
+            t.memcpy_ratio,
+            bool(memcpy_ratio is not None and memcpy_ratio > t.memcpy_ratio),
+            "above",
+            "Host-device transfer time.",
+        ),
+        TriageSignal(
+            "sync_ratio",
+            "Blocking sync API time / wall",
+            sync_ratio,
+            t.sync_ratio,
+            bool(sync_ratio is not None and sync_ratio > t.sync_ratio),
+            "above",
+            "cudaDeviceSynchronize / cudaStreamSynchronize / event syncs.",
+        ),
+        TriageSignal(
+            "short_kernel_share",
+            "Share of kernels under the launch-overhead floor",
+            short_share,
+            t.short_kernel_share,
+            bool(short_share is not None and short_share > t.short_kernel_share),
+            "above",
+            f"Kernels shorter than {t.short_kernel_us:.0f} us cost more to launch than to run.",
+        ),
     ]
 
     host_signal_keys = ("gpu_idle_ratio", "launch_overhead_ratio", "gpu_utilization")
@@ -289,7 +359,9 @@ def triage_step(
         "memcpy_ns": memcpy_ns,
         "comm_compute_overlap_ns": overlap_ns,
         "exposed_comm_ns": exposed_comm_ns,
-        "overlap_pct_of_comm": (overlap_pct_of_comm * 100.0) if overlap_pct_of_comm is not None else None,
+        "overlap_pct_of_comm": (overlap_pct_of_comm * 100.0)
+        if overlap_pct_of_comm is not None
+        else None,
         "kernel_count": len(kernel_durations_ns) or None,
         "short_kernel_count": len(short_kernels) or None,
         "launch_delay_outliers": len(delay_outliers) or None,
@@ -372,7 +444,8 @@ def triage_step(
     if exposed_comm_ratio is not None and exposed_comm_ratio > t.exposed_comm_ratio:
         overlap_text = (
             f"Only {overlap_pct_of_comm * 100:.0f}% of collective time overlaps compute."
-            if overlap_pct_of_comm is not None else ""
+            if overlap_pct_of_comm is not None
+            else ""
         )
         return TriageVerdict(
             verdict="communication_bound",

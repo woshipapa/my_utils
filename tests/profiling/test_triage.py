@@ -10,7 +10,10 @@ from _synthetic_loader import triage
 
 
 def test_merge_intervals_coalesces_and_sorts():
-    assert triage.merge_intervals([(30, 40), (0, 10), (5, 20)]) == [(0.0, 20.0), (30.0, 40.0)]
+    assert triage.merge_intervals([(30, 40), (0, 10), (5, 20)]) == [
+        (0.0, 20.0),
+        (30.0, 40.0),
+    ]
     assert triage.merge_intervals([]) == []
     # Zero-length and inverted intervals are dropped rather than corrupting the union.
     assert triage.merge_intervals([(5, 5), (10, 3)]) == []
@@ -108,7 +111,9 @@ def test_cuda_graph_mode_tightens_the_idle_gate():
         kernel_durations_ns=[5 * MS] * 16,
     )
     default = triage.triage_step(**kwargs)
-    graphs = triage.triage_step(**kwargs, thresholds=triage.TriageThresholds(cuda_graphs=True))
+    graphs = triage.triage_step(
+        **kwargs, thresholds=triage.TriageThresholds(cuda_graphs=True)
+    )
 
     def idle(v):
         return next(s for s in v.signals if s.key == "gpu_idle_ratio")
@@ -142,7 +147,14 @@ def test_steady_state_allocations_surface_as_a_secondary_note():
 def test_verdict_serialises_for_reports():
     verdict = triage.triage_step(wall_ns=10 * MS, compute_intervals=[(0, 9 * MS)])
     payload = verdict.to_dict()
-    assert set(payload) >= {"verdict", "confidence", "summary", "signals", "breakdown", "next_steps"}
+    assert set(payload) >= {
+        "verdict",
+        "confidence",
+        "summary",
+        "signals",
+        "breakdown",
+        "next_steps",
+    }
     assert isinstance(payload["signals"], list)
 
 
@@ -158,7 +170,9 @@ class TestTriageRefusesMissingData:
     def test_no_intervals_yields_no_verdict(self):
         tri = triage
         verdict = tri.triage_step(
-            wall_ns=1e9, launch_api_ns=8e8, sync_api_ns=5e8,
+            wall_ns=1e9,
+            launch_api_ns=8e8,
+            sync_api_ns=5e8,
             kernel_durations_ns=[4e3] * 50,
         )
         assert verdict.verdict == "undetermined"
@@ -168,7 +182,10 @@ class TestTriageRefusesMissingData:
     def test_real_intervals_still_reach_host_bound(self):
         tri = triage
         verdict = tri.triage_step(
-            wall_ns=1e9, compute_intervals=[(0, 5e7)], launch_api_ns=8e8,
-            sync_api_ns=5e8, kernel_durations_ns=[4e3] * 50,
+            wall_ns=1e9,
+            compute_intervals=[(0, 5e7)],
+            launch_api_ns=8e8,
+            sync_api_ns=5e8,
+            kernel_durations_ns=[4e3] * 50,
         )
         assert verdict.verdict == "host_bound"

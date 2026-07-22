@@ -41,7 +41,11 @@ class SyntheticTrainProvider(BaseMetricsProvider):
             backward_ms *= 1.7
 
         # Synthetic memory model (slow growth + noise)
-        mem_bytes = self._memory_base + self._step * 8_000_000 + int(self._rng.uniform(-2e6, 2e6))
+        mem_bytes = (
+            self._memory_base
+            + self._step * 8_000_000
+            + int(self._rng.uniform(-2e6, 2e6))
+        )
 
         events = [
             MetricEvent(
@@ -146,9 +150,15 @@ def run_demo(output_dir: Path, steps: int, seed: int) -> None:
     collector.stop()
 
     report = collector.analyze()
-    json_path = collector.export_report(fmt="json", output_path=str(output_dir / "report.json"), report=report)
-    md_path = collector.export_report(fmt="markdown", output_path=str(output_dir / "report.md"), report=report)
-    html_path = collector.export_report(fmt="html", output_path=str(output_dir / "report.html"), report=report)
+    json_path = collector.export_report(
+        fmt="json", output_path=str(output_dir / "report.json"), report=report
+    )
+    md_path = collector.export_report(
+        fmt="markdown", output_path=str(output_dir / "report.md"), report=report
+    )
+    html_path = collector.export_report(
+        fmt="html", output_path=str(output_dir / "report.html"), report=report
+    )
 
     print("=== Unified Metrics Demo Finished ===")
     print(f"Output dir : {output_dir}")

@@ -4,19 +4,15 @@ HTML报告生成器
 整合所有组件，生成完整的性能分析HTML报告
 """
 
-from typing import Any, Optional
+from typing import Optional
 import time
-import json
 from pathlib import Path
 
 from .charts import ChartConfig, ChartRenderer, create_chart_renderer
 from .transformers import DataTransformer, MetricEvent
 from .layouts import (
     LayoutBuilder,
-    Finding,
-    Recommendation,
     AnalysisReport,
-    Severity,
 )
 
 
@@ -104,7 +100,9 @@ class HTMLReportGenerator:
 
         return html
 
-    def _add_summary_section(self, builder: LayoutBuilder, report: AnalysisReport) -> None:
+    def _add_summary_section(
+        self, builder: LayoutBuilder, report: AnalysisReport
+    ) -> None:
         """添加摘要部分"""
         details = {
             "Total Events": report.metadata.get("event_count", 0),
@@ -118,7 +116,9 @@ class HTMLReportGenerator:
             details=details,
         )
 
-    def _add_key_metrics(self, builder: LayoutBuilder, events: list[MetricEvent]) -> None:
+    def _add_key_metrics(
+        self, builder: LayoutBuilder, events: list[MetricEvent]
+    ) -> None:
         """添加关键指标卡片"""
         # 提取关键指标
         metrics = {}
@@ -137,7 +137,9 @@ class HTMLReportGenerator:
         if metrics:
             builder.add_metrics_grid(metrics)
 
-    def _add_trend_charts(self, builder: LayoutBuilder, events: list[MetricEvent]) -> None:
+    def _add_trend_charts(
+        self, builder: LayoutBuilder, events: list[MetricEvent]
+    ) -> None:
         """添加趋势图表"""
         # 获取所有唯一的指标名称
         metric_names = list(set(e.name for e in events))
@@ -159,7 +161,9 @@ class HTMLReportGenerator:
 
         if selected_metrics:
             # 多条时间序列
-            chart_data = self.transformer.to_multiple_time_series(events, selected_metrics)
+            chart_data = self.transformer.to_multiple_time_series(
+                events, selected_metrics
+            )
 
             config = ChartConfig(
                 chart_type="line",
@@ -172,18 +176,21 @@ class HTMLReportGenerator:
                     "plugins": {
                         "title": {"display": True, "text": "Metrics Over Time"},
                         "tooltip": {"mode": "index", "intersect": False},
-                    }
-                }
+                    },
+                },
             )
 
             chart_html = self.renderer.render(config)
             builder.add_chart(chart_html, title="Performance Trends Over Steps")
 
-    def _add_bottleneck_charts(self, builder: LayoutBuilder, report: AnalysisReport) -> None:
+    def _add_bottleneck_charts(
+        self, builder: LayoutBuilder, report: AnalysisReport
+    ) -> None:
         """添加瓶颈分析图表"""
         # 从findings中提取瓶颈信息
         bottlenecks = [
-            f for f in report.findings
+            f
+            for f in report.findings
             if "瓶颈" in f.title or "bottleneck" in f.title.lower()
         ]
 
@@ -194,7 +201,9 @@ class HTMLReportGenerator:
 
             for finding in bottlenecks:
                 component = finding.evidence.get("component", finding.title)
-                ratio = finding.evidence.get("ratio", finding.evidence.get("percentage", 0))
+                ratio = finding.evidence.get(
+                    "ratio", finding.evidence.get("percentage", 0)
+                )
 
                 if isinstance(ratio, str):
                     ratio = float(ratio.rstrip("%")) / 100
@@ -207,16 +216,18 @@ class HTMLReportGenerator:
             if labels and values:
                 chart_data = {
                     "labels": labels,
-                    "datasets": [{
-                        "data": values,
-                        "backgroundColor": [
-                            "rgba(239, 68, 68, 0.8)",
-                            "rgba(249, 115, 22, 0.8)",
-                            "rgba(245, 158, 11, 0.8)",
-                            "rgba(34, 197, 94, 0.8)",
-                            "rgba(59, 130, 246, 0.8)",
-                        ][:len(labels)]
-                    }]
+                    "datasets": [
+                        {
+                            "data": values,
+                            "backgroundColor": [
+                                "rgba(239, 68, 68, 0.8)",
+                                "rgba(249, 115, 22, 0.8)",
+                                "rgba(245, 158, 11, 0.8)",
+                                "rgba(34, 197, 94, 0.8)",
+                                "rgba(59, 130, 246, 0.8)",
+                            ][: len(labels)],
+                        }
+                    ],
                 }
 
                 config = ChartConfig(
@@ -240,6 +251,7 @@ class HTMLReportGenerator:
                 table_html = self._create_table_html(table_data)
 
                 from .layouts import LayoutBuilder as LB
+
                 temp_builder = LB()
                 temp_builder.add_table(table_data, title="")
 
@@ -250,7 +262,9 @@ class HTMLReportGenerator:
                     right_title="Detailed Breakdown",
                 )
 
-    def _add_memory_charts(self, builder: LayoutBuilder, events: list[MetricEvent]) -> None:
+    def _add_memory_charts(
+        self, builder: LayoutBuilder, events: list[MetricEvent]
+    ) -> None:
         """添加内存分析图表"""
         memory_events = [e for e in events if "memory" in e.name.lower()]
 
@@ -287,15 +301,19 @@ class HTMLReportGenerator:
             steps = sorted(by_step.keys())
             values = [by_step.get(s, [0])[0] for s in sorted(all_labels)]
 
-            color = colors.get(mem_type, ("rgb(153, 102, 255)", "rgba(153, 102, 255, 0.2)"))
+            color = colors.get(
+                mem_type, ("rgb(153, 102, 255)", "rgba(153, 102, 255, 0.2)")
+            )
 
-            datasets.append({
-                "label": f"Memory {mem_type}",
-                "data": values,
-                "borderColor": color[0],
-                "backgroundColor": color[1],
-                "fill": False,
-            })
+            datasets.append(
+                {
+                    "label": f"Memory {mem_type}",
+                    "data": values,
+                    "borderColor": color[0],
+                    "backgroundColor": color[1],
+                    "fill": False,
+                }
+            )
 
         chart_data = {
             "labels": sorted(all_labels),
@@ -312,19 +330,19 @@ class HTMLReportGenerator:
                 "scales": {
                     "y": {
                         "beginAtZero": True,
-                        "title": {"display": True, "text": "Memory (GB)"}
+                        "title": {"display": True, "text": "Memory (GB)"},
                     },
-                    "x": {
-                        "title": {"display": True, "text": "Step"}
-                    }
-                }
-            }
+                    "x": {"title": {"display": True, "text": "Step"}},
+                },
+            },
         )
 
         chart_html = self.renderer.render(config)
         builder.add_chart(chart_html, title="Memory Usage")
 
-    def _add_detail_tables(self, builder: LayoutBuilder, events: list[MetricEvent]) -> None:
+    def _add_detail_tables(
+        self, builder: LayoutBuilder, events: list[MetricEvent]
+    ) -> None:
         """添加详细数据表格"""
         # 计算统计信息
         stats = self.transformer.compute_statistics(events)
@@ -333,15 +351,17 @@ class HTMLReportGenerator:
             # 格式化表格数据
             table_data = []
             for stat in stats[:20]:  # 只显示前20个
-                table_data.append({
-                    "Metric": stat["metric"],
-                    "Count": stat["count"],
-                    "Mean": f"{stat['mean']:.4f}",
-                    "Std": f"{stat['std']:.4f}",
-                    "Min": f"{stat['min']:.4f}",
-                    "Max": f"{stat['max']:.4f}",
-                    "Median": f"{stat['median']:.4f}",
-                })
+                table_data.append(
+                    {
+                        "Metric": stat["metric"],
+                        "Count": stat["count"],
+                        "Mean": f"{stat['mean']:.4f}",
+                        "Std": f"{stat['std']:.4f}",
+                        "Min": f"{stat['min']:.4f}",
+                        "Max": f"{stat['max']:.4f}",
+                        "Median": f"{stat['median']:.4f}",
+                    }
+                )
 
             builder.add_table(table_data, title="Detailed Statistics")
 
@@ -459,16 +479,20 @@ class QuickReportGenerator:
             reader = csv.DictReader(f)
             for row in reader:
                 try:
-                    events.append(MetricEvent(
-                        timestamp=float(row.get("timestamp_unix", 0)),
-                        name=row.get("event_name", ""),
-                        value=float(row.get("duration_ms", 0)) if row.get("duration_ms") else 0,
-                        unit="ms",
-                        tags={
-                            "step": row.get("step", ""),
-                            "type": row.get("event_type", ""),
-                        }
-                    ))
+                    events.append(
+                        MetricEvent(
+                            timestamp=float(row.get("timestamp_unix", 0)),
+                            name=row.get("event_name", ""),
+                            value=float(row.get("duration_ms", 0))
+                            if row.get("duration_ms")
+                            else 0,
+                            unit="ms",
+                            tags={
+                                "step": row.get("step", ""),
+                                "type": row.get("event_type", ""),
+                            },
+                        )
+                    )
                 except (ValueError, KeyError):
                     continue
 
@@ -481,15 +505,19 @@ class QuickReportGenerator:
         # 访问timer的事件列表
         if hasattr(timer, "_events"):
             for event in timer._events:
-                events.append(MetricEvent(
-                    timestamp=event.timestamp if hasattr(event, "timestamp") else time.time(),
-                    name=event.name if hasattr(event, "name") else "timer",
-                    value=event.duration_ms if hasattr(event, "duration_ms") else 0,
-                    unit="ms",
-                    tags={
-                        "step": str(event.step) if hasattr(event, "step") else "0",
-                        "type": event.type if hasattr(event, "type") else "unknown",
-                    }
-                ))
+                events.append(
+                    MetricEvent(
+                        timestamp=event.timestamp
+                        if hasattr(event, "timestamp")
+                        else time.time(),
+                        name=event.name if hasattr(event, "name") else "timer",
+                        value=event.duration_ms if hasattr(event, "duration_ms") else 0,
+                        unit="ms",
+                        tags={
+                            "step": str(event.step) if hasattr(event, "step") else "0",
+                            "type": event.type if hasattr(event, "type") else "unknown",
+                        },
+                    )
+                )
 
         return events

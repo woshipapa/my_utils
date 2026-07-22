@@ -208,9 +208,7 @@ class NsysSqliteMetricsProvider(BaseMetricsProvider):
         re.compile(r"\bstep(?:\s*|[:=_-])(\d+)\b", re.IGNORECASE),
         re.compile(r"\biter(?:ation)?(?:\s*|[:=_-])(\d+)\b", re.IGNORECASE),
     )
-    _RANK_PATTERNS = (
-        re.compile(r"\brank(?:\s*|[:=_-])(\d+)\b", re.IGNORECASE),
-    )
+    _RANK_PATTERNS = (re.compile(r"\brank(?:\s*|[:=_-])(\d+)\b", re.IGNORECASE),)
 
     def __init__(
         self,
@@ -265,12 +263,18 @@ class NsysSqliteMetricsProvider(BaseMetricsProvider):
 
         # (pid, correlationId) -> runtime api info
         # pid can be None when not available in source row.
-        self._runtime_by_correlation: Dict[Tuple[Optional[str], int], Dict[str, str]] = {}
+        self._runtime_by_correlation: Dict[
+            Tuple[Optional[str], int], Dict[str, str]
+        ] = {}
         self._schema_meta: Optional[Dict[str, str]] = None
         self._version_info: Optional[NsysVersionInfo] = None
         self._schema_tags_cache: Optional[Dict[str, str]] = None
-        self._gpu_metric_info_cache: Optional[Dict[Tuple[Optional[int], Optional[int]], Dict[str, str]]] = None
-        self._network_metric_info_cache: Optional[Dict[Tuple[int, int], Dict[str, str]]] = None
+        self._gpu_metric_info_cache: Optional[
+            Dict[Tuple[Optional[int], Optional[int]], Dict[str, str]]
+        ] = None
+        self._network_metric_info_cache: Optional[
+            Dict[Tuple[int, int], Dict[str, str]]
+        ] = None
         self._generic_event_type_cache: Optional[Dict[int, Dict[str, str]]] = None
 
     def _load_schema_meta(self, conn: sqlite3.Connection) -> Dict[str, str]:
@@ -416,7 +420,9 @@ class NsysSqliteMetricsProvider(BaseMetricsProvider):
         if self._table_exists(conn, "ThreadNames"):
             cols = self._table_columns(conn, "ThreadNames")
             if {"globalTid", "nameId"}.issubset(cols):
-                for row in conn.execute("SELECT globalTid, nameId FROM ThreadNames;").fetchall():
+                for row in conn.execute(
+                    "SELECT globalTid, nameId FROM ThreadNames;"
+                ).fetchall():
                     gtid = _safe_int(row["globalTid"])
                     if gtid is None:
                         continue
@@ -426,10 +432,18 @@ class NsysSqliteMetricsProvider(BaseMetricsProvider):
 
         if self._table_exists(conn, "PROCESSES"):
             cols = self._table_columns(conn, "PROCESSES")
-            pid_col = "globalPid" if "globalPid" in cols else ("pid" if "pid" in cols else None)
-            name_col = "name" if "name" in cols else ("nameId" if "nameId" in cols else None)
+            pid_col = (
+                "globalPid"
+                if "globalPid" in cols
+                else ("pid" if "pid" in cols else None)
+            )
+            name_col = (
+                "name" if "name" in cols else ("nameId" if "nameId" in cols else None)
+            )
             if pid_col and name_col:
-                for row in conn.execute(f"SELECT {pid_col} AS _pid, {name_col} AS _name FROM PROCESSES;").fetchall():
+                for row in conn.execute(
+                    f"SELECT {pid_col} AS _pid, {name_col} AS _name FROM PROCESSES;"
+                ).fetchall():
                     gpid = _safe_int(row["_pid"])
                     if gpid is None:
                         continue
@@ -501,9 +515,13 @@ class NsysSqliteMetricsProvider(BaseMetricsProvider):
         token = NsysSqliteMetricsProvider._normalize_token(raw_name)
         if token in GPU_METRIC_NAME_HINTS:
             return GPU_METRIC_NAME_HINTS[token]
-        if "dram" in token and ("throughput" in token or "bandwidth" in token or token.endswith("_bw")):
+        if "dram" in token and (
+            "throughput" in token or "bandwidth" in token or token.endswith("_bw")
+        ):
             return "memory.gpu.dram.throughput"
-        if "sm" in token and ("active" in token or "throughput" in token or "utilization" in token):
+        if "sm" in token and (
+            "active" in token or "throughput" in token or "utilization" in token
+        ):
             return "compute.gpu.sm.utilization"
         if "pcie" in token and ("throughput" in token or "bandwidth" in token):
             if "tx" in token:
@@ -552,7 +570,11 @@ class NsysSqliteMetricsProvider(BaseMetricsProvider):
             for key, value in payload.items():
                 sub_key = NsysSqliteMetricsProvider._normalize_token(str(key))
                 next_prefix = f"{prefix}.{sub_key}" if prefix else sub_key
-                out.update(NsysSqliteMetricsProvider._flatten_numeric_payload(value, next_prefix))
+                out.update(
+                    NsysSqliteMetricsProvider._flatten_numeric_payload(
+                        value, next_prefix
+                    )
+                )
             return out
         if isinstance(payload, list):
             # Keep compact output by skipping array expansion.
@@ -574,7 +596,11 @@ class NsysSqliteMetricsProvider(BaseMetricsProvider):
         cols = self._table_columns(conn, "TARGET_INFO_GPU_METRICS")
         type_col = "typeId" if "typeId" in cols else None
         metric_col = "metricId" if "metricId" in cols else None
-        name_col = "metricName" if "metricName" in cols else ("name" if "name" in cols else None)
+        name_col = (
+            "metricName"
+            if "metricName" in cols
+            else ("name" if "name" in cols else None)
+        )
         if name_col is None:
             return
 
@@ -592,15 +618,23 @@ class NsysSqliteMetricsProvider(BaseMetricsProvider):
 
         for row in rows:
             type_id = _safe_int(row["_type_id"]) if "_type_id" in row.keys() else None
-            metric_id = _safe_int(row["_metric_id"]) if "_metric_id" in row.keys() else None
+            metric_id = (
+                _safe_int(row["_metric_id"]) if "_metric_id" in row.keys() else None
+            )
             metric_name = str(row["_name"] or "").strip()
             if not metric_name:
                 continue
-            self._gpu_metric_info_cache[(type_id, metric_id)] = {"metric_name": metric_name}
+            self._gpu_metric_info_cache[(type_id, metric_id)] = {
+                "metric_name": metric_name
+            }
             if metric_id is not None:
-                self._gpu_metric_info_cache.setdefault((None, metric_id), {"metric_name": metric_name})
+                self._gpu_metric_info_cache.setdefault(
+                    (None, metric_id), {"metric_name": metric_name}
+                )
 
-    def _resolve_gpu_metric_name(self, conn: sqlite3.Connection, type_id: Optional[int], metric_id: Optional[int]) -> str:
+    def _resolve_gpu_metric_name(
+        self, conn: sqlite3.Connection, type_id: Optional[int], metric_id: Optional[int]
+    ) -> str:
         self._ensure_gpu_metric_info(conn)
         cache = self._gpu_metric_info_cache or {}
         if (type_id, metric_id) in cache:
@@ -647,9 +681,14 @@ class NsysSqliteMetricsProvider(BaseMetricsProvider):
             unit = str(row["_unit"] or "").strip() if "_unit" in row.keys() else ""
             if not name:
                 continue
-            self._network_metric_info_cache[(list_id, idx)] = {"name": name, "unit": unit}
+            self._network_metric_info_cache[(list_id, idx)] = {
+                "name": name,
+                "unit": unit,
+            }
 
-    def _resolve_network_metric(self, conn: sqlite3.Connection, list_id: Optional[int], idx: Optional[int]) -> Dict[str, str]:
+    def _resolve_network_metric(
+        self, conn: sqlite3.Connection, list_id: Optional[int], idx: Optional[int]
+    ) -> Dict[str, str]:
         self._ensure_network_metric_info(conn)
         if list_id is None or idx is None:
             return {}
@@ -666,7 +705,9 @@ class NsysSqliteMetricsProvider(BaseMetricsProvider):
             cols = self._table_columns(conn, "GENERIC_EVENT_SOURCES")
             if {"sourceId", "name"}.issubset(cols):
                 try:
-                    rows = conn.execute("SELECT sourceId, name FROM GENERIC_EVENT_SOURCES;").fetchall()
+                    rows = conn.execute(
+                        "SELECT sourceId, name FROM GENERIC_EVENT_SOURCES;"
+                    ).fetchall()
                     for row in rows:
                         sid = _safe_int(row["sourceId"])
                         if sid is None:
@@ -711,7 +752,9 @@ class NsysSqliteMetricsProvider(BaseMetricsProvider):
                 "source_name": source_name,
             }
 
-    def _resolve_generic_event_type(self, conn: sqlite3.Connection, type_id: Optional[int]) -> Dict[str, str]:
+    def _resolve_generic_event_type(
+        self, conn: sqlite3.Connection, type_id: Optional[int]
+    ) -> Dict[str, str]:
         self._ensure_generic_event_type_cache(conn)
         if type_id is None:
             return {}
@@ -734,7 +777,9 @@ class NsysSqliteMetricsProvider(BaseMetricsProvider):
                 break
         return tags
 
-    def _enrich_common_tags(self, conn: sqlite3.Connection, row: sqlite3.Row) -> Dict[str, str]:
+    def _enrich_common_tags(
+        self, conn: sqlite3.Connection, row: sqlite3.Row
+    ) -> Dict[str, str]:
         self._ensure_thread_process_names(conn)
 
         tags: Dict[str, str] = {}
@@ -757,7 +802,13 @@ class NsysSqliteMetricsProvider(BaseMetricsProvider):
                 if self._process_name_cache and gpid in self._process_name_cache:
                     tags["process"] = self._process_name_cache[gpid]
 
-        for key in ("deviceId", "contextId", "greenContextId", "streamId", "correlationId"):
+        for key in (
+            "deviceId",
+            "contextId",
+            "greenContextId",
+            "streamId",
+            "correlationId",
+        ):
             if key in row.keys():
                 val = _safe_int(row[key])
                 if val is not None:
@@ -770,7 +821,9 @@ class NsysSqliteMetricsProvider(BaseMetricsProvider):
         return tags
 
     def _attach_runtime_api_tag(self, tags: Dict[str, str], row: sqlite3.Row) -> None:
-        corr = _safe_int(row["correlationId"]) if "correlationId" in row.keys() else None
+        corr = (
+            _safe_int(row["correlationId"]) if "correlationId" in row.keys() else None
+        )
         if corr is None:
             return
         pid = tags.get("pid")
@@ -809,7 +862,14 @@ class NsysSqliteMetricsProvider(BaseMetricsProvider):
         rows = self._rows_incremental(
             conn,
             "CUPTI_ACTIVITY_KIND_RUNTIME",
-            required_columns=("start", "end", "nameId", "eventClass", "globalTid", "correlationId"),
+            required_columns=(
+                "start",
+                "end",
+                "nameId",
+                "eventClass",
+                "globalTid",
+                "correlationId",
+            ),
         )
         if not rows:
             return []
@@ -817,12 +877,22 @@ class NsysSqliteMetricsProvider(BaseMetricsProvider):
         events: List[MetricEvent] = []
         for row in rows:
             tags = self._enrich_common_tags(conn, row)
-            api_name = self._resolve_string(conn, row["nameId"]) if "nameId" in row.keys() else "unknown_api"
+            api_name = (
+                self._resolve_string(conn, row["nameId"])
+                if "nameId" in row.keys()
+                else "unknown_api"
+            )
             tags["api"] = api_name
-            evt = self._make_duration_event(now=now, row=row, name="latency.cuda.runtime_api", tags=tags)
+            evt = self._make_duration_event(
+                now=now, row=row, name="latency.cuda.runtime_api", tags=tags
+            )
             if evt is not None:
                 events.append(evt)
-            corr = _safe_int(row["correlationId"]) if "correlationId" in row.keys() else None
+            corr = (
+                _safe_int(row["correlationId"])
+                if "correlationId" in row.keys()
+                else None
+            )
             if corr is not None:
                 pid = tags.get("pid")
                 self._runtime_by_correlation[(pid, corr)] = {"api": api_name}
@@ -873,7 +943,9 @@ class NsysSqliteMetricsProvider(BaseMetricsProvider):
             tags["kernel"] = self._resolve_string(conn, kernel_raw) or "unknown_kernel"
             self._attach_runtime_api_tag(tags, row)
 
-            evt = self._make_duration_event(now=now, row=row, name="latency.kernel.cuda", tags=tags)
+            evt = self._make_duration_event(
+                now=now, row=row, name="latency.kernel.cuda", tags=tags
+            )
             if evt is not None:
                 events.append(evt)
 
@@ -883,7 +955,11 @@ class NsysSqliteMetricsProvider(BaseMetricsProvider):
                 ("staticSharedMemory", "memory.kernel.shared_static_bytes", "bytes"),
                 ("dynamicSharedMemory", "memory.kernel.shared_dynamic_bytes", "bytes"),
                 ("localMemoryTotal", "memory.kernel.local_total_bytes", "bytes"),
-                ("localMemoryPerThread", "memory.kernel.local_per_thread_bytes", "bytes"),
+                (
+                    "localMemoryPerThread",
+                    "memory.kernel.local_per_thread_bytes",
+                    "bytes",
+                ),
             ):
                 if col not in row.keys():
                     continue
@@ -994,7 +1070,9 @@ class NsysSqliteMetricsProvider(BaseMetricsProvider):
                 tags["dst_kind"] = CUDA_MEMORY_KIND_MAP.get(dst_kind, str(dst_kind))
             self._attach_runtime_api_tag(tags, row)
 
-            dur_evt = self._make_duration_event(now=now, row=row, name="latency.memcpy.cuda", tags=tags)
+            dur_evt = self._make_duration_event(
+                now=now, row=row, name="latency.memcpy.cuda", tags=tags
+            )
             if dur_evt is not None:
                 events.append(dur_evt)
 
@@ -1055,7 +1133,9 @@ class NsysSqliteMetricsProvider(BaseMetricsProvider):
                 tags["mem_kind"] = CUDA_MEMORY_KIND_MAP.get(mem_kind, str(mem_kind))
             self._attach_runtime_api_tag(tags, row)
 
-            dur_evt = self._make_duration_event(now=now, row=row, name="latency.memset.cuda", tags=tags)
+            dur_evt = self._make_duration_event(
+                now=now, row=row, name="latency.memset.cuda", tags=tags
+            )
             if dur_evt is not None:
                 events.append(dur_evt)
 
@@ -1106,7 +1186,9 @@ class NsysSqliteMetricsProvider(BaseMetricsProvider):
                 tags["sync_event_id"] = str(event_id)
             self._attach_runtime_api_tag(tags, row)
 
-            dur_evt = self._make_duration_event(now=now, row=row, name="latency.cuda.sync", tags=tags)
+            dur_evt = self._make_duration_event(
+                now=now, row=row, name="latency.cuda.sync", tags=tags
+            )
             if dur_evt is not None:
                 events.append(dur_evt)
         return events
@@ -1163,15 +1245,25 @@ class NsysSqliteMetricsProvider(BaseMetricsProvider):
 
             mem_pool_type = self._row_int(row, "memoryPoolType", "poolType")
             if mem_pool_type is not None:
-                tags["memory_pool_type"] = CUDA_MEMPOOL_TYPE_MAP.get(mem_pool_type, str(mem_pool_type))
+                tags["memory_pool_type"] = CUDA_MEMPOOL_TYPE_MAP.get(
+                    mem_pool_type, str(mem_pool_type)
+                )
 
-            mem_pool_op = self._row_int(row, "memoryPoolOperationType", "poolOperationType")
+            mem_pool_op = self._row_int(
+                row, "memoryPoolOperationType", "poolOperationType"
+            )
             if mem_pool_op is not None:
-                tags["memory_pool_operation"] = CUDA_MEMPOOL_OPERATION_TYPE_MAP.get(mem_pool_op, str(mem_pool_op))
+                tags["memory_pool_operation"] = CUDA_MEMPOOL_OPERATION_TYPE_MAP.get(
+                    mem_pool_op, str(mem_pool_op)
+                )
 
             op_type = self._row_int(row, "memoryOperationType", "operationType")
             if op_type is not None:
-                tags["memory_operation_type"] = "allocate" if op_type == 0 else ("deallocate" if op_type == 1 else str(op_type))
+                tags["memory_operation_type"] = (
+                    "allocate"
+                    if op_type == 0
+                    else ("deallocate" if op_type == 1 else str(op_type))
+                )
 
             self._attach_runtime_api_tag(tags, row)
             bytes_val = self._row_float(row, "bytes")
@@ -1205,7 +1297,9 @@ class NsysSqliteMetricsProvider(BaseMetricsProvider):
             table_name = "CUDA_GPU_MEMORY_POOL_EVENTS"
         elif self._table_exists(conn, "CUDA_GPU_MEMORY_USAGE_EVENTS"):
             usage_cols = self._table_columns(conn, "CUDA_GPU_MEMORY_USAGE_EVENTS")
-            if {"operationType", "poolType"}.issubset(usage_cols) and "bytes" not in usage_cols:
+            if {"operationType", "poolType"}.issubset(
+                usage_cols
+            ) and "bytes" not in usage_cols:
                 # Compatibility fallback for legacy exports where pool events are in usage table shape.
                 table_name = "CUDA_GPU_MEMORY_USAGE_EVENTS"
         if table_name is None:
@@ -1238,12 +1332,18 @@ class NsysSqliteMetricsProvider(BaseMetricsProvider):
         events: List[MetricEvent] = []
         for row in rows:
             tags = self._enrich_common_tags(conn, row)
-            pool_op = self._row_int(row, "operationType", "memoryPoolOperationType", "poolOperationType")
+            pool_op = self._row_int(
+                row, "operationType", "memoryPoolOperationType", "poolOperationType"
+            )
             pool_type = self._row_int(row, "poolType", "memoryPoolType")
             if pool_op is not None:
-                tags["memory_pool_operation"] = CUDA_MEMPOOL_OPERATION_TYPE_MAP.get(pool_op, str(pool_op))
+                tags["memory_pool_operation"] = CUDA_MEMPOOL_OPERATION_TYPE_MAP.get(
+                    pool_op, str(pool_op)
+                )
             if pool_type is not None:
-                tags["memory_pool_type"] = CUDA_MEMPOOL_TYPE_MAP.get(pool_type, str(pool_type))
+                tags["memory_pool_type"] = CUDA_MEMPOOL_TYPE_MAP.get(
+                    pool_type, str(pool_type)
+                )
 
             self._attach_runtime_api_tag(tags, row)
             node_id = self._get_node_id(row)
@@ -1261,9 +1361,15 @@ class NsysSqliteMetricsProvider(BaseMetricsProvider):
 
             for col, metric_name in (
                 ("minBytesToKeep", "memory.cuda.pool.min_bytes_to_keep"),
-                ("localMemoryPoolReleaseThreshold", "memory.cuda.pool.local_release_threshold_bytes"),
+                (
+                    "localMemoryPoolReleaseThreshold",
+                    "memory.cuda.pool.local_release_threshold_bytes",
+                ),
                 ("localMemoryPoolSize", "memory.cuda.pool.local_size_bytes"),
-                ("localMemoryPoolUtilizedSize", "memory.cuda.pool.local_utilized_bytes"),
+                (
+                    "localMemoryPoolUtilizedSize",
+                    "memory.cuda.pool.local_utilized_bytes",
+                ),
             ):
                 val = self._row_float(row, col)
                 if val is None:
@@ -1351,10 +1457,14 @@ class NsysSqliteMetricsProvider(BaseMetricsProvider):
         for row in rows:
             type_id = self._row_int(row, "typeId")
             type_info = self._resolve_generic_event_type(conn, type_id)
-            type_name = type_info.get("type_name", f"type_{type_id}" if type_id is not None else "unknown")
+            type_name = type_info.get(
+                "type_name", f"type_{type_id}" if type_id is not None else "unknown"
+            )
             source_name = type_info.get("source_name", "")
 
-            payload = self._safe_json_load(row["data"]) if "data" in row.keys() else None
+            payload = (
+                self._safe_json_load(row["data"]) if "data" in row.keys() else None
+            )
             if not payload:
                 continue
             flat = self._flatten_numeric_payload(payload)
@@ -1396,7 +1506,9 @@ class NsysSqliteMetricsProvider(BaseMetricsProvider):
                 )
         return events
 
-    def _read_network_metric_table(self, conn: sqlite3.Connection, table_name: str, metric_prefix: str) -> List[MetricEvent]:
+    def _read_network_metric_table(
+        self, conn: sqlite3.Connection, table_name: str, metric_prefix: str
+    ) -> List[MetricEvent]:
         rows = self._rows_incremental(
             conn,
             table_name,
@@ -1422,7 +1534,9 @@ class NsysSqliteMetricsProvider(BaseMetricsProvider):
             list_id = self._row_int(row, "metricsListId")
             idx = self._row_int(row, "metricsIdx")
             info = self._resolve_network_metric(conn, list_id, idx)
-            metric_name_raw = info.get("name", f"{table_name}_metric_{idx if idx is not None else 'unknown'}")
+            metric_name_raw = info.get(
+                "name", f"{table_name}_metric_{idx if idx is not None else 'unknown'}"
+            )
             metric_name = f"{metric_prefix}.{self._normalize_token(metric_name_raw)}"
             unit = info.get("unit", "") or self._infer_unit_from_name(metric_name_raw)
 
@@ -1463,8 +1577,14 @@ class NsysSqliteMetricsProvider(BaseMetricsProvider):
 
     def _read_network_metrics(self, conn: sqlite3.Connection) -> List[MetricEvent]:
         events: List[MetricEvent] = []
-        events.extend(self._read_network_metric_table(conn, "NET_NIC_METRIC", "comm.nic"))
-        events.extend(self._read_network_metric_table(conn, "NET_IB_SWITCH_METRIC", "comm.ib.switch"))
+        events.extend(
+            self._read_network_metric_table(conn, "NET_NIC_METRIC", "comm.nic")
+        )
+        events.extend(
+            self._read_network_metric_table(
+                conn, "NET_IB_SWITCH_METRIC", "comm.ib.switch"
+            )
+        )
         return events
 
     def _read_pmu_metrics(self, conn: sqlite3.Connection) -> List[MetricEvent]:
@@ -1517,8 +1637,16 @@ class NsysSqliteMetricsProvider(BaseMetricsProvider):
             value = self._row_float(row, "value")
             if value is None:
                 continue
-            event_name = str(row["event_name"] or "").strip() if "event_name" in row.keys() else ""
-            metric_name = f"perf.pmu.{self._normalize_token(event_name)}" if event_name else "perf.pmu.value"
+            event_name = (
+                str(row["event_name"] or "").strip()
+                if "event_name" in row.keys()
+                else ""
+            )
+            metric_name = (
+                f"perf.pmu.{self._normalize_token(event_name)}"
+                if event_name
+                else "perf.pmu.value"
+            )
             tags = dict(self._schema_tags())
             if event_name:
                 tags["pmu_event"] = event_name
@@ -1545,7 +1673,9 @@ class NsysSqliteMetricsProvider(BaseMetricsProvider):
             )
 
             if "start" in row.keys() and "end" in row.keys():
-                dur = self._make_duration_event(now=now, row=row, name="latency.pmu.sample_window", tags=tags)
+                dur = self._make_duration_event(
+                    now=now, row=row, name="latency.pmu.sample_window", tags=tags
+                )
                 if dur is not None:
                     events.append(dur)
         return events
@@ -1624,7 +1754,9 @@ class NsysSqliteMetricsProvider(BaseMetricsProvider):
                         node_id=node_id,
                     )
                 )
-            dur = self._make_duration_event(now=now, row=row, name="latency.cuda.um.gpu_page_fault", tags=tags)
+            dur = self._make_duration_event(
+                now=now, row=row, name="latency.cuda.um.gpu_page_fault", tags=tags
+            )
             if dur is not None:
                 events.append(dur)
         return events
@@ -1638,7 +1770,11 @@ class NsysSqliteMetricsProvider(BaseMetricsProvider):
         for table in tables:
             if table in AUTO_DURATION_SKIP_TABLES:
                 continue
-            if table.startswith("ENUM_") or table.startswith("TARGET_INFO_") or table.startswith("EXPORT_"):
+            if (
+                table.startswith("ENUM_")
+                or table.startswith("TARGET_INFO_")
+                or table.startswith("EXPORT_")
+            ):
                 continue
             cols = self._table_columns(conn, table)
             if not {"start", "end"}.issubset(cols):
@@ -1688,7 +1824,9 @@ class NsysSqliteMetricsProvider(BaseMetricsProvider):
                     latency_name = f"latency.mpi.{table_token}"
                 else:
                     latency_name = f"latency.nsys.{table_token}"
-                evt = self._make_duration_event(now=now, row=row, name=latency_name, tags=tags)
+                evt = self._make_duration_event(
+                    now=now, row=row, name=latency_name, tags=tags
+                )
                 if evt is not None:
                     events.append(evt)
 
@@ -1751,9 +1889,13 @@ class NsysSqliteMetricsProvider(BaseMetricsProvider):
         events: List[MetricEvent] = []
         for row in rows:
             tags = self._enrich_common_tags(conn, row)
-            event_type = _safe_int(row["eventType"]) if "eventType" in row.keys() else None
+            event_type = (
+                _safe_int(row["eventType"]) if "eventType" in row.keys() else None
+            )
             if event_type is not None:
-                tags["nvtx_event_type"] = NVTX_EVENT_TYPE_MAP.get(event_type, str(event_type))
+                tags["nvtx_event_type"] = NVTX_EVENT_TYPE_MAP.get(
+                    event_type, str(event_type)
+                )
             if "domainId" in row.keys() and row["domainId"] is not None:
                 tags["nvtx_domain_id"] = str(row["domainId"])
             if "category" in row.keys() and row["category"] is not None:
@@ -1771,7 +1913,11 @@ class NsysSqliteMetricsProvider(BaseMetricsProvider):
             if not text and "name" in row.keys() and row["name"] is not None:
                 maybe_name = row["name"]
                 sid = _safe_int(maybe_name)
-                text = self._resolve_string(conn, sid) if sid is not None else str(maybe_name)
+                text = (
+                    self._resolve_string(conn, sid)
+                    if sid is not None
+                    else str(maybe_name)
+                )
             if not text and "jsonText" in row.keys() and row["jsonText"] is not None:
                 text = str(row["jsonText"])
             if text:
@@ -1823,9 +1969,15 @@ class NsysSqliteMetricsProvider(BaseMetricsProvider):
         events: List[MetricEvent] = []
         for row in rows:
             tags = self._enrich_common_tags(conn, row)
-            api_name = self._resolve_string(conn, row["nameId"]) if "nameId" in row.keys() else "unknown_osrt_api"
+            api_name = (
+                self._resolve_string(conn, row["nameId"])
+                if "nameId" in row.keys()
+                else "unknown_osrt_api"
+            )
             tags["api"] = api_name
-            evt = self._make_duration_event(now=now, row=row, name="latency.osrt.api", tags=tags)
+            evt = self._make_duration_event(
+                now=now, row=row, name="latency.osrt.api", tags=tags
+            )
             if evt is not None:
                 events.append(evt)
         return events
@@ -1839,7 +1991,9 @@ class NsysSqliteMetricsProvider(BaseMetricsProvider):
             self._load_schema_meta(conn)
             schema = NsightSchema(conn, meta=self._schema_meta)
             tables = list(schema.tables)
-            columns: Dict[str, List[str]] = {table: schema.columns(table) for table in tables}
+            columns: Dict[str, List[str]] = {
+                table: schema.columns(table) for table in tables
+            }
             summary = schema.summary()
             return {
                 "sqlite_path": str(self.sqlite_path),
@@ -1850,10 +2004,18 @@ class NsysSqliteMetricsProvider(BaseMetricsProvider):
                 "schema_meta": dict(self._schema_meta or {}),
                 "canonical_tables": dict(summary.get("canonical_tables", {})),
                 "version_info": {
-                    "exporter_version": getattr(self._version_info, "exporter_version", ""),
-                    "export_schema_version": getattr(self._version_info, "export_schema_version", ""),
-                    "adapter_family": getattr(self._version_info, "adapter_family", "generic"),
-                    "known_version": bool(getattr(self._version_info, "known_version", False)),
+                    "exporter_version": getattr(
+                        self._version_info, "exporter_version", ""
+                    ),
+                    "export_schema_version": getattr(
+                        self._version_info, "export_schema_version", ""
+                    ),
+                    "adapter_family": getattr(
+                        self._version_info, "adapter_family", "generic"
+                    ),
+                    "known_version": bool(
+                        getattr(self._version_info, "known_version", False)
+                    ),
                 },
             }
         finally:
@@ -2137,7 +2299,9 @@ class NsysSqliteMetricsProvider(BaseMetricsProvider):
         try:
             if not self._table_exists(conn, "TARGET_INFO_GPU"):
                 return ""
-            row = conn.execute("SELECT name FROM TARGET_INFO_GPU ORDER BY id ASC LIMIT 1;").fetchone()
+            row = conn.execute(
+                "SELECT name FROM TARGET_INFO_GPU ORDER BY id ASC LIMIT 1;"
+            ).fetchone()
             return str(row["name"] or "").strip() if row else ""
         finally:
             conn.close()

@@ -60,8 +60,8 @@ class QualityIssue:
     detail: str
     # What the analyzer must not conclude while this holds.
     invalidates: Tuple[str, ...] = ()
-    blocks: bool = False          # True => refuse, False => caveat
-    severity: str = "medium"      # info | low | medium | high
+    blocks: bool = False  # True => refuse, False => caveat
+    severity: str = "medium"  # info | low | medium | high
     evidence: Dict[str, Any] = field(default_factory=dict)
     remedy: str = ""
 
@@ -85,7 +85,9 @@ class QualityIssue:
 MIN_STEADY_STATE_ITERATIONS = 3
 
 
-def check_warmup(iteration_count: Optional[int], *, profiled_from_iteration: Optional[int] = None) -> List[QualityIssue]:
+def check_warmup(
+    iteration_count: Optional[int], *, profiled_from_iteration: Optional[int] = None
+) -> List[QualityIssue]:
     """Reject steady-state claims made from too few iterations.
 
     The first iterations carry CUDA context creation, library autotuning and
@@ -96,30 +98,34 @@ def check_warmup(iteration_count: Optional[int], *, profiled_from_iteration: Opt
     if iteration_count is None:
         return issues
     if iteration_count < MIN_STEADY_STATE_ITERATIONS:
-        issues.append(QualityIssue(
-            key="insufficient_iterations",
-            title=f"Only {iteration_count} iteration(s) captured",
-            detail=(
-                f"Steady-state numbers need at least {MIN_STEADY_STATE_ITERATIONS} iterations. "
-                "The first ones include CUDA context init, library autotuning and allocator "
-                "growth, none of which happens again."
-            ),
-            invalidates=("step_time", "throughput", "mfu", "kernel_averages"),
-            blocks=True,
-            severity="high",
-            evidence={"iteration_count": iteration_count},
-            remedy="Profile a window starting around iteration 10 (cudaProfilerStart/Stop or --capture-range).",
-        ))
+        issues.append(
+            QualityIssue(
+                key="insufficient_iterations",
+                title=f"Only {iteration_count} iteration(s) captured",
+                detail=(
+                    f"Steady-state numbers need at least {MIN_STEADY_STATE_ITERATIONS} iterations. "
+                    "The first ones include CUDA context init, library autotuning and allocator "
+                    "growth, none of which happens again."
+                ),
+                invalidates=("step_time", "throughput", "mfu", "kernel_averages"),
+                blocks=True,
+                severity="high",
+                evidence={"iteration_count": iteration_count},
+                remedy="Profile a window starting around iteration 10 (cudaProfilerStart/Stop or --capture-range).",
+            )
+        )
     elif profiled_from_iteration is not None and profiled_from_iteration < 5:
-        issues.append(QualityIssue(
-            key="warmup_included",
-            title=f"Capture starts at iteration {profiled_from_iteration}",
-            detail="Early iterations are not representative of steady state.",
-            invalidates=("step_time", "throughput"),
-            severity="medium",
-            evidence={"profiled_from_iteration": profiled_from_iteration},
-            remedy="Start the capture around iteration 10.",
-        ))
+        issues.append(
+            QualityIssue(
+                key="warmup_included",
+                title=f"Capture starts at iteration {profiled_from_iteration}",
+                detail="Early iterations are not representative of steady state.",
+                invalidates=("step_time", "throughput"),
+                severity="medium",
+                evidence={"profiled_from_iteration": profiled_from_iteration},
+                remedy="Start the capture around iteration 10.",
+            )
+        )
     return issues
 
 
@@ -150,32 +156,39 @@ def check_autotuning(
         config = tuple(launch.get(k) for k in config_keys)
         by_name.setdefault(name, set()).add(config)
 
-    suspects = {name: len(cfgs) for name, cfgs in by_name.items() if len(cfgs) >= _AUTOTUNE_CONFIG_THRESHOLD}
+    suspects = {
+        name: len(cfgs)
+        for name, cfgs in by_name.items()
+        if len(cfgs) >= _AUTOTUNE_CONFIG_THRESHOLD
+    }
     if not suspects:
         return []
 
     worst = max(suspects, key=suspects.get)
-    return [QualityIssue(
-        key="autotuning_in_trace",
-        title=f"{len(suspects)} kernel name(s) ran under many launch configurations",
-        detail=(
-            f"'{worst[:60]}' appears with {suspects[worst]} distinct launch configurations. "
-            "That is the signature of an autotuning sweep: the same name covers genuinely "
-            "different compiled variants, so any average over it describes none of them."
-        ),
-        invalidates=("kernel_averages", "kernel_ranking"),
-        severity="high",
-        evidence={"kernels_with_many_configs": suspects},
-        remedy=(
-            "Profile after autotuning has settled, key kernels on (name, grid, block, "
-            "num_warps) rather than name alone, or check TRITON_PRINT_AUTOTUNING output."
-        ),
-    )]
+    return [
+        QualityIssue(
+            key="autotuning_in_trace",
+            title=f"{len(suspects)} kernel name(s) ran under many launch configurations",
+            detail=(
+                f"'{worst[:60]}' appears with {suspects[worst]} distinct launch configurations. "
+                "That is the signature of an autotuning sweep: the same name covers genuinely "
+                "different compiled variants, so any average over it describes none of them."
+            ),
+            invalidates=("kernel_averages", "kernel_ranking"),
+            severity="high",
+            evidence={"kernels_with_many_configs": suspects},
+            remedy=(
+                "Profile after autotuning has settled, key kernels on (name, grid, block, "
+                "num_warps) rather than name alone, or check TRITON_PRINT_AUTOTUNING output."
+            ),
+        )
+    ]
 
 
 # ---------------------------------------------------------------------------
 # CUDA graphs
 # ---------------------------------------------------------------------------
+
 
 def check_cuda_graphs(
     *,
@@ -194,27 +207,35 @@ def check_cuda_graphs(
     if not graph_launch_count and not graph_kernel_count:
         return []
     share = (graph_kernel_count / total_kernel_count) if total_kernel_count else None
-    return [QualityIssue(
-        key="cuda_graph_attribution",
-        title="CUDA graph replay detected: per-kernel host attribution unavailable",
-        detail=(
-            f"{graph_kernel_count} kernel(s) executed inside CUDA graphs"
-            + (f" ({share * 100:.0f}% of all kernels)" if share else "")
-            + f" from {graph_launch_count} graph launch(es). Every kernel in a graph shares the "
-            "single cudaGraphLaunch correlation id, so launch overhead and launch delay cannot "
-            "be attributed per kernel. This is the point of graphs, not a defect."
-        ),
-        invalidates=("per_kernel_launch_overhead", "per_kernel_launch_delay", "launch_gap_attribution"),
-        blocks=False,
-        severity="medium",
-        evidence={"graph_launch_count": graph_launch_count,
-                  "graph_kernel_count": graph_kernel_count,
-                  "graph_kernel_share": share},
-        remedy=(
-            "Attribute by (graph id, node id) instead of by launching call. Collect with "
-            "--cuda-graph-trace=node to see individual nodes, accepting the extra overhead."
-        ),
-    )]
+    return [
+        QualityIssue(
+            key="cuda_graph_attribution",
+            title="CUDA graph replay detected: per-kernel host attribution unavailable",
+            detail=(
+                f"{graph_kernel_count} kernel(s) executed inside CUDA graphs"
+                + (f" ({share * 100:.0f}% of all kernels)" if share else "")
+                + f" from {graph_launch_count} graph launch(es). Every kernel in a graph shares the "
+                "single cudaGraphLaunch correlation id, so launch overhead and launch delay cannot "
+                "be attributed per kernel. This is the point of graphs, not a defect."
+            ),
+            invalidates=(
+                "per_kernel_launch_overhead",
+                "per_kernel_launch_delay",
+                "launch_gap_attribution",
+            ),
+            blocks=False,
+            severity="medium",
+            evidence={
+                "graph_launch_count": graph_launch_count,
+                "graph_kernel_count": graph_kernel_count,
+                "graph_kernel_share": share,
+            },
+            remedy=(
+                "Attribute by (graph id, node id) instead of by launching call. Collect with "
+                "--cuda-graph-trace=node to see individual nodes, accepting the extra overhead."
+            ),
+        )
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -235,20 +256,22 @@ def check_kernel_name_uniqueness(kernel_names: Iterable[str]) -> List[QualityIss
     bare = [n for n in names if _BARE_TRITON.match(n.strip())]
     if len(bare) <= 1:
         return []
-    return [QualityIssue(
-        key="non_unique_kernel_names",
-        title=f"{len(bare)} kernels all named 'triton_'",
-        detail=(
-            "TorchInductor was built with TORCHINDUCTOR_UNIQUE_KERNEL_NAMES=0, so every "
-            "generated kernel carries the same name. Any breakdown keyed on kernel name is "
-            "merging unrelated fused regions."
-        ),
-        invalidates=("kernel_ranking", "kernel_averages", "name_based_attribution"),
-        blocks=True,
-        severity="high",
-        evidence={"bare_triton_kernels": len(bare)},
-        remedy="Re-profile with TORCHINDUCTOR_UNIQUE_KERNEL_NAMES=1.",
-    )]
+    return [
+        QualityIssue(
+            key="non_unique_kernel_names",
+            title=f"{len(bare)} kernels all named 'triton_'",
+            detail=(
+                "TorchInductor was built with TORCHINDUCTOR_UNIQUE_KERNEL_NAMES=0, so every "
+                "generated kernel carries the same name. Any breakdown keyed on kernel name is "
+                "merging unrelated fused regions."
+            ),
+            invalidates=("kernel_ranking", "kernel_averages", "name_based_attribution"),
+            blocks=True,
+            severity="high",
+            evidence={"bare_triton_kernels": len(bare)},
+            remedy="Re-profile with TORCHINDUCTOR_UNIQUE_KERNEL_NAMES=1.",
+        )
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -284,38 +307,46 @@ def check_rank_completeness(
         return []
     ranks = sorted({r for r in (_rank_of(p) for p in report_paths) if r is not None})
     if not ranks:
-        return [QualityIssue(
-            key="rank_ids_unrecoverable",
-            title="Could not identify rank ids from the report filenames",
-            detail=(
-                f"{len(report_paths)} report(s) supplied but none carries a recognisable rank "
-                "id. Per-rank conclusions cannot be labelled reliably."
-            ),
-            invalidates=("straggler_detection", "per_rank_comparison"),
-            severity="medium",
-            evidence={"report_count": len(report_paths)},
-            remedy="Name reports with the rank, e.g. -o report_%q{SLURM_PROCID}.",
-        )]
+        return [
+            QualityIssue(
+                key="rank_ids_unrecoverable",
+                title="Could not identify rank ids from the report filenames",
+                detail=(
+                    f"{len(report_paths)} report(s) supplied but none carries a recognisable rank "
+                    "id. Per-rank conclusions cannot be labelled reliably."
+                ),
+                invalidates=("straggler_detection", "per_rank_comparison"),
+                severity="medium",
+                evidence={"report_count": len(report_paths)},
+                remedy="Name reports with the rank, e.g. -o report_%q{SLURM_PROCID}.",
+            )
+        ]
 
     expected = expected_world_size or (max(ranks) + 1)
     missing = [r for r in range(expected) if r not in ranks]
     if not missing:
         return []
-    return [QualityIssue(
-        key="incomplete_rank_set",
-        title=f"{len(missing)} of {expected} ranks missing from the trace set",
-        detail=(
-            f"Ranks present: {len(ranks)}; missing: {missing[:12]}"
-            + ("..." if len(missing) > 12 else "")
-            + ". Aggregates over an incomplete rank set are biased, and a rank that failed to "
-            "produce a report is more likely than average to be the one that was slow."
-        ),
-        invalidates=("straggler_detection", "per_rank_aggregate", "comm_analysis"),
-        blocks=True,
-        severity="high",
-        evidence={"ranks_present": ranks, "ranks_missing": missing, "expected_world_size": expected},
-        remedy="Collect every rank, or state explicitly that the analysis covers a subset.",
-    )]
+    return [
+        QualityIssue(
+            key="incomplete_rank_set",
+            title=f"{len(missing)} of {expected} ranks missing from the trace set",
+            detail=(
+                f"Ranks present: {len(ranks)}; missing: {missing[:12]}"
+                + ("..." if len(missing) > 12 else "")
+                + ". Aggregates over an incomplete rank set are biased, and a rank that failed to "
+                "produce a report is more likely than average to be the one that was slow."
+            ),
+            invalidates=("straggler_detection", "per_rank_aggregate", "comm_analysis"),
+            blocks=True,
+            severity="high",
+            evidence={
+                "ranks_present": ranks,
+                "ranks_missing": missing,
+                "expected_world_size": expected,
+            },
+            remedy="Collect every rank, or state explicitly that the analysis covers a subset.",
+        )
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -324,14 +355,26 @@ def check_rank_completeness(
 
 # nsys surfaces these in Diagnostics Summary rather than on stdout.
 _DIAGNOSTIC_PATTERNS: Tuple[Tuple[str, str, str], ...] = (
-    ("buffer_overflow", r"buffer overflow",
-     "GPU-metrics sampler buffer overflowed: timeline gaps are lost samples, not idle GPU."),
-    ("trace_size_limit", r"size limit on recording trace events",
-     "The trace hit its event-size limit, so events after that point are missing."),
-    ("cupti_buffer", r"couldn'?t allocate cupti buf",
-     "CUPTI could not allocate buffers; some CUDA events are missing."),
-    ("event_order", r"wrong event order",
-     "Event ordering broke; a large fraction of CUDA events may be absent."),
+    (
+        "buffer_overflow",
+        r"buffer overflow",
+        "GPU-metrics sampler buffer overflowed: timeline gaps are lost samples, not idle GPU.",
+    ),
+    (
+        "trace_size_limit",
+        r"size limit on recording trace events",
+        "The trace hit its event-size limit, so events after that point are missing.",
+    ),
+    (
+        "cupti_buffer",
+        r"couldn'?t allocate cupti buf",
+        "CUPTI could not allocate buffers; some CUDA events are missing.",
+    ),
+    (
+        "event_order",
+        r"wrong event order",
+        "Event ordering broke; a large fraction of CUDA events may be absent.",
+    ),
 )
 
 
@@ -351,35 +394,39 @@ def check_gpu_metric_gaps(
 
     for key, pattern, detail in _DIAGNOSTIC_PATTERNS:
         if re.search(pattern, blob):
-            issues.append(QualityIssue(
-                key=f"nsys_{key}",
-                title=f"nsys reported a data-loss condition: {key.replace('_', ' ')}",
-                detail=detail,
-                invalidates=("idle_analysis", "kernel_totals", "gap_attribution"),
-                blocks=(key in ("trace_size_limit", "event_order")),
-                severity="high",
-                evidence={"matched": key},
-                remedy=(
-                    "Lower --gpu-metrics-frequency, shorten the capture, or reduce traced "
-                    "features, then re-collect."
-                ),
-            ))
+            issues.append(
+                QualityIssue(
+                    key=f"nsys_{key}",
+                    title=f"nsys reported a data-loss condition: {key.replace('_', ' ')}",
+                    detail=detail,
+                    invalidates=("idle_analysis", "kernel_totals", "gap_attribution"),
+                    blocks=(key in ("trace_size_limit", "event_order")),
+                    severity="high",
+                    evidence={"matched": key},
+                    remedy=(
+                        "Lower --gpu-metrics-frequency, shorten the capture, or reduce traced "
+                        "features, then re-collect."
+                    ),
+                )
+            )
 
     if missing_data_ranges > 0:
-        issues.append(QualityIssue(
-            key="gpu_metrics_missing_data",
-            title=f"{missing_data_ranges} 'Missing Data' range(s) in the GPU metrics",
-            detail=(
-                "These are sampler-buffer exhaustion, not GPU idleness. This blocks rather than "
-                "caveats because reading them as idle time inverts the conclusion: the analyzer "
-                "would report a starved GPU that was in fact fully busy."
-            ),
-            invalidates=("idle_analysis", "gpu_utilization", "host_bound_verdict"),
-            blocks=True,
-            severity="high",
-            evidence={"missing_data_ranges": missing_data_ranges},
-            remedy="Reduce --gpu-metrics-frequency (default 10000 Hz) and re-collect.",
-        ))
+        issues.append(
+            QualityIssue(
+                key="gpu_metrics_missing_data",
+                title=f"{missing_data_ranges} 'Missing Data' range(s) in the GPU metrics",
+                detail=(
+                    "These are sampler-buffer exhaustion, not GPU idleness. This blocks rather than "
+                    "caveats because reading them as idle time inverts the conclusion: the analyzer "
+                    "would report a starved GPU that was in fact fully busy."
+                ),
+                invalidates=("idle_analysis", "gpu_utilization", "host_bound_verdict"),
+                blocks=True,
+                severity="high",
+                evidence={"missing_data_ranges": missing_data_ranges},
+                remedy="Reduce --gpu-metrics-frequency (default 10000 Hz) and re-collect.",
+            )
+        )
     return issues
 
 
@@ -400,23 +447,30 @@ def check_profiler_overhead(
     share = overhead_ns / wall_ns
     if share < threshold:
         return []
-    return [QualityIssue(
-        key="profiler_overhead_significant",
-        title=f"Profiler overhead is {share * 100:.1f}% of the window",
-        detail=(
-            "CUPTI buffer flushes and instrumentation appear as GPU idle time. Subtract the "
-            "overhead intervals before attributing idle time to the workload."
-        ),
-        invalidates=("idle_analysis", "gap_attribution"),
-        severity="medium",
-        evidence={"overhead_ns": overhead_ns, "wall_ns": wall_ns, "overhead_share": share},
-        remedy="Trace fewer features, or raise --cuda-flush-interval to batch flushes.",
-    )]
+    return [
+        QualityIssue(
+            key="profiler_overhead_significant",
+            title=f"Profiler overhead is {share * 100:.1f}% of the window",
+            detail=(
+                "CUPTI buffer flushes and instrumentation appear as GPU idle time. Subtract the "
+                "overhead intervals before attributing idle time to the workload."
+            ),
+            invalidates=("idle_analysis", "gap_attribution"),
+            severity="medium",
+            evidence={
+                "overhead_ns": overhead_ns,
+                "wall_ns": wall_ns,
+                "overhead_share": share,
+            },
+            remedy="Trace fewer features, or raise --cuda-flush-interval to batch flushes.",
+        )
+    ]
 
 
 # ---------------------------------------------------------------------------
 # Aggregate
 # ---------------------------------------------------------------------------
+
 
 def assess_trace_quality(
     *,
@@ -440,7 +494,9 @@ def assess_trace_quality(
     refuse outright. Anything else is safe to report with the caveats attached.
     """
     issues: List[QualityIssue] = []
-    issues += check_warmup(iteration_count, profiled_from_iteration=profiled_from_iteration)
+    issues += check_warmup(
+        iteration_count, profiled_from_iteration=profiled_from_iteration
+    )
     issues += check_autotuning(launches)
     issues += check_kernel_name_uniqueness(kernel_names)
     issues += check_cuda_graphs(
@@ -448,8 +504,12 @@ def assess_trace_quality(
         graph_kernel_count=graph_kernel_count,
         total_kernel_count=total_kernel_count,
     )
-    issues += check_rank_completeness(report_paths, expected_world_size=expected_world_size)
-    issues += check_gpu_metric_gaps(diagnostic_messages, missing_data_ranges=missing_data_ranges)
+    issues += check_rank_completeness(
+        report_paths, expected_world_size=expected_world_size
+    )
+    issues += check_gpu_metric_gaps(
+        diagnostic_messages, missing_data_ranges=missing_data_ranges
+    )
     issues += check_profiler_overhead(overhead_ns=overhead_ns, wall_ns=wall_ns)
 
     blocked: set = set()
@@ -505,32 +565,36 @@ def check_clock_alignment(
         f"error is 1-10 ms. Claims finer than ~{UTC_ALIGNMENT_FLOOR_MS:.0f} ms across "
         "ranks are indistinguishable from clock skew."
     )
-    blocks = claim_magnitude_ms is not None and claim_magnitude_ms < UTC_ALIGNMENT_FLOOR_MS
+    blocks = (
+        claim_magnitude_ms is not None and claim_magnitude_ms < UTC_ALIGNMENT_FLOOR_MS
+    )
     if blocks:
         detail += (
             f" The pending claim is {claim_magnitude_ms:.2f} ms, which is below that floor: "
             "it is noise, not an observation."
         )
-    return [QualityIssue(
-        key="cross_node_clock_skew",
-        title="Cross-node timestamps are NTP-aligned, not synchronised",
-        detail=detail,
-        invalidates=("straggler_rank", "arrival_skew", "cross_rank_latency"),
-        blocks=blocks,
-        severity="high" if blocks else "medium",
-        evidence={
-            "alignment_source": source or "unknown",
-            "report_count": report_count,
-            "floor_ms": UTC_ALIGNMENT_FLOOR_MS,
-            "claim_ms": claim_magnitude_ms,
-        },
-        remedy=(
-            "Anchor on a collective that is simultaneous by construction (match one "
-            "AllReduce instance across ranks), derive per-rank offsets, and apply them "
-            "with 'nsys export --ts-shift'. Otherwise keep conclusions within a rank. "
-            "PTP gives sub-microsecond alignment; NTP does not."
-        ),
-    )]
+    return [
+        QualityIssue(
+            key="cross_node_clock_skew",
+            title="Cross-node timestamps are NTP-aligned, not synchronised",
+            detail=detail,
+            invalidates=("straggler_rank", "arrival_skew", "cross_rank_latency"),
+            blocks=blocks,
+            severity="high" if blocks else "medium",
+            evidence={
+                "alignment_source": source or "unknown",
+                "report_count": report_count,
+                "floor_ms": UTC_ALIGNMENT_FLOOR_MS,
+                "claim_ms": claim_magnitude_ms,
+            },
+            remedy=(
+                "Anchor on a collective that is simultaneous by construction (match one "
+                "AllReduce instance across ranks), derive per-rank offsets, and apply them "
+                "with 'nsys export --ts-shift'. Otherwise keep conclusions within a rank. "
+                "PTP gives sub-microsecond alignment; NTP does not."
+            ),
+        )
+    ]
 
 
 def check_nvlink_utilization_validity(
@@ -551,24 +615,26 @@ def check_nvlink_utilization_validity(
     moved_bytes = nvlink_bytes is not None and nvlink_bytes > 0
     if links_active is True or moved_bytes:
         return []
-    return [QualityIssue(
-        key="nvlink_util_ambiguous",
-        title="NVLink reads ~100% but may be inactive rather than saturated",
-        detail=(
-            f"NVLink utilisation is {nvlink_util_pct:.1f}%, but inactive links report as "
-            "fully utilised in Nsight Systems GPU metrics. Without a nonzero byte count "
-            "or a topology check, saturated and absent are indistinguishable here."
-        ),
-        invalidates=("nvlink_saturated", "communication_bound"),
-        blocks=True,
-        severity="high",
-        evidence={"nvlink_util_pct": nvlink_util_pct, "nvlink_bytes": nvlink_bytes},
-        remedy=(
-            "Confirm the links carry traffic before concluding saturation: check "
-            "'nvidia-smi topo -p2p p' or 'nvidia-smi nvlink -s', or read the nvlink_sum "
-            "recipe, which reports bytes rather than a percentage."
-        ),
-    )]
+    return [
+        QualityIssue(
+            key="nvlink_util_ambiguous",
+            title="NVLink reads ~100% but may be inactive rather than saturated",
+            detail=(
+                f"NVLink utilisation is {nvlink_util_pct:.1f}%, but inactive links report as "
+                "fully utilised in Nsight Systems GPU metrics. Without a nonzero byte count "
+                "or a topology check, saturated and absent are indistinguishable here."
+            ),
+            invalidates=("nvlink_saturated", "communication_bound"),
+            blocks=True,
+            severity="high",
+            evidence={"nvlink_util_pct": nvlink_util_pct, "nvlink_bytes": nvlink_bytes},
+            remedy=(
+                "Confirm the links carry traffic before concluding saturation: check "
+                "'nvidia-smi topo -p2p p' or 'nvidia-smi nvlink -s', or read the nvlink_sum "
+                "recipe, which reports bytes rather than a percentage."
+            ),
+        )
+    ]
 
 
 def check_diagnostic_events(
@@ -585,7 +651,8 @@ def check_diagnostic_events(
     """
     issues: List[QualityIssue] = []
     serious = [
-        row for row in (events or ())
+        row
+        for row in (events or ())
         if isinstance(row, Mapping)
         and str(row.get("severity", "")).lower() in ("warning", "error", "fatal")
     ]
@@ -593,47 +660,57 @@ def check_diagnostic_events(
     # The literal strings the collector emits when it drops data.
     text = str(log_text or "")
     lost_markers = [
-        marker for marker in (
+        marker
+        for marker in (
             "were lost",
             "Reached the size limit on recording trace events",
             "throttled the collection of sampling data",
             "Buffer overflow",
-        ) if marker in text
+        )
+        if marker in text
     ]
 
     if serious:
-        issues.append(QualityIssue(
-            key="diagnostic_events",
-            title=f"Report carries {len(serious)} collection diagnostic(s) at warning or above",
-            detail=(
-                "The profiler recorded problems during collection. Timeline data may be "
-                "incomplete in ways that are not visually obvious: "
-                + "; ".join(str(r.get("text") or r.get("message") or "?")[:90] for r in serious[:3])
-            ),
-            invalidates=("any_timeline_conclusion",),
-            blocks=True,
-            severity="high",
-            evidence={"count": len(serious)},
-            remedy="Resolve the diagnostics and re-collect before drawing conclusions.",
-        ))
+        issues.append(
+            QualityIssue(
+                key="diagnostic_events",
+                title=f"Report carries {len(serious)} collection diagnostic(s) at warning or above",
+                detail=(
+                    "The profiler recorded problems during collection. Timeline data may be "
+                    "incomplete in ways that are not visually obvious: "
+                    + "; ".join(
+                        str(r.get("text") or r.get("message") or "?")[:90]
+                        for r in serious[:3]
+                    )
+                ),
+                invalidates=("any_timeline_conclusion",),
+                blocks=True,
+                severity="high",
+                evidence={"count": len(serious)},
+                remedy="Resolve the diagnostics and re-collect before drawing conclusions.",
+            )
+        )
 
     if lost_markers:
-        issues.append(QualityIssue(
-            key="dropped_events",
-            title="Collector reported dropped events",
-            detail=(
-                "The collection log contains " + ", ".join(repr(m) for m in lost_markers)
-                + ". Any count, sum, or rate derived from this trace is a lower bound."
-            ),
-            invalidates=("kernel_counts", "api_counts", "utilization"),
-            blocks=False,
-            severity="high",
-            evidence={"markers": lost_markers},
-            remedy=(
-                "Reduce the sampling rate, narrow --trace, or shorten the capture window. "
-                "Captures beyond ~5 minutes are not officially supported."
-            ),
-        ))
+        issues.append(
+            QualityIssue(
+                key="dropped_events",
+                title="Collector reported dropped events",
+                detail=(
+                    "The collection log contains "
+                    + ", ".join(repr(m) for m in lost_markers)
+                    + ". Any count, sum, or rate derived from this trace is a lower bound."
+                ),
+                invalidates=("kernel_counts", "api_counts", "utilization"),
+                blocks=False,
+                severity="high",
+                evidence={"markers": lost_markers},
+                remedy=(
+                    "Reduce the sampling rate, narrow --trace, or shorten the capture window. "
+                    "Captures beyond ~5 minutes are not officially supported."
+                ),
+            )
+        )
     return issues
 
 
@@ -677,84 +754,103 @@ def check_multi_tenancy(
         # performance of individual clients" under MPS. Anything per-client is
         # therefore not a weak conclusion, it is an unavailable one.
         primary_only = mps_primary_client is False
-        issues.append(QualityIssue(
-            key="mps_shared_measurement",
-            title="Kernel ran under MPS; per-client attribution is not available",
-            detail=(
-                "Nsight Compute profiles how the GPU is utilised across all MPS clients "
-                "concurrently and does not isolate individual clients. Measured throughput "
-                "includes work from every co-resident client."
-                + (" Instruction-level source and warp sampling are attributed to the "
-                   "primary client only, and this kernel is not it."
-                   if primary_only else "")
-            ),
-            invalidates=("per_client_attribution", "kernel_throughput", "sol_classification"),
-            blocks=True,
-            severity="high",
-            evidence={"launch__uses_mps": view.get("launch__uses_mps")},
-            remedy=(
-                "Profile the client alone, or accept whole-GPU attribution. If MPS must "
-                "stay on, use --replay-mode range (kernel mode lets each MPS client "
-                "contribute only a single launch) and --primary-client to narrow the window."
-            ),
-        ))
+        issues.append(
+            QualityIssue(
+                key="mps_shared_measurement",
+                title="Kernel ran under MPS; per-client attribution is not available",
+                detail=(
+                    "Nsight Compute profiles how the GPU is utilised across all MPS clients "
+                    "concurrently and does not isolate individual clients. Measured throughput "
+                    "includes work from every co-resident client."
+                    + (
+                        " Instruction-level source and warp sampling are attributed to the "
+                        "primary client only, and this kernel is not it."
+                        if primary_only
+                        else ""
+                    )
+                ),
+                invalidates=(
+                    "per_client_attribution",
+                    "kernel_throughput",
+                    "sol_classification",
+                ),
+                blocks=True,
+                severity="high",
+                evidence={"launch__uses_mps": view.get("launch__uses_mps")},
+                remedy=(
+                    "Profile the client alone, or accept whole-GPU attribution. If MPS must "
+                    "stay on, use --replay-mode range (kernel mode lets each MPS client "
+                    "contribute only a single launch) and --primary-client to narrow the window."
+                ),
+            )
+        )
 
     if _flag("launch__uses_vgpu"):
-        issues.append(QualityIssue(
-            key="vgpu_counters_shared",
-            title="Kernel ran on a vGPU; counters may include other VMs",
-            detail=(
-                "Enabling profiling for a VM grants access to the GPU's global performance "
-                "counters, which may include activity from other VMs on the same physical "
-                "GPU. That VM can also lock clocks for everyone else."
-            ),
-            invalidates=("kernel_throughput", "dram_bandwidth", "sol_classification"),
-            blocks=False,
-            severity="high",
-            evidence={"launch__uses_vgpu": view.get("launch__uses_vgpu")},
-            remedy="Confirm exclusive use of the physical GPU before trusting counter-derived numbers.",
-        ))
+        issues.append(
+            QualityIssue(
+                key="vgpu_counters_shared",
+                title="Kernel ran on a vGPU; counters may include other VMs",
+                detail=(
+                    "Enabling profiling for a VM grants access to the GPU's global performance "
+                    "counters, which may include activity from other VMs on the same physical "
+                    "GPU. That VM can also lock clocks for everyone else."
+                ),
+                invalidates=(
+                    "kernel_throughput",
+                    "dram_bandwidth",
+                    "sol_classification",
+                ),
+                blocks=False,
+                severity="high",
+                evidence={"launch__uses_vgpu": view.get("launch__uses_vgpu")},
+                remedy="Confirm exclusive use of the physical GPU before trusting counter-derived numbers.",
+            )
+        )
 
     if _flag("launch__uses_nvlink_centric_scheduling"):
         # A documented reason a good kernel measures badly, in the same family as
         # green contexts: the denominator is the whole device but the kernel was
         # never given the whole device.
-        issues.append(QualityIssue(
-            key="nvlink_centric_scheduling",
-            title="NVLink-centric scheduling was active; SM utilisation reads low by design",
-            detail=(
-                "Some SM resources are not available to a workload under NVLink-centric "
-                "scheduling, which NVIDIA documents as producing lower-than-expected "
-                "measured utilisation. A low SM SOL here is not necessarily a defect."
-            ),
-            invalidates=("sm_utilization_verdict", "occupancy_verdict"),
-            blocks=False,
-            severity="medium",
-            evidence={"launch__uses_nvlink_centric_scheduling": 1},
-            remedy="Discount the SM SOL accordingly, or re-measure without NVLink-centric scheduling.",
-        ))
+        issues.append(
+            QualityIssue(
+                key="nvlink_centric_scheduling",
+                title="NVLink-centric scheduling was active; SM utilisation reads low by design",
+                detail=(
+                    "Some SM resources are not available to a workload under NVLink-centric "
+                    "scheduling, which NVIDIA documents as producing lower-than-expected "
+                    "measured utilisation. A low SM SOL here is not necessarily a defect."
+                ),
+                invalidates=("sm_utilization_verdict", "occupancy_verdict"),
+                blocks=False,
+                severity="medium",
+                evidence={"launch__uses_nvlink_centric_scheduling": 1},
+                remedy="Discount the SM SOL accordingly, or re-measure without NVLink-centric scheduling.",
+            )
+        )
 
     log = str(collection_log or "")
     if MIG_SHARED_UNIT_ERROR in log or "MIG instance" in log:
-        issues.append(QualityIssue(
-            key="mig_shared_units",
-            title="MIG instance shares GPU units; some metrics could not be collected",
-            detail=(
-                "Profiling on a shared Compute Instance cannot read units owned by other "
-                "MIG instances. Metrics from exclusively-owned units are still valid, so "
-                "this is a partial collection rather than a failed one - but any absent "
-                "metric here means 'not permitted', not 'zero'."
-            ),
-            invalidates=("dram_bandwidth", "l2_metrics"),
-            blocks=False,
-            severity="medium",
-            evidence={"marker": MIG_SHARED_UNIT_ERROR},
-            remedy=(
-                "Use an isolated Compute Instance for full coverage. Note also that ncu "
-                "cannot set clocks on any Compute Instance: pass --clock-control none and "
-                "lock externally with 'nvidia-smi --lock-gpu-clocks=tdp,tdp'."
-            ),
-        ))
+        issues.append(
+            QualityIssue(
+                key="mig_shared_units",
+                title="MIG instance shares GPU units; some metrics could not be collected",
+                detail=(
+                    "Profiling on a shared Compute Instance cannot read units owned by other "
+                    "MIG instances. Metrics from exclusively-owned units are still valid, so "
+                    "this is a partial collection rather than a failed one - but any absent "
+                    "metric here means 'not permitted', not 'zero'."
+                ),
+                invalidates=("dram_bandwidth", "l2_metrics"),
+                blocks=False,
+                severity="medium",
+                evidence={"marker": MIG_SHARED_UNIT_ERROR},
+                remedy=(
+                    "Use an isolated Compute Instance for full coverage. Note also that ncu "
+                    "cannot set clocks on any Compute Instance: pass --clock-control none and "
+                    "lock externally with 'nvidia-smi --lock-gpu-clocks=tdp,tdp'."
+                ),
+            )
+        )
     return issues
 
 
@@ -806,59 +902,64 @@ def check_dataloader_attribution(
     assigned a default likelihood.
     """
     names = [str(n) for n in (thread_names or ())]
-    have_worker_threads = any(
-        n.startswith(DATALOADER_THREAD_PREFIXES) for n in names
-    )
+    have_worker_threads = any(n.startswith(DATALOADER_THREAD_PREFIXES) for n in names)
 
     if not have_worker_threads:
         if gpu_idle_ms and gpu_idle_ms > 0:
-            return [QualityIssue(
-                key="dataloader_unattributable",
-                title="GPU idle time cannot be attributed to the dataloader",
+            return [
+                QualityIssue(
+                    key="dataloader_unattributable",
+                    title="GPU idle time cannot be attributed to the dataloader",
+                    detail=(
+                        "No PyTorch DataLoader worker threads were found in the trace, so "
+                        "worker-side blocking is unmeasured. Attributing idle time to input "
+                        "pipeline here would be a guess."
+                    ),
+                    invalidates=("dataloader_bound",),
+                    blocks=True,
+                    severity="medium",
+                    evidence={"gpu_idle_ms": gpu_idle_ms},
+                    remedy=(
+                        "Collect with --trace=osrt so worker threads appear, then join "
+                        "ThreadNames.value LIKE 'pt_data_%' to OSRT_API by globalTid. "
+                        "torch.profiler cannot see into worker processes; nsys can."
+                    ),
+                )
+            ]
+        return []
+
+    if (
+        gpu_idle_ms
+        and dataloader_blocked_ms is not None
+        and gpu_idle_ms > 0
+        and dataloader_blocked_ms < 0.25 * gpu_idle_ms
+    ):
+        return [
+            QualityIssue(
+                key="dataloader_not_the_cause",
+                title="Dataloader threads are present but are not explaining the idle time",
                 detail=(
-                    "No PyTorch DataLoader worker threads were found in the trace, so "
-                    "worker-side blocking is unmeasured. Attributing idle time to input "
-                    "pipeline here would be a guess."
+                    f"Worker threads blocked for {dataloader_blocked_ms:.0f} ms against "
+                    f"{gpu_idle_ms:.0f} ms of GPU idle. The input pipeline accounts for a "
+                    "minority of the gap; look elsewhere."
                 ),
                 invalidates=("dataloader_bound",),
                 blocks=True,
                 severity="medium",
-                evidence={"gpu_idle_ms": gpu_idle_ms},
-                remedy=(
-                    "Collect with --trace=osrt so worker threads appear, then join "
-                    "ThreadNames.value LIKE 'pt_data_%' to OSRT_API by globalTid. "
-                    "torch.profiler cannot see into worker processes; nsys can."
-                ),
-            )]
-        return []
-
-    if (
-        gpu_idle_ms and dataloader_blocked_ms is not None
-        and gpu_idle_ms > 0 and dataloader_blocked_ms < 0.25 * gpu_idle_ms
-    ):
-        return [QualityIssue(
-            key="dataloader_not_the_cause",
-            title="Dataloader threads are present but are not explaining the idle time",
-            detail=(
-                f"Worker threads blocked for {dataloader_blocked_ms:.0f} ms against "
-                f"{gpu_idle_ms:.0f} ms of GPU idle. The input pipeline accounts for a "
-                "minority of the gap; look elsewhere."
-            ),
-            invalidates=("dataloader_bound",),
-            blocks=True,
-            severity="medium",
-            evidence={
-                "gpu_idle_ms": gpu_idle_ms,
-                "dataloader_blocked_ms": dataloader_blocked_ms,
-            },
-            remedy="Check host-side Python work, blocking syncs, and launch overhead instead.",
-        )]
+                evidence={
+                    "gpu_idle_ms": gpu_idle_ms,
+                    "dataloader_blocked_ms": dataloader_blocked_ms,
+                },
+                remedy="Check host-side Python work, blocking syncs, and launch overhead instead.",
+            )
+        ]
     return []
 
 
 # ---------------------------------------------------------------------------
 # Kernel grouping and derived-metric invariants
 # ---------------------------------------------------------------------------
+
 
 def group_kernels_by_shape(
     launches: Iterable[Mapping[str, Any]],
@@ -903,13 +1004,15 @@ def group_kernels_by_shape(
     for key, values in groups.items():
         values.sort()
         n = len(values)
-        median = values[n // 2] if n % 2 else 0.5 * (values[n // 2 - 1] + values[n // 2])
+        median = (
+            values[n // 2] if n % 2 else 0.5 * (values[n // 2 - 1] + values[n // 2])
+        )
         mean = sum(values) / n
         # Coefficient of variation over ~20%, or a max more than 3x the median,
         # means the group is not one population - reporting a single number for
         # it would be an average over unlike things.
         var = sum((v - mean) ** 2 for v in values) / n
-        cv = (var ** 0.5 / mean) if mean else 0.0
+        cv = (var**0.5 / mean) if mean else 0.0
         dispersed = n >= 3 and (cv > 0.20 or (median and values[-1] > 3 * median))
         summary = {
             "kernel": key[0][:120],
@@ -937,12 +1040,14 @@ def group_kernels_by_shape(
         "note": (
             f"{len(groups)} (name, shape) groups across {distinct_names} distinct names. "
             "Grouping by name alone would have merged them."
-            if len(groups) > distinct_names else ""
+            if len(groups) > distinct_names
+            else ""
         ),
         "warning": (
             f"{len(non_stationary)} group(s) are too dispersed to summarise with a single "
             "number; use the median with p10/p90, or treat min as the achievable figure."
-            if non_stationary else ""
+            if non_stationary
+            else ""
         ),
     }
 
@@ -968,81 +1073,91 @@ def check_derived_metric_invariants(
 
     for label, value in (("MFU", mfu), ("HFU", hfu), ("efficiency", efficiency_pct)):
         if value is not None and value > 100.0:
-            issues.append(QualityIssue(
-                key=f"{label.lower()}_above_peak",
-                title=f"{label} exceeds 100% of peak",
-                detail=(
-                    f"{label} computed as {value:.1f}%, which the hardware cannot do. This is a "
-                    "denominator or FLOP-model error, not a result: check for a sparsity-inflated "
-                    "peak, the wrong dtype's peak, or an FMA counted as one FLOP instead of two."
-                ),
-                invalidates=(label.lower(), "throughput_comparison"),
-                blocks=True,
-                severity="high",
-                evidence={label.lower(): value, "dtype": dtype},
-                remedy="Recompute against the dense peak for the dtype the kernel actually ran.",
-            ))
+            issues.append(
+                QualityIssue(
+                    key=f"{label.lower()}_above_peak",
+                    title=f"{label} exceeds 100% of peak",
+                    detail=(
+                        f"{label} computed as {value:.1f}%, which the hardware cannot do. This is a "
+                        "denominator or FLOP-model error, not a result: check for a sparsity-inflated "
+                        "peak, the wrong dtype's peak, or an FMA counted as one FLOP instead of two."
+                    ),
+                    invalidates=(label.lower(), "throughput_comparison"),
+                    blocks=True,
+                    severity="high",
+                    evidence={label.lower(): value, "dtype": dtype},
+                    remedy="Recompute against the dense peak for the dtype the kernel actually ran.",
+                )
+            )
 
     if mfu is not None and hfu is not None and hfu < mfu - 1e-6:
-        issues.append(QualityIssue(
-            key="hfu_below_mfu",
-            title="HFU is below MFU, which is impossible",
-            detail=(
-                f"HFU {hfu:.1f}% < MFU {mfu:.1f}%. Hardware FLOPs include every operation the "
-                "implementation performed, model FLOPs only those the model requires, so HFU is "
-                "always at least MFU. The two are being computed from different denominators."
-            ),
-            invalidates=("mfu", "hfu"),
-            blocks=True,
-            severity="high",
-            evidence={"mfu": mfu, "hfu": hfu},
-            remedy="Use one peak value and one FLOP convention for both.",
-        ))
+        issues.append(
+            QualityIssue(
+                key="hfu_below_mfu",
+                title="HFU is below MFU, which is impossible",
+                detail=(
+                    f"HFU {hfu:.1f}% < MFU {mfu:.1f}%. Hardware FLOPs include every operation the "
+                    "implementation performed, model FLOPs only those the model requires, so HFU is "
+                    "always at least MFU. The two are being computed from different denominators."
+                ),
+                invalidates=("mfu", "hfu"),
+                blocks=True,
+                severity="high",
+                evidence={"mfu": mfu, "hfu": hfu},
+                remedy="Use one peak value and one FLOP convention for both.",
+            )
+        )
 
     if peak_is_sparse:
-        issues.append(QualityIssue(
-            key="sparse_peak_denominator",
-            title="Efficiency computed against a sparsity-inflated peak",
-            detail=(
-                "The denominator is the 2:4-sparse peak, which is double the dense figure and is "
-                "essentially never reached in production LLM work. Every efficiency number here "
-                "is half what it should be."
-            ),
-            invalidates=("mfu", "hfu", "pct_of_peak"),
-            blocks=True,
-            severity="high",
-            evidence={"dtype": dtype},
-            remedy="Use the dense peak. NVIDIA's spec tables print the sparse figure by default.",
-        ))
+        issues.append(
+            QualityIssue(
+                key="sparse_peak_denominator",
+                title="Efficiency computed against a sparsity-inflated peak",
+                detail=(
+                    "The denominator is the 2:4-sparse peak, which is double the dense figure and is "
+                    "essentially never reached in production LLM work. Every efficiency number here "
+                    "is half what it should be."
+                ),
+                invalidates=("mfu", "hfu", "pct_of_peak"),
+                blocks=True,
+                severity="high",
+                evidence={"dtype": dtype},
+                remedy="Use the dense peak. NVIDIA's spec tables print the sparse figure by default.",
+            )
+        )
 
     if activation_checkpointing and mfu is not None and hfu is None:
-        issues.append(QualityIssue(
-            key="mfu_without_recompute_model",
-            title="MFU reported with activation checkpointing but no HFU",
-            detail=(
-                "Recomputation performs extra forward passes that model FLOPs deliberately "
-                "exclude, so MFU alone hides real work the hardware did. Report HFU alongside it "
-                "or the two are not comparable across configurations."
-            ),
-            invalidates=("mfu",),
-            blocks=False,
-            severity="medium",
-            evidence={"activation_checkpointing": True},
-            remedy="Report HFU as a separate labelled field, with the recompute factor used.",
-        ))
+        issues.append(
+            QualityIssue(
+                key="mfu_without_recompute_model",
+                title="MFU reported with activation checkpointing but no HFU",
+                detail=(
+                    "Recomputation performs extra forward passes that model FLOPs deliberately "
+                    "exclude, so MFU alone hides real work the hardware did. Report HFU alongside it "
+                    "or the two are not comparable across configurations."
+                ),
+                invalidates=("mfu",),
+                blocks=False,
+                severity="medium",
+                evidence={"activation_checkpointing": True},
+                remedy="Report HFU as a separate labelled field, with the recompute factor used.",
+            )
+        )
 
     if not dtype and (mfu is not None or efficiency_pct is not None):
-        issues.append(QualityIssue(
-            key="unknown_dtype_denominator",
-            title="Efficiency computed without a known dtype",
-            detail=(
-                "Peak FLOPs differ by up to 8x across bf16, fp8 and fp4, so an efficiency figure "
-                "without a stated dtype is not interpretable."
-            ),
-            invalidates=("mfu", "hfu", "pct_of_peak"),
-            blocks=True,
-            severity="high",
-            evidence={},
-            remedy="Determine the dominant dtype from the kernel mix, not from config.",
-        ))
+        issues.append(
+            QualityIssue(
+                key="unknown_dtype_denominator",
+                title="Efficiency computed without a known dtype",
+                detail=(
+                    "Peak FLOPs differ by up to 8x across bf16, fp8 and fp4, so an efficiency figure "
+                    "without a stated dtype is not interpretable."
+                ),
+                invalidates=("mfu", "hfu", "pct_of_peak"),
+                blocks=True,
+                severity="high",
+                evidence={},
+                remedy="Determine the dominant dtype from the kernel mix, not from config.",
+            )
+        )
     return issues

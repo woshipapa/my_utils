@@ -79,37 +79,52 @@ class NsightSchema:
     - provide robust column alias resolution for query builders
     """
 
-    def __init__(self, conn: sqlite3.Connection, *, meta: Optional[Dict[str, str]] = None) -> None:
+    def __init__(
+        self, conn: sqlite3.Connection, *, meta: Optional[Dict[str, str]] = None
+    ) -> None:
         self._conn = conn
         self.tables = self._load_tables()
         self._columns_cache: Dict[str, set[str]] = {}
         self.meta = dict(meta or self._load_meta())
         self.version = detect_nsys_version(self.meta)
 
-        self.meta_table = self._detect_first_existing(("META_DATA_EXPORT", "EXPORT_META_DATA", "META_DATA_CAPTURE"))
+        self.meta_table = self._detect_first_existing(
+            ("META_DATA_EXPORT", "EXPORT_META_DATA", "META_DATA_CAPTURE")
+        )
         self.string_table = self._detect_first_existing(("StringIds", "STRINGIDS"))
         self.kernel_table = self._detect_kernel_table()
-        self.runtime_table = self._detect_first_existing(("CUPTI_ACTIVITY_KIND_RUNTIME",))
+        self.runtime_table = self._detect_first_existing(
+            ("CUPTI_ACTIVITY_KIND_RUNTIME",)
+        )
         self.nvtx_table = self._detect_first_existing(("NVTX_EVENTS",))
         self.memcpy_table = self._detect_first_existing(("CUPTI_ACTIVITY_KIND_MEMCPY",))
         self.memset_table = self._detect_first_existing(("CUPTI_ACTIVITY_KIND_MEMSET",))
-        self.sync_table = self._detect_first_existing(("CUPTI_ACTIVITY_KIND_SYNCHRONIZATION",))
+        self.sync_table = self._detect_first_existing(
+            ("CUPTI_ACTIVITY_KIND_SYNCHRONIZATION",)
+        )
         self.metrics_table = self._detect_metrics_table()
         self.metrics_timestamp_col = (
-            self.resolve_column(self.metrics_table, ("timestamp", "rawTimestamp", "start", "time"))
-            if self.metrics_table else None
+            self.resolve_column(
+                self.metrics_table, ("timestamp", "rawTimestamp", "start", "time")
+            )
+            if self.metrics_table
+            else None
         )
         self.metrics_id_col = (
             self.resolve_column(self.metrics_table, ("metricId", "nameId", "eventId"))
-            if self.metrics_table else None
+            if self.metrics_table
+            else None
         )
         self.metrics_value_col = (
             self.resolve_column(self.metrics_table, ("value", "metricValue", "val"))
-            if self.metrics_table else None
+            if self.metrics_table
+            else None
         )
 
     def _load_tables(self) -> List[str]:
-        rows = self._conn.execute("SELECT name FROM sqlite_master WHERE type='table';").fetchall()
+        rows = self._conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table';"
+        ).fetchall()
         result = [str(row[0]) for row in rows if row and row[0]]
         result.sort()
         return result
@@ -123,7 +138,9 @@ class NsightSchema:
             if not {"name", "value"}.issubset(cols):
                 continue
             try:
-                rows = self._conn.execute(f"SELECT name, value FROM {table_name};").fetchall()
+                rows = self._conn.execute(
+                    f"SELECT name, value FROM {table_name};"
+                ).fetchall()
             except sqlite3.Error:
                 continue
             out["meta_table"] = table_name
@@ -151,7 +168,9 @@ class NsightSchema:
 
     def _is_metrics_fact_table(self, table_name: str) -> bool:
         return bool(
-            self.resolve_column(table_name, ("timestamp", "rawTimestamp", "start", "time"))
+            self.resolve_column(
+                table_name, ("timestamp", "rawTimestamp", "start", "time")
+            )
             and self.resolve_column(table_name, ("metricId", "nameId", "eventId"))
             and self.resolve_column(table_name, ("value", "metricValue", "val"))
         )
@@ -170,11 +189,15 @@ class NsightSchema:
                 continue
             if first_existing is None:
                 first_existing = table_name
-            if self._is_metrics_fact_table(table_name) and self._table_has_rows(table_name):
+            if self._is_metrics_fact_table(table_name) and self._table_has_rows(
+                table_name
+            ):
                 return table_name
         # Fallback to structurally valid metrics fact table even if empty.
         for table_name in candidates:
-            if self.table_exists(table_name) and self._is_metrics_fact_table(table_name):
+            if self.table_exists(table_name) and self._is_metrics_fact_table(
+                table_name
+            ):
                 return table_name
         return first_existing
 

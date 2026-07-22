@@ -6,7 +6,7 @@ import math
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence
+from typing import Any, Callable, Dict, List, Optional, Sequence
 
 
 def _normalize_key(text: str) -> str:
@@ -123,7 +123,9 @@ class NcuCsvSkillEngine:
                 raise ValueError(f"CSV has no header row: {csv_path}")
             rows = []
             for row in reader:
-                rows.append({str(k or "").strip(): str(v or "").strip() for k, v in row.items()})
+                rows.append(
+                    {str(k or "").strip(): str(v or "").strip() for k, v in row.items()}
+                )
         return rows
 
     @staticmethod
@@ -132,7 +134,9 @@ class NcuCsvSkillEngine:
             return []
         norm_rows: List[Dict[str, str]] = []
         for row in rows:
-            norm = {_normalize_key(k): v for k, v in row.items() if str(k or "").strip()}
+            norm = {
+                _normalize_key(k): v for k, v in row.items() if str(k or "").strip()
+            }
             norm_rows.append(norm)
 
         keys = sorted({k for row in norm_rows for k in row.keys()})
@@ -157,7 +161,9 @@ class NcuCsvSkillEngine:
                         kernel_name=kernel_name,
                         metric_name=metric_name,
                         value=float(value),
-                        unit=str(row.get(metric_unit_key, "")).strip() if metric_unit_key else "",
+                        unit=str(row.get(metric_unit_key, "")).strip()
+                        if metric_unit_key
+                        else "",
                         row_index=idx,
                         source_format="long",
                     )
@@ -248,7 +254,9 @@ class NcuCsvSkillEngine:
             raise RuntimeError(f"skill '{name}' has no run function")
         return skill.run_fn(**params)
 
-    def _resolve_params(self, skill: CsvSkill, kwargs: Dict[str, Any]) -> Dict[str, Any]:
+    def _resolve_params(
+        self, skill: CsvSkill, kwargs: Dict[str, Any]
+    ) -> Dict[str, Any]:
         out: Dict[str, Any] = {}
         for p in skill.params:
             if p.name in kwargs:
@@ -256,7 +264,9 @@ class NcuCsvSkillEngine:
             elif p.default is not None:
                 value = p.default
             elif p.required:
-                raise ValueError(f"skill '{skill.name}' missing required param '{p.name}'")
+                raise ValueError(
+                    f"skill '{skill.name}' missing required param '{p.name}'"
+                )
             else:
                 continue
             t = str(p.type).lower()
@@ -293,7 +303,9 @@ class NcuCsvSkillEngine:
         kernel_like: str = "%",
         top_k: int = 20,
     ) -> Dict[str, object]:
-        records = self._filtered_records(metric_like=metric_like, kernel_like=kernel_like)
+        records = self._filtered_records(
+            metric_like=metric_like, kernel_like=kernel_like
+        )
         values = [r.value for r in records]
         values_sorted = sorted(values)
         by_metric: Dict[str, int] = {}
@@ -317,8 +329,12 @@ class NcuCsvSkillEngine:
                 "p90": _percentile(values_sorted, 90) if values else None,
                 "p99": _percentile(values_sorted, 99) if values else None,
             },
-            "top_metrics": sorted(by_metric.items(), key=lambda x: x[1], reverse=True)[: int(top_k)],
-            "top_kernels": sorted(by_kernel.items(), key=lambda x: x[1], reverse=True)[: int(top_k)],
+            "top_metrics": sorted(by_metric.items(), key=lambda x: x[1], reverse=True)[
+                : int(top_k)
+            ],
+            "top_kernels": sorted(by_kernel.items(), key=lambda x: x[1], reverse=True)[
+                : int(top_k)
+            ],
         }
 
     def _skill_top_kernels(
@@ -329,7 +345,9 @@ class NcuCsvSkillEngine:
         top_k: int = 20,
         score: str = "sum",
     ) -> List[Dict[str, object]]:
-        records = self._filtered_records(metric_like=metric_like, kernel_like=kernel_like)
+        records = self._filtered_records(
+            metric_like=metric_like, kernel_like=kernel_like
+        )
         grouped: Dict[str, List[float]] = {}
         for r in records:
             grouped.setdefault(r.kernel_name, []).append(float(r.value))
@@ -370,7 +388,9 @@ class NcuCsvSkillEngine:
         kernel_like: str = "%",
         top_k: int = 20,
     ) -> List[Dict[str, object]]:
-        records = self._filtered_records(metric_like=metric_like, kernel_like=kernel_like)
+        records = self._filtered_records(
+            metric_like=metric_like, kernel_like=kernel_like
+        )
         grouped: Dict[str, List[float]] = {}
         for r in records:
             grouped.setdefault(r.metric_name, []).append(float(r.value))
@@ -396,7 +416,9 @@ class NcuCsvSkillEngine:
         metric_like: str = "%",
         kernel_like: str = "%",
     ) -> List[Dict[str, object]]:
-        records = self._filtered_records(metric_like=metric_like, kernel_like=kernel_like)
+        records = self._filtered_records(
+            metric_like=metric_like, kernel_like=kernel_like
+        )
         grouped: Dict[str, List[float]] = {}
         for r in records:
             grouped.setdefault(r.metric_name, []).append(float(r.value))
@@ -436,8 +458,20 @@ class NcuCsvSkillEngine:
                 description="Summarize row counts, unique metrics/kernels and value stats.",
                 category="overview",
                 params=[
-                    SkillParam("metric_like", "metric name LIKE pattern (%/_/*)", "str", False, "%"),
-                    SkillParam("kernel_like", "kernel name LIKE pattern (%/_/*)", "str", False, "%"),
+                    SkillParam(
+                        "metric_like",
+                        "metric name LIKE pattern (%/_/*)",
+                        "str",
+                        False,
+                        "%",
+                    ),
+                    SkillParam(
+                        "kernel_like",
+                        "kernel name LIKE pattern (%/_/*)",
+                        "str",
+                        False,
+                        "%",
+                    ),
                     SkillParam("top_k", "top rows limit", "int", False, 20),
                 ],
                 run_fn=self._skill_summary,
@@ -448,10 +482,16 @@ class NcuCsvSkillEngine:
                 description="Aggregate selected metric values by kernel and rank by score mode.",
                 category="kernels",
                 params=[
-                    SkillParam("metric_like", "metric name LIKE pattern", "str", False, "%"),
-                    SkillParam("kernel_like", "kernel name LIKE pattern", "str", False, "%"),
+                    SkillParam(
+                        "metric_like", "metric name LIKE pattern", "str", False, "%"
+                    ),
+                    SkillParam(
+                        "kernel_like", "kernel name LIKE pattern", "str", False, "%"
+                    ),
                     SkillParam("top_k", "top rows limit", "int", False, 20),
-                    SkillParam("score", "score mode: sum|avg|max|min", "str", False, "sum"),
+                    SkillParam(
+                        "score", "score mode: sum|avg|max|min", "str", False, "sum"
+                    ),
                 ],
                 run_fn=self._skill_top_kernels,
             ),
@@ -461,8 +501,12 @@ class NcuCsvSkillEngine:
                 description="Aggregate values by metric name.",
                 category="metrics",
                 params=[
-                    SkillParam("metric_like", "metric name LIKE pattern", "str", False, "%"),
-                    SkillParam("kernel_like", "kernel name LIKE pattern", "str", False, "%"),
+                    SkillParam(
+                        "metric_like", "metric name LIKE pattern", "str", False, "%"
+                    ),
+                    SkillParam(
+                        "kernel_like", "kernel name LIKE pattern", "str", False, "%"
+                    ),
                     SkillParam("top_k", "top rows limit", "int", False, 20),
                 ],
                 run_fn=self._skill_top_metrics,
@@ -473,8 +517,12 @@ class NcuCsvSkillEngine:
                 description="Compute p50/p90/p99 by metric.",
                 category="metrics",
                 params=[
-                    SkillParam("metric_like", "metric name LIKE pattern", "str", False, "%"),
-                    SkillParam("kernel_like", "kernel name LIKE pattern", "str", False, "%"),
+                    SkillParam(
+                        "metric_like", "metric name LIKE pattern", "str", False, "%"
+                    ),
+                    SkillParam(
+                        "kernel_like", "kernel name LIKE pattern", "str", False, "%"
+                    ),
                 ],
                 run_fn=self._skill_metric_percentiles,
             ),
@@ -503,7 +551,11 @@ def analyze_ncu_csv(
         kernel_like=kernel_like,
         top_k=top_k,
     )
-    all_metrics = [row[0] for row in summary.get("top_metrics", [])] if isinstance(summary, dict) else []
+    all_metrics = (
+        [row[0] for row in summary.get("top_metrics", [])]
+        if isinstance(summary, dict)
+        else []
+    )
 
     selected_metric = str(metric_like or "").strip()
     if not selected_metric:
@@ -539,7 +591,11 @@ def analyze_ncu_csv(
 
 def analyze_ncu_to_markdown(payload: Dict[str, object]) -> str:
     summary = payload.get("summary", {}) if isinstance(payload, dict) else {}
-    selected_metric_like = str(payload.get("selected_metric_like", "")) if isinstance(payload, dict) else ""
+    selected_metric_like = (
+        str(payload.get("selected_metric_like", ""))
+        if isinstance(payload, dict)
+        else ""
+    )
     top_kernels = payload.get("top_kernels", []) if isinstance(payload, dict) else []
     lines: List[str] = []
     lines.append("# NCU CSV Analyze Report")

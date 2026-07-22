@@ -23,7 +23,9 @@ class SlimeAdapter(FrameworkAdapter):
             return False
         if framework == "slime":
             return True
-        if context_has_any_key(context, ("slime_runner", "slime_config", "slime_trainer")):
+        if context_has_any_key(
+            context, ("slime_runner", "slime_config", "slime_trainer")
+        ):
             return True
 
         command = context_command_text(context)
