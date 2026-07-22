@@ -110,6 +110,22 @@ the same training workflows, shipped as-is without support commitments.
   ECharts from `cdn.jsdelivr.net`; on an offline machine, open the report
   where that CDN is reachable or vendor the script locally.
 
+### Locating Nsight Compute
+
+The ncu tools auto-detect common install locations (`/opt/nvidia/nsight-compute`,
+the CUDA-bundled copy, the macOS app bundle under `/Applications`). If yours
+lives elsewhere, point them at it:
+
+```bash
+export NCU_PATH=/path/to/ncu                          # the ncu binary or the install dir
+# or
+export NSIGHT_COMPUTE_HOME=/opt/nvidia/nsight-compute/2026.1.1
+```
+
+`NCU_PATH` wins over `NSIGHT_COMPUTE_HOME`, and both win over the built-in
+defaults; unset, behaviour is unchanged. `NCU_PYTHON_DIR` is still honoured for
+pointing directly at the directory containing `ncu_report.py`, and outranks both.
+
 ## License
 
 Apache-2.0. See [LICENSE](LICENSE).

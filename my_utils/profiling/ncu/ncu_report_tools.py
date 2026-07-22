@@ -94,10 +94,40 @@ def _load_ncu_report_module(ncu_report_module: Any = None) -> ModuleType:
         "  export PYTHONPATH=/usr/local/cuda/nsight-compute-<version>/extras/python:$PYTHONPATH\n"
         "  # macOS\n"
         "  export PYTHONPATH='/Applications/NVIDIA Nsight Compute.app/Contents/MacOS/python':$PYTHONPATH\n\n"
+        "Alternatively point the tools at your install and they will find it:\n"
+        "  export NCU_PATH=/path/to/ncu   # the ncu binary or the install dir\n"
+        "  export NSIGHT_COMPUTE_HOME=/path/to/nsight-compute/<version>\n\n"
         "To find it on this machine:\n"
         "  find / -name 'ncu_report.py' 2>/dev/null | head\n\n"
         "The module must also match the Python version you are running it under."
     )
+
+
+def _nsight_paths_module():
+    """Import :mod:`nsight_paths` — the one source of truth for the
+    ``NCU_PATH`` / ``NSIGHT_COMPUTE_HOME`` overrides — tolerating every way
+    this file gets loaded: as a package submodule, standalone via
+    ``spec_from_file_location``, or under the synthetic package the tests
+    build.
+    """
+    try:
+        from . import nsight_paths
+        return nsight_paths
+    except ImportError:
+        pass
+    import importlib.util
+    import sys
+    name = "_my_utils_profiling_ncu_nsight_paths"
+    module = sys.modules.get(name)
+    if module is None:
+        spec = importlib.util.spec_from_file_location(
+            name, Path(__file__).resolve().with_name("nsight_paths.py")
+        )
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[name] = module
+        spec.loader.exec_module(module)
+    return module
 
 
 def find_ncu_report_dir() -> Optional[Path]:
@@ -106,12 +136,18 @@ def find_ncu_report_dir() -> Optional[Path]:
     Searched because the module ships with Nsight Compute rather than on PyPI,
     and its location differs between a standalone install, a CUDA-bundled one,
     and macOS. Returns None rather than guessing when nothing is found.
+
+    Environment overrides, most specific first: ``NCU_PYTHON_DIR`` names the
+    directory holding ``ncu_report.py`` itself; ``NCU_PATH`` /
+    ``NSIGHT_COMPUTE_HOME`` name the install (see :mod:`nsight_paths`).  The
+    historical platform fallbacks follow, unchanged.
     """
     import glob as _glob
     import os as _os
 
     candidates = [
         _os.environ.get("NCU_PYTHON_DIR", ""),
+        *_nsight_paths_module().python_dir_candidates(),
         "/opt/nvidia/nsight-compute/*/extras/python",
         "/usr/local/cuda*/nsight-compute-*/extras/python",
         "/usr/local/NVIDIA-Nsight-Compute*/extras/python",

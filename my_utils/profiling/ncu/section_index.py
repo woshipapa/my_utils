@@ -238,9 +238,47 @@ _DEFAULT_SECTION_DIRS: Tuple[str, ...] = (
 )
 
 
+def _nsight_paths_module():
+    """Import :mod:`nsight_paths` — the one source of truth for the
+    ``NCU_PATH`` / ``NSIGHT_COMPUTE_HOME`` overrides — tolerating every way
+    this file gets loaded: as a package submodule, standalone via
+    ``spec_from_file_location``, or under the synthetic package the tests
+    build.
+    """
+    try:
+        from . import nsight_paths
+        return nsight_paths
+    except ImportError:
+        pass
+    import importlib.util
+    import sys
+    name = "_my_utils_profiling_ncu_nsight_paths"
+    module = sys.modules.get(name)
+    if module is None:
+        spec = importlib.util.spec_from_file_location(
+            name, Path(__file__).resolve().with_name("nsight_paths.py")
+        )
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[name] = module
+        spec.loader.exec_module(module)
+    return module
+
+
 def find_sections_dir(explicit: str = "") -> Optional[Path]:
-    """Locate the Nsight Compute sections directory, or ``None``."""
-    candidates: Sequence[str] = (explicit,) if explicit else _DEFAULT_SECTION_DIRS
+    """Locate the Nsight Compute sections directory, or ``None``.
+
+    An explicit argument wins outright.  Otherwise the ``NCU_PATH`` /
+    ``NSIGHT_COMPUTE_HOME`` environment variables (see :mod:`nsight_paths`)
+    are consulted first, then the historical platform defaults, unchanged.
+    """
+    if explicit:
+        candidates: Sequence[str] = (explicit,)
+    else:
+        candidates = (
+            tuple(_nsight_paths_module().sections_dir_candidates())
+            + _DEFAULT_SECTION_DIRS
+        )
     for candidate in candidates:
         if not candidate:
             continue

@@ -821,6 +821,34 @@ FULL_DIAGNOSIS_SECTIONS: Tuple[str, ...] = (
 # Metric *groups* worth requesting explicitly when driving ncu with --metrics
 # rather than sections. Regex groups keep the command line short and survive
 # per-architecture metric renames.
+def _nsight_paths_module():
+    """Import :mod:`nsight_paths` — the one source of truth for the
+    ``NCU_PATH`` / ``NSIGHT_COMPUTE_HOME`` overrides — tolerating every way
+    this file gets loaded: as a package submodule, standalone via
+    ``spec_from_file_location``, or under the synthetic package the tests
+    build.
+    """
+    try:
+        from . import nsight_paths
+        return nsight_paths
+    except ImportError:
+        pass
+    import importlib.util
+    import sys
+    from pathlib import Path
+    name = "_my_utils_profiling_ncu_nsight_paths"
+    module = sys.modules.get(name)
+    if module is None:
+        spec = importlib.util.spec_from_file_location(
+            name, Path(__file__).resolve().with_name("nsight_paths.py")
+        )
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[name] = module
+        spec.loader.exec_module(module)
+    return module
+
+
 def verify_catalog_coverage(sections_dir: str = "") -> Dict[str, object]:
     """Measure this catalog against the metrics a real ncu install requests.
 
@@ -842,7 +870,10 @@ def verify_catalog_coverage(sections_dir: str = "") -> Dict[str, object]:
     import re
     from pathlib import Path
 
+    # An explicit argument wins; then NCU_PATH / NSIGHT_COMPUTE_HOME (see
+    # nsight_paths); then the historical platform defaults, unchanged.
     candidates = [sections_dir] if sections_dir else [
+        *_nsight_paths_module().sections_dir_candidates(),
         "/Applications/NVIDIA Nsight Compute.app/Contents/Resources/sections",
         "/opt/nvidia/nsight-compute/*/sections",
         "/usr/local/cuda/nsight-compute-*/sections",
