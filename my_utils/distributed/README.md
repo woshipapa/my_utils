@@ -1,19 +1,15 @@
 # distributed
 
-分布式训练辅助层。
+Helpers for distributed training.
 
-## 30秒定位
+## Quick orientation
 
-1. 需要 rank 间时间对齐  
-用 `ClockSynchronizer`
+1. Cross-rank clock alignment: `ClockSynchronizer`.
+2. An etcd-based barrier: `etcd_barrier` (optional dependency: `etcd3`).
+3. Sequence-parallel padding: `pad_for_sequence_parallel` /
+   `remove_pad_by_value` (optional dependency: `megatron.core`).
 
-2. 需要 etcd barrier  
-用 `etcd_barrier`（可选依赖 `etcd3`）
-
-3. 需要 sequence parallel padding  
-用 `pad_for_sequence_parallel` / `remove_pad_by_value`（可选依赖 `megatron.core`）
-
-## 最小示例
+## Minimal example
 
 ```python
 from my_utils.distributed import ClockSynchronizer
@@ -23,12 +19,18 @@ offset = sync.sync_once()
 print("clock offset us:", offset)
 ```
 
-## 关键文件
+## Key files
 
-- `clockSyncUtils.py`: `ClockSynchronizer`、`SocketClockSynchronizer`
-- `etcd_utils.py`: `etcd_barrier`
-- `pad.py`: sequence parallel padding helpers
+- `clockSyncUtils.py` — `ClockSynchronizer`, `SocketClockSynchronizer`.
+- `etcd_utils.py` — `etcd_barrier`.
+- `pad.py` — sequence-parallel padding helpers.
 
-## 注意
+## Notes
 
-- `etcd` 与 `megatron` 能力是“可选导入”，缺依赖时不影响其它模块。  
+- The etcd and megatron capabilities are optional imports; missing
+  dependencies do not affect the rest of the package.
+- torch is optional and only needed by the torch-based helpers.
+
+---
+
+Chinese original: [docs/zh/distributed/README.md](../../docs/zh/distributed/README.md)

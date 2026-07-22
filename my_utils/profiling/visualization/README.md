@@ -1,22 +1,18 @@
-# visualization（报告可视化）
+# visualization
 
-这个目录负责把 profiling 数据渲染成更直观的图表和 HTML 报告。
+Renders profiling data into charts and HTML reports.
 
-## 30秒定位
+## Quick orientation
 
-1. 我已经有 report/events，想快速出 HTML  
-用 `HTMLReportGenerator`
+1. You already have a report/events and want HTML fast:
+   `HTMLReportGenerator`.
+2. You just want one chart (line/bar): the renderers in `charts.py` plus
+   `ChartConfig`.
+3. You want to turn raw events into chartable data:
+   `DataTransformer` in `transformers.py`.
+4. You want a custom report layout: `LayoutBuilder` in `layouts.py`.
 
-2. 我只想画一个图（折线/柱状）  
-用 `charts.py` 的 renderer + `ChartConfig`
-
-3. 我想把原始事件转成可画图的数据  
-用 `transformers.py` 的 `DataTransformer`
-
-4. 我想自定义报告布局  
-用 `layouts.py` 的 `LayoutBuilder`
-
-## 最小示例
+## Minimal example
 
 ```python
 from my_utils.profiling.visualization import (
@@ -24,34 +20,34 @@ from my_utils.profiling.visualization import (
     QuickReportGenerator,
 )
 
-# 1) 从 CSV 快速生成报告
+# 1) quick report from a CSV
 quick = QuickReportGenerator()
 quick.generate_from_csv("profile_rank_0.csv", output_path="csv_report.html")
 
-# 2) 从统一分析报告对象生成 HTML
+# 2) HTML from a unified analysis report object
 gen = HTMLReportGenerator()
 html = gen.generate(report_obj, events, output_path="analysis_report.html")
 ```
 
-## 关键文件
+## Key files
 
-- `charts.py`  
-  图表配置与渲染器工厂（Chart.js / Plotly / ECharts）。
+- `charts.py` — chart config and renderer factory
+  (`ChartJsRenderer`, `PlotlyRenderer`, `EChartsRenderer`,
+  `create_chart_renderer`).
+- `transformers.py` — metric events to chart inputs (time series,
+  statistical aggregation).
+- `layouts.py` — report layout building (header/summary/cards/sections).
+- `html_generator.py` — final HTML report generation (findings,
+  recommendations, charts).
+- `examples.py` — built-in examples for this module.
 
-- `transformers.py`  
-  指标事件 -> 图表输入数据（时间序列、统计聚合）。
+## Practical advice
 
-- `layouts.py`  
-  报告布局构建（header/summary/cards/sections）。
+1. Start with `QuickReportGenerator` for a default report.
+2. To customize, change `layouts.py` first, then chart styling in `charts.py`.
+3. For complex charts, do the data shaping in `transformers.py`; keep logic
+   out of the templates.
 
-- `html_generator.py`  
-  最终 HTML 报告生成器（整合 findings/recommendations/charts）。
+---
 
-- `examples.py`  
-  可视化模块内置示例。
-
-## 实战建议
-
-1. 先用 `QuickReportGenerator` 出一版默认报告。  
-2. 如果要定制，先改 `layouts.py`，再补 `charts.py` 风格。  
-3. 复杂图表先在 `transformers.py` 做数据清洗，避免模板层写逻辑。  
+Chinese original: [docs/zh/profiling/visualization/README.md](../../../docs/zh/profiling/visualization/README.md)

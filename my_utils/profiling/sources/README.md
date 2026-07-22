@@ -1,102 +1,69 @@
-# sources（NSYS SQLite 离线解析）
+# sources (NSYS SQLite offline parsing)
 
-这个目录负责：读取 `nsys export` 产生的 SQLite，然后做可复用分析。
+Reads the SQLite files produced by `nsys export` and runs reusable analyses
+over them. Everything here is offline — no torch or GPU required.
 
-## 30秒定位
+## Quick orientation
 
-1. 我只想看训练整体分析  
-用 CLI：`myutils-profile nsys-analyze`
+1. Overall training analysis: `myutils-profile nsys-analyze`.
+2. Run a single SQL skill: `myutils-profile nsys-sql-skill`.
+3. Export kernel details: `myutils-profile nsys-export`.
+4. Compare two profiles: `myutils-profile nsys-diff`.
+5. Produce a timeline HTML page: `myutils-profile nsys-timeline-html`.
 
-2. 我想跑某个 SQL skill  
-用 CLI：`myutils-profile nsys-sql-skill`
-
-3. 我想导出 kernel 明细  
-用 CLI：`myutils-profile nsys-export`
-
-4. 我想对比两次 profile  
-用 CLI：`myutils-profile nsys-diff`
-
-5. 我想出 timeline HTML  
-用 CLI：`myutils-profile nsys-timeline-html`
-
-## 最常用命令
-
-统一分析：
+## Most-used commands
 
 ```bash
+# unified analysis
 myutils-profile nsys-analyze --sqlite ./train_rank0.sqlite --output ./nsys_analyze.json
-```
 
-列出 SQL skills：
-
-```bash
+# list SQL skills
 myutils-profile nsys-sql-skill --sqlite ./train_rank0.sqlite --list-skills --pretty
-```
 
-运行一个 skill：
-
-```bash
+# run one skill
 myutils-profile nsys-sql-skill \
   --sqlite ./train_rank0.sqlite \
   --skill top_kernels \
   --param device_id=0 \
   --param limit=20 \
   --pretty
-```
 
-导出 kernel 明细：
-
-```bash
+# export kernel details
 myutils-profile nsys-export --sqlite ./train_rank0.sqlite --format csv --output ./kernels.csv
-```
 
-两次对比：
-
-```bash
+# before/after comparison
 myutils-profile nsys-diff --before-sqlite ./a.sqlite --after-sqlite ./b.sqlite --output ./diff.json
-```
 
-timeline html：
-
-```bash
+# timeline html
 myutils-profile nsys-timeline-html --sqlite ./train_rank0.sqlite --output ./timeline.html
 ```
 
-## 关键文件（按职责）
+## Key files (by responsibility)
 
-- `nsys_schema_adapter.py`  
-  跨版本 schema 识别（不同 nsys 导出的表名/列名差异适配）。
+- `nsys_schema_adapter.py` — cross-version schema detection (adapts to
+  table/column differences between nsys exports).
+- `nsys_sql_skills.py` — built-in SQL skill engine (top kernels, overlap,
+  nvtx, memcpy, occupancy, ...).
+- `nsys_sqlite_provider.py` — provider wrapper for the unified metrics
+  pipeline.
+- `nsys_analyze.py` — one-stop aggregation (summary/overlap/nccl/
+  iterations/mfu).
+- `nsys_auto_analysis.py` — automated analysis flow on top of the above.
+- `nsys_diff.py` — before/after diff analysis.
+- `nsys_flat_export.py` — flat kernel-timeline export to json/csv.
+- `nsys_timeline_html.py` — static HTML timeline export.
+- `nsys_iterations.py` — iteration splitting from NVTX markers.
+- `nsys_mfu.py` — MFU-related helper computation.
+- `nsys_module_kernel_compare.py` — module-level kernel comparison.
+- `kernel_taxonomy.py` — kernel-name classification.
 
-- `nsys_sql_skills.py`  
-  内置 SQL skill 引擎（top kernels、overlap、nvtx、memcpy、occupancy 等）。
+## Debugging tips
 
-- `nsys_sqlite_provider.py`  
-  上层 provider 封装，给统一 metrics 管线调用。
+1. Run the `schema_inspect` skill first to confirm the sqlite is recognized.
+2. Then `nsys-analyze` for the overview.
+3. On a regression, reach for `nsys-diff` first.
+4. Export `timeline.html` only when you need visual localization.
 
-- `nsys_analyze.py`  
-  一站式分析聚合（summary/overlap/nccl/iterations/mfu）。
+---
 
-- `nsys_diff.py`  
-  before/after 差异分析。
-
-- `nsys_flat_export.py`  
-  扁平化导出 kernel timeline 到 json/csv。
-
-- `nsys_timeline_html.py`  
-  静态 HTML 时间线导出。
-
-- `nsys_iterations.py`  
-  基于 NVTX marker 的 iteration 切分。
-
-- `nsys_mfu.py`  
-  MFU 相关辅助计算。
-
-- `nsys_module_kernel_compare.py`  
-  模块级 kernel 对比（更细粒度）。
-
-## 调试建议
-
-1. 先用 `schema_inspect` skill 看 sqlite 是否识别正确。  
-2. 再跑 `nsys-analyze` 看总览。  
-3. 如果出现回退，优先跑 `nsys-diff`。  
-4. 需要可视化定位时再导出 `timeline.html`。  
+Chinese original: [docs/zh/profiling/sources/README.md](../../../docs/zh/profiling/sources/README.md)

@@ -1,19 +1,24 @@
 # pipeline
 
-编排层：把 provider、store、analyzer、report 串成一条统一流程。
+Orchestration layer: wires providers, store, analyzer, and report output into
+one unified flow.
 
-## 核心入口
+## Core entry point
 
-- `metrics_collector.py` 中的 `MetricsCollector`
+- `MetricsCollector` in `metrics_collector.py`.
 
-## 典型流程
+## Typical flow
 
-1. 注册 providers  
-2. `collect()` 写入事件  
-3. `analyze()` 生成分析结果  
-4. `export_report()` / `export_chrome_trace()` 导出结果  
+1. Register providers.
+2. `collect()` writes events.
+3. `analyze()` produces the analysis result.
+4. `export_report()` / `export_chrome_trace()` export the results.
 
-## 你什么时候会改这里
+## When you touch this package
 
-- 你要改“统一采集/分析流程本身”时（不是改单个 provider）。
-- 你要新增统一导出能力（例如新的 report format）时。  
+- Changing the unified collect/analyze flow itself (not a single provider).
+- Adding a unified export capability (e.g. a new report format).
+
+---
+
+Chinese original: [docs/zh/profiling/pipeline/README.md](../../../docs/zh/profiling/pipeline/README.md)

@@ -1,11 +1,16 @@
-# NCCL Inspector 快速使用手册
+# NCCL Inspector quick guide
 
-这部分用于解析 NCCL 最新 profiler plugin 里的 Inspector 输出：
+Parses the Inspector output of NCCL's profiler plugin:
 
-- JSON/JSONL dump：`NCCL_INSPECTOR_PROM_DUMP=0`，每条 collective/P2P 写一个 JSON 对象。
-- Prometheus textfile：`NCCL_INSPECTOR_PROM_DUMP=1`，写 `nccl_*` 指标供 node exporter 抓取。
+- JSON/JSONL dumps (`NCCL_INSPECTOR_PROM_DUMP=0`): one JSON object per
+  collective/P2P operation.
+- Prometheus textfile (`NCCL_INSPECTOR_PROM_DUMP=1`): `nccl_*` metrics for
+  the node exporter to scrape.
 
-## 采集
+Parsing is offline and pure Python; only the capture step needs a real
+NCCL/GPU environment.
+
+## Capture
 
 ```bash
 export NCCL_PROFILER_PLUGIN=/path/to/libnccl-profiler-inspector.so
@@ -16,7 +21,7 @@ export NCCL_INSPECTOR_DUMP_THREAD_INTERVAL_MICROSECONDS=500
 torchrun --nproc_per_node=8 train.py
 ```
 
-也可以用 wrapper：
+Or use the wrapper:
 
 ```bash
 bash my_utils/profiling/nccl/run_nccl_inspector.sh \
@@ -26,7 +31,7 @@ bash my_utils/profiling/nccl/run_nccl_inspector.sh \
   -- torchrun --nproc_per_node=8 train.py
 ```
 
-Prometheus 模式：
+Prometheus mode:
 
 ```bash
 export NCCL_PROFILER_PLUGIN=/path/to/libnccl-profiler-inspector.so
@@ -36,15 +41,15 @@ export NCCL_INSPECTOR_DUMP_THREAD_INTERVAL_MICROSECONDS=30000000
 export NCCL_INSPECTOR_DUMP_DIR=/var/lib/node_exporter/nccl_inspector
 ```
 
-## 解析
+## Parse
 
-列出技能：
+List skills:
 
 ```bash
 myutils-profile nccl-inspector-skill --input ./nccl-inspector-logs --list-skills --pretty
 ```
 
-直接分析 JSON dump：
+Analyze JSON dumps directly:
 
 ```bash
 myutils-profile nccl-inspector-analyze \
@@ -53,7 +58,7 @@ myutils-profile nccl-inspector-analyze \
   --pretty
 ```
 
-同时带上 Prometheus textfile：
+Include a Prometheus textfile as well:
 
 ```bash
 myutils-profile nccl-inspector-analyze \
@@ -63,7 +68,7 @@ myutils-profile nccl-inspector-analyze \
   --output nccl_inspector.md
 ```
 
-只看大消息的 AllReduce：
+Only large-message AllReduce:
 
 ```bash
 myutils-profile nccl-inspector-skill \
@@ -74,17 +79,24 @@ myutils-profile nccl-inspector-skill \
   --pretty
 ```
 
-## 输出重点
+## What to look at in the output
 
-1. `summary.timing_sources`：确认是否主要来自 `kernel_gpu`。
-2. `top_collectives` / `top_p2p`：按 op、消息大小 bucket、comm 聚合耗时和带宽。
-3. `rank_skew`：同一 NCCL sequence 在不同 rank 上的耗时差异。
-4. `prometheus_summary`：Prometheus 模式下各 `nccl_*` 指标的 label 和最大值。
+1. `summary.timing_sources` — confirm timings mostly come from `kernel_gpu`.
+2. `top_collectives` / `top_p2p` — time and bandwidth aggregated by op,
+   message-size bucket, and communicator.
+3. `rank_skew` — per-rank duration spread for the same NCCL sequence.
+4. `prometheus_summary` — labels and max values of each `nccl_*` metric in
+   Prometheus mode.
 
-NCCL Inspector 最新文档中的关键环境变量也要留意：
+Other Inspector environment variables worth knowing (see the upstream NCCL
+Inspector docs):
 
 - `NCCL_INSPECTOR_ENABLE_P2P`
 - `NCCL_INSPECTOR_DUMP_VERBOSE`
 - `NCCL_INSPECTOR_PROM_DUMP`
 - `NCCL_INSPECTOR_DUMP_MIN_SIZE_BYTES`
 - `NCCL_INSPECTOR_REQUIRE_KERNEL_TIMING`
+
+---
+
+Chinese original: [docs/zh/profiling/nccl/README.md](../../../docs/zh/profiling/nccl/README.md)

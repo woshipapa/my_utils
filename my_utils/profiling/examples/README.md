@@ -1,27 +1,22 @@
-# examples（可运行示例）
+# examples (runnable)
 
-这个目录用于两类事情：
+This directory serves two purposes:
 
-1. 快速验证统一 metrics 管线是否工作。  
-2. 给你可复制的配置模板（尤其是 NSYS sqlite 配置）。  
+1. Quickly verify that the unified metrics pipeline works.
+2. Provide copy-paste config templates (especially for NSYS sqlite input).
 
-## 30秒定位
+## Quick orientation
 
-1. 我想跑最小 demo（provider + analyze + report）  
-运行 `unified_metrics_demo.py`
+1. Minimal demo (provider + analyze + report): `unified_metrics_demo.py`.
+2. End-to-end acceptance run (including diff): `p0_p13_end_to_end_demo.py`.
+3. Offline analysis straight from a CLI config:
+   `collector_config_*.json` + `myutils-profile ingest`.
+4. Per-framework ready-made commands (TorchTitan/SLIME/VERL/ROLL/HF/SGLang/vLLM):
+   `framework_playbook_samples/README.md`.
 
-2. 我想做端到端验收（含 diff）  
-运行 `p0_p13_end_to_end_demo.py`
+## Most-used commands
 
-3. 我想直接用 CLI 配置跑离线分析  
-用 `collector_config_*.json` + `myutils-profile ingest`
-
-4. 我想按具体框架直接套命令（TorchTitan/SLIME/VERL/ROLL/HF/SGLang/vLLM）  
-看 `framework_playbook_samples/README.md`
-
-## 最常用命令
-
-### A) 最小统一 demo
+### A) Minimal unified demo
 
 ```bash
 python -m my_utils.profiling.examples.unified_metrics_demo \
@@ -29,9 +24,9 @@ python -m my_utils.profiling.examples.unified_metrics_demo \
   --steps 30
 ```
 
-产物：`metrics_events.jsonl`、`report.json`、`report.md`、`report.html` 等。
+Outputs `metrics_events.jsonl`, `report.json`, `report.md`, `report.html`, etc.
 
-### B) 端到端验收 demo
+### B) End-to-end acceptance demo
 
 ```bash
 python -m my_utils.profiling.examples.p0_p13_end_to_end_demo \
@@ -39,7 +34,7 @@ python -m my_utils.profiling.examples.p0_p13_end_to_end_demo \
   --steps 20
 ```
 
-可选加 sqlite 探测：
+Optional sqlite probing:
 
 ```bash
 python -m my_utils.profiling.examples.p0_p13_end_to_end_demo \
@@ -47,9 +42,9 @@ python -m my_utils.profiling.examples.p0_p13_end_to_end_demo \
   --nsys-sqlite ./train_rank0.sqlite
 ```
 
-### C) 用 JSON 配置跑 CLI（离线）
+### C) CLI with a JSON config (offline)
 
-单 sqlite：
+Single sqlite:
 
 ```bash
 myutils-profile ingest \
@@ -59,7 +54,7 @@ myutils-profile ingest \
   --report-formats json,markdown,html
 ```
 
-多 rank glob：
+Multi-rank glob:
 
 ```bash
 myutils-profile ingest \
@@ -69,7 +64,7 @@ myutils-profile ingest \
   --report-formats json,markdown,html
 ```
 
-### D) 框架一键模板（NSYS/NCU）
+### D) One-command framework templates (NSYS/NCU)
 
 ```bash
 bash my_utils/profiling/examples/framework_playbook_samples/nsys_torchtitan.sh
@@ -80,22 +75,28 @@ bash my_utils/profiling/examples/framework_playbook_samples/ncu_generic_wrap.sh 
   torchrun --nproc_per_node=8 train.py --config cfg.yaml
 ```
 
-## 配置文件说明
+## Config files
 
-- `collector_config_example.json`  
-  全量离线 provider 示例（table_csv / ncu_csv / nsys_sqlite / cprofile / perf_stat）。
+- `collector_config_example.json` — full offline provider example
+  (table_csv / ncu_csv / nsys_sqlite / cprofile / perf_stat).
+- `collector_config_nsys_sqlite_full.json` — complete template for a single
+  sqlite.
+- `collector_config_nsys_multi_rank_full.json` — complete template for a
+  multi-rank `sqlite_glob`.
+- `framework_playbook_samples/*` — copy-paste launch templates for
+  TorchTitan, Megatron, DeepSpeed, HF Trainer, VERL, SLIME, ROLL, SGLang,
+  and vLLM.
 
-- `collector_config_nsys_sqlite_full.json`  
-  单个 sqlite 的完整配置模板。
+## Common pitfalls
 
-- `collector_config_nsys_multi_rank_full.json`  
-  多 rank sqlite_glob 的完整配置模板。
+1. `nsys_sqlite` takes `sqlite_path`, not `db_path`.
+2. `nsys_sqlite_glob` takes `sqlite_glob`.
+3. Files matched by `sqlite_glob` may have any extension, but their content
+   must be a real SQLite database.
 
-- `framework_playbook_samples/*`  
-  面向 TorchTitan、Megatron、DeepSpeed、HF Trainer、VERL、SLIME、ROLL、SGLang、vLLM 的可复制启动模板。
+The demos and offline CLI runs are pure Python — no torch or GPU needed;
+only the framework capture templates require a real training environment.
 
-## 常见坑
+---
 
-1. `nsys_sqlite` 用的是 `sqlite_path`，不是 `db_path`。  
-2. `nsys_sqlite_glob` 用的是 `sqlite_glob`。  
-3. `sqlite_glob` 命中文件扩展名可以不是 `.sqlite`，但文件内容必须是真正 SQLite。  
+Chinese original: [docs/zh/profiling/examples/README.md](../../../docs/zh/profiling/examples/README.md)

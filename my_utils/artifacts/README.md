@@ -1,16 +1,16 @@
 # artifacts
 
-离线产物层：中间数据落盘/回读，以及 NCU CSV 分析辅助。
+Offline artifact layer: dumping and reloading intermediate data, plus NCU CSV
+analysis helpers.
 
-## 30秒定位
+## Quick orientation
 
-1. 我想把 tensor/中间结果落盘  
-用 `UniversalDumper` / `DumpConfig`
+1. Dump tensors / intermediate results to disk:
+   `UniversalDumper` / `DumpConfig` (or the process-wide `get_dumper()`).
+2. Analyze and compare NCU CSV metrics:
+   `analyze_sm_throughput_from_csv` / `compare_kernel_metrics`.
 
-2. 我想做 NCU CSV 指标分析对比  
-用 `analyze_sm_throughput_from_csv` / `compare_kernel_metrics`
-
-## 最小示例
+## Minimal example
 
 ```python
 from my_utils.artifacts import DumpConfig, UniversalDumper
@@ -20,7 +20,16 @@ dumper = UniversalDumper(cfg)
 dumper.dump_tensor("x", x_tensor)
 ```
 
-## 关键文件
+## Key files
 
-- `dump_utils.py`: `DumpTensorIO`、`DumpConfig`、`UniversalDumper`、`UniversalLoader`
-- `ncu_analyze_from_csv.py`: NCU CSV 指标分析与对比工具  
+- `dump_utils.py` — `DumpTensorIO`, `DumpConfig`, `UniversalDumper`,
+  `get_dumper` (singleton access); `UniversalLoader` for reading dumps back
+  (import it from `my_utils.artifacts.dump_utils`).
+- `ncu_analyze_from_csv.py` — NCU CSV metric analysis and comparison.
+
+torch is optional: it is only needed when actually dumping/loading torch
+tensors. The CSV analysis helpers are pure Python.
+
+---
+
+Chinese original: [docs/zh/artifacts/README.md](../../docs/zh/artifacts/README.md)

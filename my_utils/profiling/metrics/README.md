@@ -1,25 +1,31 @@
 # metrics
 
-统一指标数据层：定义“指标是什么、从哪来、怎么存、怎么校验”。
+Unified metrics data layer: defines what a metric is, where it comes from, how
+it is stored, and how it is validated.
 
-## 你什么时候会改这里
+## When you touch this package
 
-- 接入新数据源（新的 provider）。
-- 增加新的指标字段或 schema 约束。
-- 调整指标分类、命名、归一化策略。
+- Integrating a new data source (a new provider).
+- Adding metric fields or schema constraints.
+- Changing metric taxonomy, naming, or normalization.
 
-## 关键文件
+## Key files
 
-- `metrics_types.py`: 核心类型（`MetricEvent` / `AnalysisReport` 等）。
-- `metrics_schema.py`: schema 校验与规范化。
-- `metrics_provider.py`: provider 抽象接口。
-- `metrics_providers.py`: 内置 provider 实现。
-- `provider_registry.py`: provider 注册与按配置实例化。
-- `metrics_store.py`: 事件落盘与读取。
-- `metrics_taxonomy.py`: 指标分类体系。
+- `metrics_types.py` — core types (`MetricEvent`, `AnalysisReport`, ...).
+- `metrics_schema.py` — schema validation and normalization.
+- `metrics_provider.py` — the provider abstraction.
+- `metrics_providers.py` — built-in provider implementations.
+- `provider_registry.py` — provider registration and config-driven
+  instantiation.
+- `metrics_store.py` — event persistence and reading.
+- `metrics_taxonomy.py` — metric taxonomy.
 
-## 最常见改动
+## Most common change
 
-1. 新 provider：实现 `MetricsProvider` 接口。  
-2. 在 `provider_registry.py` 注册。  
-3. 在 `examples/collector_config_example.json` 写配置并验证。  
+1. New provider: implement the `MetricsProvider` interface.
+2. Register it in `provider_registry.py`.
+3. Add a config entry in `examples/collector_config_example.json` and verify.
+
+---
+
+Chinese original: [docs/zh/profiling/metrics/README.md](../../../docs/zh/profiling/metrics/README.md)

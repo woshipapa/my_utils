@@ -1,34 +1,38 @@
 # hooks
 
-基于 PyTorch hook 的观测与局部 profiling 控制。
+Observation and scoped profiling control built on PyTorch hooks.
 
-## 30秒定位
+torch is required to actually use these hooks (it is an optional dependency of
+`my_utils` overall — only capture/runtime paths like this one need it).
 
-1. 我想按训练窗口触发 profiler start/stop  
-用 `ForwardProfilerHook`
+## Quick orientation
 
-2. 我想记录模块级前向输入输出信息  
-用 `ForwardTraceRecorder`
+1. Trigger profiler start/stop on a training window: `ForwardProfilerHook`.
+2. Record module-level forward input/output info: `ForwardTraceRecorder`.
+3. Module-level timing statistics (legacy approach): `ModuleProfiler`
+   (optional export).
 
-3. 我想要模块级耗时统计（历史方案）  
-用 `ModuleProfiler`（可选）
-
-## 最小示例
+## Minimal example
 
 ```python
 from my_utils.hooks import ForwardTraceRecorder
 
 recorder = ForwardTraceRecorder()
 recorder.register(model)
-# forward 后可读取 recorder 的记录结果
+# after forward, read the recorded results from `recorder`
 ```
 
-## 关键文件
+## Key files
 
-- `ForwardProfileHook.py`: `ForwardProfilerHook`
-- `module_hook.py`: `ForwardTraceRecorder`
-- `moduleProfiler.py`: `ModuleProfiler`
+- `ForwardProfileHook.py` — `ForwardProfilerHook`.
+- `module_hook.py` — `ForwardTraceRecorder`.
+- `moduleProfiler.py` — `ModuleProfiler`.
 
-## 兼容性
+## Compatibility
 
-- 旧路径 `my_utils.ForwardProfileHook`、`my_utils.module_hook` 仍可用。  
+- The legacy import paths `my_utils.ForwardProfileHook` and
+  `my_utils.module_hook` still work.
+
+---
+
+Chinese original: [docs/zh/hooks/README.md](../../docs/zh/hooks/README.md)

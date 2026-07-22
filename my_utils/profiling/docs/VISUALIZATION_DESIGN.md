@@ -1,100 +1,100 @@
-# 可视化增强设计方案
+# Visualization Enhancement Design
 
-## 设计目标
+## Design Goals
 
-1. **多种输出格式** - HTML、TensorBoard、Web Dashboard
-2. **实时监控** - 支持训练过程中的实时指标展示
-3. **交互式分析** - 支持钻取、过滤、对比
-4. **框架无关** - 可视化层不依赖特定训练框架
+1. **Shareable output** - self-contained static HTML reports that can be archived and sent around
+2. **Timeline interoperability** - export collected metrics as Chrome `traceEvents` JSON for Perfetto / `chrome://tracing`
+3. **Interactive analysis** - drill-down, filtering, and comparison inside the generated reports
+4. **Framework agnostic** - the visualization layer does not depend on any specific training framework
 
-## 整体架构
+> **Historical note:** earlier revisions of this design also planned a TensorBoard
+> plugin and a standalone real-time Web Dashboard. Neither was built and neither is
+> planned; static HTML reports plus the Chrome-trace exporter
+> (`my_utils/profiling/output/metrics_trace.py`) replaced both. See
+> [Retired plans](#3-retired-plans-tensorboard-plugin-and-web-dashboard).
+
+## Overall Architecture
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
-│                   VisualizationLayer                          │
-├──────────────────────────────────────────────────────────────┤
+│              Visualization Layer                             │
+│              my_utils/profiling/visualization/               │
 │                                                              │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐      │
-│  │ HTMLReport   │  │ TensorBoard  │  │   Web        │      │
-│  │  Generator   │  │   Plugin     │  │ Dashboard    │      │
-│  └──────────────┘  └──────────────┘  └──────────────┘      │
-│         │                  │                  │              │
-│         └──────────────────┼──────────────────┘              │
-│                            ▼                                 │
-│              ┌──────────────────────────┐                    │
-│              │   Shared Components      │                    │
-│              │  - Chart Templates       │                    │
-│              │  - Layout Builders       │                    │
-│              │  - Data Transform        │                    │
-│              └──────────────────────────┘                    │
+│   ┌────────────────────┐    ┌────────────────────┐           │
+│   │ HTMLReport         │    │ QuickReport        │           │
+│   │ Generator          │    │ Generator          │           │
+│   └─────────┬──────────┘    └─────────┬──────────┘           │
+│             └─────────────┬───────────┘                      │
+│                           ▼                                  │
+│             ┌──────────────────────────┐                     │
+│             │   Shared Components      │                     │
+│             │  - charts.py (renderers) │                     │
+│             │  - transformers.py       │                     │
+│             │  - layouts.py            │                     │
+│             └──────────────────────────┘                     │
 └──────────────────────────────────────────────────────────────┘
-                            │
-                            ▼
-                  ┌─────────────────┐
-                  │ MetricsCollector │
-                  │ & Analyzer      │
-                  └─────────────────┘
+              ▲                            ▲
+              │ MetricEvent lists          │ MetricEvent lists
+┌─────────────┴──────────┐    ┌────────────┴────────────────────┐
+│ MetricsCollector       │───▶│ output/metrics_trace.py         │
+│ + MetricsAnalyzer      │    │ Chrome traceEvents JSON export  │
+└────────────────────────┘    └─────────────────────────────────┘
 ```
 
-## 1. 共享组件库
+All components below exist in the codebase; code excerpts show the real
+signatures (docstrings and CSS are abridged where noted).
 
-### 1.1 图表模板
+## 1. Shared Component Library
+
+### 1.1 Chart Templates (`visualization/charts.py`)
+
+A chart is described by a renderer-independent `ChartConfig`; concrete
+renderers turn it into embeddable HTML (or JSON for API-style consumers).
+This keeps the report layout code decoupled from the charting library.
 
 ```python
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
-from typing import Any
+from dataclasses import dataclass, field
+from typing import Any, Optional
 import json
+
 
 @dataclass
 class ChartConfig:
-    """图表配置"""
-    chart_type: str  # "line", "bar", "pie", "heatmap", "scatter", "gantt"
+    """Chart configuration."""
+    chart_type: str  # "line", "bar", "pie", "heatmap", "scatter", "doughnut"
     title: str
     data: dict[str, Any]
-    options: dict[str, Any] = None
+    options: dict[str, Any] = field(default_factory=dict)
+    width: Optional[str] = None
+    height: Optional[str] = None
 
     def to_dict(self) -> dict:
         return {
             "type": self.chart_type,
             "title": self.title,
             "data": self.data,
-            "options": self.options or {},
+            "options": self.options,
+            "width": self.width,
+            "height": self.height,
         }
 
+
 class ChartRenderer(ABC):
-    """图表渲染器基类"""
+    """Base class for chart renderers."""
 
     @abstractmethod
     def render(self, config: ChartConfig) -> str:
-        """返回渲染后的HTML/SVG/JSON"""
-        pass
+        """Render the chart as an HTML fragment."""
 
-class ChartJsRenderer(ChartRenderer):
-    """Chart.js渲染器"""
+    @abstractmethod
+    def render_to_json(self, config: ChartConfig) -> str:
+        """Render the chart as JSON (for API-style responses)."""
 
-    def render(self, config: ChartConfig) -> str:
-        template = '''
-        <div class="chart-container">
-            <canvas id="{chart_id}"></canvas>
-        </div>
-        <script>
-            new Chart(document.getElementById("{chart_id}"), {{
-                type: "{chart_type}",
-                data: {data},
-                options: {options}
-            }});
-        </script>
-        '''
-        return template.format(
-            chart_id=f"chart_{id(config)}",
-            chart_type=config.chart_type,
-            data=json.dumps(config.data),
-            options=json.dumps(config.options or self._default_options(config)),
-        )
+    def _get_chart_id(self, config: ChartConfig) -> str:
+        """Derive a stable, unique chart id from the config (md5 of type/title/data)."""
 
-    def _default_options(self, config: ChartConfig) -> dict:
-        """默认图表选项"""
+    def _get_default_options(self, config: ChartConfig) -> dict:
         return {
             "responsive": True,
             "maintainAspectRatio": False,
@@ -102,929 +102,612 @@ class ChartJsRenderer(ChartRenderer):
                 "legend": {"position": "top"},
                 "tooltip": {"mode": "index", "intersect": False},
             },
-            "interaction": {"mode": "nearest", "axis": "x", "intersect": False},
         }
-
-class PlotlyRenderer(ChartRenderer):
-    """Plotly渲染器（支持交互式图表）"""
-
-    def render(self, config: ChartConfig) -> str:
-        import plotly.graph_objects as go
-        from plotly.offline import plot
-
-        fig = self._create_figure(config)
-        return plot(fig, output_type="div", include_plotlyjs=False)
-
-    def _create_figure(self, config: ChartConfig) -> go.Figure:
-        """根据配置创建Plotly图表"""
-        if config.chart_type == "line":
-            return go.Figure(data=go.Scatter(**config.data))
-        elif config.chart_type == "bar":
-            return go.Figure(data=go.Bar(**config.data))
-        elif config.chart_type == "pie":
-            return go.Figure(data=go.Pie(**config.data))
-        # ...
 ```
 
-### 1.2 数据转换器
+Three concrete renderers are implemented:
+
+```python
+class ChartJsRenderer(ChartRenderer):
+    """
+    Chart.js renderer (default fallback; loads Chart.js from a CDN).
+    """
+
+    def __init__(self, version: str = "4.4.0"):
+        self.version = version
+        self.cdn_url = f"https://cdn.jsdelivr.net/npm/chart.js@{self.version}/dist/chart.umd.min.js"
+
+    def render(self, config: ChartConfig) -> str:
+        chart_id = self._get_chart_id(config)
+        options = self._merge_options(config)
+
+        template = '''
+        <div class="chart-container" {style}>
+            <canvas id="{chart_id}"></canvas>
+        </div>
+        <script>
+            (function() {{
+                const ctx = document.getElementById('{chart_id}');
+                if (ctx) {{
+                    new Chart(ctx, {{
+                        type: '{chart_type}',
+                        data: {data},
+                        options: {options}
+                    }});
+                }}
+            }})();
+        </script>
+        '''
+        # ... fills in chart_id, chart_type, JSON-encoded data/options,
+        # and an optional inline width/height style.
+
+    def _merge_options(self, config: ChartConfig) -> dict:
+        """Deep-merge defaults, chart-type-specific options, and config.options."""
+
+    def _get_type_specific_options(self, chart_type: str) -> dict:
+        """Per-type defaults: axis scaffolding for line/bar (with smoothed
+        lines via tension 0.4), right-hand legends for pie/doughnut."""
+
+
+class PlotlyRenderer(ChartRenderer):
+    """
+    Plotly renderer for interactive charts.
+
+    If Plotly is not importable, render() transparently falls back to
+    ChartJsRenderer, so callers never need to guard the import themselves.
+    """
+
+    def __init__(self, offline: bool = True):
+        self.offline = offline  # inline plotly.js for fully offline reports
+
+    def render(self, config: ChartConfig) -> str:
+        try:
+            import plotly.graph_objects as go
+            from plotly.offline import plot
+        except ImportError:
+            return ChartJsRenderer().render(config)
+
+        fig = self._create_figure(config)
+        plot_div = plot(
+            fig,
+            output_type="div",
+            include_plotlyjs="inline" if self.offline else False,
+            config={"displayModeBar": True, "displaylogo": False},
+        )
+        # ... wraps plot_div in a .chart-container div
+
+    def _create_figure(self, config: ChartConfig):
+        """Map ChartConfig to a plotly Figure.
+
+        Supports "line" (Scatter, lines+markers), "bar", "pie", and
+        "doughnut" (Pie with hole=0.4); applies title and converts a small
+        subset of Chart.js-style options (e.g. beginAtZero -> rangemode)."""
+
+
+class EChartsRenderer(ChartRenderer):
+    """
+    Apache ECharts renderer (richer feature set, e.g. built-in resize handling).
+    """
+
+    def __init__(self, version: str = "5.4.3"):
+        self.version = version
+        self.cdn_url = f"https://cdn.jsdelivr.net/npm/echarts@{self.version}/dist/echarts.min.js"
+
+    def _convert_to_echarts_option(self, config: ChartConfig) -> dict:
+        """Translate ChartConfig into an ECharts `option` object for
+        line / bar / pie / doughnut charts."""
+```
+
+A factory selects the backend so the rest of the pipeline never hard-codes
+a charting library:
+
+```python
+def create_chart_renderer(backend: str = "auto") -> ChartRenderer:
+    """
+    Create a chart renderer.
+
+    Args:
+        backend:
+            - "auto":    prefer Plotly if importable, else Chart.js
+            - "chartjs": Chart.js renderer
+            - "plotly":  Plotly renderer
+            - "echarts": ECharts renderer
+    """
+```
+
+### 1.2 Data Transformers (`visualization/transformers.py`)
+
+The transformers convert lists of metric events into the `labels` /
+`datasets` shapes the renderers expect.
+
+`transformers.py` defines its **own lightweight `MetricEvent` dataclass**.
+It is intentionally decoupled from the richer
+`my_utils.profiling.metrics.metrics_types.MetricEvent` used by the
+collector pipeline, so the visualization layer can be fed from any source
+(timers, CSV logs, ad-hoc scripts) without importing the metrics stack:
+
+```python
+@dataclass
+class MetricEvent:
+    """Unified metric event format (visualization-local)."""
+    timestamp: float             # Unix timestamp in seconds
+    name: str                    # metric name
+    value: float                 # metric value
+    unit: str = ""               # unit
+    tags: dict[str, Any] = None  # extra tags; defaults to {} in __post_init__
+```
+
+`DataTransformer` is a namespace of static methods. Representative
+implementations:
 
 ```python
 class DataTransformer:
-    """将MetricEvent转换为图表友好的格式"""
+    """Convert MetricEvent lists into chart-friendly formats."""
 
     @staticmethod
-    def to_time_series(events: list[MetricEvent], metric_name: str) -> dict:
-        """转换为时间序列数据"""
-        filtered = [e for e in events if e.name == metric_name]
-        filtered.sort(key=lambda e: e.timestamp)
+    def to_time_series(
+        events: list[MetricEvent],
+        metric_name: str | None = None,
+        group_by_step: bool = True,
+    ) -> dict:
+        """
+        Convert to time-series data for a line chart.
 
-        return {
-            "labels": [e.timestamp for e in filtered],
-            "datasets": [{
-                "label": metric_name,
-                "data": [e.value for e in filtered],
-                "borderColor": "rgb(75, 192, 192)",
-                "backgroundColor": "rgba(75, 192, 192, 0.2)",
-            }]
-        }
+        If group_by_step is True and events carry a "step" tag, values are
+        grouped by step and averaged per step; otherwise events are sorted
+        by timestamp and plotted directly.
 
-    @staticmethod
-    def to_comparison(events: list[MetricEvent], group_by: str) -> dict:
-        """转换为对比图表数据"""
-        groups: dict[str, list[float]] = {}
-        for evt in events:
-            key = evt.tags.get(group_by, "unknown")
-            if key not in groups:
-                groups[key] = []
-            groups[key].append(evt.value)
-
-        return {
-            "labels": list(groups.keys()),
-            "datasets": [{
-                "label": f"by {group_by}",
-                "data": [np.mean(groups[k]) for k in groups.keys()],
-                "backgroundColor": [
-                    "rgba(255, 99, 132, 0.7)",
-                    "rgba(54, 162, 235, 0.7)",
-                    "rgba(255, 206, 86, 0.7)",
-                    "rgba(75, 192, 192, 0.7)",
-                ][:len(groups)],
-            }]
-        }
+        Returns {"labels": [...], "datasets": [{...}]}.
+        """
 
     @staticmethod
-    def to_trace(events: list[MetricEvent]) -> dict:
-        """转换为Chrome Trace格式"""
-        trace_events = []
-        for evt in events:
-            if evt.tags.get("type") == "START":
-                trace_events.append({
-                    "name": evt.name,
-                    "cat": evt.tags.get("category", "default"),
-                    "ph": "B",
-                    "ts": int(evt.timestamp * 1_000_000),
-                    "pid": evt.tags.get("rank", 0),
-                    "tid": evt.tags.get("step", 0),
-                    "args": {"value": evt.value, "unit": evt.unit},
-                })
-            elif evt.tags.get("type") == "END":
-                trace_events.append({
-                    "name": evt.name,
-                    "cat": evt.tags.get("category", "default"),
-                    "ph": "E",
-                    "ts": int(evt.timestamp * 1_000_000),
-                    "pid": evt.tags.get("rank", 0),
-                    "tid": evt.tags.get("step", 0),
-                })
+    def to_comparison(
+        events: list[MetricEvent],
+        metric_name: str,
+        group_by: str = "rank",
+    ) -> dict:
+        """
+        Convert to comparison (bar-chart) data.
 
-        return {"traceEvents": trace_events}
+        Groups the named metric by a tag (e.g. "rank"), returning per-group
+        means plus an "errors" list of standard deviations for error bars.
+        """
 ```
 
-### 1.3 布局构建器
+The full set of transformations:
+
+| Method | Purpose |
+|---|---|
+| `to_time_series(events, metric_name=None, group_by_step=True)` | Single line series, grouped by step or by timestamp |
+| `to_multiple_time_series(events, metric_names)` | Multiple series on a shared step axis, with a color cycle |
+| `to_comparison(events, metric_name, group_by="rank")` | Per-group means + std-dev error bars for bar charts |
+| `to_distribution(events, metric_name, bins=20)` | Histogram via `np.histogram`, bin centers as labels |
+| `to_pie_chart(events, metric_name)` | Share-of-total breakdown (e.g. per-kernel time), sorted descending |
+| `to_scatter_plot(events, x_metric, y_metric)` | Pairs two metrics by common step for correlation analysis |
+| `to_heatmap(events, row_metric, col_metric, value_metric)` | `{"rows", "cols", "matrix"}` aggregated by two tag dimensions |
+| `compute_statistics(events, metric_name=None)` | Per-metric count/mean/std/min/max/median/p25/p75, sorted by mean |
+| `filter_by_tags(events, tags)` | Keep only events matching all tag key/value pairs |
+| `aggregate_by_time_window(events, window_size=1.0, aggregation="mean")` | Downsample into fixed time windows (mean/sum/min/max/count) |
+
+**Chrome trace conversion is not part of `DataTransformer`.** Trace export
+operates on the collector-side `MetricEvent` (which carries `attributes`
+such as precise start/end timestamps) and lives in
+`my_utils/profiling/output/metrics_trace.py`:
+
+```python
+from my_utils.profiling import (
+    ChromeTraceExportConfig,
+    estimate_rank_time_offsets,
+    metric_events_to_chrome_trace,   # events -> {"traceEvents": [...], ...}
+    write_chrome_trace,              # events -> trace JSON file
+    export_events_file_to_chrome_trace,  # events.jsonl file -> trace JSON file
+)
+```
+
+The resulting `traceEvents` JSON loads directly into Perfetto or
+`chrome://tracing`. `MetricsCollector.export_chrome_trace()` wraps
+`write_chrome_trace` for the common case (see the usage example below).
+
+### 1.3 Layout Builders (`visualization/layouts.py`)
+
+`layouts.py` owns the report-domain dataclasses and the HTML assembly. The
+report model is deliberately renderer-free so analyzers can produce it
+without importing any charting code:
+
+```python
+class Severity(Enum):
+    CRITICAL = "critical"
+    HIGH = "high"
+    MEDIUM = "medium"
+    LOW = "low"
+    INFO = "info"
+
+
+@dataclass
+class Finding:
+    """A single analysis finding."""
+    id: str
+    title: str
+    description: str
+    severity: Severity
+    category: str
+    evidence: dict[str, Any]
+    affected_components: list[str]
+    metrics: dict[str, float]
+
+
+@dataclass
+class Recommendation:
+    """An optimization recommendation."""
+    id: str
+    title: str
+    description: str
+    priority: int            # rendered as P<priority>; >=8 high, >=5 medium
+    estimated_impact: str
+    effort: str
+    actions: list[str]
+    references: list[str]
+
+
+@dataclass
+class AnalysisReport:
+    """A full analysis report (visualization-side model)."""
+    metadata: dict[str, Any]
+    findings: list[Finding]
+    recommendations: list[Recommendation]
+    summary: str
+    overall_score: float     # 0-100
+```
+
+Timeline-style reports additionally use an extensible panel system, so new
+panels can be added (or reordered) without touching the builder:
+
+```python
+@dataclass(frozen=True)
+class PanelSpec:
+    """Extensible panel definition."""
+    panel_id: str
+    title: str
+    description: str = ""
+    order: int = 0
+    enabled: bool = True
+    min_height: str = "260px"
+
+
+def default_timeline_panel_specs(include_metrics: bool = True) -> list[PanelSpec]:
+    """Default timeline panel order: gpu_metrics, rank_heatmap,
+    roofline_proxy, gil_lane, kernel_category, nvtx_stability,
+    all_streams, nvtx_scopes, kernel_timeline."""
+```
+
+`LayoutBuilder` assembles a report section by section with a fluent
+(chainable) API. Note that `add_chart` takes **already-rendered chart
+HTML** (from any `ChartRenderer`), keeping layout and rendering decoupled:
 
 ```python
 class LayoutBuilder:
-    """HTML布局构建器"""
+    """
+    HTML layout builder.
+
+    Builds the sections of an HTML report step by step.
+    """
 
     def __init__(self):
         self.sections = []
         self.scripts = []
         self.styles = []
+        self.title = "Performance Analysis Report"
+        self.subtitle = ""
 
-    def add_header(self, title: str, subtitle: str = "") -> "LayoutBuilder":
-        """添加标题"""
-        self.sections.append({
-            "type": "header",
-            "content": f"<h1>{title}</h1><p class='subtitle'>{subtitle}</p>"
-        })
-        return self
+    def set_title(self, title: str, subtitle: str = "") -> "LayoutBuilder": ...
 
-    def add_summary(self, summary: str, score: float) -> "LayoutBuilder":
-        """添加摘要"""
-        score_class = "good" if score >= 80 else "warning" if score >= 60 else "critical"
+    def add_header(self, title: str = None, subtitle: str = None) -> "LayoutBuilder":
+        """Title header; defaults to self.title and a 'Generated at ...' subtitle."""
 
-        self.sections.append({
-            "type": "summary",
-            "content": f"""
-            <div class="summary-card score-{score_class}">
-                <div class="score-circle">{score:.0f}</div>
-                <div class="summary-text">{summary}</div>
-            </div>
-            """
-        })
-        return self
+    def add_summary(
+        self,
+        summary: str,
+        score: float,
+        details: dict[str, Any] = None,
+    ) -> "LayoutBuilder":
+        """Score card. score >= 80 renders green ('good'), >= 60 amber
+        ('warning'), otherwise red ('critical'); details render as
+        label/value pairs under the summary text."""
 
-    def add_chart(self, config: ChartConfig, renderer: ChartRenderer) -> "LayoutBuilder":
-        """添加图表"""
-        self.sections.append({
-            "type": "chart",
-            "content": renderer.render(config)
-        })
-        return self
+    def add_metrics_grid(self, metrics: dict[str, Any]) -> "LayoutBuilder":
+        """Grid of headline metric cards ({"name": value})."""
 
-    def add_findings(self, findings: list[Finding]) -> "LayoutBuilder":
-        """添加发现列表"""
-        items = []
-        for finding in findings:
-            items.append(f"""
-            <div class="finding-item severity-{finding.severity.value}">
-                <div class="finding-header">
-                    <span class="finding-title">{finding.title}</span>
-                    <span class="finding-badge">{finding.severity.value}</span>
-                </div>
-                <div class="finding-description">{finding.description}</div>
-                <div class="finding-evidence">
-                    {self._format_evidence(finding.evidence)}
-                </div>
-            </div>
-            """)
+    def add_chart(
+        self,
+        chart_html: str,
+        title: str = "",
+        width: str = None,
+        height: str = "400px",
+    ) -> "LayoutBuilder":
+        """Add a chart section wrapping pre-rendered chart HTML."""
 
-        self.sections.append({
-            "type": "findings",
-            "content": f'<div class="findings-list">{"".join(items)}</div>'
-        })
-        return self
+    def add_two_column_charts(
+        self,
+        left_chart_html: str,
+        right_chart_html: str,
+        left_title: str = "",
+        right_title: str = "",
+    ) -> "LayoutBuilder":
+        """Side-by-side layout, e.g. a pie chart next to its data table."""
 
-    def add_recommendations(self, recommendations: list[Recommendation]) -> "LayoutBuilder":
-        """添加建议列表"""
-        items = []
-        for rec in recommendations:
-            items.append(f"""
-            <div class="recommendation-item priority-{rec.priority}">
-                <div class="rec-header">
-                    <span class="rec-title">{rec.title}</span>
-                    <span class="rec-priority">P{rec.priority}</span>
-                </div>
-                <div class="rec-description">{rec.description}</div>
-                <div class="rec-meta">
-                    <span class="rec-impact">预期影响: {rec.estimated_impact}</span>
-                    <span class="rec-effort">工作量: {rec.effort}</span>
-                </div>
-                <div class="rec-actions">
-                    <strong>建议操作:</strong>
-                    <ul>{"".join(f"<li>{a}</li>" for a in rec.actions)}</ul>
-                </div>
-            </div>
-            """)
+    def add_panel_grid(
+        self,
+        panel_html_map: dict[str, str],
+        *,
+        panel_specs: list[PanelSpec] | None = None,
+        title: str = "Panels",
+    ) -> "LayoutBuilder":
+        """Extensible panel grid ordered by PanelSpec; defaults to
+        default_timeline_panel_specs(). Panels missing from the map are
+        skipped silently."""
 
-        self.sections.append({
-            "type": "recommendations",
-            "content": f'<div class="recommendations-list">{"".join(items)}</div>'
-        })
-        return self
+    def add_findings(self, findings: list[Finding], title: str = "Findings") -> "LayoutBuilder":
+        """Findings list with severity badge, description, affected
+        components, and formatted evidence key/value pairs."""
 
-    def add_table(self, data: list[dict], title: str = "") -> "LayoutBuilder":
-        """添加表格"""
-        if not data:
-            return self
+    def add_recommendations(
+        self,
+        recommendations: list[Recommendation],
+        title: str = "Recommendations",
+    ) -> "LayoutBuilder":
+        """Recommendations with priority badge, expected impact, effort,
+        an action checklist, and optional reference links."""
 
-        headers = list(data[0].keys())
-        rows = []
-        for row in data:
-            rows.append("<tr>" + "".join(f"<td>{row[h]}</td>" for h in headers) + "</tr>")
+    def add_table(
+        self,
+        data: list[dict[str, Any]],
+        title: str = "",
+        sortable: bool = True,
+    ) -> "LayoutBuilder":
+        """Table from a list of row dicts; headers come from the first row."""
 
-        table_html = f"""
-        <div class="table-container">
-            {f"<h3>{title}</h3>" if title else ""}
-            <table class="data-table">
-                <thead>
-                    <tr>{"".join(f"<th>{h}</th>" for h in headers)}</tr>
-                </thead>
-                <tbody>{"".join(rows)}</tbody>
-            </table>
-        </div>
+    def add_code_block(self, code: str, language: str = "python") -> "LayoutBuilder": ...
+    def add_section(self, html: str) -> "LayoutBuilder":
+        """Escape hatch: append arbitrary custom HTML."""
+    def add_divider(self) -> "LayoutBuilder": ...
+    def add_script(self, script: str) -> "LayoutBuilder": ...
+    def add_style(self, style: str) -> "LayoutBuilder": ...
+
+    def build(self, include_styles: bool = True) -> str:
         """
-
-        self.sections.append({"type": "table", "content": table_html})
-        return self
-
-    def _format_evidence(self, evidence: dict) -> str:
-        """格式化证据"""
-        items = []
-        for key, value in evidence.items():
-            if key not in ["components", "metrics"]:
-                if isinstance(value, float):
-                    items.append(f"<strong>{key}:</strong> {value:.4f}")
-                else:
-                    items.append(f"<strong>{key}:</strong> {value}")
-
-        return "<br>".join(items)
-
-    def build(self) -> str:
-        """构建完整HTML"""
-        template = '''
-        <!DOCTYPE html>
-        <html lang="zh-CN">
-        <head>
-            <meta charset="UTF-8">
-            <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            <title>Performance Analysis Report</title>
-            <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
-            <style>{css}</style>
-        </head>
-        <body>
-            <div class="container">{sections}</div>
-            <script>{scripts}</script>
-        </body>
-        </html>
-        '''
-
-        css = self._get_css()
-        sections = "".join(s["content"] for s in self.sections)
-        scripts = "\n".join(self.scripts)
-
-        return template.format(css=css, sections=sections, scripts=scripts)
-
-    def _get_css(self) -> str:
-        """获取CSS样式"""
-        return '''
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-            background: #f5f7fa;
-            color: #2c3e50;
-            padding: 20px;
-        }
-        .container {
-            max-width: 1400px;
-            margin: 0 auto;
-        }
-        .summary-card {
-            background: white;
-            border-radius: 12px;
-            padding: 24px;
-            margin-bottom: 24px;
-            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
-            display: flex;
-            align-items: center;
-            gap: 24px;
-        }
-        .score-good { border-left: 4px solid #10b981; }
-        .score-warning { border-left: 4px solid #f59e0b; }
-        .score-critical { border-left: 4px solid #ef4444; }
-        .score-circle {
-            width: 80px;
-            height: 80px;
-            border-radius: 50%;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-size: 28px;
-            font-weight: bold;
-            color: white;
-        }
-        .score-good .score-circle { background: #10b981; }
-        .score-warning .score-circle { background: #f59e0b; }
-        .score-critical .score-circle { background: #ef4444; }
-        .finding-item, .recommendation-item {
-            background: white;
-            border-radius: 8px;
-            padding: 16px;
-            margin-bottom: 12px;
-            border-left: 4px solid #cbd5e1;
-        }
-        .severity-critical { border-left-color: #ef4444; }
-        .severity-high { border-left-color: #f97316; }
-        .severity-medium { border-left-color: #f59e0b; }
-        .finding-header, .rec-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 8px;
-        }
-        .finding-title, .rec-title { font-weight: 600; }
-        .finding-badge, .rec-priority {
-            padding: 4px 12px;
-            border-radius: 12px;
-            font-size: 12px;
-            font-weight: 600;
-        }
-        .chart-container {
-            background: white;
-            border-radius: 12px;
-            padding: 20px;
-            margin-bottom: 24px;
-            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
-            height: 400px;
-        }
-        .table-container {
-            background: white;
-            border-radius: 12px;
-            padding: 20px;
-            margin-bottom: 24px;
-            overflow-x: auto;
-        }
-        .data-table {
-            width: 100%;
-            border-collapse: collapse;
-        }
-        .data-table th, .data-table td {
-            padding: 12px;
-            text-align: left;
-            border-bottom: 1px solid #e2e8f0;
-        }
-        .data-table th {
-            font-weight: 600;
-            background: #f8fafc;
-        }
-        '''
+        Assemble the final self-contained HTML document: <head> pulls in
+        Chart.js 4.4.0 from the jsDelivr CDN plus the built-in CSS (and any
+        add_style additions), <body> concatenates all sections inside a
+        .container div, followed by any add_script scripts.
+        """
 ```
 
-## 2. HTML报告生成器
+The built-in stylesheet (`_get_builtin_css`, ~400 lines) defines the visual
+language of every generated report:
+
+- card-based layout on a gradient page background, max content width 1400px;
+- score cards and severity accents share one palette: green `#10b981`
+  (good / low), amber `#f59e0b` (warning / medium), orange `#f97316`
+  (high), red `#ef4444` (critical), blue `#3b82f6` (low/info badges);
+- dedicated styles for the metrics grid, chart sections, panel grid,
+  findings/recommendations lists, evidence blocks, data tables (hover
+  highlighting), dark code blocks, and section dividers;
+- a responsive breakpoint at 768px collapses two-column layouts and the
+  metrics grid for small screens.
+
+## 2. HTML Report Generator (`visualization/html_generator.py`)
+
+`HTMLReportGenerator` ties the three shared components together: it
+transforms events, renders charts, and drives a `LayoutBuilder` to produce
+the final document.
 
 ```python
 class HTMLReportGenerator:
-    """HTML报告生成器"""
+    """
+    HTML report generator.
 
-    def __init__(self, renderer: ChartRenderer = None):
-        self.renderer = renderer or ChartJsRenderer()
-        self.transformer = DataTransformer()
+    Combines chart rendering, data transformation, and layout building
+    into a complete performance-analysis HTML report.
+    """
 
-    def generate(self, report: AnalysisReport, events: list[MetricEvent]) -> str:
-        """生成完整HTML报告"""
+    def __init__(
+        self,
+        renderer: Optional[ChartRenderer] = None,
+        transformer: Optional[DataTransformer] = None,
+    ):
+        # renderer defaults to create_chart_renderer() ("auto" backend);
+        # transformer defaults to DataTransformer()
+        self.renderer = renderer or create_chart_renderer()
+        self.transformer = transformer or DataTransformer()
+
+    def generate(
+        self,
+        report: AnalysisReport,
+        events: list[MetricEvent],
+        output_path: Optional[str] = None,
+    ) -> str:
+        """
+        Generate the full HTML report. If output_path is given, the file
+        (and its parent directories) are written as a side effect; the HTML
+        string is always returned.
+        """
         builder = LayoutBuilder()
 
-        # 1. 标题
+        # 1. Header
         builder.add_header(
-            "Performance Analysis Report",
-            f"Generated at {time.strftime('%Y-%m-%d %H:%M:%S')}"
+            title="Performance Analysis Report",
+            subtitle=f"Generated at {time.strftime('%Y-%m-%d %H:%M:%S')}",
         )
-
-        # 2. 摘要
-        builder.add_summary(report.summary, report.overall_score)
-
-        # 3. 性能趋势图
+        # 2. Summary card (score + event/finding/recommendation counts)
+        self._add_summary_section(builder, report)
+        # 3. Key metric cards
+        self._add_key_metrics(builder, events)
+        # 4. Performance trend charts
         self._add_trend_charts(builder, events)
-
-        # 4. 瓶颈分析图
-        self._add_bottleneck_charts(builder, report.findings)
-
-        # 5. 内存分析图
+        # 5. Bottleneck analysis charts
+        self._add_bottleneck_charts(builder, report)
+        # 6. Memory analysis charts
         self._add_memory_charts(builder, events)
-
-        # 6. 发现列表
-        builder.add_findings(report.findings)
-
-        # 7. 优化建议
-        builder.add_recommendations(report.recommendations)
-
-        # 8. 详细数据表
-        self._add_detail_tables(builder, report, events)
-
-        return builder.build()
-
-    def _add_trend_charts(self, builder: LayoutBuilder, events: list[MetricEvent]) -> None:
-        """添加趋势图表"""
-        # 按step分组的时间趋势
-        time_events = [e for e in events if "timer" in e.name.lower()]
-
-        if time_events:
-            by_step: dict[int, list[MetricEvent]] = {}
-            for evt in time_events:
-                step = int(evt.tags.get("step", 0))
-                if step not in by_step:
-                    by_step[step] = []
-                by_step[step].append(evt)
-
-            # 每个timer的总时间
-            timer_totals: dict[str, dict[int, float]] = {}
-            for step, step_events in by_step.items():
-                for evt in step_events:
-                    name = evt.name
-                    if name not in timer_totals:
-                        timer_totals[name] = {}
-                    timer_totals[name][step] = timer_totals[name].get(step, 0) + evt.value
-
-            # 创建折线图
-            for timer_name, step_data in timer_totals.items():
-                sorted_steps = sorted(step_data.keys())
-                config = ChartConfig(
-                    chart_type="line",
-                    title=f"{timer_name} Trend",
-                    data={
-                        "labels": sorted_steps,
-                        "datasets": [{
-                            "label": f"{timer_name} (ms)",
-                            "data": [step_data[s] for s in sorted_steps],
-                            "borderColor": "rgb(75, 192, 192)",
-                            "backgroundColor": "rgba(75, 192, 192, 0.2)",
-                            "fill": True,
-                        }]
-                    },
-                    options={
-                        "responsive": True,
-                        "maintainAspectRatio": False,
-                        "scales": {
-                            "y": {"beginAtZero": True},
-                            "x": {"title": {"display": True, "text": "Step"}}
-                        }
-                    }
-                )
-                builder.add_chart(config, self.renderer)
-
-    def _add_bottleneck_charts(self, builder: LayoutBuilder, findings: list[Finding]) -> None:
-        """添加瓶颈分析图表"""
-        bottlenecks = [f for f in findings if "瓶颈" in f.title]
-
-        if bottlenecks:
-            # 饼图
-            config = ChartConfig(
-                chart_type="pie",
-                title="Performance Bottlenecks",
-                data={
-                    "labels": [b.evidence.get("component", b.title) for b in bottlenecks],
-                    "datasets": [{
-                        "data": [b.evidence.get("ratio", 0) * 100 for b in bottlenecks],
-                        "backgroundColor": [
-                            "rgba(239, 68, 68, 0.8)",
-                            "rgba(249, 115, 22, 0.8)",
-                            "rgba(245, 158, 11, 0.8)",
-                            "rgba(34, 197, 94, 0.8)",
-                        ][:len(bottlenecks)]
-                    }]
-                }
-            )
-            builder.add_chart(config, self.renderer)
-
-    def _add_memory_charts(self, builder: LayoutBuilder, events: list[MetricEvent]) -> None:
-        """添加内存分析图表"""
-        memory_events = [e for e in events if "memory" in e.name.lower()]
-
-        if memory_events:
-            # 按类型分组
-            by_type: dict[str, list[tuple[float, float]]] = {}  # (timestamp, value)
-            for evt in memory_events:
-                mem_type = evt.name.split(".")[-1]  # allocated, reserved等
-                if mem_type not in by_type:
-                    by_type[mem_type] = []
-                by_type[mem_type].append((evt.timestamp, evt.value))
-
-            # 折线图
-            datasets = []
-            colors = {"allocated": "rgb(75, 192, 192)", "reserved": "rgb(255, 99, 132)"}
-            for mem_type, data in by_type.items():
-                data.sort(key=lambda x: x[0])
-                datasets.append({
-                    "label": f"Memory {mem_type}",
-                    "data": [d[1] for d in data],
-                    "borderColor": colors.get(mem_type, "rgb(153, 102, 255)"),
-                    "backgroundColor": colors.get(mem_type, "rgb(153, 102, 255)").replace("rgb", "rgba").replace(")", ", 0.2)"),
-                })
-
-            config = ChartConfig(
-                chart_type="line",
-                title="Memory Usage Over Time",
-                data={
-                    "labels": list(set([e.timestamp for e in memory_events])),
-                    "datasets": datasets
-                },
-                options={
-                    "responsive": True,
-                    "scales": {
-                        "y": {"beginAtZero": True, "title": {"display": True, "text": "Memory (GB)"}},
-                        "x": {"title": {"display": True, "text": "Time"}}
-                    }
-                }
-            )
-            builder.add_chart(config, self.renderer)
-
-    def _add_detail_tables(self, builder: LayoutBuilder, report: AnalysisReport, events: list[MetricEvent]) -> None:
-        """添加详细数据表格"""
-        # 指标统计表
-        stats = self._compute_statistics(events)
-        builder.add_table(stats, title="Metrics Statistics")
-
-    def _compute_statistics(self, events: list[MetricEvent]) -> list[dict]:
-        """计算统计数据"""
-        by_name: dict[str, list[float]] = {}
-        for evt in events:
-            name = evt.name
-            if name not in by_name:
-                by_name[name] = []
-            by_name[name].append(evt.value)
-
-        stats = []
-        for name, values in by_name.items():
-            stats.append({
-                "Metric": name,
-                "Count": len(values),
-                "Mean": f"{np.mean(values):.4f}",
-                "Std": f"{np.std(values):.4f}",
-                "Min": f"{np.min(values):.4f}",
-                "Max": f"{np.max(values):.4f}",
-                "Unit": events[[e.name for e in events].index(name)].unit,
-            })
-
-        return sorted(stats, key=lambda x: float(x["Mean"]), reverse=True)
+        # 7. Findings
+        if report.findings:
+            builder.add_findings(report.findings, title="Key Findings")
+        # 8. Recommendations
+        if report.recommendations:
+            builder.add_recommendations(report.recommendations, title="Recommendations")
+        # 9. Detailed statistics table
+        self._add_detail_tables(builder, events)
+        # 10. Build (and optionally save)
+        html = builder.build()
+        ...
+        return html
 ```
 
-## 3. TensorBoard插件
+Section builders (all private methods on the generator):
+
+- `_add_summary_section` - feeds `report.summary` / `report.overall_score`
+  into `add_summary`, with `event_count` / `finding_count` /
+  `recommendation_count` pulled from `report.metadata` as details.
+- `_add_key_metrics` - shows the latest `step` seen in event tags plus the
+  top-5 metrics by mean (from `DataTransformer.compute_statistics`) as a
+  metrics grid.
+- `_add_trend_charts` - plots a multi-series line chart via
+  `to_multiple_time_series`. Preferred metrics, in order: `timer.iter`,
+  `timer.forward`, `timer.backward`, `memory.allocated`,
+  `memory.reserved`, `loss`; if none of these are present it falls back to
+  the first three metric names found.
+- `_add_bottleneck_charts` - selects findings whose title contains
+  "bottleneck" (matched case-insensitively, in English or Chinese), reads
+  `component` and `ratio` / `percentage` from their evidence, and renders a
+  pie chart next to a percentage breakdown table using
+  `add_two_column_charts`.
+- `_add_memory_charts` - groups `memory.*` events by suffix (`allocated`,
+  `reserved`, ...) and plots them as line series over steps.
+- `_add_detail_tables` - top-20 rows of `compute_statistics` (count, mean,
+  std, min, max, median) as a sortable table.
+
+For the common case where no analyzer has run, a report can be produced
+from raw events alone:
 
 ```python
-# my_utils/profiling/tensorboard_plugin/__init__.py
-
-"""
-TensorBoard插件用于可视化my_utils收集的指标
-
-安装:
-pip install tensorboard
-
-使用:
-tensorboard --logdir=./metrics_logs --load_plugins=my_utils.profiling.tensorboard_plugin
-"""
-
-from tensorboard.plugins import base_plugin
-from tensorboard.plugins.hparams import api as hp
-from tensorboard.data import provider
-from tensorboard.types import plugin_data_pb2 as plugin_data_pb2
-import json
-
-class MetricsPluginLoader(base_plugin.TBLoader):
-    """插件加载器"""
-
-    def load(self, context: base_plugin.TBContext) -> "MetricsPlugin":
-        return MetricsPlugin(context)
-
-class MetricsPlugin(base_plugin.TBPlugin):
-    """TensorBoard Metrics插件"""
-
-    plugin_name = "my_utils_metrics"
-
-    def __init__(self, context: base_plugin.TBContext):
-        self._context = context
-        self._data_provider = MetricsDataProvider(context.logdir)
-
-    def get_plugin_apps(self):
-        """返回Flask应用"""
-        from flask import Blueprint
-        bp = Blueprint(self.plugin_name, __name__)
-
-        @bp.route("/index")
-        def index():
-            return self._render_index()
-
-        @bp.route("/data")
-        def data():
-            from flask import jsonify
-            return jsonify(self._get_data())
-
-        @bp.route("/ws")
-        def websocket():
-            """WebSocket端点，用于实时更新"""
-            # 实现WebSocket逻辑
-            pass
-
-        return [bp]
-
-    def _render_index(self) -> str:
-        """渲染插件主页"""
-        return '''
-        <!DOCTYPE html>
-        <html>
-        <head>
-            <title>Metrics Dashboard</title>
-            <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-            <style>
-                .dashboard { display: grid; grid-template-columns: repeat(2, 1fr); gap: 20px; padding: 20px; }
-                .card { background: white; border-radius: 8px; padding: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
-                .full-width { grid-column: 1 / -1; }
-            </style>
-        </head>
-        <body>
-            <div class="dashboard">
-                <div class="card full-width">
-                    <h2>Real-time Metrics</h2>
-                    <canvas id="realtimeChart"></canvas>
-                </div>
-                <div class="card">
-                    <h2>Memory Usage</h2>
-                    <canvas id="memoryChart"></canvas>
-                </div>
-                <div class="card">
-                    <h2>Top Bottlenecks</h2>
-                    <div id="bottlenecks"></div>
-                </div>
-            </div>
-            <script>
-                // WebSocket连接
-                const ws = new WebSocket(`ws://${location.host}/data/plugins/my_utils_metrics/ws`);
-
-                ws.onmessage = (event) => {
-                    const data = JSON.parse(event.data);
-                    updateCharts(data);
-                };
-
-                function updateCharts(data) {
-                    // 更新图表
-                }
-            </script>
-        </body>
-        </html>
-        '''
-
-    def _get_data(self) -> dict:
-        """获取当前数据"""
-        return self._data_provider.get_latest_data()
-
-class MetricsDataProvider:
-    """数据提供者，读取MetricsCollector的输出"""
-
-    def __init__(self, logdir: str):
-        self.logdir = logdir
-        self._cache = {}
-        self._last_update = 0
-
-    def get_latest_data(self) -> dict:
-        """获取最新数据"""
-        import time
-        import os
-
-        # 检查是否有新数据
-        metrics_file = os.path.join(self.logdir, "metrics.json")
-        if os.path.exists(metrics_file):
-            mtime = os.path.getmtime(metrics_file)
-            if mtime > self._last_update:
-                with open(metrics_file) as f:
-                    self._cache = json.load(f)
-                self._last_update = mtime
-
-        return self._cache
+    def generate_from_events(
+        self,
+        events: list[MetricEvent],
+        output_path: Optional[str] = None,
+    ) -> str:
+        """
+        Generate a simple report from events only (no AnalysisReport
+        required). Wraps the events in a stub report (default score 75,
+        no findings/recommendations) and delegates to generate().
+        """
 ```
 
-## 4. Web Dashboard (可选)
+### 2.1 Quick Report Generator
+
+`QuickReportGenerator` adapts existing lightweight tooling to the report
+pipeline without requiring the metrics stack:
 
 ```python
-# my_utils/profiling/dashboard/app.py
+class QuickReportGenerator:
+    """
+    Quick report generator.
 
-"""
-独立的Web Dashboard服务器
+    Produces reports directly from existing tools (e.g. MyTimer) or logs.
+    """
 
-使用:
-python -m my_utils.profiling.dashboard --logdir=./metrics_logs --port=8080
-"""
+    def generate_from_timer(self, timer, output_path: str = "timer_report.html") -> str:
+        """Extract events from a my_utils.utils.MyTimer instance
+        (its _events list) and generate a report."""
 
-from flask import Flask, render_template, jsonify, Response
-from flask_sock import Sock
-import json
-import os
+    def generate_from_csv(self, csv_path: str, output_path: str = "csv_report.html") -> str:
+        """Parse a timer CSV log (columns: timestamp_unix, step, event_name,
+        event_type, duration_ms) into MetricEvents and generate a report.
+        Malformed rows are skipped."""
+```
+
+## 3. Retired Plans: TensorBoard Plugin and Web Dashboard
+
+Earlier drafts of this document specified a TensorBoard plugin
+(`my_utils.profiling.tensorboard_plugin`) and a standalone WebSocket-based
+Web Dashboard (`my_utils.profiling.dashboard`) for real-time monitoring.
+Neither was implemented, and the roadmap (see [ROADMAP](./ROADMAP.md))
+completed without them: static HTML reports (section 2) cover shareable
+post-hoc analysis, and the Chrome-trace exporter in
+`my_utils/profiling/output/metrics_trace.py` covers interactive timeline
+exploration through Perfetto / `chrome://tracing`. The original Chinese
+specifications for both retired components are preserved in the archived
+source document.
+
+## 4. Usage Example
+
+Generate a report directly from the visualization package (fully
+self-contained; also re-exported from `my_utils.profiling` when the
+optional visualization dependencies import cleanly — check
+`my_utils.profiling.VISUALIZATION_AVAILABLE`):
+
+```python
 import time
-from pathlib import Path
 
-app = Flask(__name__)
-sock = Sock(app)
-
-class DashboardServer:
-    """Dashboard服务器"""
-
-    def __init__(self, logdir: str):
-        self.logdir = Path(logdir)
-        self._clients = set()
-
-    def watch_files(self):
-        """监控文件变化"""
-        """后台线程，监控metrics文件变化并通过WebSocket推送"""
-
-    def broadcast_update(self, data: dict):
-        """向所有客户端广播更新"""
-        import json
-        message = json.dumps(data)
-        for client in self._clients:
-            try:
-                client.send(message)
-            except Exception:
-                self._clients.remove(client)
-
-@app.route("/")
-def index():
-    return render_template("dashboard.html")
-
-@app.route("/api/metrics")
-def get_metrics():
-    """获取当前指标"""
-    # 读取并返回metrics数据
-    pass
-
-@sock.route("/ws")
-def websocket_connection(ws):
-    """WebSocket连接处理"""
-    server = app.config["dashboard_server"]
-    server._clients.add(ws)
-
-    try:
-        while True:
-            ws.receive()  # 保持连接
-    except Exception:
-        pass
-    finally:
-        server._clients.remove(ws)
-
-# templates/dashboard.html
-DASHBOARD_TEMPLATE = '''
-<!DOCTYPE html>
-<html>
-<head>
-    <title>Training Metrics Dashboard</title>
-    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0"></script>
-    <script src="https://cdn.jsdelivr.net/npm/vue@3/dist/vue.global.js"></script>
-    <style>
-        body { margin: 0; font-family: system-ui; background: #f5f7fa; }
-        .app { display: grid; grid-template-rows: auto 1fr; height: 100vh; }
-        .header { background: #1e293b; color: white; padding: 1rem 2rem; }
-        .content { padding: 2rem; overflow-y: auto; }
-        .metrics-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-            gap: 1.5rem;
-        }
-        .card {
-            background: white;
-            border-radius: 12px;
-            padding: 1.5rem;
-            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
-        }
-        .metric-value {
-            font-size: 2.5rem;
-            font-weight: 700;
-            color: #1e293b;
-        }
-        .metric-label {
-            color: #64748b;
-            font-size: 0.875rem;
-            text-transform: uppercase;
-            letter-spacing: 0.05em;
-        }
-        .chart-container {
-            position: relative;
-            height: 250px;
-        }
-    </style>
-</head>
-<body>
-    <div id="app" class="app">
-        <div class="header">
-            <h1>Training Metrics Dashboard</h1>
-            <span>Last update: {{ lastUpdate }}</span>
-        </div>
-        <div class="content">
-            <div class="metrics-grid">
-                <div class="card">
-                    <div class="metric-label">Current Step</div>
-                    <div class="metric-value">{{ metrics.step || '-' }}</div>
-                </div>
-                <div class="card">
-                    <div class="metric-label">Throughput (samples/s)</div>
-                    <div class="metric-value">{{ metrics.throughput?.toFixed(1) || '-' }}</div>
-                </div>
-                <div class="card">
-                    <div class="metric-label">Loss</div>
-                    <div class="metric-value">{{ metrics.loss?.toFixed(4) || '-' }}</div>
-                </div>
-                <div class="card">
-                    <div class="metric-label">Memory (GB)</div>
-                    <div class="metric-value">{{ metrics.memory?.toFixed(2) || '-' }}</div>
-                </div>
-            </div>
-
-            <div class="metrics-grid" style="margin-top: 2rem;">
-                <div class="card" style="grid-column: span 2;">
-                    <h3>Loss Curve</h3>
-                    <div class="chart-container">
-                        <canvas id="lossChart"></canvas>
-                    </div>
-                </div>
-                <div class="card">
-                    <h3>Performance Score</h3>
-                    <div class="chart-container">
-                        <canvas id="scoreChart"></canvas>
-                    </div>
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <script>
-        const { createApp } = Vue;
-
-        createApp({
-            data() {
-                return {
-                    metrics: {},
-                    lastUpdate: 'Never',
-                    ws: null,
-                    charts: {}
-                };
-            },
-            mounted() {
-                this.initCharts();
-                this.connectWebSocket();
-            },
-            methods: {
-                initCharts() {
-                    this.charts.loss = new Chart(document.getElementById('lossChart'), {
-                        type: 'line',
-                        data: { labels: [], datasets: [{ label: 'Loss', data: [] }] },
-                        options: { responsive: true, maintainAspectRatio: false }
-                    });
-
-                    this.charts.score = new Chart(document.getElementById('scoreChart'), {
-                        type: 'doughnut',
-                        data: {
-                            labels: ['Compute', 'Memory', 'Communication', 'IO'],
-                            datasets: [{ data: [40, 30, 20, 10] }]
-                        },
-                        options: { responsive: true, maintainAspectRatio: false }
-                    });
-                },
-                connectWebSocket() {
-                    const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-                    this.ws = new WebSocket(`${protocol}//${location.host}/ws`);
-
-                    this.ws.onmessage = (event) => {
-                        const data = JSON.parse(event.data);
-                        this.metrics = { ...this.metrics, ...data };
-                        this.lastUpdate = new Date().toLocaleTimeString();
-                        this.updateCharts(data);
-                    };
-                },
-                updateCharts(data) {
-                    if (data.step !== undefined && data.loss !== undefined) {
-                        this.charts.loss.data.labels.push(data.step);
-                        this.charts.loss.data.datasets[0].data.push(data.loss);
-                        this.charts.loss.update('none');
-                    }
-                }
-            }
-        }).mount('#app');
-    </script>
-</body>
-</html>
-'''
-```
-
-## 5. 使用示例
-
-```python
-from my_utils.profiling import (
-    MetricsCollector,
-    AnalyzerPipeline,
+from my_utils.profiling.visualization import (
     HTMLReportGenerator,
+    MetricEvent,
 )
 
-# 收集指标
-collector = MetricsCollector(output_dir="./metrics_logs")
-# ... 注册providers ...
-# ... 训练 ...
+# Build (or adapt) events - here, simulated timer/loss data
+events = []
+for step in range(20):
+    events.append(MetricEvent(
+        timestamp=time.time() + step,
+        name="timer.forward",
+        value=100 + step * 0.5,
+        unit="ms",
+        tags={"step": str(step)},
+    ))
+    events.append(MetricEvent(
+        timestamp=time.time() + step,
+        name="loss",
+        value=2.0 * (0.95 ** step),
+        unit="",
+        tags={"step": str(step)},
+    ))
 
-# 生成分析报告
-pipeline = AnalyzerPipeline()
-events = collector._store.read_all_events()
-report = pipeline.analyze(events)
-
-# 生成HTML报告
+# Generate an HTML report (no analyzer needed)
 generator = HTMLReportGenerator()
-html_path = "./metrics_logs/report.html"
-with open(html_path, "w") as f:
-    f.write(generator.generate(report, events))
-
-print(f"HTML报告已生成: {html_path}")
-
-# 启动TensorBoard
-# tensorboard --logdir=./metrics_logs --load_plugins=my_utils.profiling.tensorboard_plugin
-
-# 或启动独立Dashboard
-# python -m my_utils.profiling.dashboard --logdir=./metrics_logs
+generator.generate_from_events(events, output_path="./metrics_logs/report.html")
+print("HTML report written to ./metrics_logs/report.html")
 ```
 
-## 总结
+With the full metrics pipeline, the collector drives analysis, report
+export, and Chrome-trace export:
 
-可视化增强通过多层次方案满足不同需求：
+```python
+from my_utils.profiling import MetricsCollector
 
-1. **HTML报告** - 静态、可分享、完整分析
-2. **TensorBoard插件** - 集成到现有工作流
-3. **Web Dashboard** - 实时监控、多用户
+collector = MetricsCollector(output_dir="./metrics_logs")
+# ... register providers (collector.register_provider(...)), then during
+# training call collector.collect(step=step) ...
 
-下一步：
-1. 实现HTMLReportGenerator
-2. 开发TensorBoard插件
-3. 添加更多图表类型（热力图、桑基图等）
-4. 支持自定义主题和布局
+events = collector.get_events()
+report = collector.analyze(events)                      # AnalysisReport
+collector.export_report(fmt="md", report=report)        # markdown/json report
+trace_path = collector.export_chrome_trace()            # metrics_trace.json
+print(f"Open {trace_path} in Perfetto or chrome://tracing")
+```
+
+For a walkthrough of every component (renderers, transformers, layout
+builder, full reports, `QuickReportGenerator` from `MyTimer` and from
+CSV), run the executable examples in
+`my_utils/profiling/visualization/examples.py`.
+
+## Summary
+
+The visualization layer serves two complementary needs:
+
+1. **HTML reports** - static, shareable, complete analysis
+   (`HTMLReportGenerator` / `QuickReportGenerator`)
+2. **Chrome trace export** - interactive timeline exploration in
+   Perfetto / `chrome://tracing` (`output/metrics_trace.py`)
+
+Possible future work:
+
+1. More chart types (heatmap rendering in all backends, Sankey diagrams)
+2. Custom themes and layouts for generated reports

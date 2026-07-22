@@ -1,22 +1,32 @@
 # analyzers
 
-分析层，负责把“原始指标事件”变成“可执行结论”。
+Analysis layer: turns raw metric events into actionable conclusions.
 
-## 你什么时候会改这里
+## When you touch this package
 
-- 新增瓶颈规则（比如 memory bound / load imbalance / comm skew）。
-- 调整不同 workload（pretrain / inference / rl）的判断逻辑。
-- 增加多机多卡对齐分析维度。
+- Adding a bottleneck rule (e.g. memory bound / load imbalance / comm skew).
+- Adjusting per-workload judgment logic (pretrain / inference / rl).
+- Extending multi-node, multi-GPU alignment analysis.
 
-## 关键文件
+## Key files
 
-- `metrics_analyzer.py`: 主分析入口（统一输出 findings/recommendations）。
-- `analysis_rules.py`: 规则定义与命中逻辑。
-- `workload_profiles.py`: 不同业务场景的分析配置。
-- `distributed_alignment.py`: rank/stage 对齐分析。
+- `metrics_analyzer.py` — main entry point; produces unified
+  findings/recommendations.
+- `analysis_rules.py` — rule definitions and matching logic.
+- `workload_profiles.py` — per-workload analysis configuration.
+- `distributed_alignment.py` — rank/stage alignment analysis.
+- `triage.py`, `axes.py`, `evidence.py` — triage flow, analysis axes, and
+  evidence tracking used by the report output.
+- `nccl_bandwidth.py` — NCCL bandwidth estimation helpers.
+- `trace_quality.py`, `measurement_context.py` — data-quality and
+  measurement-context checks that guard against misleading numbers.
 
-## 建议改动顺序
+## Suggested change order
 
-1. 先在 `analysis_rules.py` 定义规则。  
-2. 在 `metrics_analyzer.py` 挂载规则。  
-3. 用 `examples/` 的 demo 跑一遍确认输出变化。  
+1. Define the rule in `analysis_rules.py`.
+2. Wire it up in `metrics_analyzer.py`.
+3. Run a demo from `examples/` to confirm the output changed as intended.
+
+---
+
+Chinese original: [docs/zh/profiling/analyzers/README.md](../../../docs/zh/profiling/analyzers/README.md)

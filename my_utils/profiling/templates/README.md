@@ -1,66 +1,65 @@
-# NSYS 快速使用手册
+# NSYS quick guide
 
-这份 README 只做一件事：让你按需求秒选命令。
+One purpose: pick the right command for your need in seconds. Capture requires
+an `nsys`-capable environment; the offline analysis commands are pure Python.
 
-## 30秒流程图
+## 30-second flow
 
 ```mermaid
 flowchart TD
-    A[开始: 我要分析训练整体性能] --> B[run_nsys_quick.sh 先抓一份trace]
-    B --> C{是否需要精细参数}
-    C -->|是| D[切到 run_nsys_quick_yaml.py + nsys_quick_launch.yaml]
-    C -->|否| E[直接进入离线分析]
+    A[Start: analyze overall training performance] --> B[run_nsys_quick.sh grabs a first trace]
+    B --> C{Need fine-grained parameters?}
+    C -->|yes| D[Switch to run_nsys_quick_yaml.py + nsys_quick_launch.yaml]
+    C -->|no| E[Go straight to offline analysis]
 
-    D --> E[生成 sqlite]
-    E --> F[nsys-analyze 统一报告]
-    F --> G{还想看什么}
-    G -->|版本差异| H[nsys-diff]
-    G -->|时间线页面| I[nsys-timeline-html]
-    G -->|kernel明细| J[nsys-export]
-    H --> K[定位退化点]
+    D --> E[Produce sqlite]
+    E --> F[nsys-analyze unified report]
+    F --> G{What next?}
+    G -->|regression| H[nsys-diff]
+    G -->|timeline page| I[nsys-timeline-html]
+    G -->|kernel details| J[nsys-export]
+    H --> K[Locate the regression]
     I --> K
     J --> K
-    K --> L[结束]
+    K --> L[Done]
 ```
 
-## 先选场景
+## Pick a scenario
 
-1. 我想快速抓训练全局时间线
-2. 我想用 YAML 配置 NSYS 参数
-3. 我想只抓训练过程某一段（capture range）
-4. 我已经有 sqlite，想做离线分析
-5. 我想对比两次训练
-6. 我想出 timeline HTML
+1. Quickly capture a full training timeline.
+2. Manage NSYS parameters via YAML.
+3. Capture only a slice of training (capture range).
+4. Already have a sqlite; run offline analysis.
+5. Compare two training runs.
+6. Produce a timeline HTML page.
 
-## 场景 -> 直接命令
+## Scenario -> command
 
-### 1) 快速抓训练全局时间线（最常用）
+### 1) Quick full-timeline capture (most common)
 
 ```bash
 bash my_utils/profiling/templates/run_nsys_quick.sh -- python train.py --config cfg.yaml
 ```
 
-作用：给你的训练命令外层自动加 `nsys profile`，快速产出 profile 文件。
+Wraps your training command with `nsys profile` automatically.
 
-### 2) 用 YAML 管理参数（推荐长期用）
+### 2) YAML-managed parameters (recommended long-term)
 
 ```bash
 python my_utils/profiling/templates/run_nsys_quick_yaml.py \
   --config my_utils/profiling/templates/nsys_quick_launch.yaml
 ```
 
-作用：通过 YAML 统一管理参数，不用改脚本。
-
-全量参数模板：
+Full parameter template:
 
 ```bash
 python my_utils/profiling/templates/run_nsys_quick_yaml.py \
   --config my_utils/profiling/templates/nsys_2026_2_full_args.yaml
 ```
 
-### 3) 只抓某一段训练（capture range + 手动 stop）
+### 3) Capture only a slice (capture range + manual stop)
 
-启动（不自动结束）：
+Launch (does not end automatically):
 
 ```bash
 python my_utils/profiling/templates/run_nsys_quick_yaml.py \
@@ -68,7 +67,7 @@ python my_utils/profiling/templates/run_nsys_quick_yaml.py \
   torchrun --nproc_per_node=8 --no_python python train.py
 ```
 
-`profile.yaml` 关键字段：
+Key fields in `profile.yaml`:
 
 ```yaml
 nsys_launch:
@@ -79,23 +78,24 @@ nsys_launch:
     - --flush-on-cudaprofilerstop=false
 ```
 
-结束采集：
+Stop the capture:
 
 ```bash
 nsys stop --session=my_train_sess
 ```
 
-作用：适合只看训练中间某段，避免抓全程超大文件。
+Useful when you only care about a segment of training and want to avoid a
+huge full-run trace.
 
-### 4) 已有 sqlite，直接做统一分析
+### 4) Already have a sqlite: unified analysis
 
 ```bash
 myutils-profile nsys-analyze --sqlite ./train_rank0.sqlite --output ./nsys_analyze.json
 ```
 
-作用：输出 summary/overlap/nccl/iteration/mfu 等聚合结果。
+Outputs summary/overlap/nccl/iteration/mfu aggregates.
 
-### 5) 对比两次训练（定位退化）
+### 5) Compare two runs (find regressions)
 
 ```bash
 myutils-profile nsys-diff \
@@ -104,23 +104,14 @@ myutils-profile nsys-diff \
   --output ./diff.json
 ```
 
-作用：比较 kernel/nvtx 变化，快速定位性能回退。
-
-### 6) 导出时间线与明细
-
-导出 kernel 明细：
+### 6) Export timeline and details
 
 ```bash
 myutils-profile nsys-export --sqlite ./train_rank0.sqlite --format csv --output ./kernels.csv
-```
-
-导出 timeline HTML：
-
-```bash
 myutils-profile nsys-timeline-html --sqlite ./train_rank0.sqlite --output ./timeline.html
 ```
 
-## 常见训练框架写法（可直接包裹）
+## Common framework wrappers
 
 Megatron-LM:
 
@@ -157,14 +148,27 @@ bash my_utils/profiling/templates/run_nsys_quick.sh -- \
   ray job submit ... -- python3 train.py ...
 ```
 
-## 你主要会改的文件
+Per-framework copy-paste templates live in
+`../examples/framework_playbook_samples/`.
 
-- `run_nsys_quick.sh`: 最快入口
-- `run_nsys_quick_yaml.py`: YAML 启动器
-- `nsys_quick_launch.yaml`: 最小模板
-- `nsys_2026_2_full_args.yaml`: 全参数模板
-- `preset_nsys_default.env`: 常用采集预设
+## Files you will mostly touch
 
-## 一句话建议
+- `run_nsys_quick.sh` — fastest entry point.
+- `run_nsys_quick_yaml.py` — YAML launcher.
+- `nsys_quick_launch.yaml` — minimal template.
+- `nsys_2026_2_full_args.yaml` — full parameter template.
+- `preset_nsys_default.env` — common capture presets (see also
+  `preset_torch_profiler.env`, `preset_disabled.env`).
+- `run_nsys_analyze.sh`, `run_nsys_diff.sh`, `run_nsys_export.sh`,
+  `run_nsys_sql_skill.sh`, `run_nsys_timeline_html.sh`,
+  `run_nsys_full_postprocess.sh` — offline post-processing wrappers.
 
-先用 `run_nsys_quick.sh` 跑通，再切到 `nsys_quick_launch.yaml` 固化参数，最后用 `nsys-analyze` / `nsys-diff` 做稳定分析。
+## One-line advice
+
+Get a first trace with `run_nsys_quick.sh`, then pin parameters in
+`nsys_quick_launch.yaml`, and rely on `nsys-analyze` / `nsys-diff` for stable
+analysis.
+
+---
+
+Chinese original: [docs/zh/profiling/templates/README.md](../../../docs/zh/profiling/templates/README.md)

@@ -1,22 +1,39 @@
 # runtime
 
-运行时集成层：处理“训练代码如何接入 profiling”。
+Runtime integration layer: how training code hooks into profiling.
 
-## 你什么时候会改这里
+Note: this subpackage drives live capture, so it expects `torch` (and for NSYS
+paths, an `nsys`-capable environment). torch is an optional dependency of
+`my_utils` overall — only the capture/runtime paths need it.
 
-- 调整框架无关接入逻辑（frameworkless API）。
-- 增加/修改采集后端（capture backend）。
-- 修改运行时配置结构（`NsysLaunchConfig` 等）。
+## When you touch this package
 
-## 关键文件
+- Adjusting the framework-agnostic integration helpers (`frameworkless.py`).
+- Adding or changing a capture backend.
+- Changing runtime configuration structures (`NsysLaunchConfig` and friends).
 
-- `frameworkless.py`: 最常用运行时辅助函数（训练脚本可直接调用）。
-- `config.py`: 运行时配置定义。
-- `backends.py`: 采集后端抽象。
-- `capture_controller.py`: 采集生命周期控制。
-- `ProfileManager.py`: 运行时管理器。
-- `template_utils.py`: 模板路径辅助。
+## Key files
 
-## 实战建议
+- `frameworkless.py` — the most commonly used runtime helpers, callable
+  directly from a training script: `create_nsys_capture_backend`,
+  `apply_profiling_environment`, `build_nsys_launch_prefix` (with NSYS
+  version detection).
+- `config.py` — runtime config dataclasses: `TorchProfilerConfig`,
+  `NsysProfilerConfig`, `ProfilingEnvConfig`, `NsysLaunchConfig`.
+- `backends.py` — capture backend abstraction (`CaptureBackend`,
+  `NoOpBackend`, `CudaProfilerBackend`).
+- `capture_controller.py` — capture lifecycle control (`CaptureController`,
+  `HookEvent`).
+- `ProfileManager.py` — runtime manager (`ProfileManager`).
+- `meta_adapters.py` — extract metadata from framework call sites.
+- `template_utils.py` — locate the shipped launch templates
+  (`get_profiling_templates_dir`, `get_profiling_template_path`).
 
-先尽量在 `frameworkless.py` 层接入，避免把 profiling 逻辑散落到训练代码多个位置。  
+## Practical advice
+
+Integrate at the `frameworkless.py` level first, so profiling logic stays in
+one place instead of being scattered across the training codebase.
+
+---
+
+Chinese original: [docs/zh/profiling/runtime/README.md](../../../docs/zh/profiling/runtime/README.md)

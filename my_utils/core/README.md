@@ -1,19 +1,14 @@
 # core
 
-基础工具层，不依赖具体 profiling 后端。
+Foundation utilities, independent of any specific profiling backend.
 
-## 30秒定位
+## Quick orientation
 
-1. 我想做计时与日志  
-看 `utils.py` + `logger.py`
+1. Timing and logging: `utils.py` + `logger.py`.
+2. Temporarily patching a method: `method_patch.py`.
+3. General debugging helpers (tensor info, checksums): `utils.py`.
 
-2. 我想临时 patch 某个方法  
-看 `method_patch.py`
-
-3. 我想做通用调试（tensor/checksum）  
-看 `utils.py`
-
-## 最小示例
+## Minimal example
 
 ```python
 from my_utils.core import setup_logging_and_timer
@@ -30,17 +25,26 @@ timer.start("step")
 timer.stop("step")
 ```
 
-## 关键文件
+## Key files
 
-- `utils.py`: `MyTimer`、`NoOpMyTimer`、`ChecksumUtils`、调试函数
-- `logger.py`: `GlobalLogger`、`get_global_logger`
-- `method_patch.py`: `MethodPatcher`、`MethodPatchHandle`
-- `annotations.py`: `parametrize_shapes`
+- `utils.py` — `MyTimer`, `NoOpMyTimer`, `setup_logging_and_timer`,
+  `ChecksumUtils`, and debugging helpers (`print_tensor_info`,
+  `tensor_md5`, `print_cuda_memory_gb`, ...).
+- `logger.py` — `GlobalLogger`, `get_global_logger`.
+- `method_patch.py` — `MethodPatcher`, `MethodPatchHandle`.
+- `annotations.py` — `parametrize_shapes`.
 
-## 常用导入
+## Common imports
 
 ```python
 from my_utils.core import MyTimer, NoOpMyTimer, setup_logging_and_timer
 from my_utils.core import GlobalLogger, get_global_logger
 from my_utils.core import MethodPatcher
 ```
+
+torch is optional here: CUDA-aware timing and tensor helpers only activate
+when torch is installed.
+
+---
+
+Chinese original: [docs/zh/core/README.md](../../docs/zh/core/README.md)
