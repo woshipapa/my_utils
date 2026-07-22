@@ -194,6 +194,36 @@ beside verified ones invites equal trust.
 
 ---
 
+## Era 5 — Borrowing from the ecosystem (2026-07)
+
+A four-track survey (NCU tools, NSYS tools, methodology writeups,
+academic/HPC toolchains — full list in `docs/REFERENCES.md`) compared this
+toolkit against everything findable. Verdict: single-report interpretation
+depth exceeded the surveyed field, but several mechanisms around it had a
+decade of prior art we lacked. The ones below were adopted. Each entry says
+what was borrowed and — because none of them fit unchanged — how it was
+adapted to this engine's honesty rules.
+
+| Capability | Borrowed from | Adaptation |
+|---|---|---|
+| Speedup upper bounds on stall findings (`ncu/speedup_model.py`) | GPA (CGO'21, github.com/Jokeren/GPA): every suggestion carries an estimated speedup, VERIFIED FROM SOURCE | GPA models instruction-level dataflow; we have kernel-level closed stall shares. So ours is a *share-removal upper bound* — 1/(1−share), clipped by three ceilings we already compute (SOL of the busiest unit, DRAM roofline for memory stalls, occupancy headroom for latency-hiding stalls) — and is labelled "upper bound, not a prediction". Withheld entirely when the stall stack fails its closure check, with the reason stated. |
+| Stall severity tiers 40%/60%, barrier gate 30% | KernelPro (arXiv:2606.26453), which published per-rule hit rates — the only external calibration data found for rules like ours, VERIFIED FROM SOURCE | Tiers adopted where ours were undocumented. The general 30% stall gate was *kept* despite KernelPro's 40%, because ours traces to NVIDIA's shipped CPIStall rule — a stricter threshold with a stronger source outranks a looser one with hit-rate data. |
+| Occupancy-advice suppression | Volkov, "Better Performance at Lower Occupancy" (GTC 2010); corroborated by arXiv:2501.16909, VERIFIED FROM SOURCE | When any `sm__pipe_*` or issue-slot utilization is ≥80%, "increase occupancy" advice is replaced — not deleted — by a statement that a saturated pipe means more warps cannot help. The finding stays visible so the low occupancy itself is still on record. |
+| A/B report diff (`ncu-diff`, `ncu/report_diff.py`) | KuangjuX/ncu-cli (`diff` command) and PerfDigest-MCP (`compare_metrics`), VERIFIED FROM SOURCE | Their shape (per-metric deltas, severity coding); our physics. The diff leads with the clock-confound guard (reusing `compare_measurements`, not reimplementing), refuses raw-time "speedups" when clocks differ >1%, adds a findings-level diff (appeared/disappeared/escalated), noise floors per metric kind, and marks the stall-delta section unreliable when either side failed closure. |
+| Replay clock-drift check (`check_replay_clock_drift`) | Thermal-throttle cautions in the CUTLASS profiler docs and Nsight Compute Profiling Guide, VERIFIED FROM SOURCE; detection mechanism DERIVED | The sources say "cap iterations to avoid throttle"; they offer no detection. Ours derives per-replay-pass effective SM clocks from PM-sampling bucket data and flags ≥2% spread — with estimate *typing* (elapsed-cycle clocks are measured; active-cycle clocks are lower bounds; a drift claim is made only when the direction is provable). |
+| Clock-control bias caveat | Nsight Compute Profiling Guide: base-clock lock cannot lower HBM clock on H100-class parts, VERIFIED FROM SOURCE; symptom detection DERIVED | ncu-rep records no clock-control flag, so detection is by symptom (SM ≤92% of rated while DRAM ≥97%). Stated as a bias direction on compute:memory verdicts, never as "data is wrong"; explicitly notes power/thermal capping produces the same signature. |
+| SFU/softmax-bound rule (`analyze_sfu_pressure`) | FlashAttention-3 (pytorch.org/blog/flashattention-3): special-function throughput (3.9 TFLOP/s on H100, vs 989 tensor) as the attention critical path, VERIFIED FROM SOURCE | Their observation, our gating: fires only with tensor pipe ≥20% (a GEMM worth overlapping), XU ≥60% of peak (real pressure), tensor <80% (not itself the limiter) — so ordinary GEMMs and light epilogues never fire it. On our fused GEMM+RMSNorm report it correctly stays silent (XU at 0.2%) and says so. |
+| Hierarchical arithmetic intensity (L1/L2/DRAM) | NERSC roofline-on-nvidia-gpus methodology; hierarchical-roofline NVIDIA blog, VERIFIED FROM SOURCE | Fixed FLOP numerator over per-level bytes; missing levels reported as absent, never invented (our reports lack `l1tex__t_sectors.sum` — the output says "not collected: L1"). Cache-blocking finding fires only on the clear signal (DRAM-compute-bound AND AI_L2 < 0.8× L2 ridge). |
+| Instruction roofline + precision-aware ceilings | Ding & Williams 2019 (instruction roofline); Giotyp/GPU-Roofline-Python (multi-precision ceilings), VERIFIED FROM SOURCE | Warp-GIPS against a first-principles issue ceiling (validated: matches the report's own `pct_of_peak` to four decimals); its 4-schedulers/SM assumption stated in evidence. Precision peaks are dense datasheet numbers — sparsity values never pre-doubled into a ceiling. |
+
+Two survey findings were recorded but *not* adopted, deliberately: GPUscout's
+static-SASS evidence channel (the one surveyed mechanism deeper than ours —
+needs a disassembly pipeline; queued, not rushed) and causal profiling
+(Omnitrace/COZ — requires runtime perturbation, does not map onto offline
+report data; a trace-replay approximation is queued instead).
+
+---
+
 ## Recurring principles
 
 Each of these exists because its absence produced a specific wrong answer.
