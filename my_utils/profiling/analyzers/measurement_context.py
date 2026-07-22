@@ -40,6 +40,7 @@ __all__ = [
     "MeasurementContext",
     "describe_collection_mode",
     "compare_measurements",
+    "assess_clock_control_bias",
     "NCU_DEFAULT_CACHE_CONTROL",
 ]
 
@@ -47,6 +48,14 @@ __all__ = [
 # --cache-control; the default flushes all caches before each replay pass so
 # that replays are reproducible, at the cost of never measuring a warm cache.
 NCU_DEFAULT_CACHE_CONTROL = "all"
+
+# Thresholds for the clock-control symptom (see assess_clock_control_bias).
+# DRAM at >=97% of its rated clock is "running at full clock" -- on a real
+# H100 report it sat at 99.97%. SM at <=92% of its rated clock is "held below
+# it": a boost-clocked SM runs at 95-100% of the rated (peak) value, while a
+# base-locked H100 sits near 80% and the real report measured 88%.
+_DRAM_FULL_CLOCK_SHARE = 0.97
+_SM_REDUCED_CLOCK_SHARE = 0.92
 
 
 class CacheState:
@@ -76,6 +85,16 @@ class MeasurementContext:
     #: measured at one clock is not comparable with one measured at another.
     sm_clock_hz: Optional[float] = None
     gpc_clock_hz: Optional[float] = None
+    dram_clock_hz: Optional[float] = None
+    #: Rated (peak) clocks from the device attributes, for judging how far the
+    #: measured clocks sat below them. In Hz, not the kHz the attribute uses.
+    rated_sm_clock_hz: Optional[float] = None
+    rated_dram_clock_hz: Optional[float] = None
+    #: ncu's --clock-control value when the caller knows it ("" when unknown --
+    #: the report does not record it, so it usually is unknown).
+    clock_control: str = ""
+    #: Output of :func:`assess_clock_control_bias`, or None when unassessed.
+    clock_control_bias: Optional[Dict[str, Any]] = None
     notes: Tuple[str, ...] = ()
 
     @property
@@ -155,6 +174,9 @@ class MeasurementContext:
             "source": self.source,
             "sm_clock_hz": self.sm_clock_hz,
             "gpc_clock_hz": self.gpc_clock_hz,
+            "dram_clock_hz": self.dram_clock_hz,
+            "clock_control": self.clock_control,
+            "clock_control_bias": self.clock_control_bias,
             "clock_disagreement": self.clock_disagreement,
             "cache_state": self.cache_state,
             "serialized_execution": self.serialized_execution,
@@ -169,6 +191,125 @@ class MeasurementContext:
         }
 
 
+def assess_clock_control_bias(
+    *,
+    sm_clock_hz: Optional[float] = None,
+    dram_clock_hz: Optional[float] = None,
+    rated_sm_clock_hz: Optional[float] = None,
+    rated_dram_clock_hz: Optional[float] = None,
+    clock_control: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Detect the compute:memory bias of profiling with a lowered SM clock.
+
+    Documented behaviour (Nsight Compute Profiling Guide 2026): the default
+    ``--clock-control base`` locks the SM clock to base but **cannot lower the
+    HBM clock** on H100/B200-class parts. The kernel then computes at a reduced
+    rate against memory running at full rate, so every compute-vs-memory
+    verdict built from the report -- Speed-of-Light compute against memory
+    throughput, roofline side -- reads more memory-rich (compute-poor) than
+    the same kernel at full clock. The numbers are not wrong; the *balance*
+    between them is a property of the clock state, and this names it.
+
+    Two detection paths, tried in order:
+
+    * **Declared**: the caller knows ``--clock-control`` was ``base``. The
+      report itself does not record the option, so this path is only available
+      when the invocation is known.
+    * **Symptom**: the measured SM clock sits well below the device's rated
+      (peak) clock while the measured DRAM clock sits at its rated value.
+      Rated clocks come from ``device__attribute_clock_rate`` and
+      ``device__attribute_memory_clock_rate`` (kHz in the report; pass Hz
+      here). Limits: the symptom cannot distinguish ``--clock-control base``
+      from power or thermal capping -- but either way the SM:DRAM clock ratio
+      during the measurement was below the device's rated ratio, and the bias
+      direction is the same, so the caveat holds regardless of cause.
+
+    This is an interpretation caveat, not a finding: it does not claim any
+    counter is wrong, only that the compute:memory balance leans a known way.
+    """
+    control = str(clock_control or "").strip().lower()
+
+    remedy = (
+        "For an unbiased balance, pin the SM clock externally "
+        "(nvidia-smi -lgc <clock>,<clock>) and profile with "
+        "--clock-control none."
+    )
+    tail = (
+        "Nsight Compute's --clock-control base lowers the SM clock but cannot "
+        "lower the HBM clock on H100/B200-class parts, so the measured "
+        "compute:memory balance is biased toward looking memory-rich "
+        "(compute-poor) relative to full-clock operation. The counters are not "
+        "wrong; verdicts that weigh compute against memory bandwidth "
+        "(Speed-of-Light compute vs memory, roofline side) lean memory-rich. " + remedy
+    )
+
+    if control == "base":
+        return {
+            "checked": True,
+            "biased": True,
+            "method": "declared",
+            "sm_share_of_rated": None,
+            "dram_share_of_rated": None,
+            "caveat": (
+                "--clock-control base was in effect: the SM clock is "
+                "locked at base while HBM runs at full clock. " + tail
+            ),
+            "limits": "",
+        }
+
+    values = (sm_clock_hz, dram_clock_hz, rated_sm_clock_hz, rated_dram_clock_hz)
+    if not all(v and v > 0 for v in values):
+        return {
+            "checked": False,
+            "biased": None,
+            "method": "",
+            "sm_share_of_rated": None,
+            "dram_share_of_rated": None,
+            "caveat": "",
+            "limits": (
+                "Clock-control bias was not assessed: it needs the measured SM "
+                "and DRAM clocks plus the device's rated clocks "
+                "(device__attribute_clock_rate, "
+                "device__attribute_memory_clock_rate), and at least one is "
+                "missing. Unassessed is not the same as unbiased."
+            ),
+        }
+
+    sm_share = sm_clock_hz / rated_sm_clock_hz
+    dram_share = dram_clock_hz / rated_dram_clock_hz
+    biased = (
+        dram_share >= _DRAM_FULL_CLOCK_SHARE and sm_share <= _SM_REDUCED_CLOCK_SHARE
+    )
+
+    caveat = ""
+    limits = ""
+    if biased:
+        caveat = (
+            f"The SM ran at {sm_share * 100:.0f}% of its rated clock "
+            f"({sm_clock_hz / 1e6:.0f} of {rated_sm_clock_hz / 1e6:.0f} MHz) "
+            f"while DRAM ran at {dram_share * 100:.0f}% of its rated clock "
+            f"({dram_clock_hz / 1e6:.0f} of {rated_dram_clock_hz / 1e6:.0f} MHz). "
+            + tail
+        )
+        limits = (
+            "Detected from the clock symptom, not from recorded profiler "
+            "options: the same signature is produced by power or thermal "
+            "capping. Either way the SM:DRAM clock ratio during the "
+            "measurement was below the device's rated ratio, and the bias "
+            "direction is the same."
+        )
+
+    return {
+        "checked": True,
+        "biased": biased,
+        "method": "symptom",
+        "sm_share_of_rated": sm_share,
+        "dram_share_of_rated": dram_share,
+        "caveat": caveat,
+        "limits": limits,
+    }
+
+
 def describe_collection_mode(
     *,
     source: str = "ncu",
@@ -180,6 +321,10 @@ def describe_collection_mode(
     input_distribution: str = "",
     sm_clock_hz: Optional[float] = None,
     gpc_clock_hz: Optional[float] = None,
+    dram_clock_hz: Optional[float] = None,
+    rated_sm_clock_hz: Optional[float] = None,
+    rated_dram_clock_hz: Optional[float] = None,
+    clock_control: Optional[str] = None,
 ) -> MeasurementContext:
     """Build a :class:`MeasurementContext` from how the tool was invoked.
 
@@ -251,10 +396,30 @@ def describe_collection_mode(
                 "report as suspect and re-collect."
             )
 
+    # A lowered SM clock against full-clock HBM biases every compute:memory
+    # verdict; an interpretation caveat, carried with the context because it is
+    # a property of how the numbers were taken, not of the kernel.
+    bias = assess_clock_control_bias(
+        sm_clock_hz=sm_clock_hz,
+        dram_clock_hz=dram_clock_hz,
+        rated_sm_clock_hz=rated_sm_clock_hz,
+        rated_dram_clock_hz=rated_dram_clock_hz,
+        clock_control=clock_control,
+    )
+    if bias.get("biased"):
+        notes.append(
+            bias["caveat"] + ((" " + bias["limits"]) if bias.get("limits") else "")
+        )
+
     return MeasurementContext(
         source=src,
         sm_clock_hz=sm_clock_hz,
         gpc_clock_hz=gpc_clock_hz,
+        dram_clock_hz=dram_clock_hz,
+        rated_sm_clock_hz=rated_sm_clock_hz,
+        rated_dram_clock_hz=rated_dram_clock_hz,
+        clock_control=str(clock_control or ""),
+        clock_control_bias=bias if bias.get("checked") else None,
         cache_state=cache_state,
         serialized_execution=serialized,
         replay_mode=replay_mode,

@@ -1087,3 +1087,122 @@ class TestLinkageDedupUsesContributingReasons:
             }
         )
         assert "carried no samples in this kernel" in text
+
+
+class TestPmSamplingReplayClockDrift:
+    """Per-pass effective clocks, and the drift caveat built from them.
+
+    Each PM pass group that carries a plain cycles counter yields an effective
+    SM clock (cycles-per-bucket over the bucket width); the report-level
+    `sm__cycles_elapsed.avg.per_second` -- itself collected in one replay pass
+    -- joins them. A supported gap above the threshold is thermal sag inside
+    ONE collection, which nothing in the report otherwise flags.
+    """
+
+    class _Scalar:
+        def __init__(self, value):
+            self._value = value
+
+        def as_double(self):
+            return self._value
+
+    class _Action:
+        _PM = "pmsampling:"
+
+        class _M:
+            def __init__(self, values, t0, step):
+                self.values, self.t0, self.step = values, t0, step
+
+            def num_instances(self):
+                return len(self.values)
+
+            def as_double(self, i):
+                return float(self.values[i])
+
+            def as_uint64(self, i):
+                return self.t0 + i * self.step
+
+            def has_correlation_ids(self):
+                return True
+
+            def correlation_ids(self):
+                return self
+
+        # pass A: sm__cycles_active at ~1.85 GHz effective (lower bound);
+        # pass B: gpc__cycles_elapsed at ~1.75 GHz (measured). 5.7% apart.
+        _FAST = [0.0] + [1500 * 1.85] * 8 + [0.0]
+        _SLOW = [1500 * 1.75] * 10
+
+        def metric_names(self):
+            return [
+                self._PM + "sm__cycles_active.avg",
+                self._PM + "gpc__cycles_elapsed.avg",
+            ]
+
+        def metric_by_name(self, n):
+            M = TestPmSamplingReplayClockDrift._Action._M
+            if n == self._PM + "sm__cycles_active.avg":
+                return M(list(self._FAST), 1_000, 1500)
+            if n == self._PM + "gpc__cycles_elapsed.avg":
+                return M(list(self._SLOW), 9_000_000, 1500)
+            if n == "sm__cycles_elapsed.avg.per_second":
+                return TestPmSamplingReplayClockDrift._Scalar(1.75e9)
+            return None
+
+    def test_per_pass_clocks_are_estimated_with_their_kind(self):
+        out = source_correlation.analyze_pm_sampling(self._Action())
+        clocks = out["pass_effective_clocks"]
+        kinds = {label: e["kind"] for label, e in clocks.items()}
+        active = next(label for label in clocks if "cycles_active" in label)
+        elapsed = next(label for label in clocks if "gpc__cycles_elapsed" in label)
+        # active cycles bound the clock from below; elapsed cycles ARE it
+        assert kinds[active] == "lower_bound"
+        assert kinds[elapsed] == "measured"
+        assert clocks[active]["clock_hz"] == pytest.approx(1.85e9, rel=1e-6)
+        assert clocks[elapsed]["clock_hz"] == pytest.approx(1.75e9, rel=1e-6)
+        # the report-level clock joins as one more per-pass estimate
+        assert "collection (sm__cycles_elapsed.avg.per_second)" in clocks
+
+    def test_drift_across_passes_is_flagged_and_reaches_the_warning(self):
+        out = source_correlation.analyze_pm_sampling(self._Action())
+        drift = out["replay_clock_drift"]
+        assert drift["drifted"] is True
+        assert drift["supported_drift"] == pytest.approx(1.85 / 1.75 - 1, rel=1e-6)
+        # the caveat rides the existing cross-pass channel, which the
+        # markdown renderer already prints -- no new reporting path
+        assert "SM clock drifted at least" in out["cross_pass_warning"]
+        assert "mix different clock states" in out["cross_pass_warning"]
+
+    def test_agreeing_passes_do_not_invent_a_caveat(self):
+        class _Steady(TestPmSamplingReplayClockDrift._Action):
+            _FAST = [0.0] + [1500 * 1.75] * 8 + [0.0]
+
+        out = source_correlation.analyze_pm_sampling(_Steady())
+        drift = out["replay_clock_drift"]
+        assert drift["checked"] is True and drift["drifted"] is False
+        assert "SM clock drifted" not in out["cross_pass_warning"]
+
+    def test_too_few_busy_buckets_yield_no_estimate(self):
+        """The two-pass fixture above (TestPmSamplingPassGroups) has under four
+        non-zero cycle buckets per pass: an estimate from that would be noise,
+        so the drift check must report unchecked rather than clean."""
+        out = source_correlation.analyze_pm_sampling(TestPmSamplingPassGroups._Action())
+        assert out["replay_clock_drift"]["checked"] is False
+        assert out["pass_effective_clocks"] == {}
+
+    def test_percentage_and_rate_spellings_are_not_mistaken_for_cycles(self):
+        class _Pct(TestPmSamplingReplayClockDrift._Action):
+            def metric_names(self):
+                return [
+                    self._PM
+                    + "sm__pipe_tensor_cycles_active.avg.pct_of_peak_sustained_elapsed",
+                ]
+
+            def metric_by_name(self, n):
+                M = TestPmSamplingReplayClockDrift._Action._M
+                if n.endswith("pct_of_peak_sustained_elapsed"):
+                    return M([50.0] * 10, 1_000, 1500)
+                return None
+
+        out = source_correlation.analyze_pm_sampling(_Pct())
+        assert out["pass_effective_clocks"] == {}

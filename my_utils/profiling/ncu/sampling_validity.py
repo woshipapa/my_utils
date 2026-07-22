@@ -39,14 +39,16 @@ sampled data is used with nothing flagging that it is unusable.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 __all__ = [
     "SamplingIssue",
     "check_pc_sampling_validity",
     "check_pm_sampling_validity",
+    "check_replay_clock_drift",
     "MIN_SAMPLES_FOR_RANKING",
     "PM_SAMPLING_MIN_CC",
+    "REPLAY_CLOCK_DRIFT_THRESHOLD",
 ]
 
 # Below this many samples, ranking one line above another is not supported by
@@ -56,6 +58,13 @@ MIN_SAMPLES_FOR_RANKING = 200
 
 # PM sampling is supported starting with SM 7.5 (PMSamplingData.py).
 PM_SAMPLING_MIN_CC = 75
+
+# Spread between per-pass effective SM clocks above which the collection is
+# flagged as having drifted. Not NVIDIA's number -- their rules do not check
+# this at all. 2% is chosen to sit above the noise of the estimators used
+# (bucket quantisation is well under 0.1%) and below the sag observed on a
+# real H100 collection (4.6% between two passes of one report).
+REPLAY_CLOCK_DRIFT_THRESHOLD = 0.02
 
 # Interval floors below which NVIDIA's rule stops advising a smaller interval,
 # because it is already at the practical minimum.
@@ -385,4 +394,144 @@ def check_pm_sampling_validity(
             f"Roughly {estimated:.0f} samples span the workload "
             f"(interval/duration = {ratio:.3f})."
         ),
+    }
+
+
+def check_replay_clock_drift(
+    clock_estimates: Optional[Mapping[str, Mapping[str, Any]]],
+    *,
+    threshold: float = REPLAY_CLOCK_DRIFT_THRESHOLD,
+) -> Dict[str, Any]:
+    """Detect intra-collection SM clock drift across ncu's replay passes.
+
+    ncu replays the kernel many times per collection and multiplexes the
+    metric set across those passes. On high-TDP parts the clock can sag
+    between early and late passes -- the profiling loop itself heats the part
+    -- so two counters that read as one coherent measurement were in fact
+    taken at different frequencies. Nothing in the report flags this.
+
+    ``clock_estimates`` maps a label to ``{"clock_hz": float, "kind": ...}``
+    where ``kind`` is:
+
+    * ``"measured"`` -- an exact clock for its pass (``<unit>__cycles_elapsed``
+      per bucket, or a whole-pass ``.per_second`` rate). Elapsed cycles tick
+      every cycle, so cycles over time *is* the clock.
+    * ``"lower_bound"`` -- derived from an activity counter
+      (``<unit>__cycles_active`` per bucket). Active cycles can undercount a
+      bucket the unit was partly idle in, so the value bounds the clock from
+      below and never from above.
+
+    The asymmetry decides what a gap can prove. An estimate *above* a measured
+    clock proves drift of at least that gap, whatever its kind. A lower bound
+    *below* a measured clock proves nothing -- the unit may simply have idled
+    -- and two lower bounds prove nothing against each other. Only the
+    provable direction triggers; the raw spread is reported either way.
+
+    This is a caveat about the collection, not a claim that any counter is
+    wrong: every counter is a faithful reading of its own pass.
+    """
+    valid: Dict[str, Dict[str, Any]] = {}
+    for label, entry in (clock_estimates or {}).items():
+        if not isinstance(entry, Mapping):
+            continue
+        clock = _num(entry.get("clock_hz"))
+        if not clock or clock <= 0:
+            continue
+        kind = str(entry.get("kind") or "measured")
+        valid[str(label)] = {"clock_hz": clock, "kind": kind}
+
+    if len(valid) < 2:
+        return {
+            "checked": False,
+            "drifted": None,
+            "supported_drift": None,
+            "raw_spread": None,
+            "threshold": threshold,
+            "estimates": valid,
+            "issues": [],
+            "note": (
+                "Fewer than two per-pass clock estimates, so drift across replay "
+                "passes could not be assessed. Nothing was validated -- this is "
+                "not a clean result."
+            ),
+        }
+
+    clocks = [e["clock_hz"] for e in valid.values()]
+    raw_spread = max(clocks) / min(clocks) - 1.0
+
+    # The largest gap whose direction the estimator kinds can actually support.
+    best: Optional[Tuple[float, str, str]] = None  # (ratio-1, hi_label, lo_label)
+    for hi_label, hi in valid.items():
+        for lo_label, lo in valid.items():
+            if hi_label == lo_label or hi["clock_hz"] <= lo["clock_hz"]:
+                continue
+            if lo["kind"] != "measured":
+                # Anything sitting above a lower bound proves nothing: the
+                # bound may simply undercount its own pass's clock.
+                continue
+            gap = hi["clock_hz"] / lo["clock_hz"] - 1.0
+            if best is None or gap > best[0]:
+                best = (gap, hi_label, lo_label)
+
+    supported = best[0] if best else 0.0
+    drifted = supported >= threshold
+
+    issues: List[SamplingIssue] = []
+    if drifted and best is not None:
+        gap, hi_label, lo_label = best
+        hi_mhz = valid[hi_label]["clock_hz"] / 1e6
+        lo_mhz = valid[lo_label]["clock_hz"] / 1e6
+        qualifier = (
+            " (a lower-bound estimate, so the true gap is at least this)"
+            if valid[hi_label]["kind"] == "lower_bound"
+            else ""
+        )
+        issues.append(
+            SamplingIssue(
+                key="replay_clock_drift",
+                title="SM clock drifted across the replay passes of this collection",
+                detail=(
+                    f"The effective SM clock differs by at least {gap * 100:.1f}% "
+                    f"between replay passes of this one collection: {lo_label} at "
+                    f"{lo_mhz:.0f} MHz against {hi_label} at {hi_mhz:.0f} MHz"
+                    f"{qualifier}. Metrics multiplexed across passes therefore mix "
+                    "different clock states, and PM-sampling series from different "
+                    "passes are additionally skewed relative to each other. Every "
+                    "counter is a faithful reading of its own pass; it is the "
+                    "combination that mixes clock states."
+                ),
+                severity="medium",
+                blocks=False,
+                remedy=(
+                    "Pin the SM clock externally before profiling "
+                    "(nvidia-smi -lgc <clock>,<clock>, with --clock-control none), "
+                    "or collect fewer sections so the collection spans fewer "
+                    "replay passes."
+                ),
+            )
+        )
+
+    if drifted and best is not None:
+        note = (
+            f"Effective SM clock spans {supported * 100:.1f}% across replay "
+            f"passes ({best[2]} vs {best[1]})."
+        )
+    elif raw_spread >= threshold:
+        note = (
+            f"Estimates spread {raw_spread * 100:.1f}%, but the spread is not "
+            "attributable to the clock: the low side is an activity-derived "
+            "lower bound that may undercount its pass. Inconclusive."
+        )
+    else:
+        note = f"Per-pass clock estimates agree within {raw_spread * 100:.1f}%."
+
+    return {
+        "checked": True,
+        "drifted": drifted,
+        "supported_drift": supported,
+        "raw_spread": raw_spread,
+        "threshold": threshold,
+        "estimates": valid,
+        "issues": [i.to_dict() for i in issues],
+        "note": note,
     }

@@ -92,3 +92,107 @@ class TestPmSamplingValidity:
         )
         assert out["usable"] is True
         assert out["estimated_sample_count"] == pytest.approx(10000)
+
+
+class TestReplayClockDrift:
+    """Thermal sag between replay passes: one collection, several clock states.
+
+    ncu multiplexes the metric set across many replay passes; on a high-TDP
+    part the clock can sag between the early and late ones, and nothing in the
+    report says so. The check compares per-pass effective-clock estimates and
+    only trusts a gap whose direction the estimator kinds can prove: an
+    estimate ABOVE a measured clock proves drift, a lower bound BELOW one
+    proves nothing (the unit may have idled).
+    """
+
+    def test_two_measured_clocks_apart_trigger(self):
+        out = sampling_validity.check_replay_clock_drift(
+            {
+                "pass 0 (sm__cycles_elapsed.avg)": {
+                    "clock_hz": 1.80e9,
+                    "kind": "measured",
+                },
+                "pass 5 (sm__cycles_elapsed.avg)": {
+                    "clock_hz": 1.70e9,
+                    "kind": "measured",
+                },
+            }
+        )
+        assert out["checked"] is True and out["drifted"] is True
+        assert out["supported_drift"] == pytest.approx(1.80 / 1.70 - 1)
+        issue = out["issues"][0]
+        assert issue["key"] == "replay_clock_drift"
+        # A caveat, not a finding: it must not block conclusions.
+        assert issue["blocks"] is False
+        assert "nvidia-smi -lgc" in issue["remedy"]
+
+    def test_lower_bound_above_a_measured_clock_proves_drift(self):
+        """The real cta_pingpong case: the PM pass's cycles-per-bucket bound
+        (1825 MHz) sits above the collection's measured clock (1745 MHz)."""
+        out = sampling_validity.check_replay_clock_drift(
+            {
+                "pass 4 (sm__cycles_active.avg)": {
+                    "clock_hz": 1.825e9,
+                    "kind": "lower_bound",
+                },
+                "collection (sm__cycles_elapsed.avg.per_second)": {
+                    "clock_hz": 1.7445e9,
+                    "kind": "measured",
+                },
+            }
+        )
+        assert out["drifted"] is True
+        assert "at least" in out["issues"][0]["detail"]
+
+    def test_lower_bound_below_a_measured_clock_is_inconclusive(self):
+        """An activity-derived bound below a measured clock can be a partly
+        idle unit rather than a slower clock; claiming drift there would
+        manufacture a caveat from estimator undercount."""
+        out = sampling_validity.check_replay_clock_drift(
+            {
+                "a": {"clock_hz": 1.80e9, "kind": "measured"},
+                "b": {"clock_hz": 1.70e9, "kind": "lower_bound"},
+            }
+        )
+        assert out["drifted"] is False and out["issues"] == []
+        assert out["raw_spread"] == pytest.approx(1.80 / 1.70 - 1)
+        assert "Inconclusive" in out["note"]
+
+    def test_two_lower_bounds_prove_nothing(self):
+        out = sampling_validity.check_replay_clock_drift(
+            {
+                "a": {"clock_hz": 1.85e9, "kind": "lower_bound"},
+                "b": {"clock_hz": 1.70e9, "kind": "lower_bound"},
+            }
+        )
+        assert out["drifted"] is False and out["issues"] == []
+
+    def test_agreeing_clocks_are_clean(self):
+        out = sampling_validity.check_replay_clock_drift(
+            {
+                "a": {"clock_hz": 1.750e9, "kind": "measured"},
+                "b": {"clock_hz": 1.760e9, "kind": "measured"},
+            }
+        )
+        assert out["drifted"] is False and out["issues"] == []
+        assert "agree" in out["note"]
+
+    def test_fewer_than_two_estimates_is_unchecked_not_clean(self):
+        out = sampling_validity.check_replay_clock_drift(
+            {"only": {"clock_hz": 1.75e9, "kind": "measured"}}
+        )
+        assert out["checked"] is False and out["drifted"] is None
+        assert "not a clean result" in out["note"]
+        assert sampling_validity.check_replay_clock_drift({})["checked"] is False
+        assert sampling_validity.check_replay_clock_drift(None)["checked"] is False
+
+    def test_caveat_does_not_claim_the_data_is_wrong(self):
+        out = sampling_validity.check_replay_clock_drift(
+            {
+                "a": {"clock_hz": 1.80e9, "kind": "measured"},
+                "b": {"clock_hz": 1.70e9, "kind": "measured"},
+            }
+        )
+        detail = out["issues"][0]["detail"]
+        assert "faithful reading" in detail
+        assert "mix different clock states" in detail

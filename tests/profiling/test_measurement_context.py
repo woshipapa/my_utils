@@ -123,3 +123,69 @@ class TestClockConfound:
     def test_agreeing_clocks_raise_nothing(self):
         ctx = self._ctx(1.789e9, gpc=1.789e9)
         assert not [c for c in ctx.cannot_answer if "derived from cycles" in c]
+
+
+class TestClockControlBias:
+    """`--clock-control base` cannot lower the HBM clock on H100/B200-class
+    parts, so the compute:memory balance reads memory-rich. A caveat about the
+    balance, never a claim that any counter is wrong."""
+
+    # The real cta_pingpong H100 report: SM at 88% of rated, DRAM at 99.97%.
+    _REAL = dict(
+        sm_clock_hz=1.7445e9,
+        dram_clock_hz=2.618e9,
+        rated_sm_clock_hz=1.98e9,
+        rated_dram_clock_hz=2.619e9,
+    )
+
+    def test_declared_base_clock_control_is_biased(self):
+        out = measurement_context.assess_clock_control_bias(clock_control="base")
+        assert out["checked"] is True and out["biased"] is True
+        assert out["method"] == "declared"
+        assert "memory-rich" in out["caveat"]
+
+    def test_symptom_detection_on_real_report_values(self):
+        out = measurement_context.assess_clock_control_bias(**self._REAL)
+        assert out["biased"] is True and out["method"] == "symptom"
+        assert out["sm_share_of_rated"] == pytest.approx(0.881, abs=0.001)
+        assert out["dram_share_of_rated"] == pytest.approx(0.9996, abs=0.001)
+        assert "nvidia-smi -lgc" in out["caveat"]
+        assert "--clock-control none" in out["caveat"]
+
+    def test_symptom_names_its_own_limits(self):
+        """The report does not record --clock-control, and the same clock
+        signature is produced by power or thermal capping. The caveat must say
+        so -- and say why the bias direction holds either way."""
+        out = measurement_context.assess_clock_control_bias(**self._REAL)
+        assert "thermal" in out["limits"]
+        assert "bias direction is the same" in out["limits"]
+
+    def test_full_clock_sm_is_not_biased(self):
+        out = measurement_context.assess_clock_control_bias(
+            **{**self._REAL, "sm_clock_hz": 1.96e9}
+        )
+        assert out["checked"] is True and out["biased"] is False
+        assert out["caveat"] == ""
+
+    def test_missing_clock_is_unassessed_not_unbiased(self):
+        out = measurement_context.assess_clock_control_bias(
+            sm_clock_hz=1.7445e9, rated_sm_clock_hz=1.98e9
+        )
+        assert out["checked"] is False and out["biased"] is None
+        assert "Unassessed is not the same as unbiased" in out["limits"]
+
+    def test_caveat_states_bias_not_wrongness(self):
+        out = measurement_context.assess_clock_control_bias(**self._REAL)
+        assert "not wrong" in out["caveat"]
+        assert "biased toward looking memory-rich" in out["caveat"]
+
+    def test_describe_collection_mode_carries_the_caveat(self):
+        ctx = measurement_context.describe_collection_mode(source="ncu", **self._REAL)
+        assert ctx.clock_control_bias and ctx.clock_control_bias["biased"] is True
+        assert any("memory-rich" in n for n in ctx.notes)
+        assert ctx.to_dict()["clock_control_bias"]["method"] == "symptom"
+
+    def test_describe_collection_mode_without_clock_data_is_unchanged(self):
+        ctx = measurement_context.describe_collection_mode(source="ncu")
+        assert ctx.clock_control_bias is None
+        assert not any("memory-rich" in n for n in ctx.notes)

@@ -1068,6 +1068,64 @@ def analyze_pm_sampling(
 
     pass_ids = {key: index for index, key in enumerate(sorted(by_pass))}
 
+    # Effective SM clock per pass group, where a pass carries a plain cycles
+    # counter. `<unit>__cycles_elapsed` ticks every cycle, so cycles-per-bucket
+    # over the bucket width IS the clock in that bucket -- a measurement.
+    # `<unit>__cycles_active` ticks only while the unit is active, so the same
+    # ratio is a LOWER BOUND on the clock, tight only in buckets the unit was
+    # busy throughout; the 90th percentile of the non-zero buckets is used to
+    # land on those. The distinction is carried as `kind` because it decides
+    # which direction of a gap is provable (see check_replay_clock_drift).
+    pass_clock_estimates: Dict[str, Dict[str, Any]] = {}
+    for key, members in by_pass.items():
+        _t0, step_ns, _length = key
+        if not step_ns:
+            continue
+        for name, values in members:
+            short = name[len(PM_SAMPLING_PREFIX) :]
+            base = short.split(".")[0]
+            if not base.endswith(("__cycles_elapsed", "__cycles_active")):
+                continue
+            if "pct" in short or "per_cycle" in short or "per_second" in short:
+                continue  # a ratio, not a per-bucket cycle count
+            nonzero = sorted(v for v in values if v > 0.0)
+            if len(nonzero) < 4:
+                continue  # too few busy buckets for a stable estimate
+            if base.endswith("__cycles_elapsed"):
+                kind = "measured"
+                per_bucket = nonzero[len(nonzero) // 2]  # median
+            else:
+                kind = "lower_bound"
+                per_bucket = nonzero[int(len(nonzero) * 0.9)]
+            pass_clock_estimates[f"pass {pass_ids[key]} ({short})"] = {
+                "clock_hz": per_bucket / step_ns * 1e9,
+                "kind": kind,
+                "pass_group": pass_ids[key],
+            }
+
+    # The report-level SM clock is itself a per-pass number: it comes from
+    # whichever single replay pass carried `sm__cycles_elapsed`, averaged over
+    # that pass's duration. Including it is what lets a report whose PM
+    # sampling holds only one cycles series still be checked for drift.
+    whole_metric = _maybe(action, "metric_by_name", "sm__cycles_elapsed.avg.per_second")
+    whole_clock = (
+        _maybe(whole_metric, "as_double") if whole_metric is not None else None
+    )
+    try:
+        whole_clock = float(whole_clock) if whole_clock else None
+    except (TypeError, ValueError):
+        whole_clock = None
+    if whole_clock and pass_clock_estimates:
+        pass_clock_estimates["collection (sm__cycles_elapsed.avg.per_second)"] = {
+            "clock_hz": whole_clock,
+            "kind": "measured",
+            "pass_group": None,
+        }
+
+    from .sampling_validity import check_replay_clock_drift
+
+    replay_clock_drift = check_replay_clock_drift(pass_clock_estimates)
+
     # Nsight Compute declares which metrics *cannot* share a pass, as a
     # `Groups:` line per metric in the shipped .section files. Timestamps say
     # what actually happened -- the scheduler may pack several compatible
@@ -1151,6 +1209,31 @@ def analyze_pm_sampling(
         and e["peak"] >= 50.0
     ]
 
+    cross_pass_warning = (
+        (
+            f"These {len(series)} series come from {len(by_pass)} replay passes, "
+            "each a separate execution with its own capture window and bucket "
+            "count. Series within one pass share a clock and can be compared "
+            "bucket for bucket; series from different passes cannot. Comparing "
+            "them by bucket index compares different moments of different runs."
+        )
+        if len(by_pass) > 1
+        else ""
+    )
+    if replay_clock_drift.get("drifted"):
+        drift_pct = float(replay_clock_drift.get("supported_drift") or 0.0) * 100
+        drift_sentence = (
+            f"SM clock drifted at least {drift_pct:.1f}% across the replay "
+            "passes of this collection -- metrics multiplexed across passes mix "
+            "different clock states, and PM-sampling series from different "
+            "passes are additionally skewed relative to each other."
+        )
+        cross_pass_warning = (
+            f"{cross_pass_warning} {drift_sentence}"
+            if cross_pass_warning
+            else drift_sentence
+        )
+
     return {
         "available": True,
         "metric_count": len(series),
@@ -1175,15 +1258,12 @@ def analyze_pm_sampling(
         "active_window_buckets": [anchor_lo, anchor_hi],
         "active_window_length": window_len,
         "active_window_ns": (step_ns * (window_len - 1)) if step_ns else None,
-        "cross_pass_warning": (
-            f"These {len(series)} series come from {len(by_pass)} replay passes, "
-            "each a separate execution with its own capture window and bucket "
-            "count. Series within one pass share a clock and can be compared "
-            "bucket for bucket; series from different passes cannot. Comparing "
-            "them by bucket index compares different moments of different runs."
-        )
-        if len(by_pass) > 1
-        else "",
+        "cross_pass_warning": cross_pass_warning,
+        # Per-pass effective SM clocks and the drift verdict built from them.
+        # The check lives in sampling_validity (the intra-report validity
+        # path); this is where the per-pass data exists to feed it.
+        "pass_effective_clocks": pass_clock_estimates,
+        "replay_clock_drift": replay_clock_drift,
         "window_source": pass_window_source.get(anchor_key, ""),
         "kernel_duration_ns": kernel_duration_ns,
         "pass_window_us": {
