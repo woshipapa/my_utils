@@ -76,6 +76,7 @@ ncu-report-skill = "my_utils.profiling.cli:entry_ncu_report_skill"
 ncu-report-analyze = "my_utils.profiling.cli:entry_ncu_report_analyze"
 nccl-inspector-skill = "my_utils.profiling.cli:entry_nccl_inspector_skill"
 nccl-inspector-analyze = "my_utils.profiling.cli:entry_nccl_inspector_analyze"
+ncu-diff = "my_utils.profiling.cli:entry_ncu_diff"
 
 [tool.ruff]
 target-version = "py310"

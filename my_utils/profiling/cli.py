@@ -49,6 +49,7 @@ from .ncu.ncu_report_tools import (
     analyze_ncu_report_to_markdown,
     report_result_to_json,
 )
+from .ncu.report_diff import diff_ncu_reports, diff_result_to_markdown
 from .nccl.nccl_inspector_tools import (
     NcclInspectorSkillEngine,
     analyze_nccl_inspector,
@@ -1202,6 +1203,27 @@ def cmd_ncu_diagnose(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_ncu_diff(args: argparse.Namespace) -> int:
+    payload = diff_ncu_reports(
+        args.report_a,
+        args.report_b,
+        kernel_like=str(args.kernel or "%"),
+        findings_per_kernel=int(args.findings_per_kernel),
+    )
+    if str(args.format).lower() in {"md", "markdown"}:
+        text = diff_result_to_markdown(payload)
+    else:
+        text = report_result_to_json(payload, pretty=bool(args.pretty))
+    if args.output:
+        path = Path(args.output)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+        print(f"[ncu-diff] wrote: {path}")
+    else:
+        print(text)
+    return 0
+
+
 def cmd_ncu_metrics(args: argparse.Namespace) -> int:
     from .ncu.metric_catalog import explain_metric, verify_catalog_coverage
     from .ncu.section_index import build_section_index
@@ -1888,6 +1910,30 @@ def build_parser() -> argparse.ArgumentParser:
     ncu_diagnose.add_argument("--output", default="")
     ncu_diagnose.add_argument("--pretty", action="store_true")
     ncu_diagnose.set_defaults(func=cmd_ncu_diagnose)
+
+    ncu_diff = sub.add_parser(
+        "ncu-diff",
+        help="A/B diff of two .ncu-rep reports: clock guard, per-axis metric deltas, findings that appeared/disappeared",
+    )
+    ncu_diff.add_argument(
+        "--report-a", required=True, help="baseline ncu report path (.ncu-rep)"
+    )
+    ncu_diff.add_argument(
+        "--report-b", required=True, help="candidate ncu report path (.ncu-rep)"
+    )
+    ncu_diff.add_argument(
+        "--kernel", default="%", help="kernel LIKE pattern (%%/_/*) to diff"
+    )
+    ncu_diff.add_argument(
+        "--findings-per-kernel",
+        type=int,
+        default=24,
+        help="findings kept per kernel per side before the findings diff",
+    )
+    ncu_diff.add_argument("--format", default="md", choices=["json", "md", "markdown"])
+    ncu_diff.add_argument("--output", default="")
+    ncu_diff.add_argument("--pretty", action="store_true")
+    ncu_diff.set_defaults(func=cmd_ncu_diff)
 
     ncu_report_analyze = sub.add_parser(
         "ncu-report-analyze",
@@ -2649,6 +2695,10 @@ def entry_ncu_metrics() -> int:
 
 def entry_ncu_diagnose() -> int:
     return _run_nsys_alias("ncu-diagnose")
+
+
+def entry_ncu_diff() -> int:
+    return _run_nsys_alias("ncu-diff")
 
 
 def entry_nccl_inspector_skill() -> int:
