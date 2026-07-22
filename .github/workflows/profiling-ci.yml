@@ -3,17 +3,33 @@ name: profiling-ci
 on:
   pull_request:
     paths:
-      - "my_utils/profiling/**"
-      - "tests/profiling/**"
-      - "setup.py"
+      - "my_utils/**"
+      - "tests/**"
+      - "pyproject.toml"
+      - ".github/workflows/profiling-ci.yml"
   push:
     branches: [ main ]
     paths:
-      - "my_utils/profiling/**"
-      - "tests/profiling/**"
-      - "setup.py"
+      - "my_utils/**"
+      - "tests/**"
+      - "pyproject.toml"
+      - ".github/workflows/profiling-ci.yml"
 
 jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install ruff
+        run: python -m pip install ruff
+      - name: Lint
+        run: ruff check my_utils tests CtrlRandom
+      - name: Format check
+        run: ruff format --check my_utils tests CtrlRandom
+
   tests:
     runs-on: ubuntu-latest
     strategy:
@@ -28,6 +44,24 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -e . pytest
+      - name: Assert torch-free import
+        run: python -c "import my_utils, my_utils.profiling, sys; assert 'torch' not in sys.modules"
       - name: Run profiling tests
         run: pytest -q tests/profiling
 
+  tests-with-torch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install package with CPU torch
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e . pytest
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+      - name: Assert import stays torch-free even with torch installed
+        run: python -c "import my_utils, my_utils.profiling, sys; assert 'torch' not in sys.modules"
+      - name: Run profiling tests (torch-dependent tests now run)
+        run: pytest -q tests/profiling
