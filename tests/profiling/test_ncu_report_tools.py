@@ -320,3 +320,362 @@ def test_ncu_dimension_report_supports_h100_metric_aliases(tmp_path: Path) -> No
     assert "small_grid" in findings
     assert "uncoalesced_global_loads" in findings
     assert "register_spill" in findings
+
+
+# ---------------------------------------------------------------------------
+# Diagnosis-path tests moved from test_analysis_engine.py.  These exercise
+# the torch-free file-path-loaded module (_prof.ncu.ncu_report_tools) via
+# the shared synthetic loader.
+# ---------------------------------------------------------------------------
+
+import types
+import pytest
+
+from _synthetic_loader import ncu_diagnostics, ncu_report_tools
+
+
+class TestReportDiagnosisUsesShippedRules:
+    """The CLI path must cross-check against NVIDIA's rules, not just the API.
+
+    `diagnose_kernel` accepted `shipped_rules=` from the start, but
+    `diagnose_ncu_report` -- what `mp ncu-diagnose` actually runs -- never
+    passed them, so corroboration reported "no shipped rules" on every real
+    report. A feature reachable only from a hand-written call is not reachable.
+    """
+
+    def _fake_module(self, with_rules=True):
+        class M:
+            def __init__(self, v): self.v = v
+            def value(self): return self.v
+            def as_double(self): return self.v
+            def as_uint64(self): return int(self.v)
+            def unit(self): return ""
+            def has_correlation_ids(self): return False
+
+        values = {
+            "sm__throughput.avg.pct_of_peak_sustained_elapsed": 85.0,
+            "gpu__compute_memory_throughput.avg.pct_of_peak_sustained_elapsed": 30.0,
+        }
+
+        class Action:
+            def name(self): return "gemm_kernel"
+            def metric_names(self): return list(values)
+            def metric_by_name(self, k): return M(values.get(k, 0.0))
+            def rule_results_as_dicts(self):
+                if not with_rules:
+                    return []
+                return [{
+                    "rule_identifier": "SOLBottleneck",
+                    "section_identifier": "SpeedOfLight",
+                    "rule_message": {"title": "Memory more utilized",
+                                     "message": "This kernel is memory bound.",
+                                     "message_type": "warning"},
+                    "speedup_estimation": {"type": "GLOBAL", "speedup": 25.0},
+                }]
+
+        class Rng:
+            num_actions = 1
+            def action_by_idx(self, i): return Action()
+
+        class Ctx:
+            num_ranges = 1
+            def range_by_idx(self, i): return Rng()
+
+        return types.SimpleNamespace(load_report=lambda p: Ctx())
+
+    def _first(self, out):
+        return (out.get("kernels") or out.get("diagnoses"))[0]
+
+    def test_shipped_rules_reach_the_diagnosis(self):
+        out = ncu_report_tools.diagnose_ncu_report(
+            "/dev/null", ncu_report_module=self._fake_module())
+        assert self._first(out)["corroboration"]["shipped_rules_available"] is True
+
+    def test_disagreement_with_nvidia_surfaces_through_the_report_path(self):
+        out = ncu_report_tools.diagnose_ncu_report(
+            "/dev/null", ncu_report_module=self._fake_module())
+        assert self._first(out)["corroboration"]["conflicts"]
+
+    def test_report_without_rules_is_reported_honestly(self):
+        out = ncu_report_tools.diagnose_ncu_report(
+            "/dev/null", ncu_report_module=self._fake_module(with_rules=False))
+        assert self._first(out)["corroboration"]["shipped_rules_available"] is False
+
+
+class TestDiagnoseIsSelfContained:
+    """`ncu-diagnose` must answer both what and where, in one command.
+
+    Source attribution used to be reachable only through a separate SkillEngine
+    call, so the question a fused kernel most needs answered -- which line
+    stalls -- was absent from the command people actually run.
+    """
+
+    def _module(self, with_samples=True):
+        class Stall:
+            def __init__(self, n): self.name = n
+
+        class M:
+            def __init__(self, v): self.v = v
+            def value(self): return self.v
+            def as_double(self): return self.v
+            def as_uint64(self): return int(self.v)
+            def unit(self): return ""
+            def has_correlation_ids(self): return False
+
+        vals = {
+            "sm__throughput.avg.pct_of_peak_sustained_elapsed": 32.0,
+            "gpu__compute_memory_throughput.avg.pct_of_peak_sustained_elapsed": 28.0,
+            "smsp__pcsamp_sample_count": 5000.0,
+            "smsp__pcsamp_interval_cycles": 1000.0,
+        }
+
+        class Action:
+            def name(self): return "fused_attn_fwd"
+            def metric_names(self): return list(vals)
+            def metric_by_name(self, k): return M(vals[k]) if k in vals else None
+            def rule_results_as_dicts(self): return []
+            def source_files(self): return {"attn.cu": "load\nsoftmax\nmm\n"}
+            def source_info(self, a):
+                table = {0x10: ("attn.cu", 1), 0x20: ("attn.cu", 2)}
+                if a not in table:
+                    return None
+                fname, ln = table[a]
+
+                class I:
+                    def file_name(self): return fname
+                    def line(self): return ln
+                return I()
+            def sass_by_pc(self, a): return ""
+            def ptx_by_pc(self, a): return ""
+            def timed_warp_samples(self):
+                if not with_samples:
+                    return []
+                return [{"timestamp": i * 100, "pc": 0x20,
+                         "stall_reason": Stall("MIO_THROTTLE"), "not_issued": True}
+                        for i in range(600)]
+
+        class Rng:
+            num_actions = 1
+            def action_by_idx(self, i): return Action()
+
+        class Ctx:
+            num_ranges = 1
+            def range_by_idx(self, i): return Rng()
+
+        return types.SimpleNamespace(load_report=lambda p: Ctx())
+
+    def test_source_attribution_is_in_the_diagnosis(self):
+        out = ncu_report_tools.diagnose_ncu_report(
+            "/dev/null", ncu_report_module=self._module())
+        kernel = out["kernels"][0]
+        assert "source_attribution" in kernel
+        rows = kernel["source_attribution"]["stall_attribution"]["source_lines"]
+        assert rows and rows[0]["line"] == 2
+
+    def test_markdown_renders_where_it_stalls(self):
+        text = ncu_report_tools.diagnose_result_to_markdown(
+            ncu_report_tools.diagnose_ncu_report(
+                "/dev/null", ncu_report_module=self._module()))
+        assert "### Where it stalls" in text
+        assert "MIO_THROTTLE" in text
+
+    def test_no_contradiction_when_attribution_succeeds(self):
+        """Do not print 'no source data' directly beneath the source data."""
+        text = ncu_report_tools.diagnose_result_to_markdown(
+            ncu_report_tools.diagnose_ncu_report(
+                "/dev/null", ncu_report_module=self._module()))
+        assert "### Where it stalls" in text
+        assert "No source-correlated metrics" not in text
+
+    def test_include_source_false_skips_it(self):
+        out = ncu_report_tools.diagnose_ncu_report(
+            "/dev/null", include_source=False, ncu_report_module=self._module())
+        assert "source_attribution" not in out["kernels"][0]
+
+    def test_absent_samples_do_not_break_the_diagnosis(self):
+        out = ncu_report_tools.diagnose_ncu_report(
+            "/dev/null", ncu_report_module=self._module(with_samples=False))
+        kernel = out["kernels"][0]
+        assert kernel["verdict"]
+        assert kernel["source_attribution"]["stall_attribution"]["available"] is False
+
+
+class TestNcuReportModuleDiscovery:
+    """`ncu_report` ships with Nsight Compute, not on PyPI.
+
+    The first-run failure for anyone with a real report is an ImportError whose
+    fix is a PYTHONPATH entry, not a pip install. Discovery removes the step
+    where it can be found; the error message covers when it cannot.
+    """
+
+    def test_discovery_returns_a_dir_or_none_never_a_guess(self):
+        found = ncu_report_tools.find_ncu_report_dir()
+        assert found is None or (found / "ncu_report.py").exists()
+
+    def test_error_message_is_actionable(self):
+        import re
+        source = Path(ncu_report_tools.__file__).read_text()
+        block = source.split("The `ncu_report` module is required")[1][:1200]
+        assert "PYTHONPATH" in block
+        assert "not on PyPI" in block or "nothing to" in block
+        assert "find /" in block, "must tell the user how to locate it"
+
+
+class TestReportIsReadOnce:
+    """Four full traversals of a --set full report was three too many.
+
+    `diagnose_ncu_report` called four loaders -- metrics, shipped rules, source
+    attribution, and one just to retain the action objects -- each of which
+    opened the report and walked every range and action. `walk_report_once`
+    visits each action a single time and gathers all four.
+    """
+
+    def _counting_module(self):
+        opens = {"n": 0}
+
+        class Stall:
+            def __init__(self, n): self.name = n
+
+        class M:
+            def __init__(self, v): self.v = v
+            def value(self): return self.v
+            def as_double(self): return self.v
+            def as_uint64(self): return int(self.v)
+            def unit(self): return ""
+            def has_correlation_ids(self): return False
+
+        vals = {
+            "sm__throughput.avg.pct_of_peak_sustained_elapsed": 34.0,
+            "gpu__compute_memory_throughput.avg.pct_of_peak_sustained_elapsed": 72.0,
+            "smsp__pcsamp_sample_count": 8000.0,
+            "smsp__pcsamp_interval_cycles": 1000.0,
+            "gpu__time_duration.sum": 410000.0,
+        }
+
+        class Action:
+            def name(self): return "k"
+            def metric_names(self): return list(vals)
+            def metric_by_name(self, k): return M(vals[k]) if k in vals else None
+            def rule_results_as_dicts(self):
+                return [{"rule_identifier": "SOLBottleneck",
+                         "rule_message": {"title": "t", "message": "m",
+                                          "message_type": "optimization"},
+                         "speedup_estimation": {"type": "GLOBAL", "speedup": 20.0}}]
+            def source_files(self): return {"k.cu": "a\nb\n"}
+            def source_info(self, a):
+                if a != 0x10:
+                    return None
+
+                class I:
+                    def file_name(self): return "k.cu"
+                    def line(self): return 1
+                return I()
+            def sass_by_pc(self, a): return ""
+            def ptx_by_pc(self, a): return ""
+            def timed_warp_samples(self):
+                return [{"timestamp": i, "pc": 0x10,
+                         "stall_reason": Stall("LONG_SCOREBOARD"), "not_issued": True}
+                        for i in range(400)]
+
+        class Rng:
+            num_actions = 1
+            def action_by_idx(self, i): return Action()
+
+        class Ctx:
+            num_ranges = 1
+            def range_by_idx(self, i): return Rng()
+
+        def loader(path):
+            opens["n"] += 1
+            return Ctx()
+
+        return types.SimpleNamespace(load_report=loader), opens
+
+    def test_report_is_opened_exactly_once(self):
+        module, opens = self._counting_module()
+        ncu_report_tools.diagnose_ncu_report("/dev/null", ncu_report_module=module)
+        assert opens["n"] == 1, f"report opened {opens['n']} times; expected 1"
+
+    def test_single_pass_still_produces_every_section(self):
+        module, _ = self._counting_module()
+        kernel = ncu_report_tools.diagnose_ncu_report(
+            "/dev/null", ncu_report_module=module)["kernels"][0]
+        for key in ("verdict", "coverage", "axes", "metric_inventory",
+                    "corroboration", "signal_scan", "source_attribution",
+                    "duration_ns"):
+            assert key in kernel, f"single-pass rewrite dropped `{key}`"
+        assert kernel["corroboration"]["shipped_rules_available"] is True
+        assert kernel["source_attribution"]["stall_attribution"]["available"] is True
+
+    def test_no_source_still_reads_once(self):
+        module, opens = self._counting_module()
+        ncu_report_tools.diagnose_ncu_report(
+            "/dev/null", include_source=False, ncu_report_module=module)
+        assert opens["n"] == 1
+
+
+class TestStringValuedMetrics:
+    """21 metrics on a real report have string values, and they are not noise.
+
+    They were dropped as unparseable. Among them: the GPU model (which the
+    caller was being asked to supply by hand), the constituent lists behind each
+    Speed-of-Light rollup, and the launch scheduling policy.
+    """
+
+    class _Action:
+        _NUM = {"sm__throughput.avg.pct_of_peak_sustained_elapsed": 33.7,
+                "sm__pipe_tensor_cycles_active.avg.pct_of_peak_sustained_elapsed": 33.7,
+                "sm__issue_active.avg.pct_of_peak_sustained_elapsed": 14.1}
+        _STR = {"device__attribute_display_name": "NVIDIA H100 80GB HBM3",
+                "launch__cluster_scheduling_policy": "PolicySpread",
+                "breakdown:sm__throughput.avg.pct_of_peak_sustained_elapsed":
+                    "sm__pipe_tensor_cycles_active.avg.pct_of_peak_sustained_elapsed,"
+                    "sm__issue_active.avg.pct_of_peak_sustained_elapsed"}
+
+        class _M:
+            def __init__(self, v): self.v = v
+            def value(self): return self.v
+            def as_double(self): return self.v if isinstance(self.v, float) else None
+            def as_string(self): return self.v if isinstance(self.v, str) else None
+            def unit(self): return ""
+
+        def name(self): return "k"
+        def metric_names(self): return list(self._NUM) + list(self._STR)
+        def metric_by_name(self, n):
+            if n in self._NUM: return self._M(self._NUM[n])
+            if n in self._STR: return self._M(self._STR[n])
+            return None
+
+    def test_string_metrics_are_kept_not_dropped(self):
+        numeric, text = ncu_report_tools._metrics_for_action(self._Action())
+        assert len(numeric) == 3 and len(text) == 3
+        assert text["device__attribute_display_name"] == "NVIDIA H100 80GB HBM3"
+
+    def test_gpu_name_comes_from_the_report(self):
+        _, text = ncu_report_tools._metrics_for_action(self._Action())
+        assert ncu_report_tools.gpu_name_from_report(text) == "NVIDIA H100 80GB HBM3"
+
+    def test_sol_breakdown_names_the_driving_constituent(self):
+        """A SOL throughput is a max over constituents, not an average."""
+        numeric, text = ncu_report_tools._metrics_for_action(self._Action())
+        out = ncu_report_tools.resolve_sol_breakdown(text, numeric)
+        entry = out["sm__throughput.avg.pct_of_peak_sustained_elapsed"]
+        assert entry["rollup_value"] == pytest.approx(33.7)
+        top = entry["top_constituents"][0]
+        assert "pipe_tensor" in top["metric"], "the max constituent drives the rollup"
+        assert "maximum over these" in entry["note"]
+
+    def test_inventory_counts_string_metrics(self):
+        result = ncu_diagnostics.diagnose_kernel(
+            {"sm__throughput.avg.pct_of_peak_sustained_elapsed": 33.7},
+            string_metrics={"device__attribute_display_name": "NVIDIA H100"},
+        )
+        inventory = result["metric_inventory"]
+        assert inventory["string_valued_count"] == 1
+        assert inventory["total_including_string"] == inventory["total"] + 1
+        assert "not lost" in inventory["summary"]
+
+    def test_breakdown_with_unresolvable_constituents_is_skipped(self):
+        out = ncu_report_tools.resolve_sol_breakdown(
+            {"breakdown:x": "not_collected_a,not_collected_b"}, {})
+        assert out == {}
