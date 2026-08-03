@@ -42,6 +42,7 @@ __all__ = [
     "compute_roofline",
     "analyze_occupancy",
     "analyze_launch_config",
+    "analyze_execution_scope",
     "analyze_coalescing",
     "analyze_shared_memory",
     "analyze_divergence",
@@ -1707,6 +1708,87 @@ def analyze_coalescing(view: MetricView) -> Dict[str, Any]:
     }
 
 
+def analyze_execution_scope(
+    view: MetricView, *, collection: Optional[Mapping[str, Any]] = None
+) -> Dict[str, Any]:
+    """Describe partitions that change what a kernel-level counter represents.
+
+    Green contexts partition SMs for one launch, MPS shares execution with other
+    clients, and MIG partitions the device outside the report's ordinary kernel
+    counters.  None is a kernel defect, but treating a shared/partitioned result
+    as an exclusive full-GPU result creates a false A/B regression.
+    """
+    sidecar = dict(collection or {})
+    uses_mps_metric = view.get("uses_mps")
+    mps_from_sidecar = sidecar.get("mps_active")
+    mps_active = (
+        bool(uses_mps_metric)
+        if uses_mps_metric is not None
+        else str(mps_from_sidecar or "").strip().lower()
+        in {"1", "true", "yes", "on", "enabled"}
+    )
+    uses_green = bool(view.get("uses_green_context"))
+    mig_instance = str(sidecar.get("mig_instance_id") or "").strip()
+    findings: List[Finding] = []
+
+    if mps_active:
+        findings.append(
+            Finding(
+                category="mps_shared_execution_scope",
+                title="Kernel ran with MPS sharing enabled",
+                summary=(
+                    "MPS can change the SM share available to this context, and device-wide "
+                    "PM samples may contain another client unless a context-switch trace is "
+                    "available. This is measurement scope, not a kernel bottleneck."
+                ),
+                severity="medium",
+                confidence="high" if uses_mps_metric is not None else "medium",
+                evidence={
+                    "launch_uses_mps": uses_mps_metric,
+                    "manifest_mps_active": mps_from_sidecar,
+                },
+                actions=(
+                    "Compare only with the same MPS client and resource configuration.",
+                    "For PM timelines, require a context-switch trace or profile an exclusive GPU.",
+                ),
+                source="measurement",
+            )
+        )
+    if mig_instance:
+        findings.append(
+            Finding(
+                category="mig_partitioned_execution_scope",
+                title="Kernel ran on a recorded MIG partition",
+                summary=(
+                    f"MIG instance {mig_instance!r} has a partition-specific SM, cache, and "
+                    "memory-resource budget. Full-device throughput and occupancy ceilings do "
+                    "not transfer directly to another MIG profile or a bare GPU."
+                ),
+                severity="medium",
+                confidence="high",
+                evidence={"mig_instance_id": mig_instance},
+                actions=(
+                    "Compare only against the same MIG profile, or re-collect on the full GPU.",
+                ),
+                source="measurement",
+            )
+        )
+
+    return {
+        "uses_mps": mps_active,
+        "uses_green_context": uses_green,
+        "green_context_id": view.get("green_context_id"),
+        "mig_instance_id": mig_instance,
+        "findings": findings,
+        "note": (
+            "Launch ran in a green context, so launch__sm_count is the relevant SM "
+            "denominator rather than the whole-device attribute."
+            if uses_green
+            else "No green-context metric was reported."
+        ),
+    }
+
+
 def analyze_shared_memory(view: MetricView) -> Dict[str, Any]:
     """Shared-memory bank conflicts, using NVIDIA's 10%-of-wavefronts gate."""
     findings: List[Finding] = []
@@ -3250,6 +3332,10 @@ _ANALYSIS_REQUIREMENTS: Dict[str, Tuple[Tuple[str, ...], str]] = {
     "stalls": (("warp_cycles_per_issued_inst", "issue_active"), "WarpStateStats"),
     "occupancy": (("achieved_occupancy", "theoretical_occupancy"), "Occupancy"),
     "launch": (("grid_size", "block_size"), "LaunchStats"),
+    "execution_scope": (
+        ("uses_mps", "uses_green_context"),
+        "LaunchStats + collection sidecar",
+    ),
     "coalescing": (
         (
             "global_ld_sectors_per_request",
@@ -3410,6 +3496,7 @@ def diagnose_kernel(
     launch = analyze_launch_config(
         view, gemm_shape=gemm_shape, problem_shape=problem_shape
     )
+    execution_scope = analyze_execution_scope(view, collection=collection)
     coalescing = analyze_coalescing(view)
     shared = analyze_shared_memory(view)
     divergence = analyze_divergence(view)
@@ -3429,6 +3516,7 @@ def diagnose_kernel(
         "roofline": roofline,
         "occupancy": occupancy,
         "launch": launch,
+        "execution_scope": execution_scope,
         "coalescing": coalescing,
         "shared_memory": shared,
         "divergence": divergence,
@@ -3643,7 +3731,10 @@ def diagnose_kernel(
 
     # Record how this was measured. Not a finding: a property of the numbers
     # above, which decides what they may be compared against.
-    from ..analyzers.measurement_context import describe_collection_mode
+    from ..analyzers.measurement_context import (
+        describe_collection_mode,
+        measurement_collection_context,
+    )
 
     context = describe_collection_mode(
         **{
@@ -3664,7 +3755,7 @@ def diagnose_kernel(
             )
             * 1e3
             or None,
-            **dict(collection or {}),
+            **measurement_collection_context(collection),
         }
     )
 

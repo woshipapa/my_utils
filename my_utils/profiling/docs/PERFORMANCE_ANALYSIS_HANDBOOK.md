@@ -194,6 +194,26 @@ ncu --set full --import-source yes \
 Build with `-lineinfo` (`nvcc --generate-line-info`) or SourceCounters findings can
 only point at SASS addresses, not source lines.
 
+### 3.1.1 Record Collection Provenance
+
+`run_ncu_quick_yaml.py` writes `report.ncu-rep.collection.json` after a
+successful run. Schema v2 records the replay/cache/clock controls plus the
+kernel and NVTX filters, device selection, PM/warp-sampling controls,
+communicator settings, and best-effort NCU/driver/GPU identities. The report
+alone does not preserve those facts, so use the sidecar for every A/B diff.
+
+```bash
+python -m my_utils.profiling.cli ncu-audit \
+  --collection-manifest logs/ncu/ncu_full_collection.ncu-rep.collection.json \
+  --sections-dir "${NSIGHT_COMPUTE_HOME}/sections" --pretty
+```
+
+For MIG or MPS, set `ncu.collection_metadata.mig_instance_id` and
+`ncu.collection_metadata.mps_active` explicitly. PM sampling observes the
+device, not an individual process; without a context-switch trace, the parser
+withholds an MPS/MIG timeline rather than assigning another client's samples to
+the selected kernel.
+
 ### 3.2 Scope the capture
 
 `--set full` replays each kernel tens of times. Always narrow it:
@@ -379,7 +399,7 @@ problems plus nine questions nobody asked.
 ```python
 cov = result["coverage"]
 print(cov["summary"])
-# 2 of 17 analyses ran. 15 could not: the required metrics are absent from this
+# 2 of 18 analyses ran. 16 could not: the required metrics are absent from this
 # report, so those questions were not asked - this is missing coverage, not a
 # clean result.
 
@@ -591,7 +611,7 @@ finding says why.
 
 ## 6. The metric catalog
 
-`my_utils/profiling/ncu/metric_catalog.py` — 179 metrics keyed by stable short
+`my_utils/profiling/ncu/metric_catalog.py` — 182 metrics keyed by stable short
 names, each with per-architecture spelling candidates.
 
 ```python
@@ -656,7 +676,7 @@ r.metric_name   # exact ncu metric
 
 ## 6b. Every metric in the report, not just the catalogued ones
 
-The curated catalog interprets 179 metrics. A `--set full` collection carries
+The curated catalog interprets 182 metrics. A `--set full` collection carries
 thousands. Everything outside the catalog used to be loaded and then touched by
 nothing - a report could hold the exact counter that explained a kernel and the
 analysis would never mention it existed.
@@ -1473,8 +1493,11 @@ my_utils/profiling/
 These modules are **pure analysis** — no torch, no CUDA. They import and run on a
 laptop with nothing installed, which is what makes them testable.
 
-`tests/profiling/test_analysis_engine.py` (297 tests) is the executable spec.
-Several tests exist specifically to stop this handbook drifting from the code:
+`tests/profiling/` is the executable specification (597 tests in the final
+2026-08 audit validation). The pure-analysis modules are loaded through
+`tests/profiling/_synthetic_loader.py`, so that contract remains testable
+without importing the package-level torch dependency. Several tests exist
+specifically to stop this handbook drifting from the code:
 `TestHandbookExamplesAreReal` checks every documented import resolves,
 `TestCoverageKeysAreReal` pins coverage tables to the metric catalog, and
 `TestSolThresholdsMatchShippedRule` pins the SOL constants to NVIDIA's rule.

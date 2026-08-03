@@ -44,7 +44,7 @@ All tests live in `tests/profiling/`. Two conventions to know:
   torch at import time — and it is kept deliberately: it guarantees the
   analysis core stays loadable standalone, independent of anything the parent
   package might grow. Read the header comment and the
-  `_package`/`_load` helpers in `tests/profiling/test_analysis_engine.py`
+  `_package`/`_load` helpers in `tests/profiling/_synthetic_loader.py`
   before writing tests for analysis code — new torch-free tests should use the
   same mechanism rather than `import my_utils`.
 - **Behavior changes need tests.** If a PR changes what an analyzer concludes,

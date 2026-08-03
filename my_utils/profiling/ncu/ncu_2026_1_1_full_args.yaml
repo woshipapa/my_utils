@@ -1,5 +1,7 @@
 ## Nsight Compute CLI v2026.1.1 全量参数模板（按官方分组）
 ##
+## 2026.2/2026.2.1 增量已列在本文件；只有目标机实际升级后才可启用。
+##
 ## 使用:
 ##   python my_utils/profiling/ncu/run_ncu_quick_yaml.py \
 ##     --config my_utils/profiling/ncu/ncu_2026_1_1_full_args.yaml
@@ -32,6 +34,7 @@ ncu:
   launch_count: 1
   launch_skip: 0
   replay_mode: kernel
+  pipeline_boost_state: stable
   profile_from_start: "off"
   nvtx: ""
   nvtx_include: ""
@@ -45,6 +48,14 @@ ncu:
   python_exclude: ""
   devices: ""
   chips: ""
+  process_id: ""
+  pm_sampling_interval: ""
+  pm_sampling_buffer_size: ""
+  pm_sampling_max_passes: ""
+  warp_sampling_interval: ""
+  communicator: ""
+  communicator_num_peers: ""
+  lockstep_kernel_launch: ""
   page: details
   print_summary: ""
   print_details: ""
@@ -74,6 +85,8 @@ ncu:
     "check-exit-code": null # 导入/处理流程时检查退出码。
     "support-32bit": null # 允许 32-bit 支持路径（平台相关）。
     "injection-path-64": null # 指定 64-bit 注入库路径。
+    "list-injection-path-64": null # NCU 2026.2.1：列出 64-bit CUDA injection 库路径（通常使用 "__flag__"）。
+    "list-injection-path-32": null # NCU 2026.2.1：列出 32-bit CUDA injection 库路径（通常使用 "__flag__"）。
     "preload-library": null # 预加载用户库（影响被测进程）。
     "forward-signals": null # 信号是否转发到被测进程。
     "kill": null # attach/launch 管控时杀进程行为。
@@ -83,6 +96,7 @@ ncu:
     "target-processes-filter": null # 进程过滤规则（名称/路径匹配）。
     "devices": null # 限定 GPU 设备。
     "chips": null # 限定芯片架构/型号。
+    "process-id": null # NCU 2026.2.1：attach 模式指定目标进程。
 
     # Launch / profile window / kernel selection
     "profile-from-start": null # 应用启动即采集(on)或等待触发(off)。
@@ -195,6 +209,18 @@ ncu:
 
   # 兜底参数：原样拼接
   extra_args: []
+
+  # 写入 .collection.json 的工作负载/硬件身份。runner 会在成功采集后
+  # 自动补充 ncu_version、driver_version、host_name、CUDA_VISIBLE_DEVICES 和
+  # nvidia-smi GPU identity；MIG/MPS 状态必须由工作负载显式提供。
+  collection_metadata:
+    workload_id: ""
+    problem_shape: {}
+    dtype: ""
+    logical_kernel_id: ""
+    kernel_config: {}
+    mig_instance_id: ""
+    mps_active: null
 
 command:
   - python

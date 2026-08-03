@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 from pathlib import Path
 
@@ -101,6 +102,16 @@ class _FakeNcuReportModule:
         return self._ctx
 
 
+class _SamplingMetric(_FakeMetric):
+    """Minimal numeric metric surface used by source-attribution tests."""
+
+    def as_double(self):
+        return float(self._value)
+
+    def as_uint64(self):
+        return int(float(self._value))
+
+
 def _fake_module() -> _FakeNcuReportModule:
     k1_rules = [
         {
@@ -163,6 +174,20 @@ def _fake_module() -> _FakeNcuReportModule:
         ]
     )
     return _FakeNcuReportModule(_FakeContext([r0]))
+
+
+def _fake_pm_drop_module() -> _FakeNcuReportModule:
+    action = _FakeAction(
+        "pm_drop_kernel",
+        {
+            "device__attribute_compute_capability_major": _SamplingMetric("9"),
+            "device__attribute_compute_capability_minor": _SamplingMetric("0"),
+            "gpu__time_duration.sum": _SamplingMetric("100000", "ns"),
+            "profiler__pmsampler_interval_time": _SamplingMetric("1000", "ns"),
+            "profiler__pmsampler_dropped_samples": _SamplingMetric("12", "sample"),
+        },
+    )
+    return _FakeNcuReportModule(_FakeContext([_FakeRange([action])]))
 
 
 def _fake_dimension_module() -> _FakeNcuReportModule:
@@ -264,6 +289,35 @@ def test_load_ncu_report_records(tmp_path: Path) -> None:
     )
     assert len(rows) == 2
     assert rows[0].metric_name == "gpu__time_duration.sum"
+
+
+def test_pm_drop_withholds_timeline_from_report_source_output(tmp_path: Path) -> None:
+    rep = tmp_path / "pm-drop.ncu-rep"
+    rep.write_text("", encoding="utf-8")
+    bundle = next(
+        iter(
+            ncu_report_tools.walk_report_once(
+                str(rep), include_source=True, ncu_report_module=_fake_pm_drop_module()
+            ).values()
+        )
+    )
+    source = bundle.source or {}
+    validity = source["pm_sampling_validity"]
+    timeline = source["pm_sampling"]
+    assert validity["usable"] is False
+    assert "pm_sampling_timeline" in validity["blocked_conclusions"]
+    assert timeline["available"] is False
+    assert "pm_sampling_timeline" in timeline["withheld_because"]
+
+
+def test_conflicting_replay_evidence_fails_closed() -> None:
+    context, evidence = _MOD._effective_collection_context(
+        {"replay_mode": "application"},
+        {"profiler__replayer_bytes_mem_backed_up.avg": 1024.0},
+    )
+    assert "replay_mode" not in context
+    assert evidence["replay_mode"] == "unknown"
+    assert evidence["conflict"] == {"report": "kernel", "manifest": "application"}
 
 
 def test_ncu_report_skill_engine_summary(tmp_path: Path) -> None:
@@ -618,6 +672,38 @@ class TestDiagnoseIsSelfContained:
         )
         assert "source_attribution" not in out["kernels"][0]
 
+    def test_collection_manifest_reaches_measurement_context(self, tmp_path: Path):
+        manifest = tmp_path / "fused_attn.ncu-rep.collection.json"
+        manifest.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "collection": {
+                        "replay_mode": "application",
+                        "app_replay_match": "all",
+                        "app_replay_mode": "strict",
+                        "cache_control": "none",
+                        "clock_control": "boost",
+                        "clocks_locked": True,
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        out = ncu_report_tools.diagnose_ncu_report(
+            "/dev/null",
+            include_source=False,
+            collection_manifest=str(manifest),
+            ncu_report_module=self._module(),
+        )
+        context = out["kernels"][0]["measurement_context"]
+        assert context["replay_mode"] == "application"
+        assert context["app_replay_match"] == "all"
+        assert context["app_replay_mode"] == "strict"
+        assert context["cache_state"] == "warm"
+        assert context["clock_control"] == "boost"
+        assert out["collection_manifest"]["status"] == "loaded"
+
     def test_absent_samples_do_not_break_the_diagnosis(self):
         out = ncu_report_tools.diagnose_ncu_report(
             "/dev/null", ncu_report_module=self._module(with_samples=False)
@@ -625,6 +711,52 @@ class TestDiagnoseIsSelfContained:
         kernel = out["kernels"][0]
         assert kernel["verdict"]
         assert kernel["source_attribution"]["stall_attribution"]["available"] is False
+
+
+def test_markdown_renders_only_observed_current_report_surfaces() -> None:
+    payload = {
+        "kernels": [
+            {
+                "kernel_name": "test_kernel",
+                "source_attribution": {
+                    "current_report_surfaces": {
+                        "discovery": {
+                            "sass_instruction_size": {
+                                "observed": True,
+                                "metrics": ["sass__instruction_size_by_opcode"],
+                            },
+                            "instruction_stats_hw_warp_id": {
+                                "observed": False,
+                                "metrics": [],
+                            },
+                            "function_statistics_line_time_range": {
+                                "observed": True,
+                                "api_members": ["function_statistics"],
+                            },
+                        },
+                        "instruction_breakdowns": {
+                            "breakdowns": [
+                                {
+                                    "available": True,
+                                    "metric": "sass__inst_executed_per_opcode",
+                                    "entries": [{"label": "FFMA", "value": 8.0}],
+                                }
+                            ]
+                        },
+                    }
+                },
+            }
+        ]
+    }
+
+    text = ncu_report_tools.diagnose_result_to_markdown(payload)
+
+    assert "### Current NCU report surfaces" in text
+    assert "`sass__instruction_size_by_opcode`" in text
+    assert "`function_statistics`" in text
+    assert "HW warp-ID stalls" not in text
+    assert "#### SASS opcode breakdown" in text
+    assert "FFMA=8" in text
 
 
 class TestNcuReportModuleDiscovery:

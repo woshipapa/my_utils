@@ -10,6 +10,7 @@ clock-mismatch pair where the guard must refuse the raw-time delta.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -124,6 +125,19 @@ def _write_pair(tmp_path: Path, metrics_a: dict, metrics_b: dict, name="kern"):
     rep_b = tmp_path / "b.ncu-rep"
     rep_a.write_bytes(b"")
     rep_b.write_bytes(b"")
+    # A normal collected report has command provenance.  Individual tests that
+    # exercise missing/changed provenance remove or replace these sidecars.
+    sidecar = json.dumps(
+        {
+            "schema_version": 1,
+            "collection": {
+                "ncu_defaults_known": True,
+                "cache_control": "all",
+            },
+        }
+    )
+    Path(str(rep_a) + ".collection.json").write_text(sidecar, encoding="utf-8")
+    Path(str(rep_b) + ".collection.json").write_text(sidecar, encoding="utf-8")
     module = _FakeNcuModule(
         {
             "a.ncu-rep": _FakeContext([_FakeRange([_FakeAction(name, metrics_a)])]),
@@ -196,6 +210,27 @@ class TestComparableClockDiff:
         hierarchy = _rows_by_metric(kernel["axes"]["memory_hierarchy"])
         assert hierarchy["l2_hit_rate"]["status"] == "unchanged"
 
+    def test_hit_rate_shift_is_context_not_a_standalone_regression(self, tmp_path):
+        metrics_a = _kernel_metrics(
+            dur_ns=100_000.0,
+            sm_hz=1.80e9,
+            cycles=180_000.0,
+            stalls={"wait": 2.0},
+            l2_hit=80.0,
+        )
+        metrics_b = _kernel_metrics(
+            dur_ns=100_000.0,
+            sm_hz=1.80e9,
+            cycles=180_000.0,
+            stalls={"wait": 2.0},
+            l2_hit=60.0,
+        )
+        rep_a, rep_b, module = _write_pair(tmp_path, metrics_a, metrics_b)
+        rows = _rows_by_metric(
+            report_diff.diff_ncu_reports(rep_a, rep_b, ncu_report_module=module)["kernels"][0]["axes"]["memory_hierarchy"]
+        )
+        assert rows["l2_hit_rate"]["status"] == "changed"
+
     def test_findings_diff_reports_appear_and_disappear(self, tmp_path):
         kernel = self._payload(tmp_path)["kernels"][0]
         diff = kernel["findings_diff"]
@@ -217,6 +252,59 @@ class TestComparableClockDiff:
         assert "disappeared" in text and "stall_long_scoreboard" in text
         assert "Honesty notes" in text
         assert "does not establish causality" in text
+
+    def test_sidecars_block_cold_warm_duration_comparison(self, tmp_path):
+        metrics = _kernel_metrics(
+            dur_ns=100_000.0,
+            sm_hz=1.80e9,
+            cycles=180_000.0,
+            stalls={"long_scoreboard": 5.0},
+        )
+        rep_a, rep_b, module = _write_pair(tmp_path, metrics, metrics)
+        Path(rep_a + ".collection.json").write_text(
+            json.dumps({"schema_version": 1, "collection": {"cache_control": "all"}}),
+            encoding="utf-8",
+        )
+        Path(rep_b + ".collection.json").write_text(
+            json.dumps({"schema_version": 1, "collection": {"cache_control": "none"}}),
+            encoding="utf-8",
+        )
+        payload = report_diff.diff_ncu_reports(rep_a, rep_b, ncu_report_module=module)
+        assert payload["clock_guard"]["all_comparable"] is False
+        assert payload["collection_manifests"]["a"]["status"] == "loaded"
+        blockers = payload["kernels"][0]["clock_comparison"]["blockers"]
+        assert any("cache state" in blocker for blocker in blockers)
+
+    def test_missing_sidecars_fail_closed_on_cache_state(self, tmp_path):
+        metrics = _kernel_metrics(
+            dur_ns=100_000.0,
+            sm_hz=1.80e9,
+            cycles=180_000.0,
+            stalls={"long_scoreboard": 5.0},
+        )
+        rep_a, rep_b, module = _write_pair(tmp_path, metrics, metrics)
+        Path(rep_a + ".collection.json").unlink()
+        Path(rep_b + ".collection.json").unlink()
+        payload = report_diff.diff_ncu_reports(rep_a, rep_b, ncu_report_module=module)
+        assert payload["clock_guard"]["all_comparable"] is False
+        blockers = payload["kernels"][0]["clock_comparison"]["blockers"]
+        assert any("unrecorded cache state" in blocker for blocker in blockers)
+
+    def test_legacy_sidecar_without_cache_provenance_also_fails_closed(self, tmp_path):
+        metrics = _kernel_metrics(
+            dur_ns=100_000.0,
+            sm_hz=1.80e9,
+            cycles=180_000.0,
+            stalls={"long_scoreboard": 5.0},
+        )
+        rep_a, rep_b, module = _write_pair(tmp_path, metrics, metrics)
+        legacy = json.dumps(
+            {"schema_version": 1, "collection": {"replay_mode": "kernel"}}
+        )
+        Path(rep_a + ".collection.json").write_text(legacy, encoding="utf-8")
+        Path(rep_b + ".collection.json").write_text(legacy, encoding="utf-8")
+        payload = report_diff.diff_ncu_reports(rep_a, rep_b, ncu_report_module=module)
+        assert payload["kernels"][0]["result_status"] == "NOT_COMPARABLE"
 
 
 # ---------------------------------------------------------------------------
@@ -365,6 +453,221 @@ class TestKernelMatching:
         assert ((0, 1), (0, 0)) in matches
         assert not unmatched_a and not unmatched_b
 
+    def test_logical_alias_matches_renamed_kernel_and_marks_launch_change(self, tmp_path):
+        shared = dict(
+            dur_ns=10_000.0, sm_hz=1.8e9, cycles=18_000.0, stalls={"wait": 2.0}
+        )
+        rep_a = tmp_path / "a.ncu-rep"
+        rep_b = tmp_path / "b.ncu-rep"
+        rep_a.write_bytes(b"")
+        rep_b.write_bytes(b"")
+        sidecar_a = {
+            "schema_version": 1,
+            "collection": {
+                "ncu_defaults_known": True,
+                "cache_control": "all",
+                "kernel_aliases": {"kernel_v1": "fused_gemm"},
+            },
+        }
+        sidecar_b = {
+            "schema_version": 1,
+            "collection": {
+                "ncu_defaults_known": True,
+                "cache_control": "all",
+                "kernel_aliases": {"kernel_v2": "fused_gemm"},
+            },
+        }
+        Path(str(rep_a) + ".collection.json").write_text(json.dumps(sidecar_a))
+        Path(str(rep_b) + ".collection.json").write_text(json.dumps(sidecar_b))
+        module = _FakeNcuModule(
+            {
+                "a.ncu-rep": _FakeContext(
+                    [_FakeRange([_FakeAction("kernel_v1", _kernel_metrics(**shared))])]
+                ),
+                "b.ncu-rep": _FakeContext(
+                    [
+                        _FakeRange(
+                            [_FakeAction("kernel_v2", _kernel_metrics(**{**shared, "block": 256.0}))]
+                        )
+                    ]
+                ),
+            }
+        )
+        payload = report_diff.diff_ncu_reports(
+            str(rep_a), str(rep_b), ncu_report_module=module
+        )
+        assert payload["matched_kernel_count"] == 1
+        match = payload["kernels"][0]["match"]
+        assert match["method"] == "logical_kernel_alias"
+        assert match["launch_signature_changed"] is True
+
+
+class TestCoverageAndProvenance:
+    def test_missing_analysis_coverage_is_not_reported_as_disappearance(self):
+        finding = {
+            "category": "stall_long_scoreboard",
+            "title": "scoreboard",
+            "severity": "high",
+            "source": "heuristic",
+        }
+        result = report_diff._diff_findings(
+            [finding],
+            [],
+            diag_a={"coverage": {"ran": ["stalls"]}},
+            diag_b={"coverage": {"ran": []}},
+        )
+        assert not result["disappeared"]
+        assert result["not_evaluated_in_b"][0]["category"] == "stall_long_scoreboard"
+
+    def test_workload_mismatch_blocks_duration_claim(self, tmp_path):
+        metrics = _kernel_metrics(
+            dur_ns=100_000.0,
+            sm_hz=1.80e9,
+            cycles=180_000.0,
+            stalls={"wait": 2.0},
+        )
+        rep_a, rep_b, module = _write_pair(tmp_path, metrics, metrics)
+        for path, workload in ((rep_a, "shape_a"), (rep_b, "shape_b")):
+            Path(path + ".collection.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "collection": {
+                            "ncu_defaults_known": True,
+                            "cache_control": "all",
+                            "workload_id": workload,
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+        payload = report_diff.diff_ncu_reports(rep_a, rep_b, ncu_report_module=module)
+        assert payload["kernels"][0]["result_status"] == "NOT_COMPARABLE"
+        assert any(
+            "workload id differs" in blocker
+            for blocker in payload["kernels"][0]["clock_comparison"]["blockers"]
+        )
+
+    def test_work_normalisation_prevents_raw_count_only_verdict(self):
+        metrics_a = {
+            "l1tex__data_bank_conflicts_pipe_lsu_mem_shared_op_st.sum": 100.0,
+            "l1tex__data_pipe_lsu_wavefronts_mem_shared_op_st.sum": 100.0,
+        }
+        metrics_b = {
+            "l1tex__data_bank_conflicts_pipe_lsu_mem_shared_op_st.sum": 80.0,
+            "l1tex__data_pipe_lsu_wavefronts_mem_shared_op_st.sum": 40.0,
+        }
+        rows = _rows_by_metric(
+            report_diff._ratio_rows(
+                report_diff.MetricView(metrics_a), report_diff.MetricView(metrics_b)
+            )
+        )
+        row = rows["shared_bank_conflicts_st_per_wavefront"]
+        assert row["a"] == 1.0 and row["b"] == 2.0
+        assert row["status"] == "regressed"
+
+    def test_pm_and_pc_diffs_are_validity_gated(self):
+        source_a = {
+            "pm_sampling_validity": {"usable": True},
+            "pm_sampling": {
+                "available": True,
+                "series": [
+                    {
+                        "metric": "sm__throughput",
+                        "pass_group": "0",
+                        "duty_cycle": 0.5,
+                        "mean_in_active_window": 10.0,
+                        "peak": 20.0,
+                        "peak_to_mean": 2.0,
+                    }
+                ],
+            },
+            "sampling_validity": {"usable": True},
+            "stall_attribution": {
+                "source_lines": [
+                    {"file_name": "kernel.cu", "line": 12, "share_of_samples": 0.6}
+                ]
+            },
+        }
+        source_b = {
+            **source_a,
+            "pm_sampling": {
+                "available": True,
+                "series": [
+                    {
+                        "metric": "sm__throughput",
+                        "pass_group": "0",
+                        "duty_cycle": 0.8,
+                        "mean_in_active_window": 12.0,
+                        "peak": 22.0,
+                        "peak_to_mean": 1.8,
+                    }
+                ],
+            },
+            "stall_attribution": {
+                "source_lines": [
+                    {"file_name": "kernel.cu", "line": 12, "share_of_samples": 0.2}
+                ]
+            },
+        }
+        pm = report_diff._pm_sampling_diff(source_a, source_b)
+        pc = report_diff._pc_hotspot_diff(source_a, source_b)
+        assert pm["available"] and len(pm["features"]) == 4
+        assert pc["available"] and abs(pc["hotspots"][0]["delta"] + 0.4) < 1e-12
+        source_b["pm_sampling_validity"] = {"usable": False}
+        assert report_diff._pm_sampling_diff(source_a, source_b)["available"] is False
+
+    def test_repeat_reports_upgrade_only_stable_locked_speedup(self, tmp_path):
+        paths = [tmp_path / name for name in ("a0.ncu-rep", "a1.ncu-rep", "b0.ncu-rep", "b1.ncu-rep")]
+        contexts = {}
+        durations = (100_000.0, 101_000.0, 80_000.0, 81_000.0)
+        for path, duration in zip(paths, durations):
+            path.write_bytes(b"")
+            Path(str(path) + ".collection.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "collection": {
+                            "ncu_defaults_known": True,
+                            "cache_control": "all",
+                            "clocks_locked": True,
+                            "workload_id": "gemm_case",
+                            "problem_shape": {"m": 128, "n": 128, "k": 64},
+                            "dtype": "fp16",
+                            "input_hash": "same-input",
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            contexts[path.name] = _FakeContext(
+                [
+                    _FakeRange(
+                        [
+                            _FakeAction(
+                                "kern",
+                                _kernel_metrics(
+                                    dur_ns=duration,
+                                    sm_hz=1.8e9,
+                                    cycles=duration * 1.8,
+                                    stalls={"wait": 2.0},
+                                ),
+                            )
+                        ]
+                    )
+                ]
+            )
+        payload = report_diff.diff_ncu_reports(
+            str(paths[0]),
+            str(paths[2]),
+            repeat_reports_a=[str(paths[1])],
+            repeat_reports_b=[str(paths[3])],
+            ncu_report_module=_FakeNcuModule(contexts),
+        )
+        assert payload["repeat_statistics"]["available"] is True
+        assert payload["repeat_statistics"]["kernels"][0]["outcome"] == "stable_improvement"
+        assert payload["kernels"][0]["result_status"] == "VALID_SPEEDUP"
+
 
 # ---------------------------------------------------------------------------
 # The delta-row severity coding itself
@@ -431,8 +734,27 @@ class TestCliSurface:
 
         captured = {}
 
-        def _fake_diff(report_a, report_b, *, kernel_like="%", findings_per_kernel=24):
-            captured["args"] = (report_a, report_b, kernel_like, findings_per_kernel)
+        def _fake_diff(
+            report_a,
+            report_b,
+            *,
+            kernel_like="%",
+            findings_per_kernel=24,
+            collection_manifest_a="",
+            collection_manifest_b="",
+            repeat_reports_a=(),
+            repeat_reports_b=(),
+        ):
+            captured["args"] = (
+                report_a,
+                report_b,
+                kernel_like,
+                findings_per_kernel,
+                collection_manifest_a,
+                collection_manifest_b,
+                repeat_reports_a,
+                repeat_reports_b,
+            )
             return {"kernels": [], "clock_guard": {"all_comparable": True}}
 
         monkeypatch.setattr(profiling_cli, "diff_ncu_reports", _fake_diff)
@@ -450,7 +772,9 @@ class TestCliSurface:
             ]
         )
         assert rc == 0
-        assert captured["args"] == ("x.ncu-rep", "y.ncu-rep", "gemm%", 24)
+        assert captured["args"] == (
+            "x.ncu-rep", "y.ncu-rep", "gemm%", 24, "", "", (), ()
+        )
         out = capsys.readouterr().out
         assert '"clock_guard"' in out
 

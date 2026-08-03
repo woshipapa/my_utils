@@ -266,6 +266,11 @@ def check_pm_sampling_validity(
     interval: Optional[float] = None,
     duration: Optional[float] = None,
     pass_groups: Optional[float] = None,
+    dropped_samples: Optional[float] = None,
+    merged_samples: Optional[float] = None,
+    context_switch_trace_available: Optional[bool] = None,
+    mps_active: Optional[bool] = None,
+    mig_active: Optional[bool] = None,
 ) -> Dict[str, Any]:
     """Validate PM-sampling data, mirroring NVIDIA's ``PMSamplingData`` rule.
 
@@ -274,7 +279,12 @@ def check_pm_sampling_validity(
     ``profiler__pmsampler_interval_time`` against ``gpu__time_duration.sum``;
     at CC 7.5-8.0 it reads ``profiler__pmsampler_interval_cycles`` against
     ``gpc__cycles_elapsed.max``. ``compute_capability`` decides which floor
-    applies to the advice.
+    applies to the advice. A non-zero ``dropped_samples`` means that retained
+    PM samples have gaps, while a non-zero ``merged_samples`` means their time
+    resolution was reduced under hardware backpressure. PM sampling is device
+    scoped, so an absent context-switch trace is fatal for attribution when MPS
+    or MIG is known to be active: samples can then include another workload and
+    the package has no safe way to filter them back to the profiled context.
     """
     issues: List[SamplingIssue] = []
 
@@ -310,18 +320,95 @@ def check_pm_sampling_validity(
 
     interval_value = _num(interval)
     duration_value = _num(duration)
+    dropped_value = _num(dropped_samples)
+    merged_value = _num(merged_samples)
+
+    if context_switch_trace_available is False and (mps_active is True or mig_active is True):
+        scope = "MPS" if mps_active is True else "MIG"
+        issues.append(
+            SamplingIssue(
+                key="pm_sampling_context_scope_unavailable",
+                title="PM samples cannot be scoped to the profiled context",
+                detail=(
+                    f"{scope} is active but this report has no PM context-switch trace. "
+                    "PM sampling observes the device, not just one kernel context, so "
+                    "the timeline can contain work from another client or partition."
+                ),
+                severity="high",
+                blocks=True,
+                invalidates=(
+                    "pm_sampling_timeline",
+                    "phase_detection",
+                    "cross_pass_alignment",
+                ),
+                remedy=(
+                    "Collect with context-switch tracing available, or profile an exclusive "
+                    "GPU/context. Do not use this PM timeline to attribute phases to the kernel."
+                ),
+            )
+        )
+
+    if dropped_value:
+        issues.append(
+            SamplingIssue(
+                key="pm_sampling_dropped_samples",
+                title="PM samples were dropped because the sampling buffer was insufficient",
+                detail=(
+                    f"{dropped_value:,.0f} PM samples were dropped. The retained "
+                    "timeline has unknown gaps, so it cannot support a timeline or "
+                    "phase conclusion."
+                ),
+                severity="high",
+                blocks=True,
+                invalidates=("pm_sampling_timeline", "phase_detection"),
+                remedy=(
+                    "Increase --pm-sampling-buffer-size, or reduce "
+                    "--pm-sampling-interval and let Nsight Compute size the buffer "
+                    "automatically."
+                ),
+            )
+        )
+
+    if merged_value:
+        issues.append(
+            SamplingIssue(
+                key="pm_sampling_merged_samples",
+                title="PM samples were merged under hardware backpressure",
+                detail=(
+                    f"{merged_value:,.0f} PM samples were merged while results were "
+                    "streamed. The timeline remains available, but phase boundaries "
+                    "finer than the merged intervals are not observable."
+                ),
+                severity="medium",
+                blocks=True,
+                invalidates=("phase_detection",),
+                remedy=(
+                    "Reduce --pm-sampling-interval or increase "
+                    "--pm-sampling-buffer-size, then recollect."
+                ),
+            )
+        )
 
     if not interval_value or not duration_value:
+        blocked: set = set()
+        for issue in issues:
+            if issue.blocks:
+                blocked.update(issue.invalidates)
         return {
-            "checked": False,
-            "usable": None,
+            "checked": bool(issues),
+            "usable": not any(issue.blocks for issue in issues) if issues else None,
             "supported": True,
-            "issues": [],
-            "blocked_conclusions": [],
+            "issues": [issue.to_dict() for issue in issues],
+            "blocked_conclusions": sorted(blocked),
+            "dropped_samples": dropped_value,
+            "merged_samples": merged_value,
+            "context_switch_trace_available": context_switch_trace_available,
+            "mps_active": mps_active,
+            "mig_active": mig_active,
             "note": (
-                "PM-sampling interval or duration missing, so nothing was validated. "
-                "Collect --section PmSampling (it ships in the `full` and `pmsampling` "
-                "sets, not in `basic`)."
+                "PM-sampling interval or duration missing, so interval resolution "
+                "was not validated. Collect --section PmSampling (it ships in the "
+                "`full` and `pmsampling` sets, not in `basic`)."
             ),
         }
 
@@ -388,6 +475,11 @@ def check_pm_sampling_validity(
         "interval_duration_ratio": ratio,
         "estimated_sample_count": estimated,
         "pass_groups": _num(pass_groups),
+        "dropped_samples": dropped_value,
+        "merged_samples": merged_value,
+        "context_switch_trace_available": context_switch_trace_available,
+        "mps_active": mps_active,
+        "mig_active": mig_active,
         "issues": [i.to_dict() for i in issues],
         "blocked_conclusions": sorted(blocked),
         "note": (

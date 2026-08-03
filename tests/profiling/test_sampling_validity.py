@@ -93,6 +93,75 @@ class TestPmSamplingValidity:
         assert out["usable"] is True
         assert out["estimated_sample_count"] == pytest.approx(10000)
 
+    def test_dropped_samples_block_the_pm_timeline(self):
+        out = sampling_validity.check_pm_sampling_validity(
+            cc_major=9,
+            cc_minor=0,
+            interval=1000,
+            duration=10_000_000,
+            dropped_samples=390,
+        )
+        assert out["usable"] is False
+        assert "pm_sampling_timeline" in out["blocked_conclusions"]
+        issue = next(i for i in out["issues"] if i["key"] == "pm_sampling_dropped_samples")
+        assert "--pm-sampling-buffer-size" in issue["remedy"]
+
+    def test_dropped_samples_fail_closed_without_interval_metadata(self):
+        out = sampling_validity.check_pm_sampling_validity(
+            cc_major=9, cc_minor=0, dropped_samples=1
+        )
+        assert out["usable"] is False
+        assert "pm_sampling_timeline" in out["blocked_conclusions"]
+
+    def test_merged_samples_keep_the_timeline_but_block_phase_claims(self):
+        out = sampling_validity.check_pm_sampling_validity(
+            cc_major=9,
+            cc_minor=0,
+            interval=1000,
+            duration=10_000_000,
+            merged_samples=12,
+        )
+        assert out["usable"] is False
+        assert "phase_detection" in out["blocked_conclusions"]
+        assert "pm_sampling_timeline" not in out["blocked_conclusions"]
+
+    def test_merged_samples_are_reported_without_interval_metadata(self):
+        out = sampling_validity.check_pm_sampling_validity(
+            cc_major=9, cc_minor=0, merged_samples=1
+        )
+        assert out["usable"] is False
+        assert "phase_detection" in out["blocked_conclusions"]
+
+    def test_missing_context_trace_blocks_device_wide_mps_samples(self):
+        out = sampling_validity.check_pm_sampling_validity(
+            cc_major=9,
+            cc_minor=0,
+            interval=1_000,
+            duration=100_000,
+            context_switch_trace_available=False,
+            mps_active=True,
+        )
+        assert out["usable"] is False
+        assert "pm_sampling_timeline" in out["blocked_conclusions"]
+        issue = next(
+            item
+            for item in out["issues"]
+            if item["key"] == "pm_sampling_context_scope_unavailable"
+        )
+        assert "MPS" in issue["detail"]
+
+    def test_missing_context_trace_is_not_a_false_mps_claim(self):
+        out = sampling_validity.check_pm_sampling_validity(
+            cc_major=9,
+            cc_minor=0,
+            interval=1_000,
+            duration=100_000,
+            context_switch_trace_available=False,
+            mps_active=False,
+            mig_active=False,
+        )
+        assert out["usable"] is True
+
 
 class TestReplayClockDrift:
     """Thermal sag between replay passes: one collection, several clock states.

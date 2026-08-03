@@ -18,6 +18,13 @@ class TestMeasurementContext:
         assert ctx.cache_state == measurement_context.CacheState.COLD
         assert any("--cache-control" in n for n in ctx.notes)
 
+    def test_imported_ncu_report_without_command_provenance_is_unknown(self):
+        ctx = measurement_context.describe_collection_mode(
+            source="ncu", ncu_defaults_known=False
+        )
+        assert ctx.cache_state == measurement_context.CacheState.UNKNOWN
+        assert any("no collection sidecar" in n for n in ctx.notes)
+
     def test_ncu_cannot_answer_overlap(self):
         ctx = measurement_context.describe_collection_mode(source="ncu")
         assert any("overlap" in c for c in ctx.cannot_answer)
@@ -27,6 +34,14 @@ class TestMeasurementContext:
             source="ncu", cache_control="none"
         )
         assert ctx.cache_state == measurement_context.CacheState.WARM
+
+    def test_range_replay_preserves_concurrency_but_blocks_kernel_attribution(self):
+        ctx = measurement_context.describe_collection_mode(
+            source="ncu", replay_mode="range"
+        )
+        assert ctx.serialized_execution is False
+        assert any("individual kernel" in note for note in ctx.notes)
+        assert any("per-kernel attribution" in item for item in ctx.cannot_answer)
 
     def test_cold_vs_warm_comparison_is_refused(self):
         cold = measurement_context.describe_collection_mode(source="ncu")
@@ -66,6 +81,39 @@ class TestMeasurementContext:
             source="wallclock", input_distribution="random"
         )
         assert any("real data" in c for c in ctx.cannot_answer)
+
+    def test_dynamic_pipeline_boost_is_recorded_and_not_comparable_to_stable(self):
+        dynamic = measurement_context.describe_collection_mode(
+            source="ncu",
+            pipeline_boost_state="dynamic",
+            sm_clock_hz=1.7e9,
+            gpc_clock_hz=1.7e9,
+        )
+        stable = measurement_context.describe_collection_mode(
+            source="ncu",
+            pipeline_boost_state="stable",
+            sm_clock_hz=1.7e9,
+            gpc_clock_hz=1.7e9,
+        )
+        assert any("pipeline-boost-state dynamic" in note for note in dynamic.notes)
+        out = measurement_context.compare_measurements(
+            dynamic, stable, baseline_value=10.0, candidate_value=9.0
+        )
+        assert out["comparable"] is False
+        assert any("pipeline boost state" in blocker for blocker in out["blockers"])
+
+    def test_mps_state_change_blocks_a_timing_comparison(self):
+        shared = measurement_context.describe_collection_mode(
+            source="ncu", mps_active=True, sm_clock_hz=1.7e9, gpc_clock_hz=1.7e9
+        )
+        exclusive = measurement_context.describe_collection_mode(
+            source="ncu", mps_active=False, sm_clock_hz=1.7e9, gpc_clock_hz=1.7e9
+        )
+        out = measurement_context.compare_measurements(
+            shared, exclusive, baseline_value=10.0, candidate_value=9.0
+        )
+        assert out["comparable"] is False
+        assert any("MPS state differs" in blocker for blocker in out["blockers"])
 
 
 class TestClockConfound:

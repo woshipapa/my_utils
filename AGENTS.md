@@ -23,7 +23,7 @@ my_utils/profiling/ncu/ncu_diagnostics.py      the ncu rule engine
 my_utils/profiling/analyzers/triage.py         the nsys top-down tree
 ```
 
-Keep it that way. It is what makes `tests/profiling/test_analysis_engine.py`
+Keep it that way. It is what makes the `tests/profiling/` analysis suite
 runnable in CI and on a laptop. If you need torch in an analysis path, you
 have almost certainly put the code in the wrong layer.
 
@@ -32,7 +32,7 @@ path rather than through the package. Follow that pattern for new analysis tests
 
 ```bash
 # These run anywhere:
-python -m pytest tests/profiling/test_analysis_engine.py -q
+python -m pytest tests/profiling -q
 
 # The rest of tests/ needs torch installed.
 ```

@@ -1188,6 +1188,7 @@ def cmd_ncu_diagnose(args: argparse.Namespace) -> int:
         findings_per_kernel=int(args.findings_per_kernel),
         gpu_name=str(args.gpu or ""),
         include_source=not bool(getattr(args, "no_source", False)),
+        collection_manifest=str(getattr(args, "collection_manifest", "") or ""),
     )
     if str(args.format).lower() in {"md", "markdown"}:
         text = diagnose_result_to_markdown(payload)
@@ -1209,6 +1210,10 @@ def cmd_ncu_diff(args: argparse.Namespace) -> int:
         args.report_b,
         kernel_like=str(args.kernel or "%"),
         findings_per_kernel=int(args.findings_per_kernel),
+        collection_manifest_a=str(args.collection_manifest_a or ""),
+        collection_manifest_b=str(args.collection_manifest_b or ""),
+        repeat_reports_a=tuple(getattr(args, "report_a_repeat", []) or ()),
+        repeat_reports_b=tuple(getattr(args, "report_b_repeat", []) or ()),
     )
     if str(args.format).lower() in {"md", "markdown"}:
         text = diff_result_to_markdown(payload)
@@ -1266,6 +1271,54 @@ def cmd_ncu_metrics(args: argparse.Namespace) -> int:
     print("metrics per hardware unit:")
     for unit, count in index.unit_summary().items():
         print(f"  {unit or '(none)':12s} {count:4d}")
+    return 0
+
+
+def cmd_ncu_audit(args: argparse.Namespace) -> int:
+    """Audit installed/current NCU support and an optional collection sidecar."""
+    from .ncu.ncu_capability_audit import (
+        audit_collection_provenance,
+        audit_ncu_capabilities,
+        probe_ncu_version,
+    )
+    from .ncu.ncu_report_tools import load_collection_manifest
+
+    probe = (
+        {
+            "available": True,
+            "version": str(args.version),
+            "source": "--version override",
+        }
+        if str(args.version or "").strip()
+        else probe_ncu_version(str(args.ncu or "ncu"))
+    )
+    payload = audit_ncu_capabilities(
+        str(probe.get("version") or ""),
+        # An omitted option inventory is not evidence that the wrapper lacks
+        # every current CLI flag.  Only an explicitly supplied inventory is
+        # treated as complete enough to report wrapper-option gaps.
+        configured_options=(
+            tuple(args.configured_option) if args.configured_option else None
+        ),
+        validated_feature_keys=tuple(args.validated_feature or ()),
+    )
+    payload["version_probe"] = probe
+    if args.collection_manifest:
+        collection = load_collection_manifest(str(args.collection_manifest))
+        payload["collection_provenance"] = audit_collection_provenance(collection)
+    if args.sections_dir:
+        from .ncu.metric_catalog import verify_catalog_coverage
+
+        payload["catalog_coverage"] = verify_catalog_coverage(str(args.sections_dir))
+
+    text = report_result_to_json(payload, pretty=bool(args.pretty))
+    if args.output:
+        path = Path(args.output)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+        print(f"[ncu-audit] wrote: {path}")
+    else:
+        print(text)
     return 0
 
 
@@ -1877,6 +1930,40 @@ def build_parser() -> argparse.ArgumentParser:
     ncu_metrics.add_argument("--verbose", action="store_true")
     ncu_metrics.set_defaults(func=cmd_ncu_metrics)
 
+    ncu_audit = sub.add_parser(
+        "ncu-audit",
+        help="audit NCU version coverage and collection-sidecar provenance",
+    )
+    ncu_audit.add_argument(
+        "--ncu", default="ncu", help="NCU executable used for --version probing"
+    )
+    ncu_audit.add_argument(
+        "--version",
+        default="",
+        help="override the probed NCU version (useful for remote inventory output)",
+    )
+    ncu_audit.add_argument(
+        "--configured-option",
+        action="append",
+        default=[],
+        help="NCU option exposed by the collection wrapper; repeat as needed",
+    )
+    ncu_audit.add_argument(
+        "--validated-feature",
+        action="append",
+        default=[],
+        help="feature key validated against a controlled report; repeat as needed",
+    )
+    ncu_audit.add_argument(
+        "--collection-manifest", default="", help="optional report sidecar JSON"
+    )
+    ncu_audit.add_argument(
+        "--sections-dir", default="", help="optional NCU sections directory"
+    )
+    ncu_audit.add_argument("--output", default="")
+    ncu_audit.add_argument("--pretty", action="store_true")
+    ncu_audit.set_defaults(func=cmd_ncu_audit)
+
     ncu_diagnose = sub.add_parser(
         "ncu-diagnose",
         help="diagnose every kernel in a .ncu-rep: bottleneck class, stalls, roofline, fixes",
@@ -1905,6 +1992,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="skip source-line attribution (it re-reads the report for PC samples)",
     )
     ncu_diagnose.add_argument(
+        "--collection-manifest",
+        default="",
+        help=(
+            "JSON sidecar recording replay/cache/clock options; when omitted, "
+            "<report>.collection.json is discovered automatically"
+        ),
+    )
+    ncu_diagnose.add_argument(
         "--format", default="md", choices=["json", "md", "markdown"]
     )
     ncu_diagnose.add_argument("--output", default="")
@@ -1922,6 +2017,18 @@ def build_parser() -> argparse.ArgumentParser:
         "--report-b", required=True, help="candidate ncu report path (.ncu-rep)"
     )
     ncu_diff.add_argument(
+        "--report-a-repeat",
+        action="append",
+        default=[],
+        help="additional independent baseline report; repeat to enable median/MAD judgement",
+    )
+    ncu_diff.add_argument(
+        "--report-b-repeat",
+        action="append",
+        default=[],
+        help="additional independent candidate report; repeat to enable median/MAD judgement",
+    )
+    ncu_diff.add_argument(
         "--kernel", default="%", help="kernel LIKE pattern (%%/_/*) to diff"
     )
     ncu_diff.add_argument(
@@ -1929,6 +2036,16 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=24,
         help="findings kept per kernel per side before the findings diff",
+    )
+    ncu_diff.add_argument(
+        "--collection-manifest-a",
+        default="",
+        help="collection JSON for baseline report A (auto-discovered when omitted)",
+    )
+    ncu_diff.add_argument(
+        "--collection-manifest-b",
+        default="",
+        help="collection JSON for candidate report B (auto-discovered when omitted)",
     )
     ncu_diff.add_argument("--format", default="md", choices=["json", "md", "markdown"])
     ncu_diff.add_argument("--output", default="")

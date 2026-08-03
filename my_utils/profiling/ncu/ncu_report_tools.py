@@ -10,6 +10,210 @@ from types import ModuleType
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
 
+_MEASUREMENT_COLLECTION_FIELDS = frozenset(
+    {
+        "cache_control",
+        "replay_mode",
+        "app_replay_match",
+        "app_replay_mode",
+        "range_replay_options",
+        "graph_profiling",
+        "iterations",
+        "warmup_iterations",
+        "clocks_locked",
+        "input_distribution",
+        "clock_control",
+        "pipeline_boost_state",
+        "ncu_defaults_known",
+    }
+)
+_PROVENANCE_FIELDS = frozenset(
+    {
+        "workload_id",
+        "problem_shape",
+        "dtype",
+        "input_hash",
+        "output_hash",
+        "logical_kernel_id",
+        "kernel_aliases",
+        "kernel_config",
+        "build_id",
+        "git_commit",
+        "ncu_version",
+        "driver_version",
+        "host_name",
+        "cuda_visible_devices",
+        "gpu_identities",
+        "mig_instance_id",
+        "mps_active",
+        # Exact NCU selection and sampling controls.  They are retained in the
+        # report payload even when a measurement-context rule does not consume
+        # them, because they establish which launch and sampling experiment was
+        # actually run.
+        "mode",
+        "devices",
+        "chips",
+        "kernel_name",
+        "kernel_id",
+        "kernel_name_base",
+        "launch_count",
+        "launch_skip",
+        "target_processes",
+        "target_processes_filter",
+        "profile_from_start",
+        "nvtx",
+        "nvtx_include",
+        "nvtx_exclude",
+        "range_filter",
+        "pm_sampling_interval",
+        "pm_sampling_buffer_size",
+        "pm_sampling_max_passes",
+        "warp_sampling_interval",
+        "disable_pm_warp_sampling",
+        "communicator",
+        "communicator_num_peers",
+        "lockstep_kernel_launch",
+        "lockstep_nvtx_include",
+        "lockstep_nvtx_exclude",
+        "process_id",
+        "import_source",
+    }
+)
+_COLLECTION_FIELDS = _MEASUREMENT_COLLECTION_FIELDS | _PROVENANCE_FIELDS
+_SUPPORTED_COLLECTION_MANIFEST_SCHEMA_VERSIONS = frozenset({1, 2})
+
+
+def _collection_manifest_candidates(report_path: str) -> List[Path]:
+    report = Path(report_path)
+    return [
+        Path(str(report) + ".collection.json"),
+        report.with_suffix(".collection.json"),
+    ]
+
+
+def load_collection_manifest(path: str) -> Dict[str, Any]:
+    """Load the collection context sidecar written with an NCU report.
+
+    Nsight Compute reports retain counters but not the command-line replay,
+    cache, or clock-control options needed to interpret them. This deliberately
+    accepts only recognised collection and workload-provenance fields.
+    """
+    manifest_path = Path(path)
+    try:
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except OSError as exc:
+        raise ValueError(f"cannot read collection manifest: {manifest_path}") from exc
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"collection manifest is not valid JSON: {manifest_path}") from exc
+    if not isinstance(payload, dict):
+        raise ValueError("collection manifest root must be an object")
+    schema = payload.get("schema_version", 1)
+    if schema not in _SUPPORTED_COLLECTION_MANIFEST_SCHEMA_VERSIONS:
+        raise ValueError(
+            f"unsupported collection manifest schema {schema!r}; expected one of "
+            f"{sorted(_SUPPORTED_COLLECTION_MANIFEST_SCHEMA_VERSIONS)!r}"
+        )
+    raw = payload.get("collection", payload)
+    if not isinstance(raw, dict):
+        raise ValueError("collection manifest 'collection' must be an object")
+    return {key: raw[key] for key in _COLLECTION_FIELDS if key in raw}
+
+
+def _resolve_collection_context(
+    report_path: str,
+    *,
+    collection: Optional[Mapping[str, Any]] = None,
+    collection_manifest: str = "",
+) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    """Resolve explicit context, then optional sidecar, without guessing mode."""
+    explicit = {
+        key: value
+        for key, value in dict(collection or {}).items()
+        if key in _COLLECTION_FIELDS
+    }
+    selected = Path(collection_manifest) if collection_manifest else None
+    if selected is None:
+        selected = next(
+            (candidate for candidate in _collection_manifest_candidates(report_path) if candidate.exists()),
+            None,
+        )
+    if selected is None:
+        # An imported report cannot safely inherit current NCU defaults: we do
+        # not know which NCU version or command produced it.  Fail closed.
+        explicit.setdefault("ncu_defaults_known", False)
+        return explicit, {"status": "not_found", "path": "", "auto_discovered": False}
+    loaded = load_collection_manifest(str(selected))
+    # Schema-v1 sidecars written before explicit default provenance existed may
+    # contain only replay metadata.  They still do not establish cache state.
+    if "cache_control" not in loaded and "ncu_defaults_known" not in loaded:
+        loaded["ncu_defaults_known"] = False
+    loaded.update(explicit)
+    return loaded, {
+        "status": "loaded",
+        "path": str(selected),
+        "auto_discovered": not bool(collection_manifest),
+    }
+
+
+def _infer_collection_context(metrics: Mapping[str, float]) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    """Use only mode-specific report evidence; otherwise preserve unknown."""
+    backed_up = max(
+        float(metrics.get(name) or 0.0)
+        for name in (
+            "profiler__replayer_bytes_mem_backed_up.avg",
+            "profiler__replayer_bytes_mem_backed_up.max",
+            "profiler__replayer_bytes_mem_backed_up.sum",
+        )
+    )
+    passes = float(metrics.get("profiler__replayer_passes") or 0.0)
+    if backed_up > 0.0:
+        return (
+            {"replay_mode": "kernel"},
+            {
+                "replay_mode": "kernel",
+                "source": "report_metric",
+                "evidence": "profiler__replayer_bytes_mem_backed_up",
+                "replayer_passes": passes,
+            },
+        )
+    return (
+        {},
+        {
+            "replay_mode": "unknown",
+            "source": "unknown",
+            "evidence": "profiler__replayer_passes" if passes > 0.0 else "",
+            "replayer_passes": passes,
+        },
+    )
+
+
+def _effective_collection_context(
+    collection: Optional[Mapping[str, Any]], metrics: Mapping[str, float]
+) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    """Merge sidecar and report evidence, failing closed on replay-mode conflict."""
+    inferred, evidence = _infer_collection_context(metrics)
+    effective = dict(inferred)
+    explicit = {
+        key: value
+        for key, value in dict(collection or {}).items()
+        if key in _COLLECTION_FIELDS
+    }
+    inferred_mode = str(inferred.get("replay_mode") or "").strip().lower()
+    explicit_mode = str(explicit.get("replay_mode") or "").strip().lower()
+    if inferred_mode and explicit_mode and inferred_mode != explicit_mode:
+        effective.update({key: value for key, value in explicit.items() if key != "replay_mode"})
+        evidence["conflict"] = {
+            "report": inferred_mode,
+            "manifest": explicit_mode,
+        }
+        evidence["replay_mode"] = "unknown"
+        evidence["source"] = "conflict"
+        effective.pop("replay_mode", None)
+        return effective, evidence
+    effective.update(explicit)
+    return effective, evidence
+
+
 def _like_match(text: str, pattern: str) -> bool:
     p = str(pattern or "").strip()
     if not p or p in {"%", "*"}:
@@ -1803,6 +2007,7 @@ class NcuReportSkillEngine:
             source_availability,
             summarize_warp_samples,
         )
+        from .current_report_surfaces import summarize_current_report_surfaces
 
         mod = _load_ncu_report_module(self._ncu_report_module)
         ctx = mod.load_report(str(self.report_path))
@@ -1861,6 +2066,9 @@ class NcuReportSkillEngine:
                         or _metric("gpc__cycles_elapsed.max")
                     ),
                     pass_groups=_metric("profiler__pmsampler_pass_groups"),
+                    dropped_samples=_metric("profiler__pmsampler_dropped_samples"),
+                    merged_samples=_metric("profiler__pmsampler_merged_samples"),
+                    **_pm_sampling_scope(action, _metric),
                 )
 
                 entry: Dict[str, object] = {
@@ -1869,6 +2077,9 @@ class NcuReportSkillEngine:
                     "sampling_validity": validity,
                     "pm_sampling_validity": pm_validity,
                     "warp_sample_summary": summarize_warp_samples(action),
+                    "current_report_surfaces": summarize_current_report_surfaces(
+                        action, top_k=int(top_k)
+                    ),
                 }
 
                 # Each analysis is withheld individually: too few samples blocks
@@ -2153,6 +2364,48 @@ def _metric_reader(action: Any):
     return read
 
 
+def _optional_bool(value: Any) -> Optional[bool]:
+    """Coerce explicit sidecar/metric truth values without treating unknown as false."""
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "on", "enabled"}:
+        return True
+    if text in {"0", "false", "no", "off", "disabled"}:
+        return False
+    return None
+
+
+def _has_pm_context_switch_trace(action: Any) -> bool:
+    """Whether the report contains the PM sampler's context-switch trace."""
+    try:
+        names = action.metric_names()  # type: ignore[attr-defined]
+    except Exception:
+        return False
+    return any(str(name).startswith("profiler__pmsampler_ctxsw_") for name in names)
+
+
+def _pm_sampling_scope(
+    action: Any, read: Any, collection: Optional[Mapping[str, Any]] = None
+) -> Dict[str, Optional[bool]]:
+    """Collect only evidence needed to scope device-wide PM sampling safely."""
+    sidecar = dict(collection or {})
+    mps = _optional_bool(sidecar.get("mps_active"))
+    if mps is None:
+        mps = _optional_bool(read("launch__uses_mps"))
+    return {
+        "context_switch_trace_available": _has_pm_context_switch_trace(action),
+        "mps_active": mps,
+        "mig_active": bool(str(sidecar.get("mig_instance_id") or "").strip())
+        if "mig_instance_id" in sidecar
+        else None,
+    }
+
+
 def _rule_rows_for_action(
     action: Any,
     *,
@@ -2294,7 +2547,12 @@ def resolve_sol_breakdown(
     return out
 
 
-def _source_for_action(action: Any, *, top_k: int = 8) -> Dict[str, object]:
+def _source_for_action(
+    action: Any,
+    *,
+    top_k: int = 8,
+    collection: Optional[Mapping[str, Any]] = None,
+) -> Dict[str, object]:
     """Source attribution for one action, gated on sampling validity."""
     from .sampling_validity import (
         check_pc_sampling_validity,
@@ -2307,6 +2565,7 @@ def _source_for_action(action: Any, *, top_k: int = 8) -> Dict[str, object]:
         source_availability,
         top_stalling_instructions,
     )
+    from .current_report_surfaces import summarize_current_report_surfaces
 
     read = _metric_reader(action)
     validity = check_pc_sampling_validity(
@@ -2318,22 +2577,31 @@ def _source_for_action(action: Any, *, top_k: int = 8) -> Dict[str, object]:
         buffer_size_bytes=read("smsp__pcsamp_buffer_size_bytes"),
     )
     blocked = set(validity.get("blocked_conclusions") or ())
+    pm_scope = _pm_sampling_scope(action, read, collection)
+
+    pm_validity = check_pm_sampling_validity(
+        cc_major=read("device__attribute_compute_capability_major"),
+        cc_minor=read("device__attribute_compute_capability_minor"),
+        interval=(
+            read("profiler__pmsampler_interval_time")
+            or read("profiler__pmsampler_interval_cycles")
+        ),
+        duration=(
+            read("gpu__time_duration.sum") or read("gpc__cycles_elapsed.max")
+        ),
+        pass_groups=read("profiler__pmsampler_pass_groups"),
+        dropped_samples=read("profiler__pmsampler_dropped_samples"),
+        merged_samples=read("profiler__pmsampler_merged_samples"),
+        **pm_scope,
+    )
+    pm_blocked = set(pm_validity.get("blocked_conclusions") or ())
 
     entry: Dict[str, object] = {
         "availability": source_availability(action),
         "sampling_validity": validity,
-        "pm_sampling_validity": check_pm_sampling_validity(
-            cc_major=read("device__attribute_compute_capability_major"),
-            cc_minor=read("device__attribute_compute_capability_minor"),
-            interval=(
-                read("profiler__pmsampler_interval_time")
-                or read("profiler__pmsampler_interval_cycles")
-            ),
-            duration=(
-                read("gpu__time_duration.sum") or read("gpc__cycles_elapsed.max")
-            ),
-            pass_groups=read("profiler__pmsampler_pass_groups"),
-        ),
+        "pm_sampling_validity": pm_validity,
+        "pm_sampling_scope": pm_scope,
+        "current_report_surfaces": summarize_current_report_surfaces(action, top_k=top_k),
     }
     if blocked & {"hot_line_ranking", "stall_attribution"}:
         entry["stall_attribution"] = {
@@ -2352,7 +2620,20 @@ def _source_for_action(action: Any, *, top_k: int = 8) -> Dict[str, object]:
     if not (blocked & {"hot_line_ranking", "stall_attribution"}):
         entry["top_instructions"] = top_stalling_instructions(action, top_k=top_k)
     # PM sampling is a separate instrument: PC sampling says where, this says when.
-    entry["pm_sampling"] = analyze_pm_sampling(action)
+    if "pm_sampling_timeline" in pm_blocked:
+        entry["pm_sampling"] = {
+            "available": False,
+            "withheld_because": sorted(pm_blocked),
+            "reason": (
+                "PM timeline withheld: the sampled data cannot support it. See "
+                "pm_sampling_validity."
+            ),
+        }
+    else:
+        entry["pm_sampling"] = analyze_pm_sampling(
+            action,
+            replay_mode=str((collection or {}).get("replay_mode") or ""),
+        )
     return entry
 
 
@@ -2374,6 +2655,7 @@ def walk_report_once(
     kernel_like: str = "%",
     include_source: bool = True,
     source_top_k: int = 8,
+    collection: Optional[Mapping[str, Any]] = None,
     ncu_report_module: Any = None,
 ) -> Dict[Tuple[int, int], _LaunchBundle]:
     """Read the report once and return everything the diagnosis needs.
@@ -2397,15 +2679,22 @@ def walk_report_once(
             kernel_name = str(_maybe_call(action, "name", "") or "")
             if not _like_match(kernel_name, kernel_like):
                 continue
+            numeric, text = _metrics_for_action(action)
+            effective_collection, _evidence = _effective_collection_context(
+                collection, numeric
+            )
             source: Optional[Dict[str, object]] = None
             if include_source:
                 try:
-                    source = _source_for_action(action, top_k=source_top_k)
+                    source = _source_for_action(
+                        action,
+                        top_k=source_top_k,
+                        collection=effective_collection,
+                    )
                 except Exception:
                     # Source data is optional and often absent. Its failure must
                     # not cost us the metrics and rules already gathered here.
                     source = None
-            numeric, text = _metrics_for_action(action)
             bundles[(range_idx, action_idx)] = _LaunchBundle(
                 kernel_name=kernel_name,
                 action=action,
@@ -2427,6 +2716,7 @@ def _collect_source_attribution(
     *,
     kernel_like: str = "%",
     top_k: int = 8,
+    collection: Optional[Mapping[str, Any]] = None,
     ncu_report_module: Any = None,
 ) -> Dict[Tuple[int, int], Dict[str, object]]:
     """Per-launch source attribution, gated on PC-sampling validity.
@@ -2439,6 +2729,7 @@ def _collect_source_attribution(
         kernel_like=kernel_like,
         include_source=True,
         source_top_k=top_k,
+        collection=collection,
         ncu_report_module=ncu_report_module,
     )
     return {key: b.source for key, b in bundles.items() if b.source is not None}
@@ -2452,6 +2743,8 @@ def diagnose_ncu_report(
     findings_per_kernel: int = 8,
     gpu_name: str = "",
     include_source: bool = True,
+    collection: Optional[Mapping[str, Any]] = None,
+    collection_manifest: str = "",
     ncu_report_module: Any = None,
 ) -> Dict[str, object]:
     """Run the full rule engine over every profiled kernel in a report.
@@ -2471,11 +2764,17 @@ def diagnose_ncu_report(
     # One traversal. This used to be four separate loaders, each opening the
     # report and walking every action: metrics, shipped rules, source
     # attribution, and the action objects themselves.
+    collection_context, manifest_info = _resolve_collection_context(
+        report_path,
+        collection=collection,
+        collection_manifest=collection_manifest,
+    )
     bundles = walk_report_once(
         report_path,
         kernel_like=kernel_like,
         include_source=include_source,
         source_top_k=int(findings_per_kernel),
+        collection=collection_context,
         ncu_report_module=ncu_report_module,
     )
 
@@ -2494,6 +2793,9 @@ def diagnose_ncu_report(
         metrics = bundle.metrics
         if not metrics:
             continue
+        effective_collection, collection_evidence = _effective_collection_context(
+            collection_context, metrics
+        )
 
         diagnosis = diagnose_kernel(
             metrics,
@@ -2503,10 +2805,12 @@ def diagnose_ncu_report(
             # NVIDIA's own rule output for this same launch.
             shipped_rules=bundle.rules,
             string_metrics=bundle.string_metrics,
+            collection=effective_collection,
         )
         diagnosis["range_index"] = range_idx
         diagnosis["action_index"] = action_idx
         diagnosis["duration_ns"] = metrics.get("gpu__time_duration.sum")
+        diagnosis["collection_evidence"] = collection_evidence
 
         # Reason over every metric the report carried, not only the curated
         # ones. The curated rules know fixes; this finds anomalies in the
@@ -2576,6 +2880,7 @@ def diagnose_ncu_report(
         "gpu_name_source": (
             "caller" if gpu_name else ("report" if detected_gpu else "unknown")
         ),
+        "collection_manifest": manifest_info,
         "kernels_analyzed": len(diagnoses),
         "verdict_counts": dict(sorted(verdict_counts.items(), key=lambda kv: -kv[1])),
         "finding_counts": dict(sorted(finding_counts.items(), key=lambda kv: -kv[1])),
@@ -2800,6 +3105,57 @@ def diagnose_result_to_markdown(payload: Dict[str, object]) -> str:
                             lines.append(f"  - {reason}")
                         if availability.get("reasons_unavailable"):
                             lines.append("")
+
+                # New NCU surfaces are rendered only when the report exposes
+                # them. A pre-2026.2 report should not read as incomplete merely
+                # because it cannot contain a feature added in a newer release.
+                current_surfaces = source.get("current_report_surfaces", {})
+                if isinstance(current_surfaces, dict):
+                    discovery = current_surfaces.get("discovery", {})
+                    observed_rows = []
+                    if isinstance(discovery, dict):
+                        for key, label in (
+                            ("sass_instruction_size", "SASS instruction size"),
+                            ("instruction_stats_hw_warp_id", "HW warp-ID stalls"),
+                            (
+                                "function_statistics_line_time_range",
+                                "Function Statistics line/time API",
+                            ),
+                        ):
+                            item = discovery.get(key, {})
+                            if not isinstance(item, dict) or not item.get("observed"):
+                                continue
+                            raw_names = item.get("metrics") or item.get("api_members") or []
+                            observed_rows.append((label, raw_names))
+                    if observed_rows:
+                        lines.append("### Current NCU report surfaces")
+                        lines.append("")
+                        lines.append("| surface | report metric/API |")
+                        lines.append("|---|---|")
+                        for label, raw_names in observed_rows:
+                            raw = ", ".join(f"`{name}`" for name in raw_names[:4])
+                            if len(raw_names) > 4:
+                                raw += ", ..."
+                            lines.append(f"| {label} | {raw or '-'} |")
+                        lines.append("")
+
+                    opcode = current_surfaces.get("instruction_breakdowns", {})
+                    rows = opcode.get("breakdowns") if isinstance(opcode, dict) else []
+                    if rows:
+                        lines.append("#### SASS opcode breakdown")
+                        lines.append("")
+                        for breakdown in rows[:3]:
+                            if not isinstance(breakdown, dict) or not breakdown.get("available"):
+                                continue
+                            entries = breakdown.get("entries") or []
+                            top = ", ".join(
+                                f"{entry.get('label', '?')}={float(entry.get('value') or 0):.3g}"
+                                for entry in entries[:5]
+                                if isinstance(entry, dict)
+                            )
+                            if top:
+                                lines.append(f"- `{breakdown.get('metric', '')}`: {top}")
+                        lines.append("")
 
                 # --- PC sampling: which instruction, and is the data sound ----
                 validity = source.get("sampling_validity", {})

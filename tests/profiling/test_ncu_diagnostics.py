@@ -120,6 +120,25 @@ def test_green_context_grid_is_judged_against_the_partition():
     assert not [f for f in result["findings"] if f["category"] == "small_grid"]
 
 
+def test_mps_scope_is_a_measurement_caveat_not_a_kernel_bottleneck():
+    result = ncu_diagnostics.diagnose_kernel(
+        {
+            "sm__throughput.avg.pct_of_peak_sustained_elapsed": 60.0,
+            "gpu__compute_memory_throughput.avg.pct_of_peak_sustained_elapsed": 55.0,
+            "launch__uses_mps": 1,
+        },
+        collection={"mps_active": True},
+    )
+    scope = result["sections"]["execution_scope"]
+    assert scope["uses_mps"] is True
+    finding = next(
+        item
+        for item in result["findings"]
+        if item["category"] == "mps_shared_execution_scope"
+    )
+    assert finding["source"] == "measurement"
+
+
 class TestAnalysisCoverage:
     """A skipped analysis and a clean analysis both produce zero findings."""
 

@@ -33,7 +33,7 @@ None of these degrade a conclusion. Each one inverts it.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 __all__ = [
     "CacheState",
@@ -41,6 +41,7 @@ __all__ = [
     "describe_collection_mode",
     "compare_measurements",
     "assess_clock_control_bias",
+    "measurement_collection_context",
     "NCU_DEFAULT_CACHE_CONTROL",
 ]
 
@@ -48,6 +49,43 @@ __all__ = [
 # --cache-control; the default flushes all caches before each replay pass so
 # that replays are reproducible, at the cost of never measuring a warm cache.
 NCU_DEFAULT_CACHE_CONTROL = "all"
+
+# These are the sidecar fields that affect a MeasurementContext.  NCU report
+# sidecars also carry workload/build provenance; keeping that separate avoids
+# silently accepting arbitrary metadata as a collection-mode argument.
+_MEASUREMENT_COLLECTION_FIELDS = frozenset(
+    {
+        "cache_control",
+        "replay_mode",
+        "app_replay_match",
+        "app_replay_mode",
+        "range_replay_options",
+        "graph_profiling",
+        "iterations",
+        "warmup_iterations",
+        "clocks_locked",
+        "input_distribution",
+        "clock_control",
+        "pipeline_boost_state",
+        "mps_active",
+        "mig_instance_id",
+        "ncu_defaults_known",
+    }
+)
+
+
+def measurement_collection_context(collection: Optional[Mapping[str, Any]]) -> Dict[str, Any]:
+    """Return only collection-mode fields consumed by this module.
+
+    A collection sidecar deliberately has both collection controls and broader
+    workload provenance (build id, input hash, logical kernel aliases).  The
+    latter belongs to report-level comparability checks, not this constructor.
+    """
+    return {
+        key: value
+        for key, value in dict(collection or {}).items()
+        if key in _MEASUREMENT_COLLECTION_FIELDS
+    }
 
 # Thresholds for the clock-control symptom (see assess_clock_control_bias).
 # DRAM at >=97% of its rated clock is "running at full clock" -- on a real
@@ -75,14 +113,21 @@ class MeasurementContext:
     #: ncu serialises kernels to profile them; overlap cannot be observed.
     serialized_execution: bool = False
     #: Replays re-run the kernel; side-effecting kernels measure differently.
-    replay_mode: str = ""  # kernel | application | range
+    replay_mode: str = ""  # kernel | application | range | app-range
+    #: Application Replay identity/matching policy. Empty means unrecorded.
+    app_replay_match: str = ""
+    app_replay_mode: str = ""
+    #: Range Replay and CUDA graph options affect the measurement entity.
+    range_replay_options: str = ""
+    graph_profiling: str = ""
     iterations: Optional[int] = None
     warmup_iterations: Optional[int] = None
     clocks_locked: Optional[bool] = None
     input_distribution: str = ""  # "real" | "random" | "ones" | ...
-    #: Measured SM clock, Hz. Nsight Compute defaults to --clock-control=base
-    #: but the clock it *achieves* still varies run to run, and a duration
-    #: measured at one clock is not comparable with one measured at another.
+    #: Measured SM clock, Hz. Nsight Compute 2026.1+ defaults to
+    #: ``--clock-control=boost`` while older releases used ``base``; the report
+    #: does not record which was used. A duration measured at one clock is not
+    #: comparable with one measured at another.
     sm_clock_hz: Optional[float] = None
     gpc_clock_hz: Optional[float] = None
     dram_clock_hz: Optional[float] = None
@@ -93,6 +138,13 @@ class MeasurementContext:
     #: ncu's --clock-control value when the caller knows it ("" when unknown --
     #: the report does not record it, so it usually is unknown).
     clock_control: str = ""
+    #: Nsight Compute's scheduler boost policy (normally ``stable`` or
+    #: ``dynamic``).  Dynamic boosting may vary between replay passes.
+    pipeline_boost_state: str = ""
+    #: Multiprocess/MIG state changes the resource and PM-sampling scope.  An
+    #: empty value is unknown, rather than a claim that the GPU was exclusive.
+    mps_active: Optional[bool] = None
+    mig_instance_id: str = ""
     #: Output of :func:`assess_clock_control_bias`, or None when unassessed.
     clock_control_bias: Optional[Dict[str, Any]] = None
     notes: Tuple[str, ...] = ()
@@ -152,6 +204,11 @@ class MeasurementContext:
                 f"performance on real data: inputs were '{self.input_distribution}', "
                 "which can be materially cheaper for the hardware than real values"
             )
+        if self.replay_mode.strip().lower() in {"range", "app-range"}:
+            out.append(
+                "per-kernel attribution from this collection: range replay counters "
+                "describe the complete range, which can include concurrent kernels"
+            )
         return tuple(out)
 
     @property
@@ -176,11 +233,18 @@ class MeasurementContext:
             "gpc_clock_hz": self.gpc_clock_hz,
             "dram_clock_hz": self.dram_clock_hz,
             "clock_control": self.clock_control,
+            "pipeline_boost_state": self.pipeline_boost_state,
+            "mps_active": self.mps_active,
+            "mig_instance_id": self.mig_instance_id,
             "clock_control_bias": self.clock_control_bias,
             "clock_disagreement": self.clock_disagreement,
             "cache_state": self.cache_state,
             "serialized_execution": self.serialized_execution,
             "replay_mode": self.replay_mode,
+            "app_replay_match": self.app_replay_match,
+            "app_replay_mode": self.app_replay_mode,
+            "range_replay_options": self.range_replay_options,
+            "graph_profiling": self.graph_profiling,
             "iterations": self.iterations,
             "warmup_iterations": self.warmup_iterations,
             "clocks_locked": self.clocks_locked,
@@ -201,8 +265,8 @@ def assess_clock_control_bias(
 ) -> Dict[str, Any]:
     """Detect the compute:memory bias of profiling with a lowered SM clock.
 
-    Documented behaviour (Nsight Compute Profiling Guide 2026): the default
-    ``--clock-control base`` locks the SM clock to base but **cannot lower the
+    Documented behaviour (Nsight Compute Profiling Guide 2026): explicitly
+    selecting ``--clock-control base`` locks the SM clock to base but **cannot lower the
     HBM clock** on H100/B200-class parts. The kernel then computes at a reduced
     rate against memory running at full rate, so every compute-vs-memory
     verdict built from the report -- Speed-of-Light compute against memory
@@ -314,7 +378,12 @@ def describe_collection_mode(
     *,
     source: str = "ncu",
     cache_control: Optional[str] = None,
+    ncu_defaults_known: bool = True,
     replay_mode: str = "",
+    app_replay_match: str = "",
+    app_replay_mode: str = "",
+    range_replay_options: str = "",
+    graph_profiling: str = "",
     iterations: Optional[int] = None,
     warmup_iterations: Optional[int] = None,
     clocks_locked: Optional[bool] = None,
@@ -325,20 +394,27 @@ def describe_collection_mode(
     rated_sm_clock_hz: Optional[float] = None,
     rated_dram_clock_hz: Optional[float] = None,
     clock_control: Optional[str] = None,
+    pipeline_boost_state: str = "",
+    mps_active: Optional[bool] = None,
+    mig_instance_id: str = "",
 ) -> MeasurementContext:
     """Build a :class:`MeasurementContext` from how the tool was invoked.
 
     ``cache_control`` is ncu's ``--cache-control`` value. Passing ``None`` for an
-    ncu run means the default was in effect, which is ``all`` -- caches flushed.
-    That default is the single most common reason an ncu duration disagrees with
-    a wall-clock one, and assuming it rather than recording "unknown" is
-    deliberate: the default is what almost every run uses.
+    ncu run means the default was in effect only when ``ncu_defaults_known`` is
+    true.  The YAML collector can assert that because it wrote the command;
+    imported historical reports cannot, and must remain unknown rather than
+    being silently labelled cold-cache.
     """
     src = (source or "").strip().lower()
     notes: List[str] = []
 
     if src == "ncu":
-        effective = (cache_control or NCU_DEFAULT_CACHE_CONTROL).strip().lower()
+        effective = (
+            (cache_control or NCU_DEFAULT_CACHE_CONTROL).strip().lower()
+            if cache_control is not None or ncu_defaults_known
+            else ""
+        )
         if effective in ("all", "system"):
             cache_state = CacheState.COLD
             if cache_control is None:
@@ -358,13 +434,30 @@ def describe_collection_mode(
             )
         else:
             cache_state = CacheState.UNKNOWN
-        # ncu profiles one kernel at a time; concurrent execution is serialised.
-        serialized = True
-        notes.append(
-            "Nsight Compute serialises kernel execution to profile each launch, so "
-            "no overlap between streams is observable here. Stream concurrency has "
-            "to be measured with Nsight Systems."
-        )
+            if cache_control is None and not ncu_defaults_known:
+                notes.append(
+                    "The report has no collection sidecar, so its NCU command and "
+                    "cache-control setting are unknown. Do not treat its duration as "
+                    "a cold-cache default or compare it as a speedup until provenance "
+                    "is supplied."
+                )
+        replay = str(replay_mode or "").strip().lower()
+        # Range replay captures the range as an entity so concurrent launches
+        # can execute together. Kernel and application replay are still
+        # interpreted as per-launch, serialised measurements.
+        serialized = replay not in {"range", "app-range"}
+        if serialized:
+            notes.append(
+                "Nsight Compute serialises kernel execution to profile each launch, so "
+                "no overlap between streams is observable here. Stream concurrency has "
+                "to be measured with Nsight Systems."
+            )
+        else:
+            notes.append(
+                "Range Replay preserves the range as the measurement entity and can "
+                "include concurrent launches. Its aggregate counters cannot be "
+                "assigned to an individual kernel."
+            )
     elif src in ("nsys", "wallclock", "timer", "cuda_event"):
         cache_state = CacheState.WARM
         serialized = False
@@ -384,6 +477,23 @@ def describe_collection_mode(
             "No warmup iterations recorded. The first launch pays JIT, module load "
             "and allocator costs that belong to neither the kernel nor the steady "
             "state."
+        )
+    boost = str(pipeline_boost_state or "").strip().lower()
+    if boost == "dynamic":
+        notes.append(
+            "--pipeline-boost-state dynamic lets the profiler adjust pipeline "
+            "boosting during collection. Treat small replay-to-replay differences "
+            "as scheduling-sensitive unless repeat runs agree."
+        )
+    if mps_active is True:
+        notes.append(
+            "MPS was active. Resource availability and PM-sampling scope can be "
+            "shared with other clients; compare only against the same MPS setup."
+        )
+    if mig_instance_id:
+        notes.append(
+            "This report ran on MIG instance "
+            f"{mig_instance_id!r}; its resource partition is part of the measurement."
         )
 
     if sm_clock_hz and gpc_clock_hz:
@@ -419,10 +529,17 @@ def describe_collection_mode(
         rated_sm_clock_hz=rated_sm_clock_hz,
         rated_dram_clock_hz=rated_dram_clock_hz,
         clock_control=str(clock_control or ""),
+        pipeline_boost_state=boost,
+        mps_active=mps_active,
+        mig_instance_id=str(mig_instance_id or ""),
         clock_control_bias=bias if bias.get("checked") else None,
         cache_state=cache_state,
         serialized_execution=serialized,
         replay_mode=replay_mode,
+        app_replay_match=app_replay_match,
+        app_replay_mode=app_replay_mode,
+        range_replay_options=range_replay_options,
+        graph_profiling=graph_profiling,
         iterations=iterations,
         warmup_iterations=warmup_iterations,
         clocks_locked=clocks_locked,
@@ -493,6 +610,41 @@ def compare_measurements(
         )
 
     if (
+        baseline.replay_mode
+        and candidate.replay_mode
+        and baseline.replay_mode != candidate.replay_mode
+    ):
+        blockers.append(
+            f"replay modes differ ({baseline.replay_mode} vs {candidate.replay_mode}); "
+            "kernel, application, and range replay do not measure the same entity"
+        )
+
+    for field, label in (
+        ("app_replay_match", "application-replay matching"),
+        ("app_replay_mode", "application-replay mode"),
+        ("range_replay_options", "range-replay options"),
+        ("graph_profiling", "graph-profiling mode"),
+        ("pipeline_boost_state", "pipeline boost state"),
+        ("mig_instance_id", "MIG instance"),
+    ):
+        left, right = getattr(baseline, field), getattr(candidate, field)
+        if left and right and left != right:
+            blockers.append(
+                f"{label} differs ({left!r} vs {right!r}), so launch identity or "
+                "the measured execution scope can differ"
+            )
+
+    if (
+        baseline.mps_active is not None
+        and candidate.mps_active is not None
+        and baseline.mps_active != candidate.mps_active
+    ):
+        blockers.append(
+            "MPS state differs between reports, so the SM partition and PM-sampling "
+            "scope are not the same measurement"
+        )
+
+    if (
         baseline.input_distribution
         and candidate.input_distribution
         and baseline.input_distribution != candidate.input_distribution
@@ -502,6 +654,14 @@ def compare_measurements(
             f"'{candidate.input_distribution}'), which alone can move throughput by "
             "20% or more"
         )
+
+    for side, context in (("baseline", baseline), ("candidate", candidate)):
+        if context.clock_disagreement and context.clock_disagreement > 1.02:
+            blockers.append(
+                f"the {side} report's GPC and SM clocks disagree by "
+                f"{(context.clock_disagreement - 1) * 100:.1f}%, indicating replay "
+                "passes were not measured over a stable clock window"
+            )
 
     ratio = None
     if baseline_value and candidate_value:

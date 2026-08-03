@@ -343,3 +343,6 @@ def _show(title: str, rows, *, limit: int = 5) -> None:
             print(f"  {k}: {v}")
     else:
         print(" ", rows)
+current_report_surfaces = _load(
+    "ncu.current_report_surfaces", "ncu/current_report_surfaces.py"
+)

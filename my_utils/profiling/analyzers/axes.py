@@ -324,6 +324,8 @@ AXES: Tuple[Axis, ...] = (
             "unattributable_kernel",
             "coverage",
             "trace_quality",
+            "mps_shared_execution_scope",
+            "mig_partitioned_execution_scope",
         ),
         shipped_rule_hints=(),
         metric_groups=(),

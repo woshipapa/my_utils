@@ -34,6 +34,12 @@ from .section_index import (
     denominator_of,
     group_report_metrics,
 )
+from .ncu_capability_audit import (
+    audit_collection_provenance,
+    audit_ncu_capabilities,
+    probe_ncu_version,
+)
+from .current_report_surfaces import summarize_current_report_surfaces
 
 __all__ = [
     "build_command_from_payload",
@@ -67,4 +73,8 @@ __all__ = [
     "scan_all_signals",
     "walk_report_once",
     "link_findings_to_source",
+    "audit_collection_provenance",
+    "audit_ncu_capabilities",
+    "probe_ncu_version",
+    "summarize_current_report_surfaces",
 ]

@@ -35,15 +35,24 @@ Honesty rules this module enforces:
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
+import math
+import statistics
+from collections import Counter
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 from ..analyzers.measurement_context import (
     compare_measurements,
     describe_collection_mode,
+    measurement_collection_context,
 )
-from .metric_catalog import STALL_REASONS
+from .metric_catalog import METRIC_CATALOG, STALL_REASONS
 from .ncu_diagnostics import MetricView
-from .ncu_report_tools import diagnose_ncu_report, walk_report_once
+from .ncu_report_tools import (
+    _effective_collection_context,
+    _resolve_collection_context,
+    diagnose_ncu_report,
+    walk_report_once,
+)
 
 __all__ = ["diff_ncu_reports", "diff_result_to_markdown"]
 
@@ -160,6 +169,53 @@ _SHARED_ENTRIES: List[Tuple[str, str, str, Optional[str], float]] = [
         "wavefronts",
         "lower_better",
         32.0,
+    ),
+]
+
+# Raw counts are meaningful only after dividing by work.  These ratios are
+# intentionally conservative: a schedule may legitimately alter instruction
+# count or traffic, so they make the denominator explicit rather than turning
+# every lower raw total into an "improvement".
+_NORMALISED_RATIO_ENTRIES: List[Tuple[str, str, str, str, Optional[str], float]] = [
+    (
+        "shared_bank_conflicts_ld_per_wavefront",
+        "Shared-load bank conflicts per wavefront",
+        "shared_bank_conflicts_ld",
+        "shared_wavefronts_ld",
+        "lower_better",
+        0.0,
+    ),
+    (
+        "shared_bank_conflicts_st_per_wavefront",
+        "Shared-store bank conflicts per wavefront",
+        "shared_bank_conflicts_st",
+        "shared_wavefronts_st",
+        "lower_better",
+        0.0,
+    ),
+    (
+        "local_loads_per_instruction",
+        "Local-load instructions per executed instruction",
+        "local_ld_inst",
+        "inst_executed",
+        "lower_better",
+        0.0,
+    ),
+    (
+        "local_stores_per_instruction",
+        "Local-store instructions per executed instruction",
+        "local_st_inst",
+        "inst_executed",
+        "lower_better",
+        0.0,
+    ),
+    (
+        "dram_bytes_per_instruction",
+        "DRAM bytes per executed instruction",
+        "dram_bytes",
+        "inst_executed",
+        None,
+        0.0,
     ),
 ]
 
@@ -304,6 +360,119 @@ def _axis_rows(
     return rows
 
 
+def _ratio_rows(view_a: MetricView, view_b: MetricView) -> List[Dict[str, Any]]:
+    """Compare counters per explicit work denominator, never raw totals alone."""
+    rows: List[Dict[str, Any]] = []
+    for key, label, numerator, denominator, direction, abs_floor in _NORMALISED_RATIO_ENTRIES:
+        a_num, a_den = view_a.get(numerator), view_a.get(denominator)
+        b_num, b_den = view_b.get(numerator), view_b.get(denominator)
+        a = a_num / a_den if a_num is not None and a_den else None
+        b = b_num / b_den if b_num is not None and b_den else None
+        row = _delta_row(
+            label,
+            a,
+            b,
+            unit=f"{numerator}/{denominator}",
+            direction=direction,
+            abs_floor=abs_floor,
+            metric=key,
+            note=(
+                f"normalised by {denominator}; raw numerator is not a workload-"
+                "independent verdict"
+            ),
+        )
+        if row is not None:
+            row["numerator"] = numerator
+            row["denominator"] = denominator
+            row["numerator_a"] = a_num
+            row["numerator_b"] = b_num
+            row["denominator_a"] = a_den
+            row["denominator_b"] = b_den
+            rows.append(row)
+    return rows
+
+
+def _catalog_rows(view_a: MetricView, view_b: MetricView) -> Tuple[Dict[str, int], List[Dict[str, Any]]]:
+    """Expose all catalog coverage, while only listing changed/one-sided keys."""
+    counts = Counter()
+    changed: List[Dict[str, Any]] = []
+    for key, spec in sorted(METRIC_CATALOG.items()):
+        a, b = view_a.get(key), view_b.get(key)
+        if a is not None and b is not None:
+            counts["both"] += 1
+        elif a is not None:
+            counts["a_only"] += 1
+        elif b is not None:
+            counts["b_only"] += 1
+        else:
+            counts["neither"] += 1
+        row = _delta_row(
+            spec.description or key,
+            a,
+            b,
+            unit=spec.unit,
+            direction=(
+                "higher_better"
+                if spec.higher_is_better is True
+                else "lower_better"
+                if spec.higher_is_better is False
+                else None
+            ),
+            metric=key,
+        )
+        if row is not None and row["status"] != "unchanged":
+            row["category"] = spec.category
+            row["section"] = spec.section
+            changed.append(row)
+    counts["total"] = len(METRIC_CATALOG)
+    changed.sort(
+        key=lambda row: (
+            row["status"] in {"a_only", "b_only"},
+            -abs(float(row.get("rel_change") or 0.0)),
+            str(row["metric"]),
+        )
+    )
+    return dict(counts), changed
+
+
+def _raw_metric_diff(
+    metrics_a: Mapping[str, float], metrics_b: Mapping[str, float], *, limit: Optional[int] = None
+) -> Dict[str, Any]:
+    """Inventory every numeric metric and surface the largest raw changes.
+
+    Raw metric names are deliberately not severity-coded. They are an audit
+    appendix that prevents a collected counter from being silently discarded;
+    the curated and normalised axes carry the interpretation.
+    """
+    names_a, names_b = set(metrics_a), set(metrics_b)
+    common = names_a & names_b
+    changes: List[Dict[str, Any]] = []
+    changed_count = 0
+    for name in common:
+        a, b = metrics_a[name], metrics_b[name]
+        if not (math.isfinite(float(a)) and math.isfinite(float(b))):
+            continue
+        if a == b:
+            continue
+        changed_count += 1
+        row = _delta_row(name, a, b, metric=name)
+        if row is not None:
+            changes.append(row)
+    changes.sort(
+        key=lambda row: (-abs(float(row.get("rel_change") or 0.0)), str(row["metric"]))
+    )
+    return {
+        "numeric_a": len(names_a),
+        "numeric_b": len(names_b),
+        "common": len(common),
+        "a_only": len(names_a - names_b),
+        "b_only": len(names_b - names_a),
+        "changed_common": changed_count,
+        "changes_truncated": max(0, len(changes) - limit) if limit is not None else 0,
+        "changes": changes[:limit] if limit is not None else changes,
+    }
+
+
 def _stall_rows(view_a: MetricView, view_b: MetricView) -> List[Dict[str, Any]]:
     """Per-stall-class deltas in cycles per issue-slot, largest movement first."""
     rows: List[Dict[str, Any]] = []
@@ -326,7 +495,7 @@ def _stall_rows(view_a: MetricView, view_b: MetricView) -> List[Dict[str, Any]]:
 
 
 def _hit_rate_rows(view_a: MetricView, view_b: MetricView) -> List[Dict[str, Any]]:
-    """Hit-rate deltas, each carrying and weighted by its own traffic."""
+    """Hit-rate shifts with traffic context, never severity-coded in isolation."""
     rows: List[Dict[str, Any]] = []
     for label, hit_key, traffic_key, total_key in _HIT_RATE_ENTRIES:
         row = _delta_row(
@@ -334,9 +503,14 @@ def _hit_rate_rows(view_a: MetricView, view_b: MetricView) -> List[Dict[str, Any
             view_a.get(hit_key),
             view_b.get(hit_key),
             unit="%",
-            direction="higher_better",
+            # A lower hit rate can be harmless (or even expected) when a
+            # schedule moves less traffic or changes the cache's role.  Miss
+            # counts and work-normalised traffic decide the cost; hit-rate is
+            # context, not a standalone regression verdict.
+            direction=None,
             abs_floor=PERCENT_POINT_FLOOR,
             metric=hit_key,
+            note="interpret with miss and traffic rows; hit rate alone is not a performance verdict",
         )
         if row is None:
             continue
@@ -359,7 +533,7 @@ def _hit_rate_rows(view_a: MetricView, view_b: MetricView) -> List[Dict[str, Any
             row["traffic_share_a"] = share_a
             row["traffic_share_b"] = share_b
             if (
-                row["status"] in ("improved", "regressed")
+                row["status"] == "changed"
                 and share_a is not None
                 and share_b is not None
                 and share_a < NEGLIGIBLE_TRAFFIC_SHARE
@@ -389,23 +563,42 @@ def _launch_sig(
 def _match_kernels(
     bundles_a: Mapping[Tuple[int, int], Any],
     bundles_b: Mapping[Tuple[int, int], Any],
+    *,
+    aliases_a: Optional[Mapping[str, Any]] = None,
+    aliases_b: Optional[Mapping[str, Any]] = None,
+    logical_kernel_id_a: str = "",
+    logical_kernel_id_b: str = "",
 ) -> Tuple[
     List[Tuple[Tuple[int, int], Tuple[int, int]]],
     List[Tuple[int, int]],
     List[Tuple[int, int]],
 ]:
-    """Pair launches by demangled name, then by launch config when duplicated.
+    """Pair launches by logical alias/name, then launch config when duplicated.
 
     Order-based pairing is the last resort for same-name-same-config repeats
     (e.g. the same kernel profiled at several iterations); anything left over
     on either side is reported unmatched rather than force-paired.
     """
+    def _identity(
+        key: Tuple[int, int], bundles: Mapping[Tuple[int, int], Any], aliases, logical_id
+    ) -> str:
+        name = str(bundles[key].kernel_name)
+        if isinstance(aliases, Mapping):
+            alias = aliases.get(name)
+            if alias is not None and str(alias).strip():
+                return str(alias).strip()
+        # A one-kernel report can use a simple logical id instead of repeating
+        # the compiler-generated kernel symbol in an aliases map.
+        if logical_id and len(bundles) == 1:
+            return logical_id
+        return name
+
     by_name_a: Dict[str, List[Tuple[int, int]]] = {}
     by_name_b: Dict[str, List[Tuple[int, int]]] = {}
     for key in sorted(bundles_a):
-        by_name_a.setdefault(bundles_a[key].kernel_name, []).append(key)
+        by_name_a.setdefault(_identity(key, bundles_a, aliases_a, logical_kernel_id_a), []).append(key)
     for key in sorted(bundles_b):
-        by_name_b.setdefault(bundles_b[key].kernel_name, []).append(key)
+        by_name_b.setdefault(_identity(key, bundles_b, aliases_b, logical_kernel_id_b), []).append(key)
 
     matches: List[Tuple[Tuple[int, int], Tuple[int, int]]] = []
     unmatched_a: List[Tuple[int, int]] = []
@@ -443,9 +636,117 @@ def _match_kernels(
     return matches, sorted(unmatched_a), sorted(unmatched_b)
 
 
+def _match_metadata(bundle_a: Any, bundle_b: Any, collection_a: Mapping[str, Any], collection_b: Mapping[str, Any]) -> Dict[str, Any]:
+    """Explain why the two launches were paired and what changed structurally."""
+    aliases_a = collection_a.get("kernel_aliases")
+    aliases_b = collection_b.get("kernel_aliases")
+    name_a, name_b = str(bundle_a.kernel_name), str(bundle_b.kernel_name)
+    alias_a = aliases_a.get(name_a) if isinstance(aliases_a, Mapping) else None
+    alias_b = aliases_b.get(name_b) if isinstance(aliases_b, Mapping) else None
+    same_name = name_a == name_b
+    alias_match = bool(alias_a and alias_b and str(alias_a) == str(alias_b))
+    grid_a, block_a = _launch_sig(bundle_a.metrics)
+    grid_b, block_b = _launch_sig(bundle_b.metrics)
+    return {
+        "method": "demangled_name" if same_name else "logical_kernel_alias",
+        "confidence": "high" if same_name and (grid_a, block_a) == (grid_b, block_b) else "medium",
+        "alias": str(alias_a or alias_b or ""),
+        "raw_name_a": name_a,
+        "raw_name_b": name_b,
+        "launch_signature_changed": (grid_a, block_a) != (grid_b, block_b),
+        "note": (
+            "launch grid or block changed; this diff explains the measured change "
+            "but does not prove equal work without matching workload provenance"
+            if (grid_a, block_a) != (grid_b, block_b)
+            else ""
+        ),
+        "alias_match": alias_match,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Findings diff -- what changed the verdict
 # ---------------------------------------------------------------------------
+
+
+def _finding_identity(finding: Mapping[str, Any]) -> str:
+    """Stable identity that does not collapse distinct shipped NCU rules."""
+    evidence = finding.get("evidence")
+    evidence = evidence if isinstance(evidence, Mapping) else {}
+    rule = str(evidence.get("ncu_rule") or "")
+    metric = str(
+        evidence.get("metric")
+        or evidence.get("metric_name")
+        or evidence.get("focus_metric")
+        or ""
+    )
+    return "|".join(
+        (
+            str(finding.get("source") or "heuristic"),
+            str(finding.get("category") or ""),
+            rule,
+            metric,
+            str(finding.get("title") or ""),
+        )
+    )
+
+
+def _analysis_for_finding(finding: Mapping[str, Any]) -> str:
+    """Map a finding to the coverage gate that could have produced it."""
+    category = str(finding.get("category") or "")
+    source = str(finding.get("source") or "")
+    evidence = finding.get("evidence")
+    evidence = evidence if isinstance(evidence, Mapping) else {}
+    # Corroboration promotes a heuristic finding's source to ``ncu_rule`` even
+    # when it did not originate from a specific stored rule row.  Such a
+    # finding is still covered by its normal analysis rather than the optional
+    # shipped-rule export.
+    if source == "ncu_rule" and evidence.get("ncu_rule"):
+        return "ncu_rules"
+    if category.startswith("stall_"):
+        return "stalls"
+    prefixes = (
+        ("occupancy_", "occupancy"),
+        ("block_size_", "launch"),
+        ("small_grid", "launch"),
+        ("tail_wave", "launch"),
+        ("tile_quantization", "launch"),
+        ("uncoalesced_", "coalescing"),
+        ("sparse_global_", "coalescing"),
+        ("shared_bank_", "shared_memory"),
+        ("thread_divergence", "divergence"),
+        ("register_spilling", "spilling"),
+        ("pipe_", "pipes"),
+        ("unexpected_fp64", "instruction_mix"),
+        ("poor_cache_", "memory_hierarchy"),
+        ("memory", "memory_hierarchy"),
+        ("below_roofline", "roofline"),
+        ("tensor_cores_idle", "instruction_mix"),
+        ("compute_bound_", "bottleneck"),
+        ("memory_bound_", "bottleneck"),
+    )
+    for prefix, analysis in prefixes:
+        if category.startswith(prefix):
+            return analysis
+    return ""
+
+
+def _coverage_ran(diag: Optional[Mapping[str, Any]], analysis: str) -> Optional[bool]:
+    if not analysis:
+        return None
+    if analysis == "ncu_rules":
+        corroboration = (diag or {}).get("corroboration")
+        if not isinstance(corroboration, Mapping):
+            return None
+        available = corroboration.get("shipped_rules_available")
+        return bool(available) if available is not None else None
+    coverage = (diag or {}).get("coverage")
+    if not isinstance(coverage, Mapping):
+        return None
+    ran = coverage.get("ran")
+    if not isinstance(ran, Sequence) or isinstance(ran, (str, bytes)):
+        return None
+    return analysis in ran
 
 
 def _index_findings(
@@ -455,19 +756,20 @@ def _index_findings(
     for finding in findings or ():
         if not isinstance(finding, Mapping):
             continue
-        category = str(finding.get("category") or "")
-        if not category:
+        identity = _finding_identity(finding)
+        if not str(finding.get("category") or ""):
             continue
-        previous = out.get(category)
+        previous = out.get(identity)
         if previous is None or _SEVERITY_RANK.get(
             str(finding.get("severity")), 0
         ) > _SEVERITY_RANK.get(str(previous.get("severity")), 0):
-            out[category] = dict(finding)
+            out[identity] = dict(finding)
     return out
 
 
 def _finding_brief(finding: Mapping[str, Any]) -> Dict[str, Any]:
     return {
+        "identity": _finding_identity(finding),
         "category": finding.get("category"),
         "title": finding.get("title"),
         "severity": finding.get("severity"),
@@ -479,29 +781,57 @@ def _finding_brief(finding: Mapping[str, Any]) -> Dict[str, Any]:
 def _diff_findings(
     findings_a: Optional[Sequence[Mapping[str, Any]]],
     findings_b: Optional[Sequence[Mapping[str, Any]]],
+    *,
+    diag_a: Optional[Mapping[str, Any]] = None,
+    diag_b: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
-    """Findings that appeared, disappeared, or changed severity from A to B."""
+    """Diff findings without treating missing diagnostic coverage as a fix."""
     index_a = _index_findings(findings_a)
     index_b = _index_findings(findings_b)
 
-    appeared = [_finding_brief(index_b[cat]) for cat in index_b if cat not in index_a]
-    disappeared = [
-        _finding_brief(index_a[cat]) for cat in index_a if cat not in index_b
-    ]
+    appeared: List[Dict[str, Any]] = []
+    disappeared: List[Dict[str, Any]] = []
+    not_evaluated_in_a: List[Dict[str, Any]] = []
+    not_evaluated_in_b: List[Dict[str, Any]] = []
+    for identity, finding in index_b.items():
+        if identity in index_a:
+            continue
+        brief = _finding_brief(finding)
+        analysis = _analysis_for_finding(finding)
+        brief["analysis"] = analysis
+        ran = _coverage_ran(diag_a, analysis)
+        if ran is True:
+            appeared.append(brief)
+        else:
+            brief["coverage"] = "unknown" if ran is None else "not_collected"
+            not_evaluated_in_a.append(brief)
+    for identity, finding in index_a.items():
+        if identity in index_b:
+            continue
+        brief = _finding_brief(finding)
+        analysis = _analysis_for_finding(finding)
+        brief["analysis"] = analysis
+        ran = _coverage_ran(diag_b, analysis)
+        if ran is True:
+            disappeared.append(brief)
+        else:
+            brief["coverage"] = "unknown" if ran is None else "not_collected"
+            not_evaluated_in_b.append(brief)
     severity_changed: List[Dict[str, Any]] = []
     unchanged = 0
-    for category in index_a:
-        if category not in index_b:
+    for identity in index_a:
+        if identity not in index_b:
             continue
-        sev_a = str(index_a[category].get("severity") or "info")
-        sev_b = str(index_b[category].get("severity") or "info")
+        sev_a = str(index_a[identity].get("severity") or "info")
+        sev_b = str(index_b[identity].get("severity") or "info")
         if sev_a == sev_b:
             unchanged += 1
             continue
         severity_changed.append(
             {
-                "category": category,
-                "title": index_b[category].get("title"),
+                "identity": identity,
+                "category": index_b[identity].get("category"),
+                "title": index_b[identity].get("title"),
                 "severity_a": sev_a,
                 "severity_b": sev_b,
                 "direction": (
@@ -515,10 +845,14 @@ def _diff_findings(
     rank = lambda f: -_SEVERITY_RANK.get(str(f.get("severity")), 0)  # noqa: E731
     appeared.sort(key=rank)
     disappeared.sort(key=rank)
+    not_evaluated_in_a.sort(key=rank)
+    not_evaluated_in_b.sort(key=rank)
     return {
         "appeared": appeared,
         "disappeared": disappeared,
         "severity_changed": severity_changed,
+        "not_evaluated_in_a": not_evaluated_in_a,
+        "not_evaluated_in_b": not_evaluated_in_b,
         "unchanged_count": unchanged,
     }
 
@@ -563,6 +897,210 @@ def _stall_reliability(diag: Optional[Mapping[str, Any]], side: str) -> Dict[str
             ),
         }
     return {"side": side, "reliable": True, "explained_share": share, "note": ""}
+
+
+def _same_provenance_value(left: Any, right: Any) -> bool:
+    """Compare JSON-like sidecar values without depending on dict ordering."""
+    if isinstance(left, Mapping) and isinstance(right, Mapping):
+        return dict(left) == dict(right)
+    return left == right
+
+
+def _report_compatibility_guards(
+    comparison: Mapping[str, Any],
+    view_a: MetricView,
+    view_b: MetricView,
+    collection_a: Mapping[str, Any],
+    collection_b: Mapping[str, Any],
+    *,
+    gpu_a: str = "",
+    gpu_b: str = "",
+) -> Dict[str, Any]:
+    """Add device and workload identity guards to collection-mode guards."""
+    blockers = list(comparison.get("blockers") or ())
+    report_blockers: List[str] = []
+    caveats = list(comparison.get("caveats") or ())
+
+    cc_a = (view_a.get("cc_major"), view_a.get("cc_minor"))
+    cc_b = (view_b.get("cc_major"), view_b.get("cc_minor"))
+    if all(value is not None for value in (*cc_a, *cc_b)) and cc_a != cc_b:
+        report_blockers.append(
+            f"GPU compute capability differs ({cc_a[0]}.{cc_a[1]} vs {cc_b[0]}.{cc_b[1]}), "
+            "so instruction throughput, cache hierarchy, and scheduler behavior differ"
+        )
+    elif gpu_a and gpu_b and gpu_a != gpu_b:
+        report_blockers.append(
+            f"GPU identity differs ({gpu_a} vs {gpu_b}); compare only after recollecting "
+            "on one device"
+        )
+
+    for key, label in (
+        ("workload_id", "workload id"),
+        ("problem_shape", "problem shape"),
+        ("dtype", "dtype"),
+        ("input_hash", "input hash"),
+        ("output_hash", "output hash"),
+    ):
+        left, right = collection_a.get(key), collection_b.get(key)
+        if left not in (None, "") and right not in (None, ""):
+            if not _same_provenance_value(left, right):
+                report_blockers.append(
+                    f"{label} differs between reports ({left!r} vs {right!r}); the "
+                    "kernel may have executed different work"
+                )
+        else:
+            caveats.append(
+                f"{label} was not recorded on both sides; equal workload is unproven"
+            )
+
+    for key, label in (("kernel_config", "kernel configuration"), ("build_id", "build id"), ("git_commit", "git commit")):
+        left, right = collection_a.get(key), collection_b.get(key)
+        if left not in (None, "") and right not in (None, "") and not _same_provenance_value(left, right):
+            caveats.append(f"{label} changed ({left!r} -> {right!r}), as expected for this A/B run")
+
+    if report_blockers:
+        blockers.extend(report_blockers)
+    out = dict(comparison)
+    out["blockers"] = blockers
+    out["caveats"] = caveats
+    out["report_blockers"] = report_blockers
+    out["comparable"] = not blockers
+    if blockers:
+        out["ratio"] = None
+        out["uncomparable_raw_ratio"] = comparison.get("uncomparable_raw_ratio") or (
+            (comparison.get("candidate_value") / comparison.get("baseline_value"))
+            if comparison.get("candidate_value") and comparison.get("baseline_value")
+            else None
+        )
+        out["verdict"] = (
+            "Not comparable. " + " Also, ".join(blockers).capitalize() + ". "
+            "Re-measure both sides with matching provenance before drawing a conclusion."
+        )
+    return out
+
+
+def _pm_sampling_diff(source_a: Optional[Mapping[str, Any]], source_b: Optional[Mapping[str, Any]]) -> Dict[str, Any]:
+    """Compare only stable PM aggregate features, never cross-pass timelines."""
+    source_a, source_b = source_a or {}, source_b or {}
+    valid_a = source_a.get("pm_sampling_validity")
+    valid_b = source_b.get("pm_sampling_validity")
+    valid_a = valid_a if isinstance(valid_a, Mapping) else {}
+    valid_b = valid_b if isinstance(valid_b, Mapping) else {}
+    if valid_a.get("usable") is not True or valid_b.get("usable") is not True:
+        return {
+            "available": False,
+            "reason": "PM sampling is unavailable or invalid on at least one side",
+            "validity_a": dict(valid_a),
+            "validity_b": dict(valid_b),
+            "features": [],
+        }
+    pm_a, pm_b = source_a.get("pm_sampling"), source_b.get("pm_sampling")
+    pm_a = pm_a if isinstance(pm_a, Mapping) else {}
+    pm_b = pm_b if isinstance(pm_b, Mapping) else {}
+    if pm_a.get("available") is not True or pm_b.get("available") is not True:
+        return {
+            "available": False,
+            "reason": "the report does not contain a usable PM sampling summary on both sides",
+            "validity_a": dict(valid_a),
+            "validity_b": dict(valid_b),
+            "features": [],
+        }
+
+    def _series_index(pm: Mapping[str, Any]) -> Dict[Tuple[str, str], Mapping[str, Any]]:
+        out: Dict[Tuple[str, str], Mapping[str, Any]] = {}
+        for item in pm.get("series") or ():
+            if not isinstance(item, Mapping):
+                continue
+            metric, group = str(item.get("metric") or ""), str(item.get("pass_group") or "")
+            if metric and group:
+                out[(metric, group)] = item
+        return out
+
+    series_a, series_b = _series_index(pm_a), _series_index(pm_b)
+    rows: List[Dict[str, Any]] = []
+    for key in sorted(series_a.keys() & series_b.keys()):
+        for feature, label in (
+            ("duty_cycle", "duty cycle"),
+            ("mean_in_active_window", "mean in active window"),
+            ("peak", "peak"),
+            ("peak_to_mean", "peak-to-mean"),
+        ):
+            a, b = series_a[key].get(feature), series_b[key].get(feature)
+            if not isinstance(a, (int, float)) or not isinstance(b, (int, float)):
+                continue
+            row = _delta_row(
+                f"{key[0]} [{key[1]}] {label}",
+                float(a),
+                float(b),
+                metric=f"{key[0]}:{key[1]}:{feature}",
+                note="same PM pass group only; timeline buckets are never diffed across replay passes",
+            )
+            if row is not None:
+                rows.append(row)
+    return {
+        "available": True,
+        "reason": "",
+        "validity_a": dict(valid_a),
+        "validity_b": dict(valid_b),
+        "matched_series": len(series_a.keys() & series_b.keys()),
+        "unmatched_series_a": sorted(f"{m} [{p}]" for m, p in series_a.keys() - series_b.keys()),
+        "unmatched_series_b": sorted(f"{m} [{p}]" for m, p in series_b.keys() - series_a.keys()),
+        "features": rows,
+    }
+
+
+def _pc_hotspot_diff(source_a: Optional[Mapping[str, Any]], source_b: Optional[Mapping[str, Any]]) -> Dict[str, Any]:
+    """Diff PC-sampling hotspot shares, gated on each report's validity check."""
+    source_a, source_b = source_a or {}, source_b or {}
+    valid_a = source_a.get("sampling_validity")
+    valid_b = source_b.get("sampling_validity")
+    valid_a = valid_a if isinstance(valid_a, Mapping) else {}
+    valid_b = valid_b if isinstance(valid_b, Mapping) else {}
+    if valid_a.get("usable") is not True or valid_b.get("usable") is not True:
+        return {
+            "available": False,
+            "reason": "PC sampling is unavailable or invalid on at least one side",
+            "validity_a": dict(valid_a),
+            "validity_b": dict(valid_b),
+            "hotspots": [],
+        }
+
+    def _lines(source: Mapping[str, Any]) -> Dict[Tuple[str, int], Mapping[str, Any]]:
+        attribution = source.get("stall_attribution")
+        attribution = attribution if isinstance(attribution, Mapping) else {}
+        out: Dict[Tuple[str, int], Mapping[str, Any]] = {}
+        for item in attribution.get("source_lines") or ():
+            if not isinstance(item, Mapping):
+                continue
+            filename, line = str(item.get("file_name") or ""), item.get("line")
+            if filename and isinstance(line, (int, float)):
+                out[(filename, int(line))] = item
+        return out
+
+    lines_a, lines_b = _lines(source_a), _lines(source_b)
+    rows: List[Dict[str, Any]] = []
+    for key in sorted(lines_a.keys() | lines_b.keys()):
+        a, b = lines_a.get(key), lines_b.get(key)
+        row = _delta_row(
+            f"{key[0]}:{key[1]}",
+            float(a.get("share_of_samples")) if a and isinstance(a.get("share_of_samples"), (int, float)) else None,
+            float(b.get("share_of_samples")) if b and isinstance(b.get("share_of_samples"), (int, float)) else None,
+            unit="share of PC samples",
+            metric=f"{key[0]}:{key[1]}",
+        )
+        if row is not None:
+            row["dominant_stall_a"] = a.get("dominant_stall_reason") if a else ""
+            row["dominant_stall_b"] = b.get("dominant_stall_reason") if b else ""
+            rows.append(row)
+    rows.sort(key=lambda row: -abs(float(row.get("delta") or 0.0)))
+    return {
+        "available": True,
+        "reason": "",
+        "validity_a": dict(valid_a),
+        "validity_b": dict(valid_b),
+        "hotspots": rows[:50],
+        "hotspots_truncated": max(0, len(rows) - 50),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -654,6 +1192,148 @@ def _duration_block(
     }
 
 
+def _comparison_status(
+    comparison: Mapping[str, Any], match: Mapping[str, Any], collection_a: Mapping[str, Any], collection_b: Mapping[str, Any]
+) -> Tuple[str, str]:
+    """Classify what the A/B result is allowed to claim, before repetition stats."""
+    if not comparison.get("comparable"):
+        return "NOT_COMPARABLE", "collection/device/workload guards block a speed claim"
+    workload_keys = ("workload_id", "problem_shape", "dtype", "input_hash")
+    has_workload_proof = all(
+        collection_a.get(key) not in (None, "")
+        and collection_b.get(key) not in (None, "")
+        and _same_provenance_value(collection_a.get(key), collection_b.get(key))
+        for key in workload_keys
+    )
+    if match.get("launch_signature_changed") and not has_workload_proof:
+        return (
+            "DIAGNOSTIC_ONLY",
+            "launch geometry changed but workload provenance does not prove equal work",
+        )
+    if not has_workload_proof:
+        return "DIAGNOSTIC_ONLY", "workload provenance is incomplete; metric deltas are diagnostic only"
+    return "INCONCLUSIVE", "one collection per side cannot establish a noise-resistant speedup"
+
+
+def _robust_duration_summary(values: Sequence[float]) -> Dict[str, Any]:
+    """Median/MAD summary that is not dominated by one throttled collection."""
+    clean = sorted(float(value) for value in values if math.isfinite(float(value)) and value > 0)
+    if not clean:
+        return {"count": 0, "values_ns": [], "median_ns": None, "mad_ns": None}
+    median = statistics.median(clean)
+    mad = statistics.median(abs(value - median) for value in clean)
+    sigma = 1.4826 * mad
+    return {
+        "count": len(clean),
+        "values_ns": clean,
+        "median_ns": median,
+        "mad_ns": mad,
+        "robust_sigma_ns": sigma,
+        "interval_95_ns": [max(0.0, median - 2.0 * sigma), median + 2.0 * sigma],
+    }
+
+
+def _repeat_duration_samples(
+    report_paths: Iterable[str],
+    *,
+    kernel_name: str,
+    kernel_alias: str = "",
+    kernel_like: str = "%",
+    ncu_report_module: Any = None,
+) -> Dict[str, Any]:
+    """Extract same-logical-kernel duration observations from repeat reports."""
+    values: List[float] = []
+    missing: List[str] = []
+    for path in report_paths:
+        collection, _manifest = _resolve_collection_context(path)
+        bundles = walk_report_once(
+            path,
+            kernel_like=kernel_like,
+            include_source=False,
+            collection=collection,
+            ncu_report_module=ncu_report_module,
+        )
+        matches = []
+        aliases = collection.get("kernel_aliases")
+        for bundle in bundles.values():
+            alias = aliases.get(bundle.kernel_name) if isinstance(aliases, Mapping) else ""
+            if bundle.kernel_name == kernel_name or (kernel_alias and str(alias) == kernel_alias):
+                duration = MetricView(bundle.metrics).get("duration_ns")
+                if duration is not None:
+                    matches.append(float(duration))
+        if len(matches) != 1:
+            missing.append(str(path))
+        else:
+            values.append(matches[0])
+    out = _robust_duration_summary(values)
+    out["missing_or_ambiguous_reports"] = missing
+    return out
+
+
+def _repeat_statistics(
+    report_paths_a: Sequence[str],
+    report_paths_b: Sequence[str],
+    kernels: Sequence[Mapping[str, Any]],
+    *,
+    kernel_like: str,
+    ncu_report_module: Any = None,
+) -> Dict[str, Any]:
+    """Judge whether repeated A/B durations have separated robust intervals."""
+    if len(report_paths_a) < 2 or len(report_paths_b) < 2:
+        return {
+            "available": False,
+            "reason": "at least two reports per side are required for a repeatability judgement",
+            "reports_a": list(report_paths_a),
+            "reports_b": list(report_paths_b),
+            "kernels": [],
+        }
+    rows: List[Dict[str, Any]] = []
+    for kernel in kernels:
+        match = kernel.get("match") or {}
+        a = _repeat_duration_samples(
+            report_paths_a,
+            kernel_name=str(match.get("raw_name_a") or kernel.get("kernel_name") or ""),
+            kernel_alias=str(match.get("alias") or ""),
+            kernel_like=kernel_like,
+            ncu_report_module=ncu_report_module,
+        )
+        b = _repeat_duration_samples(
+            report_paths_b,
+            kernel_name=str(match.get("raw_name_b") or kernel.get("kernel_name") or ""),
+            kernel_alias=str(match.get("alias") or ""),
+            kernel_like=kernel_like,
+            ncu_report_module=ncu_report_module,
+        )
+        outcome = "inconclusive"
+        ratio = None
+        if a["count"] >= 2 and b["count"] >= 2 and a["median_ns"] and b["median_ns"]:
+            ratio = b["median_ns"] / a["median_ns"]
+            a_low, a_high = a["interval_95_ns"]
+            b_low, b_high = b["interval_95_ns"]
+            if b_high < a_low:
+                outcome = "stable_improvement"
+            elif b_low > a_high:
+                outcome = "stable_regression"
+            else:
+                outcome = "overlapping_intervals"
+        rows.append(
+            {
+                "kernel_name": kernel.get("kernel_name"),
+                "a": a,
+                "b": b,
+                "median_ratio_b_over_a": ratio,
+                "outcome": outcome,
+            }
+        )
+    return {
+        "available": True,
+        "method": "median and MAD-derived interval (median +/- 2 * 1.4826 * MAD)",
+        "reports_a": list(report_paths_a),
+        "reports_b": list(report_paths_b),
+        "kernels": rows,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Top level
 # ---------------------------------------------------------------------------
@@ -665,37 +1345,59 @@ def diff_ncu_reports(
     *,
     kernel_like: str = "%",
     findings_per_kernel: int = 24,
+    collection_manifest_a: str = "",
+    collection_manifest_b: str = "",
+    repeat_reports_a: Sequence[str] = (),
+    repeat_reports_b: Sequence[str] = (),
     ncu_report_module: Any = None,
 ) -> Dict[str, Any]:
     """Compare two .ncu-rep files kernel-by-kernel.
 
     A is the baseline, B the candidate; every ratio in the result is B over A.
     ``kernel_like`` filters kernels by the same LIKE pattern the rest of the
-    package uses. ``ncu_report_module`` is the usual injection point for tests.
+    package uses. ``repeat_reports_a`` and ``repeat_reports_b`` add independent
+    reports to a median/MAD repeatability check. ``ncu_report_module`` is the
+    usual injection point for tests.
     """
+    collection_a, manifest_a = _resolve_collection_context(
+        report_a, collection_manifest=collection_manifest_a
+    )
+    collection_b, manifest_b = _resolve_collection_context(
+        report_b, collection_manifest=collection_manifest_b
+    )
     bundles_a = walk_report_once(
         report_a,
         kernel_like=kernel_like,
-        include_source=False,
+        include_source=True,
+        source_top_k=50,
+        collection=collection_a,
         ncu_report_module=ncu_report_module,
     )
     bundles_b = walk_report_once(
         report_b,
         kernel_like=kernel_like,
-        include_source=False,
+        include_source=True,
+        source_top_k=50,
+        collection=collection_b,
         ncu_report_module=ncu_report_module,
     )
 
     # The findings diff runs the same pipeline `ncu-diagnose` runs -- signal
     # scan, shipped-rule reconciliation and all -- so what appeared or
     # disappeared here is exactly what the single-report tool would have said.
-    def _diagnoses(path: str) -> Dict[Tuple[int, int], Dict[str, Any]]:
+    def _diagnoses(
+        path: str, collection: Mapping[str, Any]
+    ) -> Dict[Tuple[int, int], Dict[str, Any]]:
         payload = diagnose_ncu_report(
             path,
             kernel_like=kernel_like,
             top_kernels=len(bundles_a) + len(bundles_b) + 1,
-            findings_per_kernel=findings_per_kernel,
+            # A diff must not convert an omitted tail finding into a
+            # disappearance.  Source attribution is disabled here, so this
+            # does not increase report traversal cost.
+            findings_per_kernel=max(int(findings_per_kernel), 1024),
             include_source=False,
+            collection=collection,
             ncu_report_module=ncu_report_module,
         )
         out: Dict[Tuple[int, int], Dict[str, Any]] = {}
@@ -705,31 +1407,46 @@ def diff_ncu_reports(
         out["__payload__"] = payload  # type: ignore[index]
         return out
 
-    diag_a = _diagnoses(report_a)
-    diag_b = _diagnoses(report_b)
+    diag_a = _diagnoses(report_a, collection_a)
+    diag_b = _diagnoses(report_b, collection_b)
     payload_a: Dict[str, Any] = diag_a.pop("__payload__")  # type: ignore[assignment]
     payload_b: Dict[str, Any] = diag_b.pop("__payload__")  # type: ignore[assignment]
 
-    matches, unmatched_a, unmatched_b = _match_kernels(bundles_a, bundles_b)
+    matches, unmatched_a, unmatched_b = _match_kernels(
+        bundles_a,
+        bundles_b,
+        aliases_a=collection_a.get("kernel_aliases") if isinstance(collection_a.get("kernel_aliases"), Mapping) else None,
+        aliases_b=collection_b.get("kernel_aliases") if isinstance(collection_b.get("kernel_aliases"), Mapping) else None,
+        logical_kernel_id_a=str(collection_a.get("logical_kernel_id") or ""),
+        logical_kernel_id_b=str(collection_b.get("logical_kernel_id") or ""),
+    )
 
     kernels: List[Dict[str, Any]] = []
-    blocked_pairs: List[str] = []
+    blocked_pairs: List[Dict[str, Any]] = []
     for key_a, key_b in matches:
         bundle_a = bundles_a[key_a]
         bundle_b = bundles_b[key_b]
         view_a = MetricView(bundle_a.metrics)
         view_b = MetricView(bundle_b.metrics)
+        effective_a, _evidence_a = _effective_collection_context(
+            collection_a, bundle_a.metrics
+        )
+        effective_b, _evidence_b = _effective_collection_context(
+            collection_b, bundle_b.metrics
+        )
 
         # Clock guard first. This is compare_measurements' decision, not ours.
         ctx_a = describe_collection_mode(
             source="ncu",
             sm_clock_hz=view_a.get("sm_clock_hz"),
             gpc_clock_hz=view_a.get("gpc_clock_hz"),
+            **measurement_collection_context(effective_a),
         )
         ctx_b = describe_collection_mode(
             source="ncu",
             sm_clock_hz=view_b.get("sm_clock_hz"),
             gpc_clock_hz=view_b.get("gpc_clock_hz"),
+            **measurement_collection_context(effective_b),
         )
         comparison = compare_measurements(
             ctx_a,
@@ -738,8 +1455,19 @@ def diff_ncu_reports(
             candidate_value=view_b.get("duration_ns"),
             metric="duration_ns",
         )
+        comparison = _report_compatibility_guards(
+            comparison,
+            view_a,
+            view_b,
+            effective_a,
+            effective_b,
+            gpu_a=str(payload_a.get("gpu") or payload_a.get("gpu_detected_from_report") or ""),
+            gpu_b=str(payload_b.get("gpu") or payload_b.get("gpu_detected_from_report") or ""),
+        )
         if not comparison.get("comparable"):
-            blocked_pairs.append(bundle_a.kernel_name)
+            blocked_pairs.append(
+                {"kernel_name": bundle_a.kernel_name, "blockers": list(comparison.get("blockers") or ())}
+            )
 
         kernel_diag_a = diag_a.get(key_a)
         kernel_diag_b = diag_b.get(key_b)
@@ -754,14 +1482,22 @@ def diff_ncu_reports(
 
         grid_a, block_a = _launch_sig(bundle_a.metrics)
         grid_b, block_b = _launch_sig(bundle_b.metrics)
+        match = _match_metadata(bundle_a, bundle_b, effective_a, effective_b)
+        result_status, result_status_reason = _comparison_status(
+            comparison, match, effective_a, effective_b
+        )
+        catalog_coverage, catalog_changes = _catalog_rows(view_a, view_b)
 
         kernels.append(
             {
                 "kernel_name": bundle_a.kernel_name,
+                "match": match,
                 "launch_a": {"grid": grid_a, "block": block_a},
                 "launch_b": {"grid": grid_b, "block": block_b},
                 "clock_comparison": dict(comparison),
                 "duration": _duration_block(view_a, view_b, comparison),
+                "result_status": result_status,
+                "result_status_reason": result_status_reason,
                 "verdict": {
                     "a": verdict_a,
                     "b": verdict_b,
@@ -770,6 +1506,8 @@ def diff_ncu_reports(
                 "findings_diff": _diff_findings(
                     (kernel_diag_a or {}).get("findings"),
                     (kernel_diag_b or {}).get("findings"),
+                    diag_a=kernel_diag_a,
+                    diag_b=kernel_diag_b,
                 ),
                 "stall_delta_reliable": all(r["reliable"] for r in reliability),
                 "stall_reliability": reliability,
@@ -783,7 +1521,13 @@ def diff_ncu_reports(
                     "instruction_mix": _axis_rows(view_a, view_b, _INSTRUCTION_ENTRIES),
                     "spills": _axis_rows(view_a, view_b, _SPILL_ENTRIES),
                     "shared_memory": _axis_rows(view_a, view_b, _SHARED_ENTRIES),
+                    "normalised_work": _ratio_rows(view_a, view_b),
                 },
+                "catalog_coverage": catalog_coverage,
+                "catalog_changes": catalog_changes,
+                "raw_metric_inventory": _raw_metric_diff(bundle_a.metrics, bundle_b.metrics),
+                "pm_sampling": _pm_sampling_diff(bundle_a.source, bundle_b.source),
+                "pc_sampling": _pc_hotspot_diff(bundle_a.source, bundle_b.source),
             }
         )
 
@@ -803,11 +1547,13 @@ def diff_ncu_reports(
         return out
 
     if blocked_pairs:
+        reasons = Counter(
+            blocker for item in blocked_pairs for blocker in item.get("blockers") or ()
+        )
         guard_summary = (
-            f"SM clocks differ by more than 1% on {len(blocked_pairs)} of "
-            f"{len(matches)} matched kernel(s). Raw-time deltas for those kernels "
-            "are NOT speedups; read the clock-normalised and elapsed-cycle "
-            "figures instead."
+            f"{len(blocked_pairs)} of {len(matches)} matched kernel(s) fail one or more "
+            "compatibility guards; raw-duration deltas are not speedups. "
+            + "; ".join(f"{count}x {reason}" for reason, count in reasons.most_common(3))
         )
     elif matches:
         guard_summary = (
@@ -825,19 +1571,55 @@ def diff_ncu_reports(
                 "the stall-composition deltas for this kernel are unreliable."
             )
 
+    report_paths_a = tuple(dict.fromkeys((str(report_a), *map(str, repeat_reports_a))))
+    report_paths_b = tuple(dict.fromkeys((str(report_b), *map(str, repeat_reports_b))))
+    repeat_stats = _repeat_statistics(
+        report_paths_a,
+        report_paths_b,
+        kernels,
+        kernel_like=kernel_like,
+        ncu_report_module=ncu_report_module,
+    )
+    if repeat_stats.get("available"):
+        rows = list(repeat_stats.get("kernels") or ())
+        for kernel, stats in zip(kernels, rows):
+            kernel["repeat_statistics"] = stats
+            comparison = kernel.get("clock_comparison") or {}
+            baseline = comparison.get("baseline") or {}
+            candidate = comparison.get("candidate") or {}
+            clocks_locked = baseline.get("clocks_locked") is True and candidate.get("clocks_locked") is True
+            if (
+                kernel.get("result_status") == "INCONCLUSIVE"
+                and clocks_locked
+                and stats.get("outcome") == "stable_improvement"
+            ):
+                kernel["result_status"] = "VALID_SPEEDUP"
+                kernel["result_status_reason"] = (
+                    "matched provenance, locked clocks, and non-overlapping repeat "
+                    "duration intervals support a speedup"
+                )
+            elif kernel.get("result_status") == "INCONCLUSIVE":
+                kernel["result_status_reason"] = (
+                    f"repeat result: {stats.get('outcome')}; this is not a validated "
+                    "speedup without a stable improvement under locked clocks"
+                )
+
     return {
         "report_a": str(report_a),
         "report_b": str(report_b),
+        "collection_manifests": {"a": manifest_a, "b": manifest_b},
         "kernel_filter": kernel_like,
         "gpu_a": payload_a.get("gpu") or payload_a.get("gpu_detected_from_report"),
         "gpu_b": payload_b.get("gpu") or payload_b.get("gpu_detected_from_report"),
         "clock_guard": {
             "all_comparable": not blocked_pairs,
-            "blocked_kernels": blocked_pairs,
+            "blocked_kernels": [item["kernel_name"] for item in blocked_pairs],
+            "blocked_pairs": blocked_pairs,
             "summary": guard_summary,
         },
         "matched_kernel_count": len(matches),
         "kernels": kernels,
+        "repeat_statistics": repeat_stats,
         "unmatched_a": _unmatched(bundles_a, unmatched_a),
         "unmatched_b": _unmatched(bundles_b, unmatched_b),
         "notes": notes,
@@ -949,9 +1731,9 @@ def diff_result_to_markdown(payload: Mapping[str, Any]) -> str:
             lines.append(f"- only in {side} (no counterpart to diff against): {names}")
     lines.append("")
 
-    # The clock guard leads. Everything below it is read in its light.
+    # The compatibility guard leads. Everything below it is read in its light.
     guard = payload.get("clock_guard") or {}
-    lines.append("## Clock guard")
+    lines.append("## Clock guard and comparability")
     lines.append("")
     if guard.get("all_comparable"):
         lines.append(str(guard.get("summary") or ""))
@@ -959,14 +1741,47 @@ def diff_result_to_markdown(payload: Mapping[str, Any]) -> str:
         lines.append(f"**WARNING: {guard.get('summary') or 'clocks differ'}**")
     lines.append("")
 
+    repeats = payload.get("repeat_statistics") or {}
+    lines.append("## Repeatability")
+    lines.append("")
+    if not repeats.get("available"):
+        lines.append(str(repeats.get("reason") or "repeatability was not evaluated"))
+    else:
+        lines.append(str(repeats.get("method") or ""))
+        for row in repeats.get("kernels") or []:
+            if not isinstance(row, Mapping):
+                continue
+            a, b = row.get("a") or {}, row.get("b") or {}
+            lines.append(
+                f"- `{row.get('kernel_name')}`: {row.get('outcome')}; median B/A "
+                f"{_fmt_ratio(row.get('median_ratio_b_over_a'))}; n={a.get('count', 0)}/"
+                f"{b.get('count', 0)}, MAD ns={_fmt(a.get('mad_ns'))}/{_fmt(b.get('mad_ns'))}."
+            )
+    lines.append("")
+
     for kernel in payload.get("kernels") or []:
         if not isinstance(kernel, Mapping):
             continue
         launch_a = kernel.get("launch_a") or {}
+        launch_b = kernel.get("launch_b") or {}
+        match = kernel.get("match") or {}
         lines.append(
             f"## `{kernel.get('kernel_name', '?')}` "
-            f"(grid {_fmt(launch_a.get('grid'))}, block {_fmt(launch_a.get('block'))})"
+            f"(grid {_fmt(launch_a.get('grid'))} -> {_fmt(launch_b.get('grid'))}, "
+            f"block {_fmt(launch_a.get('block'))} -> {_fmt(launch_b.get('block'))})"
         )
+        lines.append("")
+        lines.append(
+            f"- result: **{kernel.get('result_status', 'INCONCLUSIVE')}** - "
+            f"{kernel.get('result_status_reason', '')}"
+        )
+        lines.append(
+            f"- match: {match.get('method', 'unknown')} "
+            f"(confidence {match.get('confidence', 'unknown')})"
+            + (f", alias `{match.get('alias')}`" if match.get("alias") else "")
+        )
+        if match.get("note"):
+            lines.append(f"- match caveat: {match.get('note')}")
         lines.append("")
 
         duration = kernel.get("duration") or {}
@@ -1036,10 +1851,22 @@ def diff_result_to_markdown(payload: Mapping[str, Any]) -> str:
                 f"[{change.get('category')}] {change.get('severity_a')} -> "
                 f"{change.get('severity_b')}"
             )
+        for finding in findings.get("not_evaluated_in_b") or []:
+            lines.append(
+                f"- not evaluated in B, not claimed disappeared: **{finding.get('title')}** "
+                f"[{finding.get('category')}; {finding.get('analysis') or 'unknown coverage'}]"
+            )
+        for finding in findings.get("not_evaluated_in_a") or []:
+            lines.append(
+                f"- not evaluated in A, not claimed appeared: **{finding.get('title')}** "
+                f"[{finding.get('category')}; {finding.get('analysis') or 'unknown coverage'}]"
+            )
         if not (
             findings.get("appeared")
             or findings.get("disappeared")
             or findings.get("severity_changed")
+            or findings.get("not_evaluated_in_a")
+            or findings.get("not_evaluated_in_b")
         ):
             lines.append(
                 f"- no findings appeared or disappeared "
@@ -1072,6 +1899,59 @@ def diff_result_to_markdown(payload: Mapping[str, Any]) -> str:
         _axis_table(lines, "Instruction mix", axes.get("instruction_mix") or [])
         _axis_table(lines, "Spills", axes.get("spills") or [])
         _axis_table(lines, "Shared memory", axes.get("shared_memory") or [])
+        _axis_table(lines, "Work-normalised counters", axes.get("normalised_work") or [])
+
+        pm = kernel.get("pm_sampling") or {}
+        lines.append("### PM sampling aggregates")
+        lines.append("")
+        if pm.get("available"):
+            _axis_table(lines, "Same-pass PM aggregate features", pm.get("features") or [])
+            if pm.get("unmatched_series_a") or pm.get("unmatched_series_b"):
+                lines.append(
+                    "- unmatched PM series were not compared because pass-group identity changed."
+                )
+                lines.append("")
+        else:
+            lines.append(f"Unavailable: {pm.get('reason') or 'no valid PM sampling data'}.")
+            lines.append("")
+
+        pc = kernel.get("pc_sampling") or {}
+        lines.append("### PC sampling hotspots")
+        lines.append("")
+        if pc.get("available"):
+            _axis_table(lines, "Source-line sample-share changes", (pc.get("hotspots") or [])[:20])
+            if pc.get("hotspots_truncated"):
+                lines.append(f"_{pc.get('hotspots_truncated')} additional hotspot rows in JSON output._")
+                lines.append("")
+        else:
+            lines.append(f"Unavailable: {pc.get('reason') or 'no valid PC sampling data'}.")
+            lines.append("")
+
+        coverage = kernel.get("catalog_coverage") or {}
+        if coverage:
+            lines.append("### Metric catalog coverage")
+            lines.append("")
+            lines.append(
+                f"{coverage.get('both', 0)} of {coverage.get('total', 0)} catalog keys are "
+                f"present on both sides; A-only {coverage.get('a_only', 0)}, "
+                f"B-only {coverage.get('b_only', 0)}, absent on both {coverage.get('neither', 0)}."
+            )
+            lines.append("")
+            _axis_table(lines, "Changed or one-sided catalog metrics", kernel.get("catalog_changes") or [])
+
+        raw = kernel.get("raw_metric_inventory") or {}
+        if raw:
+            lines.append("### Raw metric audit appendix")
+            lines.append("")
+            lines.append(
+                f"numeric metrics A/B/common: {raw.get('numeric_a', 0)}/"
+                f"{raw.get('numeric_b', 0)}/{raw.get('common', 0)}; changed common: "
+                f"{raw.get('changed_common', 0)}; A-only/B-only: {raw.get('a_only', 0)}/"
+                f"{raw.get('b_only', 0)}. JSON retains every changed raw metric; "
+                "the Markdown appendix shows the largest 25 relative changes."
+            )
+            lines.append("")
+            _axis_table(lines, "Largest raw metric changes", (raw.get("changes") or [])[:25])
 
     notes = payload.get("notes") or []
     if notes:

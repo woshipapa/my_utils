@@ -65,7 +65,7 @@ conclusion carry its evidence.
 
 | Capability | Source | Why |
 |---|---|---|
-| `METRIC_CATALOG` (179 metrics) | ncu metric reference + shipped sections | Raw metric names are meaningless without units, ideal values and interpretation. |
+| `METRIC_CATALOG` (182 metrics) | ncu metric reference + shipped sections | Raw metric names are meaningless without units, ideal values and interpretation. |
 | Arch-variant name resolution | Observed renames across Ampere/Hopper/Blackwell | `_v2` suffixes and `dram__bytes_op_read` spellings meant a single hard-coded name returned `None` on half the fleet. |
 | `classify_bottleneck` + `SOL_THRESHOLDS` | **VERIFIED LOCALLY**: `sections/SpeedOfLight.py` | The four constants (10/60/80/1) are read verbatim from NVIDIA's shipped rule, not from blog posts. |
 | `analyze_stalls`, 19 stall reasons | ncu `WarpStateStats` + shipped `CPIStall` rule | "Latency bound" is not actionable; the stall reason is. |
@@ -262,5 +262,8 @@ Each of these exists because its absence produced a specific wrong answer.
 ## Where to read next
 
 - `PERFORMANCE_ANALYSIS_HANDBOOK.md` — how to use all of this
-- `docs/research/01`–`07` — the research record, with VERIFIED/UNVERIFIED tags
-- `tests/profiling/test_analysis_engine.py` — 297 tests; the executable spec
+- `docs/research/2026-08-ncu-audit/` — the current audit record, including
+  verified real-report evidence and open validation boundaries
+- `tests/profiling/` — the distributed executable specification (597 tests in
+  the final 2026-08 audit validation); `_synthetic_loader.py` keeps pure analysis tests
+  independent of the package-level torch import

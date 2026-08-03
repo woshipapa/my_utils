@@ -940,6 +940,7 @@ def analyze_pm_sampling(
     *,
     top_k: int = 0,
     kernel_duration_ns: Optional[float] = None,
+    replay_mode: str = "",
 ) -> Dict[str, Any]:
     """Read the PM-sampling timeline: how utilisation moved across the kernel.
 
@@ -1286,7 +1287,8 @@ def analyze_pm_sampling(
         # several times the kernel's duration is expected and does not mean the
         # kernel ran that long; the caller is given both so the difference is
         # visible rather than silently misread as one execution.
-        "span_covers_replays": True,
+        "span_covers_replays": len(by_pass) > 1,
+        "replay_mode": str(replay_mode or "").strip().lower() or "unknown",
         "bucket_interval_ns": (
             duration_ns / (series[0]["buckets"] - 1)
             if duration_ns and series[0]["buckets"] > 1
@@ -1321,16 +1323,46 @@ def analyze_pm_sampling(
             or "No percentage-valued unit shows a large gap between its peak and "
             "its kernel average."
         ),
-        "span_note": (
-            "The sampled span covers the whole profiling session. Under kernel "
-            "replay that is several executions of this kernel, so a span larger "
-            "than the kernel duration is expected."
-        ),
+        "span_note": _pm_sampling_span_note(replay_mode),
         "counts_note": (
             "Series marked `unit: count` are raw per-bucket counts, not "
             "percentages; they have no ceiling to be measured against."
         ),
     }
+
+
+def _pm_sampling_span_note(replay_mode: str) -> str:
+    """Describe PM timestamps without inventing an unrecorded replay mode."""
+    mode = str(replay_mode or "").strip().lower()
+    if mode == "kernel":
+        return (
+            "The sampled span covers the whole profiling session. Under kernel "
+            "replay that is several executions of this kernel, so a span larger "
+            "than the kernel duration is expected."
+        )
+    if mode == "application":
+        return (
+            "The sampled span can cover several application-replay runs. A span "
+            "larger than one kernel duration is therefore expected, but it is not "
+            "a Kernel Replay measurement."
+        )
+    if mode == "range":
+        return (
+            "The sampled span can cover several range-replay passes. A span larger "
+            "than one kernel duration is therefore expected, but it is not a Kernel "
+            "Replay measurement."
+        )
+    if mode == "app-range":
+        return (
+            "The sampled span can cover several application-range-replay runs. A "
+            "span larger than one kernel duration is therefore expected, but it is "
+            "not a Kernel Replay measurement."
+        )
+    return (
+        "The sampled span can include several collection passes, but the report "
+        "did not record its replay mode. Do not interpret it as Kernel Replay "
+        "without an accompanying collection manifest."
+    )
 
 
 def top_stalling_instructions(

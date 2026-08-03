@@ -40,6 +40,7 @@ from .measurement_context import (
     MeasurementContext,
     compare_measurements,
     describe_collection_mode,
+    measurement_collection_context,
 )
 from .metrics_analyzer import MetricsAnalyzer
 from .nccl_bandwidth import (
@@ -141,6 +142,7 @@ __all__ = [
     "CacheState",
     "MeasurementContext",
     "describe_collection_mode",
+    "measurement_collection_context",
     "compare_measurements",
     "MetricsAnalyzer",
     "WORKLOAD_PROFILES",

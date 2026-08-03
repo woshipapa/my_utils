@@ -4,6 +4,25 @@
 官方来源：<https://docs.nvidia.com/nsight-compute/NsightComputeCli/index.html>  
 文档版本标识：`v2026.1.1`（页面 `Last updated on Mar 13, 2026`）
 
+## Current Documentation Delta (2026.2.1)
+
+This file remains the verified local `2026.1.1` option inventory. NVIDIA's
+current `2026.2.1` release adds `--process-id` for attach mode and
+`--list-injection-path-64` / `--list-injection-path-32` for CUDA injection
+library discovery. The YAML template exposes those options, but they must not
+be enabled until the target host reports `ncu --version >= 2026.2.1`.
+
+Use the version/provenance audit before treating a collection as current:
+
+```bash
+python -m my_utils.profiling.cli ncu-audit \
+  --ncu ncu \
+  --configured-option process-id \
+  --configured-option list-injection-path-64 \
+  --configured-option list-injection-path-32 \
+  --collection-manifest report.ncu-rep.collection.json --pretty
+```
+
 ## 1) 扫描范围与方法
 
 - 扫描对象：`Command Line Options` 章节的官方表格。

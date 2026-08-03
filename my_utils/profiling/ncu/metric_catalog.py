@@ -169,10 +169,10 @@ _CATALOG_LIST: List[MetricSpec] = [
         "timing",
         unit="cycles",
     ),
-    # The clock the kernel actually ran at. Nsight Compute defaults to
-    # --clock-control=base, but the achieved clock still varies run to run, and
-    # comparing two durations taken at different clocks mixes the code change
-    # with the frequency change.
+    # The clock the kernel actually ran at. Nsight Compute 2026.1+ defaults to
+    # --clock-control=boost, while older releases used base; the report does not
+    # record which option was used. Comparing two durations taken at different
+    # clocks mixes the code change with the frequency change.
     _m(
         "sm_clock_hz",
         ["sm__cycles_elapsed.avg.per_second"],
@@ -1669,6 +1669,36 @@ _CATALOG_LIST: List[MetricSpec] = [
         "PmSampling",
         "sampling",
         description="Number of pass groups PM sampling needed. More passes means more replay.",
+    ),
+    _m(
+        "pmsampler_buffer_size_bytes",
+        ["profiler__pmsampler_buffer_size_bytes"],
+        "PmSampling",
+        "sampling",
+        unit="byte",
+        description="Device-side PM-sampling buffer size per pass group.",
+    ),
+    _m(
+        "pmsampler_dropped_samples",
+        ["profiler__pmsampler_dropped_samples"],
+        "PmSampling",
+        "sampling",
+        unit="sample",
+        description=(
+            "Non-zero means PM samples were dropped because the buffer was "
+            "insufficient; the PM timeline and phase conclusions are invalid."
+        ),
+    ),
+    _m(
+        "pmsampler_merged_samples",
+        ["profiler__pmsampler_merged_samples"],
+        "PmSampling",
+        "sampling",
+        unit="sample",
+        description=(
+            "Non-zero means PM samples were merged under hardware backpressure; "
+            "the retained timeline has reduced temporal resolution."
+        ),
     ),
 ]
 

@@ -531,7 +531,7 @@ The system is covered by the suite under `tests/profiling/`, notably:
 
 - `test_collector_from_config.py` - config-driven bootstrap, collection,
   validation stats, report metadata
-- `test_analysis_engine.py` / `test_analyzer_rules.py` - analyzer rules and
+- `test_analyzer_rules.py` / `test_ncu_diagnostics.py` - analyzer rules and
   scoring
 - `test_metrics_trace.py` - Chrome trace export
 - `test_framework_adapters.py` - adapter detection and provider spec wiring

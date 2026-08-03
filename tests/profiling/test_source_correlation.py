@@ -790,10 +790,11 @@ class TestSamplingAppearsInTheReport:
         assert "### PM sampling" in text
         assert "time buckets" in text
 
-    def test_pm_span_is_explained_as_covering_replays(self):
-        """316us of samples for an 81us kernel is replay, not a long kernel."""
+    def test_pm_span_does_not_invent_kernel_replay_without_metadata(self):
+        """A multipass timeline is not proof of a particular replay mode."""
         text = self._markdown()
-        assert "several executions" in text
+        assert "did not record its replay mode" in text
+        assert "Under kernel replay" not in text
 
     def test_raw_counts_carry_no_percent_sign_in_the_table(self):
         text = self._markdown()
@@ -1206,3 +1207,10 @@ class TestPmSamplingReplayClockDrift:
 
         out = source_correlation.analyze_pm_sampling(_Pct())
         assert out["pass_effective_clocks"] == {}
+
+    def test_application_range_replay_is_not_described_as_kernel_replay(self):
+        out = source_correlation.analyze_pm_sampling(
+            self._Action(), replay_mode="app-range"
+        )
+        assert "application-range-replay" in out["span_note"]
+        assert "Kernel Replay measurement" in out["span_note"]
